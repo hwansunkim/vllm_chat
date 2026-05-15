@@ -102,18 +102,40 @@ def _llm(prompt: str, max_tokens: int = 512, temperature: float = 0.1) -> str:
             "max_tokens": max_tokens,
             "temperature": temperature,
         },
+        timeout=30,
     )
     response.raise_for_status()
     return response.json()["choices"][0]["message"]["content"]
 
 
 def _parse_json(text: str, array: bool = False) -> list | dict | None:
-    pattern = r"\[.*\]" if array else r"\{.*\}"
-    match = re.search(pattern, text, re.DOTALL)
-    try:
-        return json.loads(match.group() if match else text)
-    except Exception:
-        return [] if array else None
+    open_ch, close_ch = ('[', ']') if array else ('{', '}')
+    fallback: list | None = [] if array else None
+
+    # LLM이 ```json ... ``` 코드 펜스로 감싸는 경우
+    fence = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL)
+    if fence:
+        try:
+            return json.loads(fence.group(1))
+        except Exception:
+            pass
+
+    # 첫 번째 open bracket에서 대응하는 close bracket까지 추출
+    start = text.find(open_ch)
+    if start == -1:
+        return fallback
+    depth = 0
+    for i, ch in enumerate(text[start:], start):
+        if ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start:i + 1])
+                except Exception:
+                    return fallback
+    return fallback
 
 
 def extract_keywords(text: str) -> list[str]:

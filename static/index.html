@@ -438,8 +438,8 @@ const md = markdownit({
 
 function renderMarkdown(text) {
   return DOMPurify.sanitize(md.render(text), {
-    ADD_ATTR: ['class', 'data-lang', 'style', 'aria-hidden', 'focusable', 'xmlns', 'viewBox', 'd', 'fill', 'stroke', 'width', 'height', 'x', 'y', 'x1', 'y1', 'x2', 'y2', 'cx', 'cy', 'r'],
-    ADD_TAGS: ['math', 'semantics', 'mrow', 'mo', 'mi', 'mn', 'mfrac', 'msup', 'msub', 'msubsup', 'munder', 'mover', 'munderover', 'mtable', 'mtr', 'mtd', 'annotation', 'svg', 'path', 'use', 'defs', 'g', 'rect', 'line', 'circle', 'text', 'clipPath'],
+    USE_PROFILES: { html: true, svg: true },
+    ADD_ATTR: ['data-lang'],
   });
 }
 
