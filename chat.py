@@ -12,6 +12,11 @@ import requests
 BASE_URL = "http://172.17.3.135:8000"
 MODEL = "google/gemma-4-31B-it"
 MAX_COMPLETION_TOKENS = 1024
+MAX_CONTINUATION_ROUNDS = 5
+CONTINUE_PROMPT = (
+    "이전 응답이 중단되었습니다. "
+    "이미 작성한 내용을 반복하지 말고 끊긴 부분부터 이어서 완성해주세요."
+)
 WARN_THRESHOLD = 0.8
 ARCHIVE_THRESHOLD = 0.75
 KEEP_RECENT_TURNS = 4
@@ -209,19 +214,47 @@ def build_messages(
 # ── Chat ─────────────────────────────────────────────────────────────────────
 
 def chat(messages: list) -> tuple[str, dict]:
-    response = requests.post(
-        f"{BASE_URL}/v1/chat/completions",
-        headers={"Content-Type": "application/json"},
-        json={
-            "model": MODEL,
-            "messages": messages,
-            "max_tokens": MAX_COMPLETION_TOKENS,
-            "temperature": 0.7,
-        },
-    )
-    response.raise_for_status()
-    data = response.json()
-    return data["choices"][0]["message"]["content"], data.get("usage", {})
+    full_reply = ""
+    total_completion_tokens = 0
+    final_usage: dict = {}
+    current_messages = list(messages)
+
+    for _ in range(MAX_CONTINUATION_ROUNDS):
+        response = requests.post(
+            f"{BASE_URL}/v1/chat/completions",
+            headers={"Content-Type": "application/json"},
+            json={
+                "model": MODEL,
+                "messages": current_messages,
+                "max_tokens": MAX_COMPLETION_TOKENS,
+                "temperature": 0.7,
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        choice = data["choices"][0]
+        partial: str = choice["message"]["content"]
+        finish_reason: str = choice.get("finish_reason", "stop")
+        usage: dict = data.get("usage", {})
+
+        full_reply += partial
+        total_completion_tokens += usage.get("completion_tokens", 0)
+        final_usage = usage
+
+        if finish_reason != "length":
+            break
+
+        current_messages = current_messages + [
+            {"role": "assistant", "content": partial},
+            {"role": "user", "content": CONTINUE_PROMPT},
+        ]
+
+    # prompt_tokens는 마지막 라운드 기준 (컨텍스트 사용률 계산에 가장 정확)
+    # completion_tokens는 전 라운드 합산
+    merged_usage = dict(final_usage)
+    merged_usage["completion_tokens"] = total_completion_tokens
+    return full_reply, merged_usage
 
 
 # ── Context status ────────────────────────────────────────────────────────────

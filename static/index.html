@@ -335,6 +335,90 @@ body {
 .bubble.md a { color: #6366f1; text-decoration: underline; }
 .bubble.md hr { border: none; border-top: 1px solid #e2e8f0; margin: 12px 0; }
 
+/* ── Sidebar footer ──────────────────────────────────────────────────────────── */
+.sidebar-footer { padding: 12px 14px; border-top: 1px solid #334155; }
+#mem-btn {
+  width: 100%; padding: 9px 12px; background: #0f172a;
+  color: #94a3b8; border: 1px solid #334155; border-radius: 8px;
+  cursor: pointer; font-size: 13px; text-align: left;
+  display: flex; align-items: center; gap: 8px;
+}
+#mem-btn:hover { background: #1e293b; color: #e2e8f0; border-color: #475569; }
+
+/* ── Memory Modal ────────────────────────────────────────────────────────────── */
+#mem-modal {
+  position: fixed; inset: 0;
+  background: rgba(15,23,42,0.55);
+  display: flex; align-items: center; justify-content: center; z-index: 200;
+}
+#mem-modal.hidden { display: none; }
+.mem-box {
+  background: white; border-radius: 16px;
+  width: 680px; max-width: 96vw; height: 80vh; max-height: 700px;
+  display: flex; flex-direction: column;
+  box-shadow: 0 30px 70px rgba(0,0,0,0.25);
+}
+.mem-header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 20px 24px 16px; border-bottom: 1px solid #f1f5f9;
+}
+.mem-header h3 { font-size: 17px; font-weight: 700; color: #1e293b; flex: 1; }
+.mem-count-badge {
+  font-size: 12px; font-weight: 600; color: #6366f1;
+  background: #eef2ff; padding: 2px 10px; border-radius: 20px;
+}
+.mem-close {
+  width: 30px; height: 30px; border: none; background: #f1f5f9;
+  border-radius: 8px; cursor: pointer; font-size: 16px; color: #64748b;
+  display: flex; align-items: center; justify-content: center;
+}
+.mem-close:hover { background: #e2e8f0; }
+.mem-filters {
+  padding: 12px 24px; display: flex; gap: 10px; align-items: center;
+  border-bottom: 1px solid #f1f5f9;
+}
+.mem-type-filters { display: flex; gap: 6px; }
+.mem-filter-btn {
+  padding: 5px 13px; border-radius: 20px; border: 1.5px solid #e2e8f0;
+  background: white; cursor: pointer; font-size: 12px; font-weight: 600; color: #64748b;
+}
+.mem-filter-btn:hover { border-color: #a5b4fc; color: #4f46e5; }
+.mem-filter-btn.active { background: #4f46e5; color: white; border-color: #4f46e5; }
+.mem-search {
+  flex: 1; padding: 6px 12px; border: 1.5px solid #e2e8f0; border-radius: 8px;
+  font-size: 13px; outline: none; font-family: inherit; color: #1e293b;
+}
+.mem-search:focus { border-color: #6366f1; }
+.mem-list { flex: 1; overflow-y: auto; padding: 12px 24px; display: flex; flex-direction: column; gap: 8px; }
+.mem-empty { text-align: center; color: #94a3b8; font-size: 14px; padding: 40px 0; }
+.mem-card {
+  border: 1.5px solid #f1f5f9; border-radius: 12px; padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 8px;
+  transition: border-color 0.15s;
+}
+.mem-card:hover { border-color: #c7d2fe; }
+.mem-card-top { display: flex; align-items: flex-start; gap: 10px; }
+.mem-type-badge {
+  font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 6px;
+  text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; margin-top: 1px;
+}
+.mem-type-badge.fact     { background: #eff6ff; color: #2563eb; }
+.mem-type-badge.decision { background: #ecfdf5; color: #059669; }
+.mem-type-badge.pending  { background: #fffbeb; color: #d97706; }
+.mem-content { font-size: 14px; color: #1e293b; line-height: 1.55; flex: 1; }
+.mem-delete-btn {
+  padding: 4px 8px; border: none; background: none;
+  color: #cbd5e1; cursor: pointer; border-radius: 6px; font-size: 14px;
+  flex-shrink: 0;
+}
+.mem-delete-btn:hover { background: #fee2e2; color: #ef4444; }
+.mem-keywords { display: flex; flex-wrap: wrap; gap: 5px; }
+.mem-kw {
+  font-size: 11px; background: #f8fafc; color: #64748b;
+  padding: 2px 8px; border-radius: 4px; border: 1px solid #e2e8f0;
+}
+.mem-meta { font-size: 11px; color: #94a3b8; }
+
 /* 코드 블록 언어 라벨 */
 .code-lang {
   position: absolute; top: 8px; right: 12px;
@@ -352,6 +436,9 @@ body {
     <button id="new-chat-btn">+ 새 대화</button>
   </div>
   <div id="conversation-list"></div>
+  <div class="sidebar-footer">
+    <button id="mem-btn">🗂 메모리 저장소</button>
+  </div>
 </div>
 
 <!-- Main -->
@@ -381,6 +468,27 @@ body {
       ></textarea>
       <button id="send-btn" disabled>▶</button>
     </div>
+  </div>
+</div>
+
+<!-- Memory Modal -->
+<div id="mem-modal" class="hidden">
+  <div class="mem-box">
+    <div class="mem-header">
+      <h3>메모리 저장소</h3>
+      <span class="mem-count-badge" id="mem-count">0개</span>
+      <button class="mem-close" id="mem-close">✕</button>
+    </div>
+    <div class="mem-filters">
+      <div class="mem-type-filters">
+        <button class="mem-filter-btn active" data-type="">전체</button>
+        <button class="mem-filter-btn" data-type="fact">fact</button>
+        <button class="mem-filter-btn" data-type="decision">decision</button>
+        <button class="mem-filter-btn" data-type="pending">pending</button>
+      </div>
+      <input class="mem-search" id="mem-search" type="text" placeholder="내용 또는 키워드 검색...">
+    </div>
+    <div class="mem-list" id="mem-list"></div>
   </div>
 </div>
 
@@ -737,6 +845,96 @@ async function createConversation() {
     alert('대화 생성 실패: ' + e.message);
   }
 }
+
+// ── Memory Modal ──────────────────────────────────────────────────────────────
+let memTypeFilter = '';
+let memSearchTimer = null;
+
+async function openMemoryModal() {
+  document.getElementById('mem-modal').classList.remove('hidden');
+  await fetchMemories();
+}
+
+function closeMemoryModal() {
+  document.getElementById('mem-modal').classList.add('hidden');
+}
+
+async function fetchMemories() {
+  const q = document.getElementById('mem-search').value.trim();
+  const params = new URLSearchParams();
+  if (memTypeFilter) params.set('type', memTypeFilter);
+  if (q) params.set('q', q);
+
+  const list = document.getElementById('mem-list');
+  list.innerHTML = '<div class="mem-empty">불러오는 중...</div>';
+
+  try {
+    const items = await api('GET', '/memories?' + params.toString());
+    renderMemories(items);
+  } catch (e) {
+    list.innerHTML = '<div class="mem-empty">불러오기 실패: ' + esc(e.message) + '</div>';
+  }
+}
+
+function renderMemories(items) {
+  const list = document.getElementById('mem-list');
+  document.getElementById('mem-count').textContent = items.length + '개';
+
+  if (!items.length) {
+    list.innerHTML = '<div class="mem-empty">저장된 메모리가 없습니다.</div>';
+    return;
+  }
+
+  list.innerHTML = items.map(m => {
+    const created = m.created_at.slice(0, 16).replace('T', ' ');
+    const accessed = m.last_accessed.slice(0, 16).replace('T', ' ');
+    const kwHtml = m.keywords.map(k => `<span class="mem-kw">${esc(k)}</span>`).join('');
+    return `
+      <div class="mem-card" data-id="${m.id}">
+        <div class="mem-card-top">
+          <span class="mem-type-badge ${m.type}">${m.type}</span>
+          <span class="mem-content">${esc(m.content)}</span>
+          <button class="mem-delete-btn" onclick="deleteMemory('${m.id}')" title="삭제">✕</button>
+        </div>
+        ${m.keywords.length ? `<div class="mem-keywords">${kwHtml}</div>` : ''}
+        <div class="mem-meta">생성: ${created} · 마지막 참조: ${accessed}</div>
+      </div>`;
+  }).join('');
+}
+
+async function deleteMemory(id) {
+  if (!confirm('이 메모리를 삭제하시겠습니까?')) return;
+  try {
+    await api('DELETE', '/memories/' + id);
+    document.querySelector(`.mem-card[data-id="${id}"]`)?.remove();
+    const list = document.getElementById('mem-list');
+    const remaining = list.querySelectorAll('.mem-card').length;
+    document.getElementById('mem-count').textContent = remaining + '개';
+    if (!remaining) list.innerHTML = '<div class="mem-empty">저장된 메모리가 없습니다.</div>';
+  } catch (e) {
+    alert('삭제 실패: ' + e.message);
+  }
+}
+
+document.getElementById('mem-btn').onclick = openMemoryModal;
+document.getElementById('mem-close').onclick = closeMemoryModal;
+document.getElementById('mem-modal').addEventListener('click', e => {
+  if (e.target === document.getElementById('mem-modal')) closeMemoryModal();
+});
+
+document.querySelectorAll('.mem-filter-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.mem-filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    memTypeFilter = btn.dataset.type;
+    fetchMemories();
+  });
+});
+
+document.getElementById('mem-search').addEventListener('input', () => {
+  clearTimeout(memSearchTimer);
+  memSearchTimer = setTimeout(fetchMemories, 300);
+});
 
 // ── Event listeners ───────────────────────────────────────────────────────────
 document.getElementById('new-chat-btn').onclick = showModal;
