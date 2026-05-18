@@ -336,14 +336,101 @@ body {
 .bubble.md hr { border: none; border-top: 1px solid #e2e8f0; margin: 12px 0; }
 
 /* ── Sidebar footer ──────────────────────────────────────────────────────────── */
-.sidebar-footer { padding: 12px 14px; border-top: 1px solid #334155; }
-#mem-btn {
+.sidebar-footer { padding: 12px 14px; border-top: 1px solid #334155; display: flex; flex-direction: column; gap: 6px; }
+.sidebar-footer-btn {
   width: 100%; padding: 9px 12px; background: #0f172a;
   color: #94a3b8; border: 1px solid #334155; border-radius: 8px;
   cursor: pointer; font-size: 13px; text-align: left;
   display: flex; align-items: center; gap: 8px;
 }
-#mem-btn:hover { background: #1e293b; color: #e2e8f0; border-color: #475569; }
+.sidebar-footer-btn:hover { background: #1e293b; color: #e2e8f0; border-color: #475569; }
+
+/* ── Agent Modal ─────────────────────────────────────────────────────────────── */
+#agent-modal {
+  position: fixed; inset: 0;
+  background: rgba(15,23,42,0.55);
+  display: flex; align-items: center; justify-content: center; z-index: 200;
+}
+#agent-modal.hidden { display: none; }
+.agent-box {
+  background: white; border-radius: 16px;
+  width: 720px; max-width: 96vw; height: 82vh; max-height: 740px;
+  display: flex; flex-direction: column;
+  box-shadow: 0 30px 70px rgba(0,0,0,0.25);
+}
+.agent-panel { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+.agent-panel.hidden { display: none; }
+.agent-modal-header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 20px 24px 16px; border-bottom: 1px solid #f1f5f9; flex-shrink: 0;
+}
+.agent-modal-header h3 { font-size: 17px; font-weight: 700; color: #1e293b; flex: 1; }
+.agent-count-badge {
+  font-size: 12px; font-weight: 600; color: #6366f1;
+  background: #eef2ff; padding: 2px 10px; border-radius: 20px;
+}
+.agent-new-btn {
+  padding: 7px 14px; background: #4f46e5; color: white;
+  border: none; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600;
+}
+.agent-new-btn:hover { background: #4338ca; }
+.agent-modal-close {
+  width: 30px; height: 30px; border: none; background: #f1f5f9;
+  border-radius: 8px; cursor: pointer; font-size: 16px; color: #64748b;
+  display: flex; align-items: center; justify-content: center;
+}
+.agent-modal-close:hover { background: #e2e8f0; }
+/* List panel */
+#agent-list { flex: 1; overflow-y: auto; padding: 12px 24px; display: flex; flex-direction: column; gap: 8px; }
+.agent-empty { text-align: center; color: #94a3b8; font-size: 14px; padding: 40px 0; line-height: 1.8; }
+.agent-card {
+  border: 1.5px solid #f1f5f9; border-radius: 12px; padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 8px; transition: border-color 0.15s;
+}
+.agent-card:hover { border-color: #c7d2fe; }
+.agent-card-header { display: flex; align-items: flex-start; gap: 12px; }
+.agent-icon-display { font-size: 26px; line-height: 1; flex-shrink: 0; padding-top: 2px; }
+.agent-card-info { flex: 1; min-width: 0; }
+.agent-card-name { font-size: 14px; font-weight: 600; color: #1e293b; }
+.agent-card-desc { font-size: 12px; color: #64748b; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent-card-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.agent-edit-btn {
+  padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 600;
+  cursor: pointer; background: white; color: #4f46e5; border: 1.5px solid #c7d2fe;
+}
+.agent-edit-btn:hover { background: #eef2ff; }
+.agent-delete-btn {
+  padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 600;
+  cursor: pointer; background: white; color: #ef4444; border: 1.5px solid #fecaca;
+}
+.agent-delete-btn:hover { background: #fee2e2; }
+.agent-card-prompt { font-size: 12px; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-style: italic; }
+.agent-card-meta { font-size: 11px; color: #cbd5e1; }
+/* Form panel */
+.agent-form-body { flex: 1; overflow-y: auto; padding: 16px 24px 24px; display: flex; flex-direction: column; gap: 14px; }
+.agent-form-group { display: flex; flex-direction: column; gap: 5px; }
+.agent-form-group label { font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }
+.agent-form-group input[type="text"],
+.agent-form-group input[type="number"],
+.agent-form-group textarea {
+  width: 100%; padding: 8px 12px;
+  border: 1.5px solid #e2e8f0; border-radius: 8px;
+  font-size: 14px; outline: none; font-family: inherit; color: #1e293b;
+}
+.agent-form-group input:focus, .agent-form-group textarea:focus { border-color: #6366f1; }
+.agent-form-group textarea { resize: vertical; min-height: 100px; line-height: 1.5; }
+.agent-form-row { display: flex; gap: 12px; }
+.agent-form-group input[type="range"] { padding: 6px 0; accent-color: #4f46e5; }
+.agent-form-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; border-top: 1px solid #f1f5f9; }
+/* Agent selector in new-chat modal */
+.agent-select-section { margin-bottom: 14px; }
+#agent-select {
+  width: 100%; padding: 9px 12px;
+  border: 1.5px solid #e2e8f0; border-radius: 8px;
+  font-size: 14px; outline: none; font-family: inherit; color: #1e293b;
+  background: white; cursor: pointer; margin-top: 6px;
+}
+#agent-select:focus { border-color: #6366f1; }
 
 /* ── Memory Modal ────────────────────────────────────────────────────────────── */
 #mem-modal {
@@ -419,6 +506,38 @@ body {
 }
 .mem-meta { font-size: 11px; color: #94a3b8; }
 
+/* ── @mention 자동완성 드롭다운 ───────────────────────────────────────────── */
+#input-row { position: relative; }
+#mention-dropdown {
+  position: absolute; bottom: calc(100% + 6px); left: 0;
+  background: white; border: 1.5px solid #e2e8f0; border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  min-width: 220px; max-height: 200px; overflow-y: auto; z-index: 50;
+}
+#mention-dropdown.hidden { display: none; }
+.mention-item {
+  padding: 9px 14px; cursor: pointer; font-size: 14px; color: #1e293b;
+  display: flex; align-items: center; gap: 8px; transition: background 0.1s;
+}
+.mention-item:hover, .mention-item.selected { background: #f1f5f9; }
+.mention-item-name { font-weight: 600; }
+.mention-item-desc { font-size: 12px; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── 에이전트 사용 뱃지 ────────────────────────────────────────────────────── */
+.agent-used-badge {
+  font-size: 11px; color: #4f46e5; background: #eef2ff;
+  padding: 3px 10px; border-radius: 20px;
+  display: inline-flex; align-items: center; gap: 4px; margin-top: 2px;
+}
+
+/* ── 라우터 모드 체크박스 ──────────────────────────────────────────────────── */
+.modal-check-row {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 10px; cursor: pointer;
+}
+.modal-check-row input[type="checkbox"] { accent-color: #4f46e5; width: 15px; height: 15px; cursor: pointer; }
+.modal-check-row label { font-size: 13px; color: #64748b; cursor: pointer; }
+
 /* 코드 블록 언어 라벨 */
 .code-lang {
   position: absolute; top: 8px; right: 12px;
@@ -437,7 +556,8 @@ body {
   </div>
   <div id="conversation-list"></div>
   <div class="sidebar-footer">
-    <button id="mem-btn">🗂 메모리 저장소</button>
+    <button class="sidebar-footer-btn" id="agent-btn">🤖 에이전트 관리</button>
+    <button class="sidebar-footer-btn" id="mem-btn">🗂 메모리 저장소</button>
   </div>
 </div>
 
@@ -461,12 +581,96 @@ body {
       <span id="context-info">컨텍스트 정보 없음</span>
     </div>
     <div id="input-row">
+      <div id="mention-dropdown" class="hidden"></div>
       <textarea
         id="message-input"
         rows="1"
-        placeholder="메시지를 입력하세요... (Enter: 전송 / Shift+Enter: 줄바꿈)"
+        placeholder="메시지를 입력하세요... (@에이전트명 으로 직접 호출 / Enter: 전송)"
       ></textarea>
       <button id="send-btn" disabled>▶</button>
+    </div>
+  </div>
+</div>
+
+<!-- Agent Modal -->
+<div id="agent-modal" class="hidden">
+  <div class="agent-box">
+    <!-- List panel -->
+    <div class="agent-panel" id="agent-list-panel">
+      <div class="agent-modal-header">
+        <h3>에이전트 관리</h3>
+        <span class="agent-count-badge" id="agent-count-badge">0개</span>
+        <button class="agent-new-btn" id="agent-new-btn">+ 새 에이전트</button>
+        <button class="agent-modal-close" id="agent-close">✕</button>
+      </div>
+      <div id="agent-list"></div>
+    </div>
+    <!-- Form panel -->
+    <div class="agent-panel hidden" id="agent-form-panel">
+      <div class="agent-modal-header">
+        <h3 id="agent-form-title">새 에이전트</h3>
+        <button class="agent-modal-close" id="agent-form-close">✕</button>
+      </div>
+      <div class="agent-form-body">
+        <div class="agent-form-row">
+          <div class="agent-form-group" style="width:72px">
+            <label>아이콘</label>
+            <input id="agent-icon" type="text" maxlength="4" value="🤖" style="text-align:center;font-size:20px;padding:6px">
+          </div>
+          <div class="agent-form-group" style="flex:1">
+            <label>이름 *</label>
+            <input id="agent-name" type="text" placeholder="에이전트 이름">
+          </div>
+        </div>
+        <div class="agent-form-group">
+          <label>설명</label>
+          <input id="agent-desc" type="text" placeholder="간략한 설명 (선택 사항)">
+        </div>
+        <div class="agent-form-group">
+          <label>시스템 프롬프트</label>
+          <textarea id="agent-prompt" rows="4" placeholder="에이전트의 역할과 행동 방식을 정의하세요..."></textarea>
+        </div>
+        <details style="border:1.5px solid #e2e8f0;border-radius:8px;padding:10px 14px">
+          <summary style="font-size:12px;font-weight:600;color:#64748b;cursor:pointer;text-transform:uppercase;letter-spacing:0.5px">
+            구조화 입력으로 자동 생성 (선택 사항)
+          </summary>
+          <div style="display:flex;flex-direction:column;gap:10px;margin-top:12px">
+            <div class="agent-form-group">
+              <label>역할 (Role)</label>
+              <input id="agent-role" type="text" placeholder="예: 시니어 Python 개발자">
+            </div>
+            <div class="agent-form-group">
+              <label>목표 (Goal)</label>
+              <input id="agent-goal" type="text" placeholder="예: 클린하고 효율적인 코드 작성">
+            </div>
+            <div class="agent-form-group">
+              <label>배경 (Backstory)</label>
+              <input id="agent-backstory" type="text" placeholder="예: 10년 경력의 백엔드 전문가로 성능 최적화를 중시합니다">
+            </div>
+            <button type="button" id="agent-gen-prompt" style="align-self:flex-end;padding:6px 14px;background:#f1f5f9;color:#4f46e5;border:1.5px solid #c7d2fe;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">
+              ✨ 시스템 프롬프트 자동 생성
+            </button>
+          </div>
+        </details>
+        <div class="agent-form-row">
+          <div class="agent-form-group" style="flex:1">
+            <label>온도 &nbsp;<span id="agent-temp-val" style="color:#4f46e5;font-weight:700">0.7</span></label>
+            <input id="agent-temp" type="range" min="0" max="2" step="0.1" value="0.7">
+          </div>
+          <div class="agent-form-group" style="flex:1">
+            <label>최대 토큰</label>
+            <input id="agent-tokens" type="number" min="256" max="8192" step="256" value="1024">
+          </div>
+        </div>
+        <div class="agent-form-group">
+          <label>모델 오버라이드 (비우면 기본 모델 사용)</label>
+          <input id="agent-model" type="text" placeholder="예: google/gemma-4-31B-it">
+        </div>
+        <div class="agent-form-actions">
+          <button class="btn-cancel" id="agent-form-cancel">취소</button>
+          <button class="btn-primary" id="agent-form-save">저장</button>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -496,12 +700,22 @@ body {
 <div id="modal" class="hidden">
   <div class="modal-box">
     <h3>새 대화 시작</h3>
+    <div class="agent-select-section">
+      <label>에이전트 (선택 사항)</label>
+      <select id="agent-select">
+        <option value="">에이전트 없이 시작</option>
+      </select>
+    </div>
     <label>시스템 프롬프트</label>
     <textarea
       id="system-prompt-input"
       placeholder="예: 당신은 친절한 코딩 전문가입니다. 한국어로 답변해 주세요."
     ></textarea>
     <p class="modal-hint">비워두면 기본 설정으로 시작합니다. Ctrl+Enter로 빠르게 시작.</p>
+    <div class="modal-check-row" id="router-mode-row">
+      <input type="checkbox" id="router-mode-check">
+      <label for="router-mode-check">라우터 모드 — 메시지마다 가장 적합한 에이전트 자동 선택</label>
+    </div>
     <div class="modal-actions">
       <button class="btn-cancel" id="modal-cancel">취소</button>
       <button class="btn-primary" id="modal-create">시작하기</button>
@@ -659,7 +873,7 @@ async function openConversation(id) {
 }
 
 // ── Message rendering ─────────────────────────────────────────────────────────
-function appendMessage(role, content, memories = [], usageInfo = null) {
+function appendMessage(role, content, memories = [], usageInfo = null, usedAgent = null) {
   removeEmptyState();
 
   const messagesEl = document.getElementById('messages');
@@ -718,6 +932,14 @@ function appendMessage(role, content, memories = [], usageInfo = null) {
   row.appendChild(avatar);
   row.appendChild(wrap);
   messagesEl.appendChild(row);
+
+  // Used agent badge (assistant only)
+  if (role === 'assistant' && usedAgent) {
+    const badge = document.createElement('div');
+    badge.className = 'agent-used-badge';
+    badge.textContent = `${usedAgent.icon} ${usedAgent.name}`;
+    wrap.appendChild(badge);
+  }
 
   // Update context bar from assistant message
   if (role === 'assistant' && usageInfo?.context_pct != null) {
@@ -797,7 +1019,7 @@ async function sendMessage() {
     const data = await api('POST', `/conversations/${currentConvId}/chat`, { content });
     removeLoadingBubble();
 
-    appendMessage('assistant', data.reply, data.memories, data.usage);
+    appendMessage('assistant', data.reply, data.memories, data.usage, data.used_agent);
 
     // 타이틀 갱신
     if (data.title) {
@@ -824,25 +1046,174 @@ async function sendMessage() {
 }
 
 // ── New conversation modal ────────────────────────────────────────────────────
-function showModal() {
+async function showModal() {
   document.getElementById('modal').classList.remove('hidden');
+  await loadAgentsForSelect();
   setTimeout(() => document.getElementById('system-prompt-input').focus(), 50);
 }
 
 function hideModal() {
   document.getElementById('modal').classList.add('hidden');
   document.getElementById('system-prompt-input').value = '';
+  document.getElementById('agent-select').value = '';
+  document.getElementById('router-mode-check').checked = false;
+}
+
+async function loadAgentsForSelect() {
+  const select = document.getElementById('agent-select');
+  try {
+    const list = await api('GET', '/agents');
+    select._agents = list;
+    select.innerHTML = '<option value="">에이전트 없이 시작</option>' +
+      list.map(a => `<option value="${a.id}">${esc(a.icon)} ${esc(a.name)}</option>`).join('');
+  } catch {
+    select._agents = [];
+  }
 }
 
 async function createConversation() {
   const systemPrompt = document.getElementById('system-prompt-input').value.trim();
+  const select = document.getElementById('agent-select');
+  const agentId = select.value || null;
   hideModal();
   try {
-    const data = await api('POST', '/conversations', { system_prompt: systemPrompt, title: '새 대화' });
+    const routerMode = document.getElementById('router-mode-check').checked;
+  const data = await api('POST', '/conversations', {
+      system_prompt: systemPrompt,
+      title: '새 대화',
+      agent_id: agentId,
+      router_mode: routerMode,
+    });
     await loadConversations();
     await openConversation(data.id);
   } catch (e) {
     alert('대화 생성 실패: ' + e.message);
+  }
+}
+
+// ── Agent Modal ───────────────────────────────────────────────────────────────
+let agentList = [];
+let editingAgentId = null;
+
+async function openAgentModal() {
+  document.getElementById('agent-modal').classList.remove('hidden');
+  await loadAgents();
+}
+
+function closeAgentModal() {
+  document.getElementById('agent-modal').classList.add('hidden');
+  hideAgentForm();
+}
+
+async function loadAgents() {
+  try {
+    agentList = await api('GET', '/agents');
+    renderAgents();
+  } catch (e) {
+    document.getElementById('agent-list').innerHTML =
+      `<div class="agent-empty">불러오기 실패: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderAgents() {
+  const listEl = document.getElementById('agent-list');
+  document.getElementById('agent-count-badge').textContent = agentList.length + '개';
+
+  if (!agentList.length) {
+    listEl.innerHTML = '<div class="agent-empty">등록된 에이전트가 없습니다.<br>+ 새 에이전트 버튼으로 만들어보세요.</div>';
+    return;
+  }
+
+  listEl.innerHTML = agentList.map(a => {
+    const promptPreview = a.system_prompt
+      ? (a.system_prompt.length > 70 ? a.system_prompt.slice(0, 70) + '...' : a.system_prompt)
+      : '시스템 프롬프트 없음';
+    const modelInfo = a.model ? ` · ${a.model.split('/').pop()}` : '';
+    return `
+      <div class="agent-card" data-id="${a.id}">
+        <div class="agent-card-header">
+          <span class="agent-icon-display">${esc(a.icon)}</span>
+          <div class="agent-card-info">
+            <div class="agent-card-name">${esc(a.name)}</div>
+            <div class="agent-card-desc">${esc(a.description || '설명 없음')}</div>
+          </div>
+          <div class="agent-card-actions">
+            <button class="agent-edit-btn" onclick="showAgentForm('${a.id}')">편집</button>
+            <button class="agent-delete-btn" onclick="deleteAgent('${a.id}')">삭제</button>
+          </div>
+        </div>
+        <div class="agent-card-prompt">${esc(promptPreview)}</div>
+        <div class="agent-card-meta">온도 ${a.temperature} · 최대 ${Number(a.max_tokens).toLocaleString()}토큰${esc(modelInfo)}</div>
+      </div>`;
+  }).join('');
+}
+
+function showAgentForm(agentId = null) {
+  editingAgentId = agentId;
+  const agent = agentId ? agentList.find(a => a.id === agentId) : null;
+
+  document.getElementById('agent-form-title').textContent = agent ? '에이전트 편집' : '새 에이전트';
+  document.getElementById('agent-icon').value = agent?.icon ?? '🤖';
+  document.getElementById('agent-name').value = agent?.name ?? '';
+  document.getElementById('agent-desc').value = agent?.description ?? '';
+  document.getElementById('agent-prompt').value = agent?.system_prompt ?? '';
+  document.getElementById('agent-role').value = agent?.role ?? '';
+  document.getElementById('agent-goal').value = agent?.goal ?? '';
+  document.getElementById('agent-backstory').value = agent?.backstory ?? '';
+  document.getElementById('agent-temp').value = agent?.temperature ?? 0.7;
+  document.getElementById('agent-temp-val').textContent = agent?.temperature ?? 0.7;
+  document.getElementById('agent-tokens').value = agent?.max_tokens ?? 1024;
+  document.getElementById('agent-model').value = agent?.model ?? '';
+
+  document.getElementById('agent-list-panel').classList.add('hidden');
+  document.getElementById('agent-form-panel').classList.remove('hidden');
+  setTimeout(() => document.getElementById('agent-name').focus(), 50);
+}
+
+function hideAgentForm() {
+  editingAgentId = null;
+  document.getElementById('agent-form-panel').classList.add('hidden');
+  document.getElementById('agent-list-panel').classList.remove('hidden');
+}
+
+async function saveAgent() {
+  const name = document.getElementById('agent-name').value.trim();
+  if (!name) { alert('에이전트 이름을 입력하세요.'); return; }
+
+  const body = {
+    name,
+    description: document.getElementById('agent-desc').value.trim(),
+    system_prompt: document.getElementById('agent-prompt').value.trim(),
+    icon: document.getElementById('agent-icon').value.trim() || '🤖',
+    temperature: parseFloat(document.getElementById('agent-temp').value),
+    max_tokens: parseInt(document.getElementById('agent-tokens').value),
+    model: document.getElementById('agent-model').value.trim() || null,
+    role: document.getElementById('agent-role').value.trim(),
+    goal: document.getElementById('agent-goal').value.trim(),
+    backstory: document.getElementById('agent-backstory').value.trim(),
+  };
+
+  try {
+    if (editingAgentId) {
+      await api('PUT', `/agents/${editingAgentId}`, body);
+    } else {
+      await api('POST', '/agents', body);
+    }
+    hideAgentForm();
+    await loadAgents();
+  } catch (e) {
+    alert('저장 실패: ' + e.message);
+  }
+}
+
+async function deleteAgent(id) {
+  const agent = agentList.find(a => a.id === id);
+  if (!confirm(`"${agent?.name}" 에이전트를 삭제할까요?`)) return;
+  try {
+    await api('DELETE', `/agents/${id}`);
+    await loadAgents();
+  } catch (e) {
+    alert('삭제 실패: ' + e.message);
   }
 }
 
@@ -936,6 +1307,108 @@ document.getElementById('mem-search').addEventListener('input', () => {
   memSearchTimer = setTimeout(fetchMemories, 300);
 });
 
+// ── Agent event listeners ─────────────────────────────────────────────────────
+document.getElementById('agent-btn').onclick = openAgentModal;
+document.getElementById('agent-close').onclick = closeAgentModal;
+document.getElementById('agent-modal').addEventListener('click', e => {
+  if (e.target === document.getElementById('agent-modal')) closeAgentModal();
+});
+document.getElementById('agent-new-btn').onclick = () => showAgentForm();
+document.getElementById('agent-form-close').onclick = hideAgentForm;
+document.getElementById('agent-form-cancel').onclick = hideAgentForm;
+document.getElementById('agent-form-save').onclick = saveAgent;
+document.getElementById('agent-temp').addEventListener('input', function () {
+  document.getElementById('agent-temp-val').textContent = this.value;
+});
+document.getElementById('agent-gen-prompt').addEventListener('click', () => {
+  const role = document.getElementById('agent-role').value.trim();
+  const goal = document.getElementById('agent-goal').value.trim();
+  const backstory = document.getElementById('agent-backstory').value.trim();
+  if (!role && !goal && !backstory) { alert('역할, 목표, 배경 중 하나 이상을 입력하세요.'); return; }
+  const parts = [];
+  if (role) parts.push(`당신은 ${role}입니다.`);
+  if (goal) parts.push(`목표: ${goal}`);
+  if (backstory) parts.push(`배경: ${backstory}`);
+  document.getElementById('agent-prompt').value = parts.join('\n');
+});
+document.getElementById('agent-select').addEventListener('change', function () {
+  const list = this._agents || [];
+  const agent = list.find(a => a.id === this.value);
+  document.getElementById('system-prompt-input').value = agent ? agent.system_prompt : '';
+  // 에이전트 선택 시 라우터 모드 해제
+  if (this.value) {
+    document.getElementById('router-mode-check').checked = false;
+  }
+});
+document.getElementById('router-mode-check').addEventListener('change', function () {
+  // 라우터 모드 활성화 시 에이전트 선택 해제
+  if (this.checked) {
+    document.getElementById('agent-select').value = '';
+    document.getElementById('system-prompt-input').value = '';
+  }
+});
+
+// ── @mention 자동완성 ─────────────────────────────────────────────────────────
+let mentionSelectedIdx = -1;
+
+function showMentionDropdown(query) {
+  const matches = agentList.filter(a => a.name.toLowerCase().includes(query.toLowerCase()));
+  const dd = document.getElementById('mention-dropdown');
+  if (!matches.length) { dd.classList.add('hidden'); return; }
+  mentionSelectedIdx = -1;
+  dd.innerHTML = matches.map((a, i) => `
+    <div class="mention-item" data-name="${a.name}" data-idx="${i}">
+      <span>${esc(a.icon)}</span>
+      <div>
+        <div class="mention-item-name">${esc(a.name)}</div>
+        <div class="mention-item-desc">${esc(a.description || a.role || '')}</div>
+      </div>
+    </div>`).join('');
+  dd.querySelectorAll('.mention-item').forEach(el => {
+    el.addEventListener('mousedown', e => {
+      e.preventDefault();
+      completeMention(el.dataset.name);
+    });
+  });
+  dd.classList.remove('hidden');
+}
+
+function hideMentionDropdown() {
+  document.getElementById('mention-dropdown').classList.add('hidden');
+  mentionSelectedIdx = -1;
+}
+
+function completeMention(name) {
+  const input = document.getElementById('message-input');
+  const before = input.value.slice(0, input.selectionStart);
+  const after = input.value.slice(input.selectionStart);
+  const newBefore = before.replace(/@\S*$/, `@${name} `);
+  input.value = newBefore + after;
+  input.selectionStart = input.selectionEnd = newBefore.length;
+  hideMentionDropdown();
+  input.focus();
+}
+
+document.getElementById('message-input').addEventListener('keydown', e => {
+  const dd = document.getElementById('mention-dropdown');
+  if (dd.classList.contains('hidden')) return;
+  const items = dd.querySelectorAll('.mention-item');
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    mentionSelectedIdx = Math.min(mentionSelectedIdx + 1, items.length - 1);
+    items.forEach((el, i) => el.classList.toggle('selected', i === mentionSelectedIdx));
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    mentionSelectedIdx = Math.max(mentionSelectedIdx - 1, 0);
+    items.forEach((el, i) => el.classList.toggle('selected', i === mentionSelectedIdx));
+  } else if (e.key === 'Enter' && mentionSelectedIdx >= 0) {
+    e.preventDefault();
+    completeMention(items[mentionSelectedIdx].dataset.name);
+  } else if (e.key === 'Escape') {
+    hideMentionDropdown();
+  }
+});
+
 // ── Event listeners ───────────────────────────────────────────────────────────
 document.getElementById('new-chat-btn').onclick = showModal;
 document.getElementById('modal-cancel').onclick = hideModal;
@@ -957,11 +1430,17 @@ document.getElementById('message-input').addEventListener('keydown', e => {
 document.getElementById('message-input').addEventListener('input', function () {
   this.style.height = 'auto';
   this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+  // @mention 감지
+  const before = this.value.slice(0, this.selectionStart);
+  const m = before.match(/@(\S*)$/);
+  if (m) showMentionDropdown(m[1]);
+  else hideMentionDropdown();
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadModelStatus();
 loadConversations();
+loadAgents();
 </script>
 </body>
 </html>

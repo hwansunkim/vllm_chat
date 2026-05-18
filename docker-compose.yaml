@@ -1,0 +1,34 @@
+services:
+  vllm-gemma4:
+    image: vllm/vllm-openai:gemma4-0505-cu129
+    container_name: vllm-speculative-inference
+    ports:
+      - "8000:8000"
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    ipc: host
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - HF_TOKEN=${HF_TOKEN}
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 2
+              capabilities: [gpu]
+    command:
+      - "google/gemma-4-31B-it"
+      - "--tensor-parallel-size"
+      - "2"
+      - "--gpu-memory-utilization"
+      - "0.85"
+      - "--max-model-len"
+      - "8192"
+      - "--trust-remote-code"
+      - "--max-num-batched-tokens"
+      - "8192"           # 2496(멀티모달 최대 토큰)보다 크게 설정
+      - "--speculative-config"
+      - '{"model":"google/gemma-4-31B-it-assistant","num_speculative_tokens":3}'
+    restart: unless-stopped
