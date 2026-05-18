@@ -544,6 +544,179 @@ body {
   font-size: 10px; font-weight: 600; color: #94a3b8;
   font-family: monospace; text-transform: uppercase;
 }
+
+/* ── Thinking block ─────────────────────────────────────────────────────────── */
+.thinking-block { margin-bottom: 6px; }
+.thinking-toggle {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: none; border: 1px solid #e2e8f0;
+  color: #94a3b8; padding: 3px 10px; border-radius: 20px;
+  cursor: pointer; font-size: 11px; font-weight: 500;
+  transition: all 0.15s;
+}
+.thinking-toggle:hover { border-color: #94a3b8; color: #64748b; }
+.thinking-toggle .th-caret { font-size: 9px; transition: transform 0.15s; }
+.thinking-toggle.open .th-caret { transform: rotate(180deg); }
+.thinking-content {
+  background: #f8fafc; border: 1px solid #e2e8f0;
+  border-radius: 10px; padding: 10px 14px;
+  margin-top: 5px; display: none;
+  font-size: 12px; color: #64748b; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 220px; overflow-y: auto;
+}
+.thinking-content.open { display: block; }
+/* 스트리밍 중: 펼쳐진 상태로 고정, 높이 제한 */
+.thinking-content.streaming {
+  display: block; max-height: 160px; overflow-y: auto;
+  border-color: #c7d2fe; background: #eef2ff;
+}
+.thinking-toggle.streaming {
+  border-color: #c7d2fe; color: #6366f1; cursor: default;
+  animation: th-pulse 1.5s ease-in-out infinite;
+}
+@keyframes th-pulse { 0%,100%{opacity:1} 50%{opacity:.6} }
+
+/* ── Streaming cursor ────────────────────────────────────────────────────────── */
+.streaming-cursor::after {
+  content: '▋'; color: #6366f1; font-size: 0.9em;
+  animation: blink 1s step-end infinite;
+}
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+/* ── Server Selector (chat header) ──────────────────────────────────────────── */
+.server-selector { position: relative; flex-shrink: 0; }
+.server-selector-btn {
+  display: flex; align-items: center; gap: 5px;
+  padding: 4px 11px; border-radius: 20px;
+  border: 1.5px solid #e2e8f0; background: #f8fafc;
+  cursor: pointer; font-size: 12px; color: #475569; white-space: nowrap;
+  transition: all 0.15s;
+}
+.server-selector-btn:hover { border-color: #94a3b8; background: white; color: #1e293b; }
+.server-selector-btn .ss-caret { font-size: 9px; color: #94a3b8; transition: transform 0.15s; }
+.server-selector-btn.open .ss-caret { transform: rotate(180deg); }
+.server-dropdown {
+  position: absolute; top: calc(100% + 6px); right: 0;
+  background: white; border: 1.5px solid #e2e8f0; border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  min-width: 240px; z-index: 50; overflow: hidden;
+}
+.server-dropdown.hidden { display: none; }
+.server-dropdown-header {
+  padding: 8px 14px 6px; font-size: 10px; font-weight: 700;
+  color: #94a3b8; text-transform: uppercase; letter-spacing: 0.6px;
+  border-bottom: 1px solid #f1f5f9;
+}
+.server-dropdown-item {
+  padding: 9px 14px; cursor: pointer;
+  display: flex; align-items: center; gap: 10px;
+  transition: background 0.1s; border-bottom: 1px solid #f8fafc;
+}
+.server-dropdown-item:last-child { border-bottom: none; }
+.server-dropdown-item:hover { background: #f8fafc; }
+.server-dropdown-item.active { background: #f0f9ff; }
+.server-dropdown-item.switching { opacity: 0.6; pointer-events: none; }
+.ss-check { width: 14px; font-size: 12px; color: #0284c7; flex-shrink: 0; }
+.ss-info { flex: 1; min-width: 0; }
+.ss-name { font-size: 13px; font-weight: 600; color: #1e293b; }
+.ss-model { font-size: 11px; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Server Modal ────────────────────────────────────────────────────────────── */
+#server-modal {
+  position: fixed; inset: 0;
+  background: rgba(15,23,42,0.55);
+  display: flex; align-items: center; justify-content: center; z-index: 200;
+}
+#server-modal.hidden { display: none; }
+.server-box {
+  background: white; border-radius: 16px;
+  width: 680px; max-width: 96vw; height: 80vh; max-height: 720px;
+  display: flex; flex-direction: column;
+  box-shadow: 0 30px 70px rgba(0,0,0,0.25);
+}
+.server-panel { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+.server-panel.hidden { display: none; }
+.server-modal-header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 20px 24px 16px; border-bottom: 1px solid #f1f5f9; flex-shrink: 0;
+}
+.server-modal-header h3 { font-size: 17px; font-weight: 700; color: #1e293b; flex: 1; }
+.server-count-badge {
+  font-size: 12px; font-weight: 600; color: #0284c7;
+  background: #e0f2fe; padding: 2px 10px; border-radius: 20px;
+}
+.server-new-btn {
+  padding: 7px 14px; background: #0284c7; color: white;
+  border: none; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600;
+}
+.server-new-btn:hover { background: #0369a1; }
+.server-modal-close {
+  width: 30px; height: 30px; border: none; background: #f1f5f9;
+  border-radius: 8px; cursor: pointer; font-size: 16px; color: #64748b;
+  display: flex; align-items: center; justify-content: center;
+}
+.server-modal-close:hover { background: #e2e8f0; }
+#server-list { flex: 1; overflow-y: auto; padding: 12px 24px; display: flex; flex-direction: column; gap: 10px; }
+.server-empty { text-align: center; color: #94a3b8; font-size: 14px; padding: 40px 0; line-height: 1.8; }
+.server-card {
+  border: 1.5px solid #f1f5f9; border-radius: 12px; padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 10px; transition: border-color 0.15s;
+}
+.server-card:hover { border-color: #bae6fd; }
+.server-card-top { display: flex; align-items: flex-start; gap: 12px; }
+.server-card-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.server-card-name {
+  font-size: 14px; font-weight: 600; color: #1e293b;
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+.server-default-badge {
+  font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 20px;
+  background: #dcfce7; color: #16a34a; letter-spacing: 0.3px;
+}
+.server-thinking-badge {
+  font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 20px;
+  background: #fef3c7; color: #d97706; letter-spacing: 0.3px;
+}
+.server-status {
+  font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 20px; letter-spacing: 0.3px;
+}
+.server-status.enabled { background: #e0f2fe; color: #0284c7; }
+.server-status.disabled { background: #f1f5f9; color: #94a3b8; }
+.server-card-url { font-size: 12px; color: #64748b; font-family: monospace; }
+.server-card-model { font-size: 12px; color: #94a3b8; }
+.server-card-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+.server-health-btn {
+  padding: 4px 11px; border-radius: 6px; font-size: 12px; font-weight: 600;
+  cursor: pointer; background: white; color: #64748b; border: 1.5px solid #e2e8f0;
+  transition: all 0.15s;
+}
+.server-health-btn:hover:not(:disabled) { border-color: #94a3b8; color: #475569; }
+.server-health-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.server-health-btn.healthy { color: #16a34a; border-color: #86efac; background: #f0fdf4; }
+.server-health-btn.unhealthy { color: #dc2626; border-color: #fca5a5; background: #fef2f2; }
+/* Server form */
+.server-form-body { flex: 1; overflow-y: auto; padding: 16px 24px 24px; display: flex; flex-direction: column; gap: 14px; }
+.server-form-group { display: flex; flex-direction: column; gap: 5px; }
+.server-form-group label { font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }
+.server-form-group input[type="text"],
+.server-form-group input[type="number"] {
+  width: 100%; padding: 8px 12px;
+  border: 1.5px solid #e2e8f0; border-radius: 8px;
+  font-size: 14px; outline: none; font-family: inherit; color: #1e293b;
+}
+.server-form-group input:focus { border-color: #0284c7; }
+.server-form-row { display: flex; gap: 12px; }
+.server-form-check { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+.server-form-check input[type="checkbox"] { accent-color: #0284c7; width: 15px; height: 15px; cursor: pointer; }
+.server-form-check label { font-size: 13px; color: #475569; cursor: pointer; }
+.server-form-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; border-top: 1px solid #f1f5f9; }
+.btn-server-primary {
+  padding: 9px 22px; background: #0284c7;
+  color: white; border: none; border-radius: 8px;
+  cursor: pointer; font-size: 14px; font-weight: 600;
+}
+.btn-server-primary:hover { background: #0369a1; }
 </style>
 </head>
 <body>
@@ -558,6 +731,7 @@ body {
   <div class="sidebar-footer">
     <button class="sidebar-footer-btn" id="agent-btn">🤖 에이전트 관리</button>
     <button class="sidebar-footer-btn" id="mem-btn">🗂 메모리 저장소</button>
+    <button class="sidebar-footer-btn" id="server-btn">🖥 서버 설정</button>
   </div>
 </div>
 
@@ -565,6 +739,16 @@ body {
 <div id="main">
   <div id="chat-header">
     <h2 id="chat-title">대화를 선택하거나 새로 시작하세요</h2>
+    <div class="server-selector" id="server-selector">
+      <button class="server-selector-btn" id="server-selector-btn">
+        🖥 <span id="current-server-name">로딩 중...</span>
+        <span class="ss-caret">▾</span>
+      </button>
+      <div class="server-dropdown hidden" id="server-dropdown">
+        <div class="server-dropdown-header">서버 선택</div>
+        <div id="server-dropdown-list"></div>
+      </div>
+    </div>
     <span class="model-badge" id="model-badge">모델 로딩 중...</span>
   </div>
 
@@ -696,6 +880,70 @@ body {
   </div>
 </div>
 
+<!-- Server Modal -->
+<div id="server-modal" class="hidden">
+  <div class="server-box">
+    <!-- List panel -->
+    <div class="server-panel" id="server-list-panel">
+      <div class="server-modal-header">
+        <h3>서버 설정</h3>
+        <span class="server-count-badge" id="server-count-badge">0개</span>
+        <button class="server-new-btn" id="server-new-btn">+ 새 서버</button>
+        <button class="server-modal-close" id="server-close">✕</button>
+      </div>
+      <div id="server-list"></div>
+    </div>
+    <!-- Form panel -->
+    <div class="server-panel hidden" id="server-form-panel">
+      <div class="server-modal-header">
+        <h3 id="server-form-title">새 서버</h3>
+        <button class="server-modal-close" id="server-form-close">✕</button>
+      </div>
+      <div class="server-form-body">
+        <div class="server-form-group">
+          <label>서버 이름 *</label>
+          <input id="sv-name" type="text" placeholder="예: Primary GPU Server">
+        </div>
+        <div class="server-form-group">
+          <label>Base URL *</label>
+          <input id="sv-url" type="text" placeholder="예: http://172.17.3.135:8000">
+        </div>
+        <div class="server-form-group">
+          <label>모델 이름 *</label>
+          <input id="sv-model" type="text" placeholder="예: google/gemma-4-31B-it">
+        </div>
+        <div class="server-form-row">
+          <div class="server-form-group" style="flex:1">
+            <label>가중치 (Round-robin)</label>
+            <input id="sv-weight" type="number" min="1" max="10" value="1">
+          </div>
+          <div class="server-form-group" style="flex:2; justify-content:flex-end;">
+            <label>&nbsp;</label>
+            <div style="display:flex; gap:16px; padding-top:2px; flex-wrap:wrap;">
+              <div class="server-form-check">
+                <input type="checkbox" id="sv-default">
+                <label for="sv-default">기본 서버로 설정</label>
+              </div>
+              <div class="server-form-check" id="sv-enabled-row">
+                <input type="checkbox" id="sv-enabled" checked>
+                <label for="sv-enabled">활성화</label>
+              </div>
+              <div class="server-form-check">
+                <input type="checkbox" id="sv-thinking">
+                <label for="sv-thinking">Thinking 모드</label>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="server-form-actions">
+          <button class="btn-cancel" id="server-form-cancel">취소</button>
+          <button class="btn-server-primary" id="server-form-save">저장</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- New Chat Modal -->
 <div id="modal" class="hidden">
   <div class="modal-box">
@@ -792,17 +1040,94 @@ function removeEmptyState() {
   document.getElementById('empty-state')?.remove();
 }
 
-// ── Model status ──────────────────────────────────────────────────────────────
+// ── Model status + Server selector ───────────────────────────────────────────
+let _statusServers = [];   // /api/model/status 에서 받은 서버 목록 캐시
+
 async function loadModelStatus() {
   try {
     const data = await api('GET', '/model/status');
-    const name = data.model.split('/').pop();
+    _statusServers = data.servers || [];
+
+    // 모델 뱃지
+    const name = data.model ? data.model.split('/').pop() : '없음';
     document.getElementById('model-badge').textContent =
       name + (data.max_model_len ? ` · ${(data.max_model_len / 1000).toFixed(0)}K ctx` : '');
+
+    // 서버 셀렉터 이름
+    const serverName = data.current_server?.name ?? '서버 없음';
+    document.getElementById('current-server-name').textContent = serverName;
+
+    renderServerDropdown(_statusServers);
   } catch {
     document.getElementById('model-badge').textContent = '연결 오류';
+    document.getElementById('current-server-name').textContent = '연결 오류';
   }
 }
+
+function renderServerDropdown(servers) {
+  const listEl = document.getElementById('server-dropdown-list');
+  if (!servers.length) {
+    listEl.innerHTML = '<div style="padding:12px 14px;font-size:13px;color:#94a3b8;">등록된 서버 없음</div>';
+    return;
+  }
+  listEl.innerHTML = servers.map(s => {
+    const isActive = s.is_default;
+    const modelShort = s.model.split('/').pop();
+    const ctxInfo = s.model_len ? ` · ${(s.model_len / 1000).toFixed(0)}K ctx` : '';
+    return `
+      <div class="server-dropdown-item ${isActive ? 'active' : ''}" data-id="${s.id}" onclick="switchDefaultServer('${s.id}')">
+        <span class="ss-check">${isActive ? '✓' : ''}</span>
+        <div class="ss-info">
+          <div class="ss-name">${esc(s.name)}</div>
+          <div class="ss-model">${esc(modelShort)}${esc(ctxInfo)}</div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function switchDefaultServer(serverId) {
+  if (_statusServers.find(s => s.id === serverId)?.is_default) return; // 이미 기본 서버
+
+  // 드롭다운 항목 전환 중 표시
+  document.querySelectorAll('.server-dropdown-item').forEach(el => el.classList.add('switching'));
+
+  try {
+    await api('PUT', `/servers/${serverId}`, { is_default: true });
+    closeServerDropdown();
+    await loadModelStatus();  // 뱃지 + 드롭다운 갱신
+  } catch (e) {
+    alert('서버 전환 실패: ' + e.message);
+    document.querySelectorAll('.server-dropdown-item').forEach(el => el.classList.remove('switching'));
+  }
+}
+
+function toggleServerDropdown() {
+  const dd = document.getElementById('server-dropdown');
+  const btn = document.getElementById('server-selector-btn');
+  const isOpen = !dd.classList.contains('hidden');
+  if (isOpen) {
+    closeServerDropdown();
+  } else {
+    dd.classList.remove('hidden');
+    btn.classList.add('open');
+  }
+}
+
+function closeServerDropdown() {
+  document.getElementById('server-dropdown').classList.add('hidden');
+  document.getElementById('server-selector-btn').classList.remove('open');
+}
+
+document.getElementById('server-selector-btn').addEventListener('click', e => {
+  e.stopPropagation();
+  toggleServerDropdown();
+});
+
+document.addEventListener('click', e => {
+  if (!document.getElementById('server-selector').contains(e.target)) {
+    closeServerDropdown();
+  }
+});
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 async function loadConversations() {
@@ -866,6 +1191,7 @@ async function openConversation(id) {
       context_pct: turn.context_pct,
       prompt_tokens: turn.prompt_tokens,
       max_model_len: turn.max_tokens,
+      thinking: turn.thinking || '',
     });
   });
 
@@ -888,6 +1214,31 @@ function appendMessage(role, content, memories = [], usageInfo = null, usedAgent
   // Content wrap
   const wrap = document.createElement('div');
   wrap.className = 'message-content-wrap';
+
+  // Thinking block (assistant only, shown before the bubble)
+  if (role === 'assistant' && usageInfo?.thinking) {
+    const thinkBlock = document.createElement('div');
+    thinkBlock.className = 'thinking-block';
+
+    const toggle = document.createElement('button');
+    toggle.className = 'thinking-toggle';
+    toggle.innerHTML = '🧠 추론 과정 보기 <span class="th-caret">▾</span>';
+
+    const content_el = document.createElement('div');
+    content_el.className = 'thinking-content';
+    content_el.textContent = usageInfo.thinking;
+
+    toggle.onclick = () => {
+      const open = content_el.classList.toggle('open');
+      toggle.classList.toggle('open', open);
+      toggle.innerHTML = (open ? '🧠 추론 과정 숨기기' : '🧠 추론 과정 보기') +
+        ' <span class="th-caret">▾</span>';
+    };
+
+    thinkBlock.appendChild(toggle);
+    thinkBlock.appendChild(content_el);
+    wrap.appendChild(thinkBlock);
+  }
 
   // Bubble
   const bubble = document.createElement('div');
@@ -999,7 +1350,7 @@ function updateContextBar(usageInfo) {
     : `${pctDisplay}%${warn}`;
 }
 
-// ── Send message ──────────────────────────────────────────────────────────────
+// ── Send message (SSE streaming) ─────────────────────────────────────────────
 async function sendMessage() {
   if (!currentConvId || isSending) return;
   const input = document.getElementById('message-input');
@@ -1016,23 +1367,20 @@ async function sendMessage() {
   appendLoadingBubble();
 
   try {
-    const data = await api('POST', `/conversations/${currentConvId}/chat`, { content });
+    const response = await fetch(`/api/conversations/${currentConvId}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || `HTTP ${response.status}`);
+    }
+
     removeLoadingBubble();
-
-    appendMessage('assistant', data.reply, data.memories, data.usage, data.used_agent);
-
-    // 타이틀 갱신
-    if (data.title) {
-      document.getElementById('chat-title').textContent = data.title;
-    }
-
-    // 아카이브 알림
-    if (data.archived_count > 0) {
-      const notice = document.createElement('div');
-      notice.className = 'archive-notice';
-      notice.textContent = `${data.archived_count}개 메시지가 메모리로 저장됨`;
-      document.getElementById('messages').appendChild(notice);
-    }
+    const row = _createStreamRow();
+    await _readSSEStream(response.body, row);
 
     scrollToBottom();
     await loadConversations();
@@ -1042,6 +1390,205 @@ async function sendMessage() {
   } finally {
     isSending = false;
     document.getElementById('send-btn').disabled = false;
+  }
+}
+
+// ── SSE 스트리밍 헬퍼 ─────────────────────────────────────────────────────────
+
+function _createStreamRow() {
+  removeEmptyState();
+  const messagesEl = document.getElementById('messages');
+  const row = document.createElement('div');
+  row.className = 'message-row assistant';
+  const avatar = document.createElement('div');
+  avatar.className = 'avatar assistant';
+  avatar.textContent = 'G';
+  const wrap = document.createElement('div');
+  wrap.className = 'message-content-wrap';
+  row.appendChild(avatar);
+  row.appendChild(wrap);
+  messagesEl.appendChild(row);
+  scrollToBottom();
+  return row;
+}
+
+async function _readSSEStream(body, row) {
+  const wrap          = row.querySelector('.message-content-wrap');
+  let thinkingBlock   = null;
+  let thinkingToggle  = null;
+  let thinkingContent = null;
+  let bubble          = null;
+  let answerBuf       = '';
+  let renderTimer     = null;
+  let isFirstAnswer   = true;
+
+  // ── thinking 요소 생성 (첫 thinking 청크 시) ──────────────────────────────
+  function ensureThinking() {
+    if (thinkingBlock) return;
+    thinkingBlock = document.createElement('div');
+    thinkingBlock.className = 'thinking-block';
+
+    thinkingToggle = document.createElement('button');
+    thinkingToggle.className = 'thinking-toggle open streaming';
+    thinkingToggle.innerHTML = '🧠 사고 중... <span class="th-caret">▾</span>';
+    thinkingToggle.disabled = true;   // 스트리밍 중 클릭 불가
+
+    thinkingContent = document.createElement('div');
+    thinkingContent.className = 'thinking-content streaming';
+
+    thinkingBlock.appendChild(thinkingToggle);
+    thinkingBlock.appendChild(thinkingContent);
+    wrap.appendChild(thinkingBlock);
+  }
+
+  // ── answer 버블 생성 (첫 answer 청크 시) ─────────────────────────────────
+  function ensureBubble() {
+    if (bubble) return;
+    bubble = document.createElement('div');
+    bubble.className = 'bubble md streaming-cursor';
+    wrap.appendChild(bubble);
+  }
+
+  // ── thinking 접기 (answer 시작 시) ───────────────────────────────────────
+  function collapseThinking() {
+    if (!thinkingBlock || !isFirstAnswer) return;
+    isFirstAnswer = false;
+    const len = thinkingContent.textContent.length;
+    thinkingContent.classList.remove('streaming');
+    thinkingContent.classList.remove('open');
+    thinkingToggle.classList.remove('streaming', 'open');
+    thinkingToggle.disabled = false;
+    thinkingToggle.innerHTML = `🧠 추론 과정 (${len.toLocaleString()}자) <span class="th-caret">▾</span>`;
+    thinkingToggle.onclick = () => {
+      const open = thinkingContent.classList.toggle('open');
+      thinkingToggle.classList.toggle('open', open);
+    };
+  }
+
+  // ── 마크다운 지연 렌더링 ─────────────────────────────────────────────────
+  function scheduleRender() {
+    if (renderTimer) return;
+    renderTimer = setTimeout(() => {
+      renderTimer = null;
+      if (bubble && answerBuf) {
+        bubble.innerHTML = renderMarkdown(answerBuf);
+        highlightCodeBlocks(bubble);
+        bubble.classList.add('streaming-cursor');
+      }
+    }, 80);
+  }
+
+  // ── 이벤트 핸들러 ────────────────────────────────────────────────────────
+  function handleEvent(type, data) {
+    if (type === 'thinking') {
+      ensureThinking();
+      thinkingContent.textContent += data.chunk;
+      thinkingContent.scrollTop = thinkingContent.scrollHeight;
+      scrollToBottom();
+
+    } else if (type === 'answer') {
+      collapseThinking();
+      ensureBubble();
+      answerBuf += data.chunk;
+      scheduleRender();
+      scrollToBottom();
+
+    } else if (type === 'done') {
+      // 최종 렌더링
+      if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
+      if (bubble && answerBuf) {
+        bubble.innerHTML = renderMarkdown(answerBuf);
+        highlightCodeBlocks(bubble);
+        bubble.classList.remove('streaming-cursor');
+      }
+      // thinking만 있고 answer 없는 경우 접기
+      collapseThinking();
+
+      // 메모리 토글
+      if (data.memories?.length > 0) {
+        const memRefs = document.createElement('div');
+        memRefs.className = 'memory-refs';
+        const toggle = document.createElement('button');
+        toggle.className = 'memory-toggle';
+        toggle.innerHTML = `💡 메모리 ${data.memories.length}건 참조 ▾`;
+        const list = document.createElement('div');
+        list.className = 'memory-list';
+        data.memories.forEach(m => {
+          const item = document.createElement('div');
+          item.className = 'memory-item';
+          item.innerHTML = `<span class="memory-type">${esc(m.type)}</span>${esc(m.content)}`;
+          list.appendChild(item);
+        });
+        toggle.onclick = () => {
+          const open = list.classList.toggle('open');
+          toggle.innerHTML = `💡 메모리 ${data.memories.length}건 참조 ${open ? '▴' : '▾'}`;
+        };
+        memRefs.appendChild(toggle);
+        memRefs.appendChild(list);
+        wrap.appendChild(memRefs);
+      }
+
+      // 에이전트 뱃지
+      if (data.used_agent) {
+        const badge = document.createElement('div');
+        badge.className = 'agent-used-badge';
+        badge.textContent = `${data.used_agent.icon} ${data.used_agent.name}`;
+        wrap.appendChild(badge);
+      }
+
+      // 컨텍스트 바
+      if (data.usage) updateContextBar(data.usage);
+
+      // 타이틀
+      if (data.title) document.getElementById('chat-title').textContent = data.title;
+
+      // 아카이브 알림
+      if (data.archived_count > 0) {
+        const notice = document.createElement('div');
+        notice.className = 'archive-notice';
+        notice.textContent = `${data.archived_count}개 메시지가 메모리로 저장됨`;
+        document.getElementById('messages').appendChild(notice);
+      }
+      scrollToBottom();
+
+    } else if (type === 'error') {
+      if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
+      ensureBubble();
+      bubble.classList.remove('streaming-cursor');
+      bubble.textContent = `오류가 발생했습니다: ${data.message}`;
+    }
+  }
+
+  // ── SSE 파싱 루프 ─────────────────────────────────────────────────────────
+  const reader  = body.getReader();
+  const decoder = new TextDecoder();
+  let sseBuf = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      sseBuf += decoder.decode(value, { stream: true });
+      const parts = sseBuf.split('\n\n');
+      sseBuf = parts.pop();   // 마지막 미완성 블록 보존
+
+      for (const part of parts) {
+        if (!part.trim()) continue;
+        let evType = '', evData = '';
+        for (const line of part.split('\n')) {
+          if (line.startsWith('event: '))      evType = line.slice(7).trim();
+          else if (line.startsWith('data: '))  evData = line.slice(6).trim();
+        }
+        if (evType && evData) {
+          try { handleEvent(evType, JSON.parse(evData)); }
+          catch (e) { console.error('SSE parse error', e, evData); }
+        }
+      }
+    }
+  } finally {
+    if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
+    reader.releaseLock();
   }
 }
 
@@ -1436,6 +1983,169 @@ document.getElementById('message-input').addEventListener('input', function () {
   if (m) showMentionDropdown(m[1]);
   else hideMentionDropdown();
 });
+
+// ── Server Modal ──────────────────────────────────────────────────────────────
+let serverList = [];
+let editingServerId = null;
+
+async function openServerModal() {
+  document.getElementById('server-modal').classList.remove('hidden');
+  await loadServers();
+}
+
+function closeServerModal() {
+  document.getElementById('server-modal').classList.add('hidden');
+  hideServerForm();
+}
+
+async function loadServers() {
+  try {
+    serverList = await api('GET', '/servers');
+    renderServers();
+  } catch (e) {
+    document.getElementById('server-list').innerHTML =
+      `<div class="server-empty">불러오기 실패: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderServers() {
+  const listEl = document.getElementById('server-list');
+  document.getElementById('server-count-badge').textContent = serverList.length + '개';
+
+  if (!serverList.length) {
+    listEl.innerHTML = '<div class="server-empty">등록된 서버가 없습니다.<br>+ 새 서버 버튼으로 추가하세요.</div>';
+    return;
+  }
+
+  listEl.innerHTML = serverList.map(s => {
+    const ctxInfo = s.model_len ? ` · ${(s.model_len / 1000).toFixed(0)}K ctx` : '';
+    const modelShort = s.model.split('/').pop();
+    const defaultBadge = s.is_default ? '<span class="server-default-badge">기본</span>' : '';
+    const thinkingBadge = s.thinking ? '<span class="server-thinking-badge">Thinking</span>' : '';
+    const statusBadge = s.enabled
+      ? '<span class="server-status enabled">활성</span>'
+      : '<span class="server-status disabled">비활성</span>';
+    return `
+      <div class="server-card" data-id="${s.id}">
+        <div class="server-card-top">
+          <div class="server-card-info">
+            <div class="server-card-name">${esc(s.name)} ${defaultBadge} ${thinkingBadge} ${statusBadge}</div>
+            <div class="server-card-url">${esc(s.base_url)}</div>
+            <div class="server-card-model">${esc(modelShort)}${esc(ctxInfo)}</div>
+          </div>
+          <div class="server-card-actions">
+            <button class="server-health-btn" id="health-btn-${s.id}"
+              onclick="checkServerHealth('${s.id}')">● 연결 확인</button>
+            <button class="agent-edit-btn" onclick="showServerForm('${s.id}')">편집</button>
+            <button class="agent-delete-btn" onclick="deleteServer('${s.id}')">삭제</button>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function checkServerHealth(serverId) {
+  const btn = document.getElementById(`health-btn-${serverId}`);
+  if (!btn) return;
+  btn.textContent = '● 확인 중...';
+  btn.disabled = true;
+  btn.className = 'server-health-btn';
+  try {
+    const data = await api('GET', `/servers/${serverId}/health`);
+    btn.textContent = data.healthy ? '🟢 정상' : '🔴 오류';
+    btn.className = 'server-health-btn ' + (data.healthy ? 'healthy' : 'unhealthy');
+  } catch {
+    btn.textContent = '🔴 오류';
+    btn.className = 'server-health-btn unhealthy';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function showServerForm(serverId = null) {
+  editingServerId = serverId;
+  const server = serverId ? serverList.find(s => s.id === serverId) : null;
+
+  document.getElementById('server-form-title').textContent = server ? '서버 편집' : '새 서버';
+  document.getElementById('sv-name').value = server?.name ?? '';
+  document.getElementById('sv-url').value = server?.base_url ?? '';
+  document.getElementById('sv-model').value = server?.model ?? '';
+  document.getElementById('sv-weight').value = server?.weight ?? 1;
+  document.getElementById('sv-default').checked = server?.is_default ?? false;
+  document.getElementById('sv-enabled').checked = server?.enabled ?? true;
+  document.getElementById('sv-thinking').checked = server?.thinking ?? false;
+
+  // 활성화 체크박스는 편집 시에만 의미있음
+  document.getElementById('sv-enabled-row').style.display = serverId ? 'flex' : 'none';
+
+  document.getElementById('server-list-panel').classList.add('hidden');
+  document.getElementById('server-form-panel').classList.remove('hidden');
+  setTimeout(() => document.getElementById('sv-name').focus(), 50);
+}
+
+function hideServerForm() {
+  editingServerId = null;
+  document.getElementById('server-form-panel')?.classList.add('hidden');
+  document.getElementById('server-list-panel')?.classList.remove('hidden');
+}
+
+async function saveServer() {
+  const name = document.getElementById('sv-name').value.trim();
+  const base_url = document.getElementById('sv-url').value.trim();
+  const model = document.getElementById('sv-model').value.trim();
+
+  if (!name || !base_url || !model) {
+    alert('이름, URL, 모델은 필수 항목입니다.');
+    return;
+  }
+
+  const body = {
+    name,
+    base_url,
+    model,
+    weight: parseInt(document.getElementById('sv-weight').value) || 1,
+    is_default: document.getElementById('sv-default').checked,
+    thinking: document.getElementById('sv-thinking').checked,
+  };
+  if (editingServerId) {
+    body.enabled = document.getElementById('sv-enabled').checked;
+  }
+
+  try {
+    if (editingServerId) {
+      await api('PUT', `/servers/${editingServerId}`, body);
+    } else {
+      await api('POST', '/servers', body);
+    }
+    hideServerForm();
+    await loadServers();
+    await loadModelStatus();
+  } catch (e) {
+    alert('저장 실패: ' + e.message);
+  }
+}
+
+async function deleteServer(id) {
+  const server = serverList.find(s => s.id === id);
+  if (!confirm(`"${server?.name}" 서버를 삭제할까요?`)) return;
+  try {
+    await api('DELETE', `/servers/${id}`);
+    await loadServers();
+    await loadModelStatus();
+  } catch (e) {
+    alert('삭제 실패: ' + e.message);
+  }
+}
+
+document.getElementById('server-btn').onclick = openServerModal;
+document.getElementById('server-close').onclick = closeServerModal;
+document.getElementById('server-modal').addEventListener('click', e => {
+  if (e.target === document.getElementById('server-modal')) closeServerModal();
+});
+document.getElementById('server-new-btn').onclick = () => showServerForm();
+document.getElementById('server-form-close').onclick = hideServerForm;
+document.getElementById('server-form-cancel').onclick = hideServerForm;
+document.getElementById('server-form-save').onclick = saveServer;
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadModelStatus();

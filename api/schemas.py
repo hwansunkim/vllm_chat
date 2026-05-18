@@ -40,3 +40,22 @@ class AgentUpdate(BaseModel):
     role: str | None = None
     goal: str | None = None
     backstory: str | None = None
+
+
+class ServerCreate(BaseModel):
+    name: str
+    base_url: str
+    model: str
+    weight: int = 1
+    is_default: bool = False
+    thinking: bool = False
+
+
+class ServerUpdate(BaseModel):
+    name: str | None = None
+    base_url: str | None = None
+    model: str | None = None
+    weight: int | None = None
+    enabled: bool | None = None
+    is_default: bool | None = None
+    thinking: bool | None = None

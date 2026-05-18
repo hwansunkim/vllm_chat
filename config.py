@@ -1,7 +1,5 @@
 from pathlib import Path
 
-BASE_URL = "http://172.17.3.135:8000"
-MODEL = "google/gemma-4-31B-it"
 MAX_COMPLETION_TOKENS = 1024
 MAX_CONTINUATION_ROUNDS = 5
 CONTINUE_PROMPT = (

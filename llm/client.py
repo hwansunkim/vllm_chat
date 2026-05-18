@@ -2,36 +2,12 @@ from __future__ import annotations
 
 import json
 import re
-
-import httpx
+import sqlite3
 
 import config
+from llm.registry import get_registry
 
-# ── HTTP 클라이언트 생명주기 ──────────────────────────────────────────────────
-# app.py lifespan에서 setup_client() / teardown_client()를 호출해 관리한다.
-
-_http_client: httpx.AsyncClient | None = None
-
-
-def setup_client() -> None:
-    global _http_client
-    _http_client = httpx.AsyncClient(timeout=httpx.Timeout(60.0))
-
-
-async def teardown_client() -> None:
-    global _http_client
-    if _http_client:
-        await _http_client.aclose()
-        _http_client = None
-
-
-def _client() -> httpx.AsyncClient:
-    if _http_client is None:
-        raise RuntimeError("HTTP client not initialized")
-    return _http_client
-
-
-# ── JSON 파싱 유틸 ────────────────────────────────────────────────────────────
+# ── JSON 파싱 유틸 (pipeline.py에서 import) ───────────────────────────────────
 
 def _parse_json(text: str, array: bool = False) -> list | dict | None:
     open_ch, close_ch = ('[', ']') if array else ('{', '}')
@@ -61,21 +37,42 @@ def _parse_json(text: str, array: bool = False) -> list | dict | None:
     return fallback
 
 
-# ── LLM 호출 ─────────────────────────────────────────────────────────────────
+# ── 앱 생명주기 ───────────────────────────────────────────────────────────────
+
+async def setup(conn: sqlite3.Connection) -> None:
+    """앱 시작 시 DB에서 서버 목록을 로드해 레지스트리를 초기화한다."""
+    await get_registry().load_from_db(conn)
+
+
+async def teardown() -> None:
+    """앱 종료 시 모든 서버의 HTTP 클라이언트를 닫는다."""
+    await get_registry().close_all()
+
+
+# ── LLM 호출 퍼블릭 API ───────────────────────────────────────────────────────
 
 async def async_llm(prompt: str, max_tokens: int = 512, temperature: float = 0.1) -> str:
-    response = await _client().post(
-        f"{config.BASE_URL}/v1/chat/completions",
-        headers={"Content-Type": "application/json"},
-        json={
-            "model": config.MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        },
-    )
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"]
+    """내부 파이프라인용 단순 LLM 호출. 기본 서버를 사용한다."""
+    provider = get_registry().select()
+    return await provider.llm(prompt, max_tokens=max_tokens, temperature=temperature)
+
+
+async def async_stream_chat(
+    messages: list,
+    *,
+    temperature: float = 0.7,
+    max_tokens: int = config.MAX_COMPLETION_TOKENS,
+    model: str | None = None,
+    server_id: str | None = None,
+):
+    """스트리밍 대화 호출. thinking/answer/usage 딕셔너리를 yield한다."""
+    provider = get_registry().select(model=model, server_id=server_id)
+    async for event in provider.stream_chat(
+        messages, temperature=temperature, max_tokens=max_tokens
+    ):
+        if event["type"] == "usage":
+            event["data"]["max_model_len"] = provider.model_len
+        yield event
 
 
 async def async_chat(
@@ -84,58 +81,23 @@ async def async_chat(
     temperature: float = 0.7,
     max_tokens: int = config.MAX_COMPLETION_TOKENS,
     model: str | None = None,
+    server_id: str | None = None,
 ) -> tuple[str, dict]:
-    full_reply = ""
-    total_completion_tokens = 0
-    final_usage: dict = {}
-    current_messages = list(messages)
-    _model = model or config.MODEL
-
-    for _ in range(config.MAX_CONTINUATION_ROUNDS):
-        response = await _client().post(
-            f"{config.BASE_URL}/v1/chat/completions",
-            headers={"Content-Type": "application/json"},
-            json={
-                "model": _model,
-                "messages": current_messages,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-            },
-        )
-        response.raise_for_status()
-        data = response.json()
-
-        choice = data["choices"][0]
-        partial: str = choice["message"]["content"]
-        finish_reason: str = choice.get("finish_reason", "stop")
-        usage: dict = data.get("usage", {})
-
-        full_reply += partial
-        total_completion_tokens += usage.get("completion_tokens", 0)
-        final_usage = usage
-
-        if finish_reason != "length":
-            break
-
-        current_messages = current_messages + [
-            {"role": "assistant", "content": partial},
-            {"role": "user", "content": config.CONTINUE_PROMPT},
-        ]
-
-    merged_usage = dict(final_usage)
-    merged_usage["completion_tokens"] = total_completion_tokens
-    return full_reply, merged_usage
+    """
+    대화 LLM 호출.
+    - server_id: 특정 서버를 명시적으로 지정
+    - model: model_match 라우팅 (없으면 fallback)
+    반환 usage에 max_model_len(선택된 서버 기준)이 포함된다.
+    """
+    provider = get_registry().select(model=model, server_id=server_id)
+    reply, usage = await provider.chat(messages, temperature=temperature, max_tokens=max_tokens)
+    usage["max_model_len"] = provider.model_len
+    return reply, usage
 
 
 async def async_get_model_context_limit() -> int:
-    try:
-        response = await _client().get(
-            f"{config.BASE_URL}/v1/models",
-            timeout=5,
-        )
-        for m in response.json().get("data", []):
-            if m["id"] == config.MODEL:
-                return m.get("max_model_len", 0)
-    except Exception:
-        pass
-    return 0
+    """기본 서버의 컨텍스트 길이를 조회하고 provider에 캐시한다."""
+    provider = get_registry().get_default()
+    if provider is None:
+        return 0
+    return await provider.fetch_model_len()
