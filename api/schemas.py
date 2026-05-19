@@ -10,6 +10,7 @@ class NewConversation(BaseModel):
 
 class ChatMessage(BaseModel):
     content: str
+    thinking: bool = False
 
 
 class UpdateTitle(BaseModel):

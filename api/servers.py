@@ -58,15 +58,7 @@ async def create_server(body: ServerCreate):
     provider = await get_registry().register(row)
     if provider:
         await provider.fetch_model_len()
-        row["model_len"] = provider.model_len
-    else:
-        row["model_len"] = 0
-
-    row["enabled"] = bool(row["enabled"])
-    row["is_default"] = bool(row["is_default"])
-    row["thinking"] = bool(row.get("thinking", False))
-    row["max_model_len"] = row.get("max_model_len", 0)
-    return row
+    return _row_to_dict(row)
 
 
 @router.get("/{server_id}")
@@ -111,20 +103,11 @@ async def update_server(server_id: str, body: ServerUpdate):
     # 레지스트리 반영 (enabled=False면 unregister, 그 외엔 재등록)
     if not row.get("enabled", True):
         await get_registry().unregister(server_id)
-        row["model_len"] = 0
     else:
         provider = await get_registry().register(row)
         if provider:
             await provider.fetch_model_len()
-            row["model_len"] = provider.model_len
-        else:
-            row["model_len"] = 0
-
-    row["enabled"] = bool(row["enabled"])
-    row["is_default"] = bool(row["is_default"])
-    row["thinking"] = bool(row.get("thinking", False))
-    row["max_model_len"] = row.get("max_model_len", 0)
-    return row
+    return _row_to_dict(row)
 
 
 @router.delete("/{server_id}", status_code=204)

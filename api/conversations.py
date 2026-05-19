@@ -29,6 +29,8 @@ from llm.pipeline import (
 router = APIRouter(prefix="/api/conversations")
 
 
+# ── DB 헬퍼 ───────────────────────────────────────────────────────────────────
+
 def get_active_turns(conn, conv_id: str) -> list[dict]:
     rows = conn.execute(
         "SELECT role, content FROM turns WHERE conversation_id=? AND archived=0 ORDER BY created_at",
@@ -59,6 +61,78 @@ def save_turn(
 def auto_title(text: str) -> str:
     return text[:30].strip() + ("..." if len(text) > 30 else "")
 
+
+# ── 라우팅 헬퍼 ───────────────────────────────────────────────────────────────
+
+async def _resolve_routing(
+    content: str, conv, conn
+) -> tuple[str, dict | None, str, list[str]]:
+    """에이전트 결정 + 키워드 추출.
+
+    반환: (user_content, used_agent, routing_method, keywords)
+    routing_method: "mention" | "router" | "fallback" | "fixed" | "none"
+    """
+    user_content, used_agent = resolve_agent_mention(content, conn)
+    routing_method = "none"
+    keywords: list[str] = []
+
+    if used_agent:
+        routing_method = "mention"
+        if user_content:
+            keywords = await async_extract_keywords(user_content)
+    elif conv["router_mode"]:
+        all_agents = [dict(r) for r in conn.execute("SELECT * FROM agents").fetchall()]
+        if all_agents:
+            keywords, (used_agent, routing_method) = await asyncio.gather(
+                async_extract_keywords(user_content),
+                async_route_agent(content, all_agents),
+            )
+        else:
+            keywords = await async_extract_keywords(user_content)
+    else:
+        if conv["agent_id"]:
+            row = conn.execute("SELECT * FROM agents WHERE id=?", (conv["agent_id"],)).fetchone()
+            if row:
+                used_agent = dict(row)
+                routing_method = "fixed"
+        keywords = await async_extract_keywords(user_content)
+
+    return user_content, used_agent, routing_method, keywords
+
+
+# ── 아카이브 헬퍼 ─────────────────────────────────────────────────────────────
+
+async def _maybe_archive(conn, conv_id: str, context_pct: float, max_model_len: int) -> int:
+    """컨텍스트가 임계치를 넘으면 오래된 turn을 아카이브하고 메모리를 추출한다."""
+    if not (max_model_len and context_pct >= config.ARCHIVE_THRESHOLD):
+        return 0
+
+    active_ids = [
+        r["id"] for r in conn.execute(
+            "SELECT id FROM turns WHERE conversation_id=? AND archived=0 ORDER BY created_at",
+            (conv_id,),
+        ).fetchall()
+    ]
+    to_archive = active_ids[:-config.KEEP_RECENT_TURNS]
+    if not to_archive:
+        return 0
+
+    ph = ",".join("?" * len(to_archive))
+    archive_turns = [
+        {"role": r["role"], "content": r["content"]}
+        for r in conn.execute(
+            f"SELECT role, content FROM turns WHERE id IN ({ph})", to_archive
+        ).fetchall()
+    ]
+    new_mems = await async_extract_memories_from_turns(archive_turns)
+    if new_mems:
+        save_memories(conn, new_mems)
+    conn.executemany("UPDATE turns SET archived=1 WHERE id=?", [(i,) for i in to_archive])
+    conn.commit()
+    return len(to_archive)
+
+
+# ── CRUD 엔드포인트 ───────────────────────────────────────────────────────────
 
 @router.get("")
 def list_conversations():
@@ -121,6 +195,8 @@ def delete_conversation(conv_id: str):
     conn.close()
 
 
+# ── 채팅 엔드포인트 ───────────────────────────────────────────────────────────
+
 @router.post("/{conv_id}/chat")
 async def send_chat(conv_id: str, body: ChatMessage):
     conn = get_db()
@@ -129,42 +205,16 @@ async def send_chat(conv_id: str, body: ChatMessage):
         conn.close()
         raise HTTPException(404)
 
-    # ── 1. 에이전트 결정 ─────────────────────────────────────────────────────
+    # ── 1. 에이전트 결정 + 키워드 추출 ──────────────────────────────────────
+    user_content, used_agent, routing_method, keywords = await _resolve_routing(
+        body.content, conv, conn
+    )
+    if used_agent and routing_method == "mention" and not user_content:
+        conn.close()
+        raise HTTPException(400, "@mention 뒤에 메시지를 입력해주세요.")
 
-    user_content, used_agent = resolve_agent_mention(body.content, conn)
-    routing_method = "none"
-
-    if used_agent:
-        if not user_content:
-            conn.close()
-            raise HTTPException(400, "@mention 뒤에 메시지를 입력해주세요.")
-        routing_method = "mention"
-        keywords = await async_extract_keywords(user_content)
-
-    elif conv["router_mode"]:
-        all_agents = [dict(r) for r in conn.execute("SELECT * FROM agents").fetchall()]
-        if all_agents:
-            keywords, (used_agent, routing_method) = await asyncio.gather(
-                async_extract_keywords(user_content),
-                async_route_agent(body.content, all_agents),
-            )
-        else:
-            keywords = await async_extract_keywords(user_content)
-
-    else:
-        if conv["agent_id"]:
-            row = conn.execute("SELECT * FROM agents WHERE id=?", (conv["agent_id"],)).fetchone()
-            if row:
-                used_agent = dict(row)
-                routing_method = "fixed"
-        keywords = await async_extract_keywords(user_content)
-
-    # ── 2. 메모리 검색 ───────────────────────────────────────────────────────
-
+    # ── 2. 메모리 검색 + 메시지 빌드 ────────────────────────────────────────
     retrieved = retrieve_memories(conn, keywords)
-
-    # ── 3. 메시지 빌드 ───────────────────────────────────────────────────────
-
     effective_system = (
         build_agent_system_prompt(used_agent) if used_agent else conv["system_prompt"]
     )
@@ -175,19 +225,16 @@ async def send_chat(conv_id: str, body: ChatMessage):
     temperature = float(used_agent.get("temperature", 0.7)) if used_agent else 0.7
     max_tokens  = int(used_agent.get("max_tokens") or config.MAX_COMPLETION_TOKENS) if used_agent else config.MAX_COMPLETION_TOKENS
     model       = used_agent.get("model") if used_agent else None
+    thinking    = body.thinking
 
-    # ── 4. 서버 사전 선택 ────────────────────────────────────────────────────
-    # provider를 미리 확정해 done 이벤트에 서버 정보를 포함하고,
-    # 스트리밍 중 model_len이 갱신되면 (400 오류 감지 등) 즉시 반영된다.
+    # ── 3. 서버 선택 ─────────────────────────────────────────────────────────
     try:
         selected_provider = get_registry().select(model=model)
     except RuntimeError as e:
         conn.close()
         raise HTTPException(503, str(e))
-    selected_server_id = selected_provider.id
 
-    # ── 5. SSE 스트리밍 ──────────────────────────────────────────────────────
-
+    # ── 4. SSE 스트리밍 ──────────────────────────────────────────────────────
     async def event_generator():
         full_thinking = ""
         full_answer   = ""
@@ -196,7 +243,7 @@ async def send_chat(conv_id: str, body: ChatMessage):
         try:
             async for event in async_stream_chat(
                 messages, temperature=temperature, max_tokens=max_tokens,
-                model=model, server_id=selected_server_id
+                model=model, server_id=selected_provider.id, thinking=thinking
             ):
                 if event["type"] == "thinking":
                     full_thinking += event["chunk"]
@@ -214,9 +261,7 @@ async def send_chat(conv_id: str, body: ChatMessage):
             conn.close()
             return
 
-        # ── 5. DB 저장 ───────────────────────────────────────────────────────
-
-        # provider.model_len: 스트리밍 중 400 오류 감지로 갱신됐을 수 있음
+        # ── DB 저장 ──────────────────────────────────────────────────────────
         max_model_len = selected_provider.model_len or usage.get("max_model_len") or state.max_model_len
         prompt_tokens = usage.get("prompt_tokens", 0)
         context_pct   = (prompt_tokens / max_model_len) if max_model_len else 0
@@ -235,52 +280,26 @@ async def send_chat(conv_id: str, body: ChatMessage):
             max_tokens=max_model_len,
         )
 
-        # ── 6. 타이틀 ────────────────────────────────────────────────────────
-
+        # ── 타이틀 업데이트 ──────────────────────────────────────────────────
         new_title = conv["title"]
         if conv["title"] == "새 대화":
             new_title = auto_title(body.content)
             conn.execute("UPDATE conversations SET title=? WHERE id=?", (new_title, conv_id))
             conn.commit()
 
-        # ── 7. 아카이브 ──────────────────────────────────────────────────────
-
-        archived_count = 0
-        if max_model_len and context_pct >= config.ARCHIVE_THRESHOLD:
-            active_ids = [
-                r[0] for r in conn.execute(
-                    "SELECT id FROM turns WHERE conversation_id=? AND archived=0 ORDER BY created_at",
-                    (conv_id,),
-                ).fetchall()
-            ]
-            to_archive = active_ids[:-config.KEEP_RECENT_TURNS]
-            if to_archive:
-                ph = ",".join("?" * len(to_archive))
-                archive_turns = [
-                    {"role": r["role"], "content": r["content"]}
-                    for r in conn.execute(
-                        f"SELECT role, content FROM turns WHERE id IN ({ph})", to_archive
-                    ).fetchall()
-                ]
-                new_mems = await async_extract_memories_from_turns(archive_turns)
-                if new_mems:
-                    save_memories(conn, new_mems)
-                conn.executemany("UPDATE turns SET archived=1 WHERE id=?", [(i,) for i in to_archive])
-                conn.commit()
-                archived_count = len(to_archive)
-
+        # ── 아카이브 ─────────────────────────────────────────────────────────
+        archived_count = await _maybe_archive(conn, conv_id, context_pct, max_model_len)
         conn.close()
 
-        # ── 8. done 이벤트 ───────────────────────────────────────────────────
-
+        # ── done 이벤트 ──────────────────────────────────────────────────────
         done = {
             "memories": [{"type": m["type"], "content": m["content"]} for m in retrieved],
             "usage": {
-                "prompt_tokens":      prompt_tokens,
-                "completion_tokens":  usage.get("completion_tokens", 0),
-                "max_model_len":      max_model_len,
-                "context_pct":        context_pct,
-                "thinking":           full_thinking,
+                "prompt_tokens":     prompt_tokens,
+                "completion_tokens": usage.get("completion_tokens", 0),
+                "max_model_len":     max_model_len,
+                "context_pct":       context_pct,
+                "thinking":          full_thinking,
             },
             "archived_count": archived_count,
             "title":          new_title,
@@ -290,11 +309,12 @@ async def send_chat(conv_id: str, body: ChatMessage):
                 "routing": routing_method,
             } if used_agent else None,
             "used_server": {
-                "id":      selected_provider.id,
-                "name":    selected_provider.name,
-                "model":   selected_provider.model,
+                "id":        selected_provider.id,
+                "name":      selected_provider.name,
+                "model":     selected_provider.model,
                 "model_len": selected_provider.model_len,
             },
+            "thinking_mode": thinking,
         }
         yield f"event: done\ndata: {json.dumps(done, ensure_ascii=False)}\n\n"
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from llm.client import _parse_json, async_llm
+from llm.client import async_llm
+from llm.utils import parse_json
 
 
 async def async_extract_keywords(text: str) -> list[str]:
@@ -14,7 +15,7 @@ JSON 배열로만 응답하세요. 다른 텍스트 없이 JSON만 출력하세�
 예시: ["서버", "포트", "모델이름"]"""
 
     try:
-        result = _parse_json(await async_llm(prompt), array=True)
+        result = parse_json(await async_llm(prompt), array=True)
         return result if isinstance(result, list) else []
     except Exception:
         return []
@@ -45,7 +46,7 @@ JSON 배열로만 응답하세요:
 ]"""
 
     try:
-        result = _parse_json(await async_llm(prompt, max_tokens=1024), array=True)
+        result = parse_json(await async_llm(prompt, max_tokens=1024), array=True)
         return result if isinstance(result, list) else []
     except Exception:
         return []

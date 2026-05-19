@@ -51,7 +51,7 @@ def retrieve_memories(
         now = datetime.now().isoformat()
         conn.executemany(
             "UPDATE memories SET last_accessed=? WHERE id=?",
-            [(now, r[0]) for r in rows],
+            [(now, r["id"]) for r in rows],
         )
         conn.commit()
 

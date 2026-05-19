@@ -228,6 +228,7 @@ class VLLMProvider:
         *,
         temperature: float = 0.7,
         max_tokens: int = config.MAX_COMPLETION_TOKENS,
+        thinking: bool = False,
     ) -> AsyncGenerator[dict, None]:
         """SSE 스트리밍. thinking/answer/usage 딕셔너리를 순서대로 yield한다.
 
@@ -267,6 +268,7 @@ class VLLMProvider:
                             "temperature":    temperature,
                             "stream":         True,
                             "stream_options": {"include_usage": True},
+                            **({"chat_template_kwargs": {"enable_thinking": True}} if thinking else {}),
                         },
                     ) as response:
                         try:
@@ -322,8 +324,6 @@ class VLLMProvider:
                                     full_answer  += content
                                     round_answer += content
                                     yield {"type": "answer", "chunk": content}
-                                if finish_reason:
-                                    break
                                 continue  # 방식 A면 상태 머신 생략
 
                             # ── 방식 B: <think> 태그 상태 머신 ─────────────────────────
@@ -371,9 +371,6 @@ class VLLMProvider:
                                         round_answer += buf
                                         yield {"type": "answer", "chunk": buf}
                                         buf = ""
-
-                            if finish_reason:
-                                break
 
                         # 잔여 버퍼 처리
                         if buf:

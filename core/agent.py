@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 
 from llm.client import async_llm
+
+logger = logging.getLogger(__name__)
 
 # routing 값: "mention" | "router" | "fallback" | "fixed" | "none"
 RoutingMethod = str
@@ -65,6 +68,6 @@ async def async_route_agent(
             if a["name"] == selected:
                 return a, "router"
     except Exception as e:
-        print(f"[route_agent] LLM 오류: {e}")
+        logger.error("[route_agent] LLM 오류: %s", e)
 
     return agents[0], "fallback"

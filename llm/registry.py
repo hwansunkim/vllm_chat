@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 
+from llm.providers.base import LLMProvider
 from llm.providers.vllm import VLLMProvider
 
 
@@ -17,7 +18,7 @@ class ServerRegistry:
     """
 
     def __init__(self) -> None:
-        self._providers: dict[str, VLLMProvider] = {}
+        self._providers: dict[str, LLMProvider] = {}
         self._rr_counters: dict[str, int] = {}  # model → round-robin 카운터
         self._lock = asyncio.Lock()
 
@@ -76,12 +77,12 @@ class ServerRegistry:
     def get_provider(self, server_id: str) -> VLLMProvider | None:
         return self._providers.get(server_id)
 
-    def list_providers(self) -> list[VLLMProvider]:
+    def list_providers(self) -> list[LLMProvider]:
         return list(self._providers.values())
 
     # ── 라우팅 ───────────────────────────────────────────────────────────────
 
-    def get_default(self) -> VLLMProvider | None:
+    def get_default(self) -> LLMProvider | None:
         """is_default=True 서버 우선, 없으면 첫 번째 enabled 서버."""
         for p in self._providers.values():
             if p.is_default and p.enabled:
@@ -96,7 +97,7 @@ class ServerRegistry:
         *,
         model: str | None = None,
         server_id: str | None = None,
-    ) -> VLLMProvider:
+    ) -> LLMProvider:
         """
         라우팅 우선순위에 따라 서버를 선택한다.
         enabled 서버가 없으면 RuntimeError.
@@ -123,7 +124,7 @@ class ServerRegistry:
 
         raise RuntimeError("사용 가능한 LLM 서버가 없습니다.")
 
-    def _round_robin(self, key: str, candidates: list[VLLMProvider]) -> VLLMProvider:
+    def _round_robin(self, key: str, candidates: list[LLMProvider]) -> LLMProvider:
         idx = self._rr_counters.get(key, 0) % len(candidates)
         self._rr_counters[key] = idx + 1
         return candidates[idx]

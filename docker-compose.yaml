@@ -25,10 +25,47 @@ services:
       - "--gpu-memory-utilization"
       - "0.85"
       - "--max-model-len"
-      - "8192"
+      - "32768"                    # 8192 → 32768 (32K)
       - "--trust-remote-code"
       - "--max-num-batched-tokens"
-      - "8192"           # 2496(멀티모달 최대 토큰)보다 크게 설정
+      - "4096"
       - "--speculative-config"
       - '{"model":"google/gemma-4-31B-it-assistant","num_speculative_tokens":3}'
+      - "--reasoning-parser"
+      - "gemma4"
+      - "--default-chat-template-kwargs"
+      - '{"enable_thinking": true}'
     restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9000:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    restart: unless-stopped
+    depends_on:
+      - vllm-gemma4
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus-data:
+  grafana-data:

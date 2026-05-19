@@ -237,6 +237,18 @@ body {
 #send-btn:hover:not(:disabled) { background: #4338ca; }
 #send-btn:disabled { background: #c7d2fe; cursor: not-allowed; }
 
+#thinking-btn {
+  width: 40px; height: 40px;
+  background: none; color: #94a3b8;
+  border: 1.5px solid #e2e8f0; border-radius: 10px;
+  cursor: pointer; font-size: 17px;
+  transition: all 0.2s; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+#thinking-btn:hover:not(:disabled) { border-color: #6366f1; color: #6366f1; }
+#thinking-btn.active { background: #eef2ff; border-color: #6366f1; color: #4f46e5; }
+#thinking-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
 /* ── Modal ───────────────────────────────────────────────────────────────────── */
 #modal {
   position: fixed; inset: 0;
@@ -771,6 +783,7 @@ body {
         rows="1"
         placeholder="메시지를 입력하세요... (@에이전트명 으로 직접 호출 / Enter: 전송)"
       ></textarea>
+      <button id="thinking-btn" disabled title="사고 모드 켜기">🧠</button>
       <button id="send-btn" disabled>▶</button>
     </div>
   </div>
@@ -981,6 +994,7 @@ body {
 // ── State ─────────────────────────────────────────────────────────────────────
 let currentConvId = null;
 let isSending = false;
+let thinkingEnabled = false;
 
 // ── API ───────────────────────────────────────────────────────────────────────
 async function api(method, path, body) {
@@ -1165,6 +1179,7 @@ async function loadConversations() {
             <p>새 대화를 시작하거나 기존 대화를 선택하세요</p>
           </div>`;
         document.getElementById('send-btn').disabled = true;
+        document.getElementById('thinking-btn').disabled = true;
         updateContextBar(null);
       }
       await loadConversations();
@@ -1178,6 +1193,7 @@ async function loadConversations() {
 async function openConversation(id) {
   currentConvId = id;
   document.getElementById('send-btn').disabled = false;
+  document.getElementById('thinking-btn').disabled = false;
   document.querySelectorAll('.conv-item').forEach(el =>
     el.classList.toggle('active', el.dataset.id === id)
   );
@@ -1384,6 +1400,7 @@ async function sendMessage() {
   input.value = '';
   input.style.height = 'auto';
   document.getElementById('send-btn').disabled = true;
+  document.getElementById('thinking-btn').disabled = true;
 
   appendMessage('user', content);
   scrollToBottom();
@@ -1393,7 +1410,7 @@ async function sendMessage() {
     const response = await fetch(`/api/conversations/${currentConvId}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, thinking: thinkingEnabled }),
     });
 
     if (!response.ok) {
@@ -1413,6 +1430,7 @@ async function sendMessage() {
   } finally {
     isSending = false;
     document.getElementById('send-btn').disabled = false;
+    document.getElementById('thinking-btn').disabled = false;
   }
 }
 
@@ -1984,6 +2002,12 @@ document.getElementById('new-chat-btn').onclick = showModal;
 document.getElementById('modal-cancel').onclick = hideModal;
 document.getElementById('modal-create').onclick = createConversation;
 document.getElementById('send-btn').onclick = sendMessage;
+document.getElementById('thinking-btn').onclick = () => {
+  thinkingEnabled = !thinkingEnabled;
+  const btn = document.getElementById('thinking-btn');
+  btn.classList.toggle('active', thinkingEnabled);
+  btn.title = thinkingEnabled ? '사고 모드 끄기' : '사고 모드 켜기';
+};
 
 document.getElementById('modal').addEventListener('click', e => {
   if (e.target === document.getElementById('modal')) hideModal();
