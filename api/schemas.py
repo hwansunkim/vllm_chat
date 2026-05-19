@@ -49,6 +49,7 @@ class ServerCreate(BaseModel):
     weight: int = 1
     is_default: bool = False
     thinking: bool = False
+    max_model_len: int = 0  # 0 = 자동 감지
 
 
 class ServerUpdate(BaseModel):
@@ -59,3 +60,4 @@ class ServerUpdate(BaseModel):
     enabled: bool | None = None
     is_default: bool | None = None
     thinking: bool | None = None
+    max_model_len: int | None = None

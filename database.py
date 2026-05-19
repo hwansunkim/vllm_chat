@@ -95,15 +95,16 @@ def init_tables(conn: sqlite3.Connection) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS servers (
-            id         TEXT PRIMARY KEY,
-            name       TEXT NOT NULL,
-            base_url   TEXT NOT NULL,
-            model      TEXT NOT NULL,
-            weight     INTEGER NOT NULL DEFAULT 1,
-            enabled    INTEGER NOT NULL DEFAULT 1,
-            is_default INTEGER NOT NULL DEFAULT 0,
-            thinking   INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL
+            id            TEXT PRIMARY KEY,
+            name          TEXT NOT NULL,
+            base_url      TEXT NOT NULL,
+            model         TEXT NOT NULL,
+            weight        INTEGER NOT NULL DEFAULT 1,
+            enabled       INTEGER NOT NULL DEFAULT 1,
+            is_default    INTEGER NOT NULL DEFAULT 0,
+            thinking      INTEGER NOT NULL DEFAULT 0,
+            max_model_len INTEGER NOT NULL DEFAULT 0,
+            created_at    TEXT NOT NULL
         );
     """)
     conn.commit()
@@ -128,21 +129,24 @@ def migrate_db(conn: sqlite3.Connection) -> None:
     if "servers" not in tables:
         conn.execute("""
             CREATE TABLE servers (
-                id         TEXT PRIMARY KEY,
-                name       TEXT NOT NULL,
-                base_url   TEXT NOT NULL,
-                model      TEXT NOT NULL,
-                weight     INTEGER NOT NULL DEFAULT 1,
-                enabled    INTEGER NOT NULL DEFAULT 1,
-                is_default INTEGER NOT NULL DEFAULT 0,
-                thinking   INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL
+                id            TEXT PRIMARY KEY,
+                name          TEXT NOT NULL,
+                base_url      TEXT NOT NULL,
+                model         TEXT NOT NULL,
+                weight        INTEGER NOT NULL DEFAULT 1,
+                enabled       INTEGER NOT NULL DEFAULT 1,
+                is_default    INTEGER NOT NULL DEFAULT 0,
+                thinking      INTEGER NOT NULL DEFAULT 0,
+                max_model_len INTEGER NOT NULL DEFAULT 0,
+                created_at    TEXT NOT NULL
             )
         """)
     else:
         server_cols = {r[1] for r in conn.execute("PRAGMA table_info(servers)").fetchall()}
         if "thinking" not in server_cols:
             conn.execute("ALTER TABLE servers ADD COLUMN thinking INTEGER NOT NULL DEFAULT 0")
+        if "max_model_len" not in server_cols:
+            conn.execute("ALTER TABLE servers ADD COLUMN max_model_len INTEGER NOT NULL DEFAULT 0")
 
     turn_cols = {r[1] for r in conn.execute("PRAGMA table_info(turns)").fetchall()}
     if "thinking" not in turn_cols:
@@ -162,11 +166,11 @@ def seed_default_servers(conn: sqlite3.Connection, path: str = "servers.json") -
     now = datetime.now().isoformat()
     for s in servers:
         conn.execute(
-            """INSERT INTO servers (id, name, base_url, model, weight, enabled, is_default, thinking, created_at)
-               VALUES (?,?,?,?,?,1,?,?,?)""",
+            """INSERT INTO servers (id, name, base_url, model, weight, enabled, is_default, thinking, max_model_len, created_at)
+               VALUES (?,?,?,?,?,1,?,?,?,?)""",
             (str(uuid.uuid4()), s["name"], s["base_url"], s["model"],
              s.get("weight", 1), int(s.get("is_default", False)),
-             int(s.get("thinking", False)), now),
+             int(s.get("thinking", False)), s.get("max_model_len", 0), now),
         )
     conn.commit()
 

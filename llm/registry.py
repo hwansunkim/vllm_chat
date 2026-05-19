@@ -40,6 +40,7 @@ class ServerRegistry:
             enabled=bool(row["enabled"]),
             is_default=bool(row.get("is_default", False)),
             thinking=bool(row.get("thinking", False)),
+            configured_max_len=int(row.get("max_model_len", 0)),
         )
         self._providers[row["id"]] = p
         return p

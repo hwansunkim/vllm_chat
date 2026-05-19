@@ -917,6 +917,12 @@ body {
             <label>가중치 (Round-robin)</label>
             <input id="sv-weight" type="number" min="1" max="10" value="1">
           </div>
+          <div class="server-form-group" style="flex:1">
+            <label>컨텍스트 길이 (0=자동)</label>
+            <input id="sv-max-len" type="number" min="0" step="1024" placeholder="예: 8192">
+          </div>
+        </div>
+        <div class="server-form-row">
           <div class="server-form-group" style="flex:2; justify-content:flex-end;">
             <label>&nbsp;</label>
             <div style="display:flex; gap:16px; padding-top:2px; flex-wrap:wrap;">
@@ -1292,9 +1298,9 @@ function appendMessage(role, content, memories = [], usageInfo = null, usedAgent
     wrap.appendChild(badge);
   }
 
-  // Update context bar from assistant message
+  // Update context bar from assistant message (이력 로드 시 server 정보 없음)
   if (role === 'assistant' && usageInfo?.context_pct != null) {
-    updateContextBar(usageInfo);
+    updateContextBar(usageInfo, null);
   }
 
   return row;
@@ -1322,32 +1328,49 @@ function removeLoadingBubble() {
 }
 
 // ── Context bar ───────────────────────────────────────────────────────────────
-function updateContextBar(usageInfo) {
+function updateContextBar(usageInfo, serverInfo) {
   const fill = document.getElementById('context-fill');
   const info = document.getElementById('context-info');
 
-  if (!usageInfo || usageInfo.context_pct == null) {
+  const total    = serverInfo?.model_len || usageInfo?.max_model_len || 0;
+  const used     = usageInfo?.prompt_tokens || 0;
+  const pct      = usageInfo?.context_pct ?? null;
+  const srvLabel = serverInfo?.name ? ` [${serverInfo.name}]` : '';
+  const modelTip = serverInfo?.model ? `\n모델: ${serverInfo.model}` : '';
+
+  // ── 케이스 1: 유효한 데이터 없음 ────────────────────────────────────────
+  // pct가 null이거나, pct·used·total 모두 0 (서버로부터 아무것도 못 받은 상태)
+  if (pct == null || (!pct && !used && !total)) {
     fill.style.width = '0%';
     info.textContent = '컨텍스트 정보 없음';
+    info.title = '';
     return;
   }
 
-  const pct = usageInfo.context_pct;
-  const pctDisplay = (pct * 100).toFixed(1);
+  // ── 케이스 2: 모델 한계는 알지만 입력 토큰 미확인 ───────────────────────
+  // prompt_tokens가 0이면 서버가 usage를 반환하지 않은 것 — 0%로 표시하면 오해 유발
+  if (!used && total) {
+    fill.style.width = '0%';
+    info.textContent = `한계 ${total.toLocaleString()} tokens${srvLabel}`;
+    info.title = `한계: ${total.toLocaleString()} tokens${modelTip}\n(서버가 입력 토큰 수를 반환하지 않음)`;
+    return;
+  }
 
+  // ── 케이스 3: 정상 데이터 ────────────────────────────────────────────────
+  const warn = pct >= 0.8 ? ' ⚠️' : '';
   fill.style.width = `${Math.min(pct * 100, 100)}%`;
   if (pct < 0.6)      fill.style.background = '#22c55e';
   else if (pct < 0.8) fill.style.background = '#eab308';
   else                fill.style.background = '#ef4444';
 
-  const remaining = usageInfo.max_model_len
-    ? (usageInfo.max_model_len - (usageInfo.prompt_tokens || 0) - 1024).toLocaleString()
-    : null;
-
-  const warn = pct >= 0.8 ? ' ⚠️' : '';
-  info.textContent = remaining
-    ? `${pctDisplay}%${warn} | 입력 ${(usageInfo.prompt_tokens || 0).toLocaleString()} | 가용 ${remaining} 토큰`
-    : `${pctDisplay}%${warn}`;
+  if (total) {
+    const avail = total - used;
+    info.textContent = `${(pct*100).toFixed(1)}%${warn} | ${used.toLocaleString()} / ${total.toLocaleString()} | 가용 ${avail.toLocaleString()}${srvLabel}`;
+    info.title = `입력: ${used.toLocaleString()} tokens\n한계: ${total.toLocaleString()} tokens\n가용: ${avail.toLocaleString()} tokens${modelTip}`;
+  } else {
+    info.textContent = `${(pct*100).toFixed(1)}%${warn}${srvLabel}`;
+    info.title = '';
+  }
 }
 
 // ── Send message (SSE streaming) ─────────────────────────────────────────────
@@ -1536,8 +1559,8 @@ async function _readSSEStream(body, row) {
         wrap.appendChild(badge);
       }
 
-      // 컨텍스트 바
-      if (data.usage) updateContextBar(data.usage);
+      // 컨텍스트 바 (used_server에서 정확한 model_len 사용)
+      if (data.usage) updateContextBar(data.usage, data.used_server);
 
       // 타이틀
       if (data.title) document.getElementById('chat-title').textContent = data.title;
@@ -2071,6 +2094,7 @@ function showServerForm(serverId = null) {
   document.getElementById('sv-url').value = server?.base_url ?? '';
   document.getElementById('sv-model').value = server?.model ?? '';
   document.getElementById('sv-weight').value = server?.weight ?? 1;
+  document.getElementById('sv-max-len').value = server?.max_model_len ?? 0;
   document.getElementById('sv-default').checked = server?.is_default ?? false;
   document.getElementById('sv-enabled').checked = server?.enabled ?? true;
   document.getElementById('sv-thinking').checked = server?.thinking ?? false;
@@ -2104,6 +2128,7 @@ async function saveServer() {
     base_url,
     model,
     weight: parseInt(document.getElementById('sv-weight').value) || 1,
+    max_model_len: parseInt(document.getElementById('sv-max-len').value) || 0,
     is_default: document.getElementById('sv-default').checked,
     thinking: document.getElementById('sv-thinking').checked,
   };

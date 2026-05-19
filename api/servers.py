@@ -17,9 +17,10 @@ def _row_to_dict(row) -> dict:
     d["enabled"] = bool(d["enabled"])
     d["is_default"] = bool(d["is_default"])
     d["thinking"] = bool(d.get("thinking", False))
-    # 레지스트리에서 캐시된 model_len 포함
+    d["max_model_len"] = d.get("max_model_len", 0)
+    # 런타임 model_len: API 조회값 우선, 없으면 설정값
     provider = get_registry().get_provider(d["id"])
-    d["model_len"] = provider.model_len if provider else 0
+    d["model_len"] = provider.model_len if provider else d["max_model_len"]
     return d
 
 
@@ -44,10 +45,10 @@ async def create_server(body: ServerCreate):
         conn.execute("UPDATE servers SET is_default=0")
 
     conn.execute(
-        """INSERT INTO servers (id, name, base_url, model, weight, enabled, is_default, thinking, created_at)
-           VALUES (?,?,?,?,?,1,?,?,?)""",
+        """INSERT INTO servers (id, name, base_url, model, weight, enabled, is_default, thinking, max_model_len, created_at)
+           VALUES (?,?,?,?,?,1,?,?,?,?)""",
         (sid, body.name, body.base_url.rstrip("/"), body.model,
-         body.weight, int(body.is_default), int(body.thinking), now),
+         body.weight, int(body.is_default), int(body.thinking), body.max_model_len, now),
     )
     conn.commit()
     row = dict(conn.execute("SELECT * FROM servers WHERE id=?", (sid,)).fetchone())
@@ -64,6 +65,7 @@ async def create_server(body: ServerCreate):
     row["enabled"] = bool(row["enabled"])
     row["is_default"] = bool(row["is_default"])
     row["thinking"] = bool(row.get("thinking", False))
+    row["max_model_len"] = row.get("max_model_len", 0)
     return row
 
 
@@ -121,6 +123,7 @@ async def update_server(server_id: str, body: ServerUpdate):
     row["enabled"] = bool(row["enabled"])
     row["is_default"] = bool(row["is_default"])
     row["thinking"] = bool(row.get("thinking", False))
+    row["max_model_len"] = row.get("max_model_len", 0)
     return row
 
 

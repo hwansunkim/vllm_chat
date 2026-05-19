@@ -19,6 +19,7 @@ from core.agent import (
 from core.memory import retrieve_memories, save_memories
 from database import get_db
 from llm.client import async_stream_chat
+from llm.registry import get_registry
 from llm.pipeline import (
     async_extract_keywords,
     async_extract_memories_from_turns,
@@ -175,7 +176,17 @@ async def send_chat(conv_id: str, body: ChatMessage):
     max_tokens  = int(used_agent.get("max_tokens") or config.MAX_COMPLETION_TOKENS) if used_agent else config.MAX_COMPLETION_TOKENS
     model       = used_agent.get("model") if used_agent else None
 
-    # ── 4. SSE 스트리밍 ──────────────────────────────────────────────────────
+    # ── 4. 서버 사전 선택 ────────────────────────────────────────────────────
+    # provider를 미리 확정해 done 이벤트에 서버 정보를 포함하고,
+    # 스트리밍 중 model_len이 갱신되면 (400 오류 감지 등) 즉시 반영된다.
+    try:
+        selected_provider = get_registry().select(model=model)
+    except RuntimeError as e:
+        conn.close()
+        raise HTTPException(503, str(e))
+    selected_server_id = selected_provider.id
+
+    # ── 5. SSE 스트리밍 ──────────────────────────────────────────────────────
 
     async def event_generator():
         full_thinking = ""
@@ -184,7 +195,8 @@ async def send_chat(conv_id: str, body: ChatMessage):
 
         try:
             async for event in async_stream_chat(
-                messages, temperature=temperature, max_tokens=max_tokens, model=model
+                messages, temperature=temperature, max_tokens=max_tokens,
+                model=model, server_id=selected_server_id
             ):
                 if event["type"] == "thinking":
                     full_thinking += event["chunk"]
@@ -204,7 +216,8 @@ async def send_chat(conv_id: str, body: ChatMessage):
 
         # ── 5. DB 저장 ───────────────────────────────────────────────────────
 
-        max_model_len = usage.get("max_model_len") or state.max_model_len
+        # provider.model_len: 스트리밍 중 400 오류 감지로 갱신됐을 수 있음
+        max_model_len = selected_provider.model_len or usage.get("max_model_len") or state.max_model_len
         prompt_tokens = usage.get("prompt_tokens", 0)
         context_pct   = (prompt_tokens / max_model_len) if max_model_len else 0
         memories_json = json.dumps(
@@ -276,6 +289,12 @@ async def send_chat(conv_id: str, body: ChatMessage):
                 "icon":    used_agent["icon"],
                 "routing": routing_method,
             } if used_agent else None,
+            "used_server": {
+                "id":      selected_provider.id,
+                "name":    selected_provider.name,
+                "model":   selected_provider.model,
+                "model_len": selected_provider.model_len,
+            },
         }
         yield f"event: done\ndata: {json.dumps(done, ensure_ascii=False)}\n\n"
 
