@@ -365,14 +365,16 @@ class VLLMProvider:
 
             logger.info("[%s] finish_reason=length, 연속 생성 round %d/%d",
                         self.name, _round + 1, config.MAX_CONTINUATION_ROUNDS)
-            # thinking 모델(Qwen3 등): round_answer가 비어있으면 thinking을 <think> 블록으로 전달
             if not round_answer and round_thinking:
+                # thinking 도중 끊긴 경우: <think> 블록을 열어둔 채로 전달
                 assistant_content = f"<think>{round_thinking}"
+                continue_prompt   = config.CONTINUE_PROMPT_THINKING
             else:
                 assistant_content = round_answer
+                continue_prompt   = config.CONTINUE_PROMPT
             current_messages = current_messages + [
                 {"role": "assistant", "content": assistant_content},
-                {"role": "user",      "content": config.CONTINUE_PROMPT},
+                {"role": "user",      "content": continue_prompt},
             ]
 
         # content가 비어있고 thinking만 있으면 thinking을 answer로 승격

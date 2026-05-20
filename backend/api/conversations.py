@@ -208,6 +208,8 @@ async def send_chat(conv_id: str, body: ChatMessage):
     max_tokens  = int(used_agent.get("max_tokens") or config.MAX_COMPLETION_TOKENS) if used_agent else config.MAX_COMPLETION_TOKENS
     model       = used_agent.get("model") if used_agent else None
     thinking    = body.thinking
+    if thinking:
+        max_tokens = max(max_tokens, config.MAX_COMPLETION_TOKENS_THINKING)
 
     try:
         selected_provider = get_registry().select(model=model)
