@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from llm.client import async_llm
-from llm.utils import parse_json
+from .client import async_llm
+from .utils import parse_json
 
 
 async def async_extract_keywords(text: str) -> list[str]:

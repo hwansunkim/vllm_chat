@@ -5,8 +5,8 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException
 
-from api.schemas import AgentCreate, AgentUpdate
-from database import get_db
+from .schemas import AgentCreate, AgentUpdate
+from ..db.database import get_db
 
 router = APIRouter(prefix="/api/agents")
 

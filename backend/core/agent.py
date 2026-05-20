@@ -4,11 +4,10 @@ import logging
 import re
 import sqlite3
 
-from llm.client import async_llm
+from ..llm.client import async_llm
 
 logger = logging.getLogger(__name__)
 
-# routing 값: "mention" | "router" | "fallback" | "fixed" | "none"
 RoutingMethod = str
 
 
@@ -24,8 +23,6 @@ def build_agent_system_prompt(agent: dict) -> str:
 
 
 def resolve_agent_mention(content: str, conn: sqlite3.Connection) -> tuple[str, dict | None]:
-    """@이름 prefix를 파싱해 (정제된 메시지, 에이전트|None)을 반환.
-    rest가 빈 문자열이어도 그대로 반환 — 빈 메시지 검증은 호출부에서 처리."""
     m = re.match(r"^@(\S+)\s*(.*)", content.strip(), re.DOTALL)
     if not m:
         return content, None
@@ -40,7 +37,6 @@ async def async_route_agent(
     user_input: str,
     agents: list[dict],
 ) -> tuple[dict | None, RoutingMethod]:
-    """LLM이 agents 중 가장 적합한 에이전트를 선택. 실패 시 첫 번째 에이전트로 폴백."""
     if not agents:
         return None, "fallback"
 
@@ -48,7 +44,7 @@ async def async_route_agent(
         f"- {a['name']}: {a.get('description') or a.get('role') or '설명 없음'}"
         for a in agents
     )
-    names = ", ".join(a["name"] for a in agents)
+    names  = ", ".join(a["name"] for a in agents)
     prompt = f"""\
 다음 전문 에이전트 중 사용자 요청에 가장 적합한 에이전트를 하나 선택하세요.
 
@@ -62,7 +58,7 @@ async def async_route_agent(
 선택 가능한 이름: [{names}]"""
 
     try:
-        raw = (await async_llm(prompt, max_tokens=30, temperature=0)).strip()
+        raw      = (await async_llm(prompt, max_tokens=30, temperature=0)).strip()
         selected = raw.split()[0].strip('.,!?\'"')
         for a in agents:
             if a["name"] == selected:

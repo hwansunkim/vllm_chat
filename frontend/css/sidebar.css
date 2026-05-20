@@ -1,0 +1,53 @@
+/* ── Sidebar ────────────────────────────────────────────────────────────────── */
+.sidebar-header {
+  padding: 18px 14px 14px;
+  border-bottom: 1px solid #334155;
+}
+.logo {
+  color: #e2e8f0; font-size: 17px; font-weight: 700;
+  display: block; margin-bottom: 12px; letter-spacing: -0.3px;
+}
+.logo span { color: #818cf8; }
+
+#new-chat-btn {
+  width: 100%; padding: 9px 12px;
+  background: #4f46e5; color: white;
+  border: none; border-radius: 8px;
+  cursor: pointer; font-size: 13px; font-weight: 500;
+  transition: background 0.2s;
+}
+#new-chat-btn:hover { background: #4338ca; }
+
+#conversation-list {
+  flex: 1; overflow-y: auto; padding: 8px 6px;
+}
+.conv-item {
+  padding: 9px 10px; border-radius: 8px;
+  cursor: pointer; margin-bottom: 1px;
+  transition: background 0.15s;
+  position: relative;
+}
+.conv-item:hover { background: #334155; }
+.conv-item.active { background: #312e81; }
+.conv-item:hover .conv-delete { opacity: 1; }
+
+.conv-title {
+  color: #e2e8f0; font-size: 13px; font-weight: 500;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  padding-right: 20px;
+}
+.conv-preview {
+  color: #64748b; font-size: 11px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  margin-top: 2px;
+}
+.conv-item.active .conv-preview { color: #a5b4fc; }
+
+.conv-delete {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  background: none; border: none; color: #64748b;
+  cursor: pointer; font-size: 14px; opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+  padding: 2px 4px; border-radius: 4px;
+}
+.conv-delete:hover { color: #f87171; }

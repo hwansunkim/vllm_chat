@@ -4,7 +4,7 @@ import sqlite3
 import uuid
 from datetime import datetime
 
-import config
+from .. import config
 
 
 def save_memories(conn: sqlite3.Connection, items: list[dict]) -> None:
@@ -32,7 +32,7 @@ def retrieve_memories(
         return []
 
     placeholders = ",".join("?" * len(keywords))
-    lower_kws = [k.lower() for k in keywords]
+    lower_kws    = [k.lower() for k in keywords]
 
     rows = conn.execute(
         f"""

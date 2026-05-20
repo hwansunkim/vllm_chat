@@ -8,19 +8,19 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
-import config
-import state
-from api.schemas import ChatMessage, NewConversation, UpdateTitle
-from core.agent import (
+from .. import config
+from .. import state
+from .schemas import ChatMessage, NewConversation, UpdateTitle
+from ..core.agent import (
     build_agent_system_prompt,
     resolve_agent_mention,
     async_route_agent,
 )
-from core.memory import retrieve_memories, save_memories
-from database import get_db
-from llm.client import async_stream_chat
-from llm.registry import get_registry
-from llm.pipeline import (
+from ..core.memory import retrieve_memories, save_memories
+from ..db.database import get_db
+from ..llm.client import async_stream_chat
+from ..llm.registry import get_registry
+from ..llm.pipeline import (
     async_extract_keywords,
     async_extract_memories_from_turns,
     build_messages,
@@ -28,8 +28,6 @@ from llm.pipeline import (
 
 router = APIRouter(prefix="/api/conversations")
 
-
-# ── DB 헬퍼 ───────────────────────────────────────────────────────────────────
 
 def get_active_turns(conn, conv_id: str) -> list[dict]:
     rows = conn.execute(
@@ -62,16 +60,9 @@ def auto_title(text: str) -> str:
     return text[:30].strip() + ("..." if len(text) > 30 else "")
 
 
-# ── 라우팅 헬퍼 ───────────────────────────────────────────────────────────────
-
 async def _resolve_routing(
     content: str, conv, conn
 ) -> tuple[str, dict | None, str, list[str]]:
-    """에이전트 결정 + 키워드 추출.
-
-    반환: (user_content, used_agent, routing_method, keywords)
-    routing_method: "mention" | "router" | "fallback" | "fixed" | "none"
-    """
     user_content, used_agent = resolve_agent_mention(content, conn)
     routing_method = "none"
     keywords: list[str] = []
@@ -100,10 +91,7 @@ async def _resolve_routing(
     return user_content, used_agent, routing_method, keywords
 
 
-# ── 아카이브 헬퍼 ─────────────────────────────────────────────────────────────
-
 async def _maybe_archive(conn, conv_id: str, context_pct: float, max_model_len: int) -> int:
-    """컨텍스트가 임계치를 넘으면 오래된 turn을 아카이브하고 메모리를 추출한다."""
     if not (max_model_len and context_pct >= config.ARCHIVE_THRESHOLD):
         return 0
 
@@ -131,8 +119,6 @@ async def _maybe_archive(conn, conv_id: str, context_pct: float, max_model_len: 
     conn.commit()
     return len(to_archive)
 
-
-# ── CRUD 엔드포인트 ───────────────────────────────────────────────────────────
 
 @router.get("")
 def list_conversations():
@@ -195,8 +181,6 @@ def delete_conversation(conv_id: str):
     conn.close()
 
 
-# ── 채팅 엔드포인트 ───────────────────────────────────────────────────────────
-
 @router.post("/{conv_id}/chat")
 async def send_chat(conv_id: str, body: ChatMessage):
     conn = get_db()
@@ -205,7 +189,6 @@ async def send_chat(conv_id: str, body: ChatMessage):
         conn.close()
         raise HTTPException(404)
 
-    # ── 1. 에이전트 결정 + 키워드 추출 ──────────────────────────────────────
     user_content, used_agent, routing_method, keywords = await _resolve_routing(
         body.content, conv, conn
     )
@@ -213,7 +196,6 @@ async def send_chat(conv_id: str, body: ChatMessage):
         conn.close()
         raise HTTPException(400, "@mention 뒤에 메시지를 입력해주세요.")
 
-    # ── 2. 메모리 검색 + 메시지 빌드 ────────────────────────────────────────
     retrieved = retrieve_memories(conn, keywords)
     effective_system = (
         build_agent_system_prompt(used_agent) if used_agent else conv["system_prompt"]
@@ -227,14 +209,12 @@ async def send_chat(conv_id: str, body: ChatMessage):
     model       = used_agent.get("model") if used_agent else None
     thinking    = body.thinking
 
-    # ── 3. 서버 선택 ─────────────────────────────────────────────────────────
     try:
         selected_provider = get_registry().select(model=model)
     except RuntimeError as e:
         conn.close()
         raise HTTPException(503, str(e))
 
-    # ── 4. SSE 스트리밍 ──────────────────────────────────────────────────────
     async def event_generator():
         full_thinking = ""
         full_answer   = ""
@@ -261,7 +241,6 @@ async def send_chat(conv_id: str, body: ChatMessage):
             conn.close()
             return
 
-        # ── DB 저장 ──────────────────────────────────────────────────────────
         max_model_len = selected_provider.model_len or usage.get("max_model_len") or state.max_model_len
         prompt_tokens = usage.get("prompt_tokens", 0)
         context_pct   = (prompt_tokens / max_model_len) if max_model_len else 0
@@ -280,18 +259,15 @@ async def send_chat(conv_id: str, body: ChatMessage):
             max_tokens=max_model_len,
         )
 
-        # ── 타이틀 업데이트 ──────────────────────────────────────────────────
         new_title = conv["title"]
         if conv["title"] == "새 대화":
             new_title = auto_title(body.content)
             conn.execute("UPDATE conversations SET title=? WHERE id=?", (new_title, conv_id))
             conn.commit()
 
-        # ── 아카이브 ─────────────────────────────────────────────────────────
         archived_count = await _maybe_archive(conn, conv_id, context_pct, max_model_len)
         conn.close()
 
-        # ── done 이벤트 ──────────────────────────────────────────────────────
         done = {
             "memories": [{"type": m["type"], "content": m["content"]} for m in retrieved],
             "usage": {

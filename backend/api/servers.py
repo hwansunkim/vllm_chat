@@ -5,9 +5,9 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException
 
-from api.schemas import ServerCreate, ServerUpdate
-from database import get_db
-from llm.registry import get_registry
+from .schemas import ServerCreate, ServerUpdate
+from ..db.database import get_db
+from ..llm.registry import get_registry
 
 router = APIRouter(prefix="/api/servers")
 
@@ -18,7 +18,6 @@ def _row_to_dict(row) -> dict:
     d["is_default"] = bool(d["is_default"])
     d["thinking"] = bool(d.get("thinking", False))
     d["max_model_len"] = d.get("max_model_len", 0)
-    # 런타임 model_len: API 조회값 우선, 없으면 설정값
     provider = get_registry().get_provider(d["id"])
     d["model_len"] = provider.model_len if provider else d["max_model_len"]
     return d
@@ -40,7 +39,6 @@ async def create_server(body: ServerCreate):
     sid = str(uuid.uuid4())
     now = datetime.now().isoformat()
 
-    # is_default 설정 시 기존 default 해제
     if body.is_default:
         conn.execute("UPDATE servers SET is_default=0")
 
@@ -54,7 +52,6 @@ async def create_server(body: ServerCreate):
     row = dict(conn.execute("SELECT * FROM servers WHERE id=?", (sid,)).fetchone())
     conn.close()
 
-    # 레지스트리에 즉시 등록 후 model_len 조회
     provider = await get_registry().register(row)
     if provider:
         await provider.fetch_model_len()
@@ -84,7 +81,6 @@ async def update_server(server_id: str, body: ServerUpdate):
         conn.close()
         return _row_to_dict(existing)
 
-    # is_default 설정 시 기존 default 해제
     if fields.get("is_default"):
         conn.execute("UPDATE servers SET is_default=0 WHERE id!=?", (server_id,))
 
@@ -100,7 +96,6 @@ async def update_server(server_id: str, body: ServerUpdate):
     row = dict(conn.execute("SELECT * FROM servers WHERE id=?", (server_id,)).fetchone())
     conn.close()
 
-    # 레지스트리 반영 (enabled=False면 unregister, 그 외엔 재등록)
     if not row.get("enabled", True):
         await get_registry().unregister(server_id)
     else:

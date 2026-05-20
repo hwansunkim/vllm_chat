@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-import config
+from .. import config
 
 _DEFAULT_AGENTS = [
     {
@@ -113,7 +113,7 @@ def init_tables(conn: sqlite3.Connection) -> None:
 def migrate_db(conn: sqlite3.Connection) -> None:
     conv_cols = [r[1] for r in conn.execute("PRAGMA table_info(conversations)").fetchall()]
     for col, ddl in [
-        ("agent_id", "ALTER TABLE conversations ADD COLUMN agent_id TEXT"),
+        ("agent_id",    "ALTER TABLE conversations ADD COLUMN agent_id TEXT"),
         ("router_mode", "ALTER TABLE conversations ADD COLUMN router_mode INTEGER NOT NULL DEFAULT 0"),
     ]:
         if col not in conv_cols:
@@ -124,21 +124,15 @@ def migrate_db(conn: sqlite3.Connection) -> None:
         if col not in agent_cols:
             conn.execute(f"ALTER TABLE agents ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
 
-    # servers 테이블이 없는 기존 DB를 위한 마이그레이션
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     if "servers" not in tables:
         conn.execute("""
             CREATE TABLE servers (
-                id            TEXT PRIMARY KEY,
-                name          TEXT NOT NULL,
-                base_url      TEXT NOT NULL,
-                model         TEXT NOT NULL,
-                weight        INTEGER NOT NULL DEFAULT 1,
-                enabled       INTEGER NOT NULL DEFAULT 1,
-                is_default    INTEGER NOT NULL DEFAULT 0,
-                thinking      INTEGER NOT NULL DEFAULT 0,
-                max_model_len INTEGER NOT NULL DEFAULT 0,
-                created_at    TEXT NOT NULL
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, base_url TEXT NOT NULL,
+                model TEXT NOT NULL, weight INTEGER NOT NULL DEFAULT 1,
+                enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0,
+                thinking INTEGER NOT NULL DEFAULT 0, max_model_len INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
             )
         """)
     else:
@@ -166,7 +160,8 @@ def seed_default_servers(conn: sqlite3.Connection, path: str = "servers.json") -
     now = datetime.now().isoformat()
     for s in servers:
         conn.execute(
-            """INSERT INTO servers (id, name, base_url, model, weight, enabled, is_default, thinking, max_model_len, created_at)
+            """INSERT INTO servers
+               (id, name, base_url, model, weight, enabled, is_default, thinking, max_model_len, created_at)
                VALUES (?,?,?,?,?,1,?,?,?,?)""",
             (str(uuid.uuid4()), s["name"], s["base_url"], s["model"],
              s.get("weight", 1), int(s.get("is_default", False)),

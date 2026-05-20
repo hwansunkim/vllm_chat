@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator
 
 import httpx
 
-import config
+from ... import config
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,6 @@ def _extract_reply(message: dict) -> tuple[str, str]:
 
     방식 A: reasoning_content 별도 필드 (vLLM 0.6+, Qwen3 등)
     방식 B: content 안의 <think>...</think> 태그 (구버전/일부 모델)
-    두 방식 모두 자동 감지한다.
     """
     thinking = (message.get("reasoning_content") or "").strip()
     content  = (message.get("content") or "").strip()
@@ -34,16 +33,15 @@ def _extract_reply(message: dict) -> tuple[str, str]:
 class _ContextLengthRetry(Exception):
     def __init__(self, reduced: int, model_len: int) -> None:
         self.reduced = reduced
-        self.model_len = model_len  # 오류 메시지에서 추출한 실제 모델 한계
+        self.model_len = model_len
 
 
 def _parse_context_error(body: str) -> tuple[int, int] | None:
-    """컨텍스트 길이 초과 400 오류를 파싱해 (줄인_max_tokens, model_len)을 반환한다."""
     m = re.search(r'maximum context length is (\d+).*?prompt contains at least (\d+)', body, re.DOTALL)
     if not m:
         return None
     model_len = int(m.group(1))
-    reduced = model_len - int(m.group(2))
+    reduced   = model_len - int(m.group(2))
     return (reduced, model_len) if reduced > 0 else None
 
 
@@ -60,24 +58,19 @@ class VLLMProvider:
         thinking: bool = False,
         configured_max_len: int = 0,
     ) -> None:
-        self.id = server_id
-        self.name = name
-        self.base_url = base_url.rstrip("/")
-        self.model = model
-        self.enabled = enabled
+        self.id        = server_id
+        self.name      = name
+        self.base_url  = base_url.rstrip("/")
+        self.model     = model
+        self.enabled   = enabled
         self.is_default = is_default
-        self.thinking = thinking
-        self.model_len: int = configured_max_len  # 설정값으로 초기화, API 조회 시 갱신
-        # thinking 모드는 추론 토큰이 수백~수천 개이므로 타임아웃을 길게 설정
+        self.thinking  = thinking
+        self.model_len: int = configured_max_len
         timeout = httpx.Timeout(300.0) if thinking else httpx.Timeout(60.0)
         self._client = httpx.AsyncClient(timeout=timeout)
 
-    # ── 내부 헬퍼 ─────────────────────────────────────────────────────────────
-
     def _chat_url(self) -> str:
         return f"{self.base_url}/v1/chat/completions"
-
-    # ── LLMProvider 인터페이스 ────────────────────────────────────────────────
 
     async def llm(
         self,
@@ -107,12 +100,12 @@ class VLLMProvider:
         temperature: float = 0.7,
         max_tokens: int = config.MAX_COMPLETION_TOKENS,
     ) -> tuple[str, dict]:
-        full_reply = ""
+        full_reply  = ""
         full_thinking = ""
         total_completion_tokens = 0
         final_usage: dict = {}
         current_messages = list(messages)
-        effective_max = max_tokens
+        effective_max    = max_tokens
         _context_retried = False
 
         for _ in range(config.MAX_CONTINUATION_ROUNDS):
@@ -121,9 +114,9 @@ class VLLMProvider:
                     self._chat_url(),
                     headers={"Content-Type": "application/json"},
                     json={
-                        "model": self.model,
-                        "messages": current_messages,
-                        "max_tokens": effective_max,
+                        "model":       self.model,
+                        "messages":    current_messages,
+                        "max_tokens":  effective_max,
                         "temperature": temperature,
                     },
                 )
@@ -138,44 +131,29 @@ class VLLMProvider:
                         if detected_len and not self.model_len:
                             self.model_len = detected_len
                         _context_retried = True
-                        logger.info("[%s] context limit (model_len=%d), retrying with max_tokens=%d",
-                                    self.name, detected_len, effective_max)
                         continue
-                raise RuntimeError(
-                    f"HTTP {e.response.status_code} from {self.name}: {body}"
-                ) from e
+                raise RuntimeError(f"HTTP {e.response.status_code} from {self.name}: {body}") from e
             except httpx.TimeoutException as e:
-                logger.error("[%s] 타임아웃 (%ss): %s", self.name, type(e).__name__, e)
-                raise RuntimeError(
-                    f"타임아웃 — {self.name} 서버가 {type(e).__name__}를 발생시켰습니다"
-                ) from e
+                raise RuntimeError(f"타임아웃 — {self.name}: {type(e).__name__}") from e
             except httpx.HTTPError as e:
-                logger.error("[%s] 연결 오류 %s: %s", self.name, type(e).__name__, e)
-                raise RuntimeError(
-                    f"연결 오류 [{type(e).__name__}]: {e or '(서버가 응답 없이 연결을 종료)'}"
-                ) from e
+                raise RuntimeError(f"연결 오류 [{type(e).__name__}]: {e or '(연결 종료)'}") from e
 
             try:
                 data = response.json()
             except Exception as e:
                 preview = response.text[:200]
-                logger.error("[%s] JSON 파싱 실패. 응답: %r", self.name, preview)
-                raise RuntimeError(
-                    f"JSON 파싱 실패 — 서버가 비표준 응답을 반환했습니다: {preview!r}"
-                ) from e
+                raise RuntimeError(f"JSON 파싱 실패: {preview!r}") from e
 
             if "choices" not in data or not data["choices"]:
-                logger.error("[%s] 응답에 choices 없음: %s", self.name, data)
                 raise RuntimeError(f"응답에 choices 없음: {data}")
 
             choice = data["choices"][0]
             if "message" not in choice:
-                logger.error("[%s] choice에 message 없음: %s", self.name, choice)
-                raise RuntimeError(f"choice에 message 없음 (스트리밍 응답인지 확인): {choice}")
+                raise RuntimeError(f"choice에 message 없음: {choice}")
 
-            partial, thinking = _extract_reply(choice["message"])
+            partial, thinking  = _extract_reply(choice["message"])
             finish_reason: str = choice.get("finish_reason", "stop")
-            usage: dict = data.get("usage", {})
+            usage: dict        = data.get("usage", {})
 
             full_reply    += partial
             full_thinking += thinking
@@ -185,7 +163,6 @@ class VLLMProvider:
             if finish_reason != "length":
                 break
 
-            # thinking은 assistant 메시지에서 제외해야 연속 생성이 안전함
             current_messages = current_messages + [
                 {"role": "assistant", "content": partial},
                 {"role": "user", "content": config.CONTINUE_PROMPT},
@@ -216,11 +193,11 @@ class VLLMProvider:
                 if m["id"] == self.model:
                     api_len = m.get("max_model_len", 0)
                     if api_len:
-                        self.model_len = api_len  # API 값이 있으면 설정값 덮어씀
-                    return self.model_len  # 없으면 설정값 유지
+                        self.model_len = api_len
+                    return self.model_len
         except Exception:
             pass
-        return self.model_len  # API 실패 시 설정값 반환
+        return self.model_len
 
     async def stream_chat(
         self,
@@ -230,13 +207,6 @@ class VLLMProvider:
         max_tokens: int = config.MAX_COMPLETION_TOKENS,
         thinking: bool = False,
     ) -> AsyncGenerator[dict, None]:
-        """SSE 스트리밍. thinking/answer/usage 딕셔너리를 순서대로 yield한다.
-
-        방식 A — reasoning_content 필드 (vLLM 0.6+): 필드가 있으면 그대로 분리.
-        방식 B — <think> 태그 (mlx_vlm): 상태 머신으로 content 스트림에서 실시간 감지.
-        finish_reason == "length"이면 MAX_CONTINUATION_ROUNDS까지 자동 연속 생성한다.
-        컨텍스트 초과(400) 시 max_tokens를 자동으로 줄여 1회 재시도한다.
-        """
         effective_max    = max_tokens
         current_messages = list(messages)
         full_thinking    = ""
@@ -244,12 +214,11 @@ class VLLMProvider:
         total_completion_tokens = 0
         final_usage: dict = {}
         _context_retried  = False
-
-        # <think> 태그 상태 머신 — 라운드 간 유지
-        think_state = "pre"   # "pre" | "thinking" | "answer"
+        think_state = "pre"
 
         for _round in range(config.MAX_CONTINUATION_ROUNDS):
             round_answer      = ""
+            round_thinking    = ""
             usage: dict       = {}
             finish_reason_end = "stop"
             buf               = ""
@@ -268,7 +237,7 @@ class VLLMProvider:
                             "temperature":    temperature,
                             "stream":         True,
                             "stream_options": {"include_usage": True},
-                            **({"chat_template_kwargs": {"enable_thinking": True}} if thinking else {}),
+                            **({"chat_template_kwargs": {"enable_thinking": thinking}} if self.thinking else {}),
                         },
                     ) as response:
                         try:
@@ -284,10 +253,8 @@ class VLLMProvider:
                                     if model_len and not self.model_len:
                                         self.model_len = model_len
                                     _context_retried = True
-                                    logger.info("[%s] context limit (model_len=%d), retrying with max_tokens=%d",
-                                                self.name, model_len, effective_max)
                                     got_context_error = True
-                                    break  # inner attempt loop → retry
+                                    break
                             raise RuntimeError(f"HTTP {e.response.status_code}: {body}") from e
 
                         async for line in response.aiter_lines():
@@ -313,23 +280,23 @@ class VLLMProvider:
                             if finish_reason:
                                 finish_reason_end = finish_reason
 
-                            # ── 방식 A: reasoning_content 필드 ───────────────────────────
-                            rc      = delta.get("reasoning_content") or ""
+                            # 방식 A: reasoning_content 필드 (구버전은 "reasoning")
+                            rc      = delta.get("reasoning_content") or delta.get("reasoning") or ""
                             content = delta.get("content") or ""
 
                             if rc:
-                                full_thinking += rc
+                                full_thinking  += rc
+                                round_thinking += rc
                                 yield {"type": "thinking", "chunk": rc}
                                 if content:
                                     full_answer  += content
                                     round_answer += content
                                     yield {"type": "answer", "chunk": content}
-                                continue  # 방식 A면 상태 머신 생략
+                                continue
 
-                            # ── 방식 B: <think> 태그 상태 머신 ─────────────────────────
+                            # 방식 B: <think> 태그 상태 머신
                             if content:
                                 buf += content
-
                                 while buf:
                                     if think_state == "pre":
                                         if buf.startswith("<think>"):
@@ -342,7 +309,7 @@ class VLLMProvider:
                                             yield {"type": "answer", "chunk": buf}
                                             buf = ""
                                         else:
-                                            break  # 태그 경계 대기
+                                            break
 
                                     elif think_state == "thinking":
                                         close = buf.find("</think>")
@@ -372,7 +339,6 @@ class VLLMProvider:
                                         yield {"type": "answer", "chunk": buf}
                                         buf = ""
 
-                        # 잔여 버퍼 처리
                         if buf:
                             if think_state == "thinking":
                                 full_thinking += buf
@@ -383,31 +349,38 @@ class VLLMProvider:
                                 yield {"type": "answer", "chunk": buf}
 
                 except httpx.TimeoutException as e:
-                    logger.error("[%s] stream 타임아웃: %s", self.name, type(e).__name__)
                     raise RuntimeError(f"타임아웃 [{type(e).__name__}]") from e
                 except httpx.HTTPError as e:
-                    logger.error("[%s] stream 연결 오류 %s: %s", self.name, type(e).__name__, e)
-                    raise RuntimeError(
-                        f"연결 오류 [{type(e).__name__}]: {e or '(연결 종료)'}"
-                    ) from e
+                    raise RuntimeError(f"연결 오류 [{type(e).__name__}]: {e or '(연결 종료)'}") from e
 
                 if got_context_error:
-                    continue  # context 오류 재시도
-                break  # 스트리밍 성공
+                    continue
+                break
 
             total_completion_tokens += usage.get("completion_tokens", 0)
             final_usage = usage
 
             if finish_reason_end != "length":
-                break  # 정상 종료 또는 stop
+                break
 
-            # ── 자동 연속 생성 ────────────────────────────────────────────────
             logger.info("[%s] finish_reason=length, 연속 생성 round %d/%d",
                         self.name, _round + 1, config.MAX_CONTINUATION_ROUNDS)
+            # thinking 모델(Qwen3 등): round_answer가 비어있으면 thinking을 <think> 블록으로 전달
+            if not round_answer and round_thinking:
+                assistant_content = f"<think>{round_thinking}"
+            else:
+                assistant_content = round_answer
             current_messages = current_messages + [
-                {"role": "assistant", "content": round_answer},
+                {"role": "assistant", "content": assistant_content},
                 {"role": "user",      "content": config.CONTINUE_PROMPT},
             ]
+
+        # content가 비어있고 thinking만 있으면 thinking을 answer로 승격
+        # (Qwen3.6 등 always-thinking 모델이 <think> 안에 최종 답변을 쓰는 경우)
+        if not full_answer and full_thinking:
+            full_answer = full_thinking
+            full_thinking = ""
+            yield {"type": "answer", "chunk": full_answer}
 
         merged = dict(final_usage)
         merged["completion_tokens"] = total_completion_tokens

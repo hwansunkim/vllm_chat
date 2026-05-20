@@ -1,0 +1,71 @@
+services:
+  vllm-qwen36:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-qwen36-inference
+    ports:
+      - "8000:8000"
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    ipc: host
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - HF_TOKEN=${HF_TOKEN}
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 2
+              capabilities: [gpu]
+    command:
+      - "Qwen/Qwen3.6-35B-A3B"
+      - "--tensor-parallel-size"
+      - "2"
+      - "--gpu-memory-utilization"
+      - "0.85"
+      - "--max-model-len"
+      - "32768"
+      - "--trust-remote-code"
+      - "--max-num-batched-tokens"
+      - "8192"
+      - "--reasoning-parser"
+      - "qwen3"
+      - "--default-chat-template-kwargs"
+      - '{"enable_thinking": false}'
+      # speculative-config 제거 — MoE overhead 대비 실익 없음
+      # prefix caching 기본 활성 상태 유지
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9000:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    restart: unless-stopped
+    depends_on:
+      - vllm-qwen36
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus-data:
+  grafana-data:
