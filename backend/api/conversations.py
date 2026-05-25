@@ -217,84 +217,94 @@ async def send_chat(conv_id: str, body: ChatMessage):
         conn.close()
         raise HTTPException(503, str(e))
 
+    save_turn(conn, conv_id, "user", user_content)
+
     async def event_generator():
         full_thinking = ""
         full_answer   = ""
         usage: dict   = {}
+        conn_closed    = False
+
+        def close_conn() -> None:
+            nonlocal conn_closed
+            if not conn_closed:
+                conn.close()
+                conn_closed = True
 
         try:
-            async for event in async_stream_chat(
-                messages, temperature=temperature, max_tokens=max_tokens,
-                model=model, server_id=selected_provider.id, thinking=thinking
-            ):
-                if event["type"] == "thinking":
-                    full_thinking += event["chunk"]
-                    yield f"event: thinking\ndata: {json.dumps({'chunk': event['chunk']}, ensure_ascii=False)}\n\n"
-                elif event["type"] == "answer":
-                    full_answer += event["chunk"]
-                    yield f"event: answer\ndata: {json.dumps({'chunk': event['chunk']}, ensure_ascii=False)}\n\n"
-                elif event["type"] == "usage":
-                    usage         = event["data"]
-                    full_thinking = usage.get("thinking", full_thinking)
-                    full_answer   = usage.get("answer",   full_answer)
-        except Exception as e:
-            msg = str(e) or f"({type(e).__name__})"
-            yield f"event: error\ndata: {json.dumps({'message': f'LLM 오류: {msg}'}, ensure_ascii=False)}\n\n"
-            conn.close()
-            return
+            try:
+                async for event in async_stream_chat(
+                    messages, temperature=temperature, max_tokens=max_tokens,
+                    model=model, server_id=selected_provider.id, thinking=thinking
+                ):
+                    if event["type"] == "thinking":
+                        full_thinking += event["chunk"]
+                        yield f"event: thinking\ndata: {json.dumps({'chunk': event['chunk']}, ensure_ascii=False)}\n\n"
+                    elif event["type"] == "answer":
+                        full_answer += event["chunk"]
+                        yield f"event: answer\ndata: {json.dumps({'chunk': event['chunk']}, ensure_ascii=False)}\n\n"
+                    elif event["type"] == "usage":
+                        usage         = event["data"]
+                        full_thinking = usage.get("thinking", full_thinking)
+                        full_answer   = usage.get("answer",   full_answer)
+            except Exception as e:
+                msg = str(e) or f"({type(e).__name__})"
+                yield f"event: error\ndata: {json.dumps({'message': f'LLM 오류: {msg}'}, ensure_ascii=False)}\n\n"
+                return
 
-        max_model_len = selected_provider.model_len or usage.get("max_model_len") or state.max_model_len
-        prompt_tokens = usage.get("prompt_tokens", 0)
-        context_pct   = (prompt_tokens / max_model_len) if max_model_len else 0
-        memories_json = json.dumps(
-            [{"type": m["type"], "content": m["content"]} for m in retrieved],
-            ensure_ascii=False,
-        )
+            max_model_len = selected_provider.model_len or usage.get("max_model_len") or state.max_model_len
+            prompt_tokens = usage.get("prompt_tokens", 0)
+            context_pct   = (prompt_tokens / max_model_len) if max_model_len else 0
+            memories_json = json.dumps(
+                [{"type": m["type"], "content": m["content"]} for m in retrieved],
+                ensure_ascii=False,
+            )
 
-        save_turn(conn, conv_id, "user", user_content)
-        save_turn(
-            conn, conv_id, "assistant", full_answer,
-            thinking=full_thinking,
-            memories_json=memories_json,
-            context_pct=round(context_pct, 4),
-            prompt_tokens=prompt_tokens,
-            max_tokens=max_model_len,
-        )
+            save_turn(
+                conn, conv_id, "assistant", full_answer,
+                thinking=full_thinking,
+                memories_json=memories_json,
+                context_pct=round(context_pct, 4),
+                prompt_tokens=prompt_tokens,
+                max_tokens=max_model_len,
+            )
 
-        new_title = conv["title"]
-        if conv["title"] == "새 대화":
-            new_title = auto_title(body.content)
-            conn.execute("UPDATE conversations SET title=? WHERE id=?", (new_title, conv_id))
-            conn.commit()
+            new_title = conv["title"]
+            if conv["title"] == "새 대화":
+                new_title = auto_title(body.content)
+                conn.execute("UPDATE conversations SET title=? WHERE id=?", (new_title, conv_id))
+                conn.commit()
 
-        archived_count = await _maybe_archive(conn, conv_id, context_pct, max_model_len)
-        conn.close()
+            archived_count = await _maybe_archive(conn, conv_id, context_pct, max_model_len)
 
-        done = {
-            "memories": [{"type": m["type"], "content": m["content"]} for m in retrieved],
-            "usage": {
-                "prompt_tokens":     prompt_tokens,
-                "completion_tokens": usage.get("completion_tokens", 0),
-                "max_model_len":     max_model_len,
-                "context_pct":       context_pct,
-                "thinking":          full_thinking,
-            },
-            "archived_count": archived_count,
-            "title":          new_title,
-            "used_agent": {
-                "name":    used_agent["name"],
-                "icon":    used_agent["icon"],
-                "routing": routing_method,
-            } if used_agent else None,
-            "used_server": {
-                "id":        selected_provider.id,
-                "name":      selected_provider.name,
-                "model":     selected_provider.model,
-                "model_len": selected_provider.model_len,
-            },
-            "thinking_mode": thinking,
-        }
-        yield f"event: done\ndata: {json.dumps(done, ensure_ascii=False)}\n\n"
+            done = {
+                "memories": [{"type": m["type"], "content": m["content"]} for m in retrieved],
+                "usage": {
+                    "prompt_tokens":     prompt_tokens,
+                    "completion_tokens": usage.get("completion_tokens", 0),
+                    "max_model_len":     max_model_len,
+                    "context_pct":       context_pct,
+                    "thinking":          full_thinking,
+                },
+                "archived_count": archived_count,
+                "title":          new_title,
+                "used_agent": {
+                    "name":    used_agent["name"],
+                    "icon":    used_agent["icon"],
+                    "routing": routing_method,
+                } if used_agent else None,
+                "used_server": {
+                    "id":        selected_provider.id,
+                    "name":      selected_provider.name,
+                    "model":     selected_provider.model,
+                    "model_len": selected_provider.model_len,
+                },
+                "thinking_mode": thinking,
+            }
+            close_conn()
+            yield f"event: done\ndata: {json.dumps(done, ensure_ascii=False)}\n\n"
+        finally:
+            close_conn()
 
     return StreamingResponse(
         event_generator(),

@@ -7,24 +7,18 @@ RAG 기반 메모리 시스템으로 컨텍스트 윈도우를 효율적으로 �
 
 ```bash
 pip install -r requirements.txt
-python server.py
+python run.py
 # → http://localhost:8888
 ```
 
-vLLM 서버 주소와 모델은 `chat.py` 상단의 상수에서 변경한다.
-
-```python
-BASE_URL = "http://172.17.3.135:8000"
-MODEL    = "google/gemma-4-31B-it"
-```
-
-## CLI 모드
-
-웹 서버 없이 터미널에서 직접 사용할 수 있다.
+또는 uvicorn을 직접 실행할 수 있다.
 
 ```bash
-python chat.py
+uvicorn backend.main:app --host 0.0.0.0 --port 8888 --reload
 ```
+
+vLLM 서버 주소와 모델은 웹 UI의 서버 관리 화면 또는 `/api/servers` API로 등록한다.
+초기 서버 목록은 `servers.json` 파일이 있을 때 첫 실행 시 DB에 시드된다.
 
 ## 문서
 

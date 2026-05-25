@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import state
 from .llm import client as llm_client
-from .api import agents, conversations, memories, servers, model
+from .api import agents, conversations, memories, servers, model, simulation
 from .db.database import get_db, init_tables, migrate_db, seed_default_agents, seed_default_servers
 
 
@@ -35,5 +35,6 @@ app.include_router(conversations.router)
 app.include_router(agents.router)
 app.include_router(memories.router)
 app.include_router(servers.router)
+app.include_router(simulation.router)
 
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

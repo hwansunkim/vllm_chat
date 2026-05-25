@@ -22,7 +22,7 @@ def _extract_reply(message: dict) -> tuple[str, str]:
     content  = (message.get("content") or "").strip()
 
     if not thinking:
-        m = re.match(r"<think>(.*?)</think>\s*(.*)", content, re.DOTALL)
+        m = re.match(r"\s*<think>(.*?)</think>\s*(.*)", content, re.DOTALL)
         if m:
             thinking = m.group(1).strip()
             content  = m.group(2).strip()
@@ -299,10 +299,15 @@ class VLLMProvider:
                                 buf += content
                                 while buf:
                                     if think_state == "pre":
-                                        if buf.startswith("<think>"):
+                                        stripped = buf.lstrip()
+                                        if not stripped:
+                                            break
+                                        if stripped.startswith("<think>"):
                                             think_state = "thinking"
-                                            buf         = buf[7:]
-                                        elif len(buf) >= 7 or finish_reason:
+                                            buf         = stripped[7:]
+                                        elif "<think>".startswith(stripped) and not finish_reason:
+                                            break
+                                        elif len(stripped) >= 7 or finish_reason:
                                             think_state  = "answer"
                                             full_answer  += buf
                                             round_answer += buf

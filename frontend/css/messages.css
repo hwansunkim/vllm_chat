@@ -115,7 +115,7 @@
 .bubble.md pre {
   background: #f8fafc; border: 1px solid #e2e8f0;
   border-radius: 10px; margin: 10px 0;
-  overflow: auto; position: relative;
+  overflow: auto;
 }
 .bubble.md pre code {
   background: none; color: inherit;
@@ -137,12 +137,25 @@
 .bubble.md a { color: #6366f1; text-decoration: underline; }
 .bubble.md hr { border: none; border-top: 1px solid #e2e8f0; margin: 12px 0; }
 
-/* 코드 블록 언어 라벨 */
+/* 코드 블록 헤더 (언어 라벨 + 복사 버튼) */
+.code-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 12px;
+  background: #f1f5f9; border-bottom: 1px solid #e2e8f0;
+  border-radius: 10px 10px 0 0;
+}
 .code-lang {
-  position: absolute; top: 8px; right: 12px;
-  font-size: 10px; font-weight: 600; color: #94a3b8;
+  font-size: 11px; font-weight: 600; color: #94a3b8;
   font-family: monospace; text-transform: uppercase;
 }
+.code-copy-btn {
+  background: none; border: 1px solid #e2e8f0;
+  color: #94a3b8; padding: 2px 8px; border-radius: 4px;
+  cursor: pointer; font-size: 11px; font-weight: 500;
+  transition: all 0.15s;
+}
+.code-copy-btn:hover { background: #e2e8f0; color: #64748b; }
+.code-copy-btn.copied { color: #22c55e; border-color: #86efac; }
 
 /* ── 에이전트 사용 뱃지 ────────────────────────────────────────────────────── */
 .agent-used-badge {

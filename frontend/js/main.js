@@ -4,6 +4,7 @@ import { initChatEvents } from './chat.js';
 import { loadAgents, initAgentEvents } from './agents.js';
 import { initMemoryEvents } from './memories.js';
 import { initMentionEvents } from './mention.js';
+import { initSimulationEvents } from './simulation.js';
 
 loadModelStatus();
 loadConversations();
@@ -15,3 +16,4 @@ initChatEvents();
 initAgentEvents();
 initMemoryEvents();
 initMentionEvents();
+initSimulationEvents();

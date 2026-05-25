@@ -22,10 +22,31 @@ export function renderMarkdown(text) {
 }
 
 export function highlightCodeBlocks(el) {
-  el.querySelectorAll('pre[data-lang]').forEach(pre => {
-    const label = document.createElement('span');
-    label.className = 'code-lang';
-    label.textContent = pre.dataset.lang;
-    pre.appendChild(label);
+  el.querySelectorAll('pre').forEach(pre => {
+    const header = document.createElement('div');
+    header.className = 'code-header';
+
+    const langSpan = document.createElement('span');
+    langSpan.className = 'code-lang';
+    langSpan.textContent = pre.dataset.lang || '';
+    header.appendChild(langSpan);
+
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'code-copy-btn';
+    copyBtn.textContent = '복사';
+    copyBtn.addEventListener('click', () => {
+      const text = pre.querySelector('code')?.textContent ?? '';
+      navigator.clipboard.writeText(text).then(() => {
+        copyBtn.textContent = '✓ 복사됨';
+        copyBtn.classList.add('copied');
+        setTimeout(() => {
+          copyBtn.textContent = '복사';
+          copyBtn.classList.remove('copied');
+        }, 2000);
+      });
+    });
+    header.appendChild(copyBtn);
+
+    pre.insertBefore(header, pre.firstChild);
   });
 }

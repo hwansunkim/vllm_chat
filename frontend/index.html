@@ -12,6 +12,8 @@
 <link rel="stylesheet" href="/css/messages.css">
 <link rel="stylesheet" href="/css/input.css">
 <link rel="stylesheet" href="/css/modals.css">
+<link rel="stylesheet" href="/css/simulation.css">
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/katex/dist/katex.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/markdown-it/dist/markdown-it.min.js"></script>
@@ -31,6 +33,7 @@
     <button class="sidebar-footer-btn" id="agent-btn">🤖 에이전트 관리</button>
     <button class="sidebar-footer-btn" id="mem-btn">🗂 메모리 저장소</button>
     <button class="sidebar-footer-btn" id="server-btn">🖥 서버 설정</button>
+    <button class="sidebar-footer-btn" id="sim-btn">🎭 시뮬레이션</button>
   </div>
 </div>
 
@@ -73,6 +76,113 @@
       <button id="thinking-btn" disabled title="사고 모드 켜기">🧠</button>
       <button id="send-btn" disabled>▶</button>
     </div>
+  </div>
+</div>
+
+<!-- Simulation View -->
+<div id="sim-view" class="sim-hidden">
+
+  <!-- Header -->
+  <div id="sim-header">
+    <button id="sim-back-btn">← 채팅</button>
+    <h2>🎭 시뮬레이션</h2>
+    <span id="sim-status-badge" class="sim-status-badge">대기 중</span>
+    <div class="sim-header-controls">
+      <input id="sim-scenario-name" type="text" placeholder="시나리오 이름..."/>
+      <select id="sim-scenario-select"><option value="">-- 불러오기 --</option></select>
+      <button id="sim-save-scenario-btn" class="sim-ctrl-btn save">💾 저장</button>
+      <button id="sim-start-btn" class="sim-ctrl-btn start">▶ 시작</button>
+      <button id="sim-stop-btn" class="sim-ctrl-btn stop" disabled>■ 중지</button>
+    </div>
+  </div>
+
+  <!-- Body (3 panels) -->
+  <div id="sim-body">
+
+    <!-- Left: Config Panel (resizable) -->
+    <div id="sim-config">
+      <div class="sim-section">
+        <div class="sim-section-title">📋 배경</div>
+        <div class="sim-section-body">
+          <textarea id="sim-background" placeholder="장면 배경을 입력하세요..."></textarea>
+        </div>
+      </div>
+      <div class="sim-section">
+        <div class="sim-section-title">👤 에이전트</div>
+        <div id="sim-agent-list"></div>
+      </div>
+      <div class="sim-section">
+        <div class="sim-section-title">🚀 실행 설정</div>
+        <div class="sim-option-row">
+          <label>시작 에이전트</label>
+          <select id="sim-start-agent" style="font-size:12px;padding:4px 6px;border:1px solid #e2e8f0;border-radius:4px;max-width:100px;"></select>
+        </div>
+        <div class="sim-option-row">
+          <label>최대 wave 수</label>
+          <input type="number" id="sim-max-waves" value="10" min="1" max="50"/>
+        </div>
+      </div>
+      <div class="sim-section">
+        <div class="sim-section-title">⚙ 옵션</div>
+        <div class="sim-option-row">
+          <label>step delay (s)</label>
+          <input type="number" id="sim-step-delay" value="1.0" step="0.5" min="0"/>
+        </div>
+        <div class="sim-option-row">
+          <label>memory limit</label>
+          <input type="number" id="sim-memory-limit" value="20" min="1"/>
+        </div>
+      </div>
+      <div class="sim-section">
+        <div class="sim-section-title">📜 시나리오 이벤트</div>
+        <div id="sim-events-list"></div>
+        <button id="sim-add-event-btn" class="sim-add-agent-btn">+ 이벤트 추가</button>
+      </div>
+    </div>
+
+    <!-- Resize handle (left config ↔ center) -->
+    <div id="sim-resize-l" class="sim-resize-handle"></div>
+
+    <!-- Center: Agent Cards + Feed -->
+    <div id="sim-center">
+      <div id="sim-agent-cards"></div>
+      <div id="sim-turn-indicator">
+        <span id="sim-turn-text">대기 중</span>
+        <div class="sim-progress-bar">
+          <div class="sim-progress-fill" id="sim-progress-fill"></div>
+        </div>
+      </div>
+      <div id="sim-feed">
+        <div id="sim-feed-empty">▶ 시뮬레이션을 시작하면 여기에 대화가 표시됩니다</div>
+      </div>
+    </div>
+
+    <!-- Resize handle (center ↔ right) -->
+    <div id="sim-resize-r" class="sim-resize-handle"></div>
+
+    <!-- Right: Graph + Context Panel -->
+    <div id="sim-graph-panel">
+      <div class="sim-graph-header">
+        <div class="sim-tabs">
+          <button class="sim-tab active" data-tab="graph">🕸 그래프</button>
+          <button class="sim-tab" data-tab="context" id="sim-context-tab-btn">👤 컨텍스트</button>
+        </div>
+        <button class="sim-export-btn" id="sim-export-graph-btn">⬇ SVG</button>
+      </div>
+      <!-- Graph pane -->
+      <div id="sim-tab-graph" class="sim-tab-pane">
+        <svg id="sim-graph-svg"></svg>
+      </div>
+      <!-- Context pane -->
+      <div id="sim-tab-context" class="sim-tab-pane sim-hidden">
+        <div id="sim-context-agent-header">
+          <span id="sim-context-agent-name">에이전트 카드를 클릭하세요</span>
+          <button id="sim-context-refresh-btn" class="sim-export-btn sim-hidden">↻ 새로고침</button>
+        </div>
+        <div id="sim-context-msgs"></div>
+      </div>
+    </div>
+
   </div>
 </div>
 
