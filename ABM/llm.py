@@ -17,7 +17,11 @@ def chat_response(
     model: str = MODEL,
     base_url: str = BASE_URL,
     timeout: int = API_TIMEOUT,
-) -> tuple[str, str]:
+) -> tuple[str, str, dict]:
+    """Returns (content, reasoning, usage).
+
+    usage keys: prompt_tokens, completion_tokens, total_tokens.
+    """
     payload = {
         "model":       model,
         "messages":    messages,
@@ -39,4 +43,5 @@ def chat_response(
     message_obj = data["choices"][0].get("message", {})
     content   = message_obj.get("content", "")
     reasoning = message_obj.get("reasoning", "") or message_obj.get("reasoning_content", "")
-    return content, reasoning
+    usage     = data.get("usage", {})
+    return content, reasoning, usage

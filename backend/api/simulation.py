@@ -47,14 +47,24 @@ class ScenarioEvent(BaseModel):
     agent:   str       = ""  # agent_enter / agent_exit 전용
 
 
+class ExtraField(BaseModel):
+    name:    str
+    default: str = ""
+
+
 class SimStartConfig(BaseModel):
-    agents:       list[AgentConfig]
-    background:   str
-    start_agent:  str
-    max_waves:    int              = 10
-    step_delay:   float            = 1.0
-    memory_limit: int              = 20
-    events:       list[ScenarioEvent] = []
+    agents:                 list[AgentConfig]
+    background:             str
+    start_agent:            str
+    max_waves:              int              = 10
+    step_delay:             float            = 1.0
+    token_limit:            int              = 8192
+    extra_fields:           list[ExtraField] = [
+        ExtraField(name="emotion", default="neutral"),
+        ExtraField(name="action",  default="speak"),
+    ]
+    events:                 list[ScenarioEvent] = []
+    output_format_template: str              = ""
 
 
 class ScenarioSave(BaseModel):
@@ -95,11 +105,13 @@ def start_simulation(cfg: SimStartConfig):
         try:
             from ABM.agent import Agent
             from ABM.simulation import Simulation
-            from ABM.config import MODEL, BASE_URL, API_TIMEOUT
+            from ABM.config import MODEL, BASE_URL, API_TIMEOUT, LOG_DIR
 
             agents = {
-                a.name: Agent(a.name, a.system_prompt, "logs_graph",
-                              memory_limit=cfg.memory_limit)
+                a.name: Agent(a.name, a.system_prompt, LOG_DIR,
+                              token_limit=cfg.token_limit,
+                              extra_fields=[f.model_dump() for f in cfg.extra_fields],
+                              output_format_template=cfg.output_format_template or None)
                 for a in cfg.agents
             }
             background_log = [{"role": "user", "content": f"[배경] {cfg.background}"}]
@@ -112,7 +124,7 @@ def start_simulation(cfg: SimStartConfig):
             alias_map = {a.display_name: a.name for a in cfg.agents if a.display_name.strip()}
 
             sim = Simulation(
-                agents, background_log, "logs_graph",
+                agents, background_log, LOG_DIR,
                 MODEL, BASE_URL, API_TIMEOUT,
                 event_queue=eq,
                 stop_event=stop_ev,
@@ -202,14 +214,17 @@ def get_agent_context(name: str):
     else:
         other_names = [k for k in agents if k != name]
         key_to_alias = {}
-    messages = agent.build_messages(bg_log, other_names, key_to_alias)
-    trimmed = max(0, agent._total_added - len(agent.memory))
+    messages      = agent.build_messages(bg_log, other_names, key_to_alias)
+    est_tokens    = agent.estimate_context_tokens(bg_log, other_names, key_to_alias)
+    prompt_tokens = agent._last_prompt_tokens if agent._last_prompt_tokens is not None else est_tokens
     return {
-        "name":         name,
-        "memory_size":  len(agent.memory),
-        "total_added":  agent._total_added,
-        "trimmed":      trimmed,
-        "messages":     messages,
+        "name":           name,
+        "memory_size":    len(agent.memory),
+        "trimmed":        agent._trimmed_count,
+        "prompt_tokens":  prompt_tokens,
+        "est_tokens":     est_tokens,
+        "token_limit":    agent._token_limit,
+        "messages":       messages,
     }
 
 
@@ -221,6 +236,12 @@ def get_logs():
 @router.get("/edges")
 def get_edges():
     return _sim["edges"]
+
+
+@router.get("/default-output-format")
+def get_default_output_format():
+    from ABM.agent import DEFAULT_OUTPUT_FORMAT_TEMPLATE
+    return {"template": DEFAULT_OUTPUT_FORMAT_TEMPLATE}
 
 
 # ── Scenarios CRUD ────────────────────────────────────────────────────────────

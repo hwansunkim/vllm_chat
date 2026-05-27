@@ -201,23 +201,29 @@ class Simulation:
         for msg in incoming_msgs:
             active_agent.add_to_memory(msg)
 
+        other_agents = [k for k in self.active_agents if k != agent_key]
+
+        # Trim memory to fit within token limit before building the final prompt
+        active_agent.trim_to_token_limit(self.background_log, other_agents, self._key_to_alias)
+        est_tokens    = active_agent.estimate_context_tokens(self.background_log, other_agents, self._key_to_alias)
+
         self._emit("turn_start", {
-            "turn":        turn,
-            "speaker":     agent_key,
-            "memory_size": len(active_agent.memory),
+            "turn":            turn,
+            "speaker":         agent_key,
+            "memory_size":     len(active_agent.memory),
+            "est_tokens":      est_tokens,
+            "token_limit":     active_agent._token_limit,
         })
 
-        other_agents  = [k for k in self.active_agents if k != agent_key]
         call_messages = active_agent.build_messages(self.background_log, other_agents, self._key_to_alias)
 
         try:
-            content, reasoning = chat_response(
+            content, reasoning, usage = chat_response(
                 call_messages, self.model, self.base_url, self.api_timeout
             )
         except Exception as e:
             logger.error(f"응답 생성 실패 ({active_agent.name}): {e}")
             self._emit("turn_error", {"turn": turn, "speaker": agent_key, "error": str(e)})
-            # roll back incoming messages to keep memory consistent
             for _ in incoming_msgs:
                 if active_agent.memory and active_agent.memory[-1]["role"] == "user":
                     active_agent.memory.pop()
@@ -231,45 +237,54 @@ class Simulation:
                     active_agent.memory.pop()
             return {"success": False, "agent_key": agent_key}
 
-        clean_content, emotion, action, parsed_targets = parse_json_response(content)
+        # Record actual prompt tokens from server response
+        prompt_tokens = usage.get("prompt_tokens", est_tokens)
+        active_agent._last_prompt_tokens = prompt_tokens
+
+        clean_content, meta, parsed_targets = parse_json_response(content, active_agent._extra_fields)
 
         active_agent.add_to_memory({"role": "assistant", "content": content})
         active_agent.add_to_log(
             content=clean_content, reasoning=reasoning,
-            emotion=emotion, action=action, targets=parsed_targets,
+            extra=meta, targets=parsed_targets,
         )
 
         self.shared_log.append({
             "speaker":   active_agent.name,
             "content":   clean_content,
-            "emotion":   emotion,
-            "action":    action,
+            "meta":      dict(meta),
             "targets":   parsed_targets,
             "timestamp": time.time(),
         })
         self._save_shared_log()
+
+        # Determine emotion value generically — use 'emotion' field if present, else empty string.
+        emotion_val = meta.get("emotion", "")
 
         new_edges = []
         for target_name in self._resolve_targets(parsed_targets, agent_key):
             edge = {
                 "source":    active_agent.name,
                 "target":    target_name,
-                "emotion":   emotion,
-                "action":    action,
+                "emotion":   emotion_val,
+                "meta":      dict(meta),
                 "content":   clean_content,
                 "timestamp": time.time(),
             }
             self.edges.append(edge)
             new_edges.append(edge)
 
+        emit_meta = {k: v for k, v in meta.items() if k != "action_note"}
         self._emit("turn_complete", {
             "turn":              turn,
             "speaker":           active_agent.name,
             "targets":           parsed_targets,
             "content":           clean_content,
-            "emotion":           emotion,
-            "action":            action,
+            "action_note":       meta.get("action_note", ""),
+            "meta":              emit_meta,
             "memory_size":       len(active_agent.memory),
+            "prompt_tokens":     prompt_tokens,
+            "token_limit":       active_agent._token_limit,
             "reasoning_preview": reasoning[:120] if reasoning else "",
             "new_edges":         new_edges,
         })

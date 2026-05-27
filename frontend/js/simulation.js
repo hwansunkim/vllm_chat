@@ -2,25 +2,28 @@ import { esc } from './utils.js';
 
 // ── Module state ──────────────────────────────────────────────────────────────
 const sim = {
-  status:        'idle',
-  selectedAgent: null,
-  agents: [
-    { name: 'boss',     display_name: '김민태', icon: '😤', initial_active: true,  system_prompt: "너는 편의점 사장님 '김민태'야. 47세 남자. 욕심이 많고 고지식함. 말투가 거칠고 불평이 많음." },
-    { name: 'lee',      display_name: '이상민', icon: '😊', initial_active: true,  system_prompt: "너는 편의점 알바생 '이상민'이야. 29세 남자. 아이돌 지망생. 착실하고 씩씩하며 친절한 말투." },
-    { name: 'park',     display_name: '박슬기', icon: '😒', initial_active: true,  system_prompt: "너는 편의점 알바생 '박슬기'야. 21세 여자. 게으르고 냉소적임. 말투가 거칠고 반항적임." },
-    { name: 'customer', display_name: '정용진', icon: '😠', initial_active: false, system_prompt: "너는 편의점 손님 '정용진'이야. 55세 남자. 불만이 많고 괴팍함. 말투가 거칠고 막무가내임." },
-  ],
-  background:   '편의점 아침 출근 시간. 김민태 사장님이 도착하여 문을 열었다. 이상민과 박슬기 알바생이 출근했다.',
-  start_agent:  'boss',
+  status:              'idle',
+  selectedAgent:       null,
+  currentScenarioId:   null,
+  currentScenarioName: '',
+  agents:       [],
+  background:   '',
+  start_agent:  '',
   max_waves:    10,
   step_delay:   1.0,
-  memory_limit: 20,
-  events: [
-    { wave: 2, type: 'agent_enter', agent: 'customer', message: '편의점 손님 정용진이 들어왔다.', targets: ['all'] },
+  token_limit:  8192,
+  extra_fields: [
+    { name: 'emotion', default: 'neutral' },
+    { name: 'action',  default: 'speak'   },
   ],
+  events:       [],
+  output_format_template: '',
   eventSource:  null,
   scenarios:    [],
 };
+
+// Accordion expand state (keyed by agent.name)
+const _expandedAgents = new Set();
 
 // ── Emotion helpers ───────────────────────────────────────────────────────────
 const EMOTION_COLORS = {
@@ -32,11 +35,12 @@ const EMOTION_CLASS = ['angry','happy','neutral','sad','fear'];
 function emotionColor(e) { return EMOTION_COLORS[e] || '#a78bfa'; }
 function emotionClass(e) { return EMOTION_CLASS.includes(e) ? `emotion-${e}` : 'emotion-neutral'; }
 
-// ── View toggle ───────────────────────────────────────────────────────────────
+// ── View management ───────────────────────────────────────────────────────────
 function showSimView() {
   document.getElementById('main').classList.add('sim-hidden');
+  document.getElementById('sim-settings-view').classList.add('sim-hidden');
   document.getElementById('sim-view').classList.remove('sim-hidden');
-  renderConfigPanel();
+  _updateScenarioLabel();
   renderAgentCards();
   initD3Graph();
   loadScenarios();
@@ -47,7 +51,78 @@ function hideSimView() {
   document.getElementById('main').classList.remove('sim-hidden');
 }
 
-// ── Config panel ──────────────────────────────────────────────────────────────
+function showSettingsView() {
+  document.getElementById('sim-view').classList.add('sim-hidden');
+  document.getElementById('sim-settings-view').classList.remove('sim-hidden');
+  renderSettingsPage();
+  loadScenarios();
+}
+
+function hideSettingsView() {
+  document.getElementById('sim-settings-view').classList.add('sim-hidden');
+  document.getElementById('sim-view').classList.remove('sim-hidden');
+  _updateScenarioLabel();
+  renderAgentCards();
+}
+
+function _updateScenarioLabel() {
+  const el = document.getElementById('sim-scenario-label');
+  if (el) el.textContent = sim.currentScenarioName || '시나리오 없음';
+}
+
+// ── Settings page ─────────────────────────────────────────────────────────────
+function renderSettingsPage() {
+  document.getElementById('sim-scenario-name').value  = sim.currentScenarioName;
+  document.getElementById('sim-background').value     = sim.background;
+  document.getElementById('sim-max-waves').value      = sim.max_waves;
+  document.getElementById('sim-step-delay').value     = sim.step_delay;
+  document.getElementById('sim-token-limit').value    = sim.token_limit;
+  document.getElementById('sim-output-format').value  = sim.output_format_template || '';
+  const delBtn = document.getElementById('sim-delete-scenario-btn');
+  if (delBtn) delBtn.disabled = !sim.currentScenarioId;
+  renderOutputFields();
+  renderAgentListInConfig();
+  renderStartAgentSelect();
+  renderScenarioEvents();
+}
+
+// ── Output Fields ─────────────────────────────────────────────────────────────
+function renderOutputFields() {
+  const list = document.getElementById('sim-fields-list');
+  if (!list) return;
+  list.innerHTML = '';
+
+  if (!sim.extra_fields.length) {
+    list.innerHTML = '<div class="sim-fields-empty">메타데이터 필드 없음 — content, target만 사용됩니다.</div>';
+    return;
+  }
+
+  sim.extra_fields.forEach((f, idx) => {
+    const row = document.createElement('div');
+    row.className = 'sim-field-row';
+    row.innerHTML = `
+      <input class="sim-field-name" type="text" placeholder="필드명 (영문)"
+             value="${esc(f.name)}" data-idx="${idx}" data-prop="name"/>
+      <span class="sim-field-sep">:</span>
+      <input class="sim-field-default" type="text" placeholder="기본값"
+             value="${esc(f.default)}" data-idx="${idx}" data-prop="default"/>
+      <button class="sim-field-del" data-idx="${idx}">✕</button>
+    `;
+    list.appendChild(row);
+
+    row.querySelectorAll('[data-prop]').forEach(el => {
+      el.addEventListener('input', () => {
+        sim.extra_fields[+el.dataset.idx][el.dataset.prop] = el.value;
+      });
+    });
+    row.querySelector('.sim-field-del').addEventListener('click', () => {
+      sim.extra_fields.splice(idx, 1);
+      renderOutputFields();
+    });
+  });
+}
+
+// ── Agent list (accordion) ────────────────────────────────────────────────────
 function renderStartAgentSelect() {
   const sel  = document.getElementById('sim-start-agent');
   const prev = sel.value;
@@ -58,20 +133,9 @@ function renderStartAgentSelect() {
     opt.textContent = `${a.icon} ${a.name}`;
     sel.appendChild(opt);
   });
-  // 이전 선택값 복원, 없으면 첫 번째
   if (prev && sim.agents.find(a => a.name === prev)) sel.value = prev;
   else if (sim.agents.length) sel.value = sim.agents[0].name;
   sim.start_agent = sel.value;
-}
-
-function renderConfigPanel() {
-  document.getElementById('sim-background').value   = sim.background;
-  document.getElementById('sim-max-waves').value    = sim.max_waves;
-  document.getElementById('sim-step-delay').value   = sim.step_delay;
-  document.getElementById('sim-memory-limit').value = sim.memory_limit;
-  renderAgentListInConfig();
-  renderStartAgentSelect();
-  renderScenarioEvents();
 }
 
 function renderAgentListInConfig() {
@@ -79,76 +143,145 @@ function renderAgentListInConfig() {
   list.innerHTML = '';
 
   sim.agents.forEach((agent, idx) => {
+    const isActive   = agent.initial_active !== false;
+    const isExpanded = _expandedAgents.has(agent.name);
+
     const row = document.createElement('div');
-    row.className = 'sim-agent-row';
-    const isActive = agent.initial_active !== false;
-    row.innerHTML = `
-      <input class="sim-agent-icon-input" data-idx="${idx}" data-field="icon"
-             value="${esc(agent.icon)}" maxlength="4" title="아이콘 (이모지)"/>
-      <div class="sim-agent-info">
-        <div class="sim-agent-name-row">
-          <input class="sim-agent-name-input" data-idx="${idx}" data-field="name"
-                 value="${esc(agent.name)}" placeholder="ID (영문)" title="시스템 ID"/>
-          <input class="sim-agent-display-name-input" data-idx="${idx}" data-field="display_name"
-                 value="${esc(agent.display_name || '')}" placeholder="표시이름 (선택)" title="한국어 이름 등 — LLM이 이 이름으로 target 지정해도 올바른 ID로 연결됩니다"/>
-        </div>
-        <textarea class="sim-agent-prompt-input" data-idx="${idx}" data-field="system_prompt"
-                  placeholder="시스템 프롬프트">${esc(agent.system_prompt)}</textarea>
+    row.className = 'sim-acrd-row';
+
+    // ── Header ──
+    const header = document.createElement('div');
+    header.className = 'sim-acrd-header';
+    header.innerHTML = `
+      <span class="sim-acrd-icon">${esc(agent.icon)}</span>
+      <div class="sim-acrd-names">
+        <span class="sim-acrd-id">${esc(agent.name)}</span>
+        ${agent.display_name ? `<span class="sim-acrd-display">${esc(agent.display_name)}</span>` : ''}
       </div>
-      <div class="sim-agent-active-wrap" title="처음부터 등장">
-        <label class="sim-active-toggle">
-          <input type="checkbox" data-idx="${idx}" data-field="initial_active" ${isActive ? 'checked' : ''}/>
-          <span class="track"></span><span class="thumb"></span>
-        </label>
-        <label style="font-size:9px;color:#94a3b8">${isActive ? '초기' : '대기'}</label>
-      </div>
-      <button class="sim-agent-del" data-idx="${idx}" title="삭제">✕</button>
+      <label class="sim-active-toggle" title="처음부터 등장">
+        <input type="checkbox" class="acrd-active-cb" data-idx="${idx}" ${isActive ? 'checked' : ''}/>
+        <span class="track"></span><span class="thumb"></span>
+      </label>
+      <span class="sim-acrd-active-label${isActive ? ' active' : ''}">${isActive ? '초기' : '대기'}</span>
+      <span class="sim-acrd-arrow">${isExpanded ? '▲' : '▼'}</span>
+      <button class="sim-acrd-del" data-idx="${idx}" title="삭제">🗑</button>
     `;
+
+    // ── Body ──
+    const body = document.createElement('div');
+    body.className = `sim-acrd-body${isExpanded ? '' : ' sim-acrd-collapsed'}`;
+    body.innerHTML = `
+      <div class="sim-acrd-field-row">
+        <div class="sim-acrd-field">
+          <label>아이콘</label>
+          <input class="sim-acrd-input-icon" data-idx="${idx}" data-field="icon"
+                 value="${esc(agent.icon)}" maxlength="4"/>
+        </div>
+        <div class="sim-acrd-field">
+          <label>ID</label>
+          <input class="sim-acrd-input-id" data-idx="${idx}" data-field="name"
+                 value="${esc(agent.name)}" placeholder="영문 ID"/>
+        </div>
+        <div class="sim-acrd-field">
+          <label>표시이름</label>
+          <input class="sim-acrd-input-display" data-idx="${idx}" data-field="display_name"
+                 value="${esc(agent.display_name || '')}" placeholder="한국어 이름 (선택)"/>
+        </div>
+      </div>
+      <div class="sim-acrd-prompt-row">
+        <label>시스템 프롬프트</label>
+        <textarea class="sim-acrd-prompt" data-idx="${idx}" data-field="system_prompt"
+                  placeholder="에이전트의 성격과 역할을 입력하세요...">${esc(agent.system_prompt)}</textarea>
+      </div>
+    `;
+
+    row.appendChild(header);
+    row.appendChild(body);
     list.appendChild(row);
-  });
 
-  const addBtn = document.createElement('button');
-  addBtn.className = 'sim-add-agent-btn';
-  addBtn.textContent = '+ 에이전트 추가';
-  addBtn.onclick = () => {
-    sim.agents.push({ name: `agent${sim.agents.length + 1}`, display_name: '', icon: '🤖', system_prompt: '', initial_active: true });
-    renderAgentListInConfig();
-    renderStartAgentSelect();
-    renderAgentCards();
-  };
-  list.appendChild(addBtn);
-
-  list.querySelectorAll('[data-field]').forEach(el => {
-    el.addEventListener('input', () => {
-      const idx = +el.dataset.idx;
-      if (el.type === 'checkbox') {
-        sim.agents[idx][el.dataset.field] = el.checked;
-        // 라벨 텍스트 갱신
-        el.closest('.sim-agent-active-wrap')
-          .querySelector('label:last-child').textContent = el.checked ? '초기' : '대기';
-        renderScenarioEvents(); // agent 선택 목록 갱신
-      } else {
-        sim.agents[idx][el.dataset.field] = el.value;
-        if (el.dataset.field === 'name') { renderStartAgentSelect(); renderScenarioEvents(); }
-      }
+    // Header area click → toggle expand (skip buttons/inputs/labels)
+    header.addEventListener('click', e => {
+      if (e.target.closest('button') || e.target.closest('input') || e.target.closest('label')) return;
+      _toggleExpand(agent.name, body, header.querySelector('.sim-acrd-arrow'));
     });
-  });
-  list.querySelectorAll('.sim-agent-del').forEach(el => {
-    el.addEventListener('click', () => {
-      sim.agents.splice(+el.dataset.idx, 1);
+    header.querySelector('.sim-acrd-arrow').addEventListener('click', () => {
+      _toggleExpand(agent.name, body, header.querySelector('.sim-acrd-arrow'));
+    });
+
+    // Active toggle
+    header.querySelector('.acrd-active-cb').addEventListener('change', e => {
+      sim.agents[idx].initial_active = e.target.checked;
+      const lbl = header.querySelector('.sim-acrd-active-label');
+      lbl.textContent = e.target.checked ? '초기' : '대기';
+      lbl.classList.toggle('active', e.target.checked);
+      renderScenarioEvents();
+    });
+
+    // Delete
+    header.querySelector('.sim-acrd-del').addEventListener('click', () => {
+      _expandedAgents.delete(agent.name);
+      sim.agents.splice(idx, 1);
       renderAgentListInConfig();
       renderStartAgentSelect();
-      renderAgentCards();
+    });
+
+    // Body field inputs — live-update sim state and header display
+    body.querySelectorAll('[data-field]').forEach(el => {
+      el.addEventListener('input', () => {
+        const i = +el.dataset.idx;
+        const oldName = sim.agents[i].name;
+        sim.agents[i][el.dataset.field] = el.value;
+
+        if (el.dataset.field === 'name') {
+          if (_expandedAgents.has(oldName)) {
+            _expandedAgents.delete(oldName);
+            _expandedAgents.add(el.value);
+          }
+          header.querySelector('.sim-acrd-id').textContent = el.value;
+          renderStartAgentSelect();
+          renderScenarioEvents();
+
+        } else if (el.dataset.field === 'icon') {
+          header.querySelector('.sim-acrd-icon').textContent = el.value;
+
+        } else if (el.dataset.field === 'display_name') {
+          const namesEl = header.querySelector('.sim-acrd-names');
+          let displayEl = namesEl.querySelector('.sim-acrd-display');
+          if (el.value.trim()) {
+            if (!displayEl) {
+              displayEl = document.createElement('span');
+              displayEl.className = 'sim-acrd-display';
+              namesEl.appendChild(displayEl);
+            }
+            displayEl.textContent = el.value;
+          } else {
+            displayEl?.remove();
+          }
+        }
+      });
     });
   });
 }
 
+function _toggleExpand(agentName, bodyEl, arrowEl) {
+  if (_expandedAgents.has(agentName)) {
+    _expandedAgents.delete(agentName);
+    bodyEl.classList.add('sim-acrd-collapsed');
+    arrowEl.textContent = '▼';
+  } else {
+    _expandedAgents.add(agentName);
+    bodyEl.classList.remove('sim-acrd-collapsed');
+    arrowEl.textContent = '▲';
+  }
+}
+
 function readConfigFromUI() {
-  sim.background   = document.getElementById('sim-background').value.trim();
-  sim.start_agent  = document.getElementById('sim-start-agent').value;
-  sim.max_waves    = parseInt(document.getElementById('sim-max-waves').value)    || 10;
-  sim.step_delay   = parseFloat(document.getElementById('sim-step-delay').value) || 1.0;
-  sim.memory_limit = parseInt(document.getElementById('sim-memory-limit').value) || 20;
+  sim.background             = document.getElementById('sim-background').value.trim();
+  sim.start_agent            = document.getElementById('sim-start-agent').value;
+  sim.max_waves              = parseInt(document.getElementById('sim-max-waves').value)    || 10;
+  sim.step_delay             = parseFloat(document.getElementById('sim-step-delay').value) || 1.0;
+  sim.token_limit            = parseInt(document.getElementById('sim-token-limit').value)  || 8192;
+  sim.output_format_template = document.getElementById('sim-output-format').value;
 }
 
 // ── Agent Cards ───────────────────────────────────────────────────────────────
@@ -162,16 +295,27 @@ function renderAgentCards() {
     card.id = `simc-${agent.name}`;
     card.title = '클릭하면 컨텍스트 윈도우 확인';
     card.style.cursor = 'pointer';
-    const displayLabel = agent.display_name ? `${esc(agent.display_name)}<small style="color:#94a3b8;font-weight:400"> (${esc(agent.name)})</small>` : esc(agent.name);
+    const displayLabel = agent.display_name
+      ? `${esc(agent.display_name)}<small style="color:#94a3b8;font-weight:400"> (${esc(agent.name)})</small>`
+      : esc(agent.name);
+    const metaHtml = sim.extra_fields.map(f => {
+      const cls = f.name === 'emotion'
+        ? `sim-feed-badge ${emotionClass(f.default)}`
+        : 'sim-feed-badge emotion-neutral';
+      return `<span class="${cls}" id="simc-meta-${esc(f.name)}-${esc(agent.name)}">${esc(f.default)}</span>`;
+    }).join('');
+
     card.innerHTML = `
       <div class="sim-card-header">
         <span class="sim-card-icon">${esc(agent.icon)}</span>
         <span class="sim-card-name">${displayLabel}</span>
       </div>
-      <span class="sim-card-emotion emotion-neutral" id="simc-em-${esc(agent.name)}">neutral</span>
-      <div class="sim-card-action"  id="simc-ac-${esc(agent.name)}">speak</div>
-      <div class="sim-card-mem-wrap">
-        <div class="sim-card-mem-fill" id="simc-mem-${esc(agent.name)}" style="width:0%"></div>
+      <div class="sim-card-meta">${metaHtml}</div>
+      <div class="sim-card-token-row">
+        <div class="sim-card-token-bar-wrap">
+          <div class="sim-card-token-bar-fill" id="simc-tok-${esc(agent.name)}" style="width:0%"></div>
+        </div>
+        <span class="sim-card-token-label" id="simc-tokl-${esc(agent.name)}">— / ${_fmtK(sim.token_limit)}</span>
       </div>
       <div class="sim-card-preview" id="simc-pre-${esc(agent.name)}">대기 중...</div>
     `;
@@ -180,15 +324,30 @@ function renderAgentCards() {
   });
 }
 
-function updateAgentCard(speaker, emotion, action, memorySize, preview) {
-  const emEl = document.getElementById(`simc-em-${speaker}`);
-  if (emEl) { emEl.textContent = emotion; emEl.className = `sim-card-emotion ${emotionClass(emotion)}`; }
+function _fmtK(n) {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}
 
-  const acEl = document.getElementById(`simc-ac-${speaker}`);
-  if (acEl) acEl.textContent = action;
+function updateAgentCard(speaker, meta, promptTokens, tokenLimit, preview) {
+  Object.entries(meta || {}).forEach(([field, value]) => {
+    const el = document.getElementById(`simc-meta-${field}-${speaker}`);
+    if (!el) return;
+    el.textContent = value;
+    if (field === 'emotion') {
+      el.className = `sim-feed-badge ${emotionClass(String(value))}`;
+    }
+  });
 
-  const memEl = document.getElementById(`simc-mem-${speaker}`);
-  if (memEl) memEl.style.width = `${Math.min(100, (memorySize / sim.memory_limit) * 100)}%`;
+  if (promptTokens && tokenLimit) {
+    const pct = Math.min(100, (promptTokens / tokenLimit) * 100);
+    const barEl  = document.getElementById(`simc-tok-${speaker}`);
+    const lblEl  = document.getElementById(`simc-tokl-${speaker}`);
+    if (barEl) {
+      barEl.style.width = `${pct}%`;
+      barEl.className   = `sim-card-token-bar-fill${pct >= 90 ? ' danger' : pct >= 70 ? ' warn' : ''}`;
+    }
+    if (lblEl) lblEl.textContent = `${_fmtK(promptTokens)} / ${_fmtK(tokenLimit)}`;
+  }
 
   const preEl = document.getElementById(`simc-pre-${speaker}`);
   if (preEl && preview) preEl.textContent = preview.slice(0, 42);
@@ -238,16 +397,20 @@ function addFeedMessage(data) {
     : '(독백)';
   const el = document.createElement('div');
   el.className = 'sim-feed-msg';
+  const meta = data.meta || {};
+  const metaBadges = Object.entries(meta).map(([k, v]) =>
+    `<span class="sim-feed-badge ${k === 'emotion' ? emotionClass(String(v)) : 'emotion-neutral'}">${esc(String(v))}</span>`
+  ).join('');
+
+  const actionNote = data.action_note || '';
   el.innerHTML = `
     <div class="sim-feed-header">
       <span class="sim-feed-speaker">${esc(agent.icon)} ${esc(agent.name)}</span>
       <span class="sim-feed-target">${esc(targetStr)}</span>
     </div>
     <div class="sim-feed-bubble">${esc(data.content)}</div>
-    <div class="sim-feed-meta">
-      <span class="sim-feed-badge ${emotionClass(data.emotion)}">${esc(data.emotion)}</span>
-      <span class="sim-feed-badge emotion-neutral">${esc(data.action)}</span>
-    </div>
+    ${actionNote ? `<div class="sim-feed-action">*${esc(actionNote)}*</div>` : ''}
+    ${metaBadges ? `<div class="sim-feed-meta">${metaBadges}</div>` : ''}
     ${data.reasoning_preview
       ? `<div class="sim-feed-thinking">🧠 ${esc(data.reasoning_preview)}...</div>`
       : ''}
@@ -272,11 +435,8 @@ function connectSSE() {
 
   es.addEventListener('wave_start', e => {
     const d = JSON.parse(e.data);
-    // 이전 wave typing 인디케이터 전체 제거
     removeTypingIndicator();
-    // 이전 speaking 상태 초기화
     document.querySelectorAll('.sim-agent-card').forEach(c => c.classList.remove('speaking'));
-    // 이번 wave 에이전트 하이라이트
     d.agents.forEach(name => {
       document.getElementById(`simc-${name}`)?.classList.add('speaking');
     });
@@ -291,10 +451,9 @@ function connectSSE() {
   es.addEventListener('turn_complete', e => {
     const d = JSON.parse(e.data);
     addFeedMessage(d);
-    updateAgentCard(d.speaker, d.emotion, d.action, d.memory_size, d.content);
-    d.new_edges?.forEach(edge => addD3Edge(edge.source, edge.target, edge.emotion));
+    updateAgentCard(d.speaker, d.meta || {}, d.prompt_tokens, d.token_limit, d.content);
+    d.new_edges?.forEach(edge => addD3Edge(edge.source, edge.target, edge.emotion || (edge.meta || {}).emotion || 'neutral'));
     document.getElementById(`simc-${d.speaker}`)?.classList.remove('speaking');
-    // context 탭이 열려 있고 이 발화자가 선택된 경우 자동 갱신
     if (sim.selectedAgent === d.speaker && !document.getElementById('sim-tab-context').classList.contains('sim-hidden')) {
       fetchAgentContext(d.speaker);
     }
@@ -360,13 +519,15 @@ async function startSimulation() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      agents:       sim.agents,
-      background:   sim.background,
-      start_agent:  sim.start_agent,
-      max_waves:    sim.max_waves,
-      step_delay:   sim.step_delay,
-      memory_limit: sim.memory_limit,
-      events:       sim.events,
+      agents:                 sim.agents,
+      background:             sim.background,
+      start_agent:            sim.start_agent,
+      max_waves:              sim.max_waves,
+      step_delay:             sim.step_delay,
+      token_limit:            sim.token_limit,
+      extra_fields:           sim.extra_fields,
+      events:                 sim.events,
+      output_format_template: sim.output_format_template || '',
     }),
   });
 
@@ -418,41 +579,84 @@ async function saveScenario() {
   if (!name) { nameEl.focus(); nameEl.style.borderColor = '#ef4444'; return; }
   nameEl.style.borderColor = '';
 
-  const res = await fetch('/api/simulation/scenarios', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      name,
-      description: '',
-      config: {
-        agents:       sim.agents,
-        background:   sim.background,
-        start_agent:  sim.start_agent,
-        max_waves:    sim.max_waves,
-        step_delay:   sim.step_delay,
-        memory_limit: sim.memory_limit,
-        events:       sim.events,
-      },
-    }),
-  });
+  const payload = {
+    name,
+    description: '',
+    config: {
+      agents:                 sim.agents,
+      background:             sim.background,
+      start_agent:            sim.start_agent,
+      max_waves:              sim.max_waves,
+      step_delay:             sim.step_delay,
+      token_limit:            sim.token_limit,
+      extra_fields:           sim.extra_fields,
+      events:                 sim.events,
+      output_format_template: sim.output_format_template || '',
+    },
+  };
+
+  let res;
+  if (sim.currentScenarioId) {
+    res = await fetch(`/api/simulation/scenarios/${sim.currentScenarioId}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } else {
+    res = await fetch('/api/simulation/scenarios', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      sim.currentScenarioId = data.id;
+    }
+  }
 
   if (res.ok) {
-    nameEl.value = '';
+    sim.currentScenarioName = name;
+    const delBtn = document.getElementById('sim-delete-scenario-btn');
+    if (delBtn) delBtn.disabled = false;
     await loadScenarios();
+    const btn = document.getElementById('sim-save-scenario-btn');
+    const orig = btn.textContent;
+    btn.textContent = '✓ 저장됨';
+    btn.style.color = '#15803d';
+    setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 1500);
   }
+}
+
+async function deleteScenario() {
+  if (!sim.currentScenarioId) return;
+  if (!confirm(`시나리오 "${sim.currentScenarioName}"을(를) 삭제하시겠습니까?`)) return;
+  await fetch(`/api/simulation/scenarios/${sim.currentScenarioId}`, { method: 'DELETE' });
+  sim.currentScenarioId   = null;
+  sim.currentScenarioName = '';
+  document.getElementById('sim-scenario-name').value = '';
+  const delBtn = document.getElementById('sim-delete-scenario-btn');
+  if (delBtn) delBtn.disabled = true;
+  await loadScenarios();
 }
 
 function applyScenario(s) {
   const cfg = s.config;
+  sim.currentScenarioId   = s.id;
+  sim.currentScenarioName = s.name;
   sim.agents       = cfg.agents       || [];
   sim.background   = cfg.background   || '';
   sim.start_agent  = cfg.start_agent  || (cfg.agents?.[0]?.name ?? '');
   sim.max_waves    = cfg.max_waves    || 10;
   sim.step_delay   = cfg.step_delay   || 1.0;
-  sim.memory_limit = cfg.memory_limit || 20;
-  sim.events       = cfg.events       || [];
-  renderConfigPanel();
-  renderAgentCards();
+  // Migrate legacy memory_limit (message count) to token_limit.
+  // Old default was 20 messages; ~400 tokens/message is a reasonable estimate.
+  sim.token_limit  = cfg.token_limit ?? (cfg.memory_limit ? cfg.memory_limit * 400 : 8192);
+  sim.extra_fields = cfg.extra_fields || [
+    { name: 'emotion', default: 'neutral' },
+    { name: 'action',  default: 'speak'   },
+  ];
+  sim.events                 = cfg.events                 || [];
+  sim.output_format_template = cfg.output_format_template || '';
+  _expandedAgents.clear();
+  renderSettingsPage();
 }
 
 // ── D3 Force Graph ─────────────────────────────────────────────────────────────
@@ -581,7 +785,6 @@ function renderScenarioEvents() {
   const list = document.getElementById('sim-events-list');
   list.innerHTML = '';
 
-  // wave 순으로 정렬 후 렌더링
   const sorted = sim.events
     .map((e, i) => ({ ...e, _i: i }))
     .sort((a, b) => a.wave - b.wave);
@@ -591,7 +794,6 @@ function renderScenarioEvents() {
     const row = document.createElement('div');
     row.className = 'sim-event-row';
 
-    // 에이전트 등장/퇴장용 선택 목록
     const agentOptions = sim.agents
       .map(a => `<option value="${esc(a.name)}" ${a.name === ev.agent ? 'selected' : ''}>${esc(a.icon)} ${esc(a.name)}</option>`)
       .join('');
@@ -631,11 +833,10 @@ function renderScenarioEvents() {
     list.appendChild(row);
   });
 
-  // 입력 이벤트
   list.querySelectorAll('[data-field]').forEach(el => {
     el.addEventListener('change', () => syncEventField(el));
     el.addEventListener('input',  () => {
-      if (el.dataset.field === 'type') syncEventField(el); // type 변경 시 즉시 재렌더
+      if (el.dataset.field === 'type') syncEventField(el);
     });
   });
   list.querySelectorAll('.sim-event-del').forEach(el => {
@@ -653,7 +854,7 @@ function syncEventField(el) {
     sim.events[idx].wave = parseInt(el.value) || 0;
   } else if (field === 'type') {
     sim.events[idx].type = el.value;
-    renderScenarioEvents(); // 필드 구성이 달라지므로 재렌더
+    renderScenarioEvents();
   } else if (field === 'targets_str') {
     sim.events[idx].targets = el.value.split(',').map(s => s.trim()).filter(Boolean);
     if (!sim.events[idx].targets.length) sim.events[idx].targets = ['all'];
@@ -664,7 +865,7 @@ function syncEventField(el) {
 
 function addSceneEventToFeed(d) {
   removeFeedEmpty();
-  const icons = { system_message: '📢', agent_enter: '🎭', agent_exit: '🚪' };
+  const icons  = { system_message: '📢', agent_enter: '🎭', agent_exit: '🚪' };
   const labels = { system_message: '시스템', agent_enter: '등장', agent_exit: '퇴장' };
   const icon  = icons[d.event_type]  || '📌';
   const label = labels[d.event_type] || d.event_type;
@@ -690,7 +891,6 @@ function switchTab(tabName) {
   document.getElementById('sim-tab-graph').classList.toggle('sim-hidden', tabName !== 'graph');
   document.getElementById('sim-tab-context').classList.toggle('sim-hidden', tabName !== 'context');
   document.getElementById('sim-export-graph-btn').classList.toggle('sim-hidden', tabName !== 'graph');
-  // 컨텍스트 탭으로 전환할 때 항상 최신 상태로 갱신
   if (tabName === 'context' && sim.selectedAgent && sim.status !== 'idle') {
     fetchAgentContext(sim.selectedAgent);
   }
@@ -701,7 +901,9 @@ async function openAgentContext(name) {
   sim.selectedAgent = name;
   switchTab('context');
   const a = sim.agents.find(ag => ag.name === name);
-  const label = a ? `${a.icon} ${a.display_name || a.name}${a.display_name ? ` (${a.name})` : ''}` : `🤖 ${name}`;
+  const label = a
+    ? `${a.icon} ${a.display_name || a.name}${a.display_name ? ` (${a.name})` : ''}`
+    : `🤖 ${name}`;
   document.getElementById('sim-context-agent-name').textContent = label;
   document.getElementById('sim-context-refresh-btn').classList.remove('sim-hidden');
   await fetchAgentContext(name);
@@ -717,20 +919,39 @@ async function fetchAgentContext(name) {
       return;
     }
     const data = await res.json();
-    renderContextMessages(data.messages, data.trimmed || 0);
+    renderContextMessages(data.messages, data.trimmed || 0, data.prompt_tokens || 0, data.token_limit || 0);
   } catch (e) {
     msgs.innerHTML = `<div style="padding:12px;font-size:11px;color:#ef4444;">오류: ${esc(String(e))}</div>`;
   }
 }
 
-function renderContextMessages(messages, trimmed = 0) {
+function renderContextMessages(messages, trimmed = 0, promptTokens = 0, tokenLimit = 0) {
   const container = document.getElementById('sim-context-msgs');
   container.innerHTML = '';
 
-  if (trimmed > 0) {
+  // Token usage bar
+  if (tokenLimit > 0) {
+    const pct = Math.min(100, (promptTokens / tokenLimit) * 100);
+    const bar = document.createElement('div');
+    bar.className = 'ctx-token-banner';
+    bar.innerHTML = `
+      <div class="ctx-token-info">
+        <span class="ctx-token-used">${promptTokens.toLocaleString()}</span>
+        <span class="ctx-token-sep">/</span>
+        <span class="ctx-token-limit">${tokenLimit.toLocaleString()} 토큰</span>
+        <span class="ctx-token-pct ${pct >= 90 ? 'danger' : pct >= 70 ? 'warn' : ''}">(${pct.toFixed(1)}%)</span>
+        ${trimmed > 0 ? `<span class="ctx-trim-badge">⚠ ${trimmed}개 제거됨</span>` : ''}
+      </div>
+      <div class="ctx-token-bar-wrap">
+        <div class="ctx-token-bar-fill ${pct >= 90 ? 'danger' : pct >= 70 ? 'warn' : ''}"
+             style="width:${pct}%"></div>
+      </div>
+    `;
+    container.appendChild(bar);
+  } else if (trimmed > 0) {
     const warn = document.createElement('div');
     warn.className = 'ctx-trim-warning';
-    warn.textContent = `⚠ 메모리 한도 초과: 이전 ${trimmed}개 메시지가 제거되었습니다 (시나리오 피드에는 전체 기록이 남아있음)`;
+    warn.textContent = `⚠ 이전 ${trimmed}개 메시지가 토큰 한도 초과로 제거되었습니다`;
     container.appendChild(warn);
   }
 
@@ -777,12 +998,20 @@ function renderContextMessages(messages, trimmed = 0) {
 
       if (parsed) {
         const tgt = Array.isArray(parsed.target) ? parsed.target.join(', ') : (parsed.target ?? '');
+        const ctxActionNote = parsed.action_note || '';
+        const metaBadges = sim.extra_fields
+          .filter(f => f.name !== 'action_note' && parsed[f.name] != null)
+          .map(f => {
+            const val = String(parsed[f.name]);
+            const cls = f.name === 'emotion' ? emotionClass(val) : 'emotion-neutral';
+            return `<span class="sim-feed-badge ${cls}">${esc(val)}</span>`;
+          }).join('');
         div.innerHTML = `
           <div class="ctx-role ctx-role-assistant">assistant</div>
           <div class="ctx-parsed-content">"${esc(parsed.content ?? '')}"</div>
+          ${ctxActionNote ? `<div class="sim-feed-action">*${esc(ctxActionNote)}*</div>` : ''}
           <div class="ctx-parsed-meta">
-            <span class="sim-feed-badge ${emotionClass(parsed.emotion)}">${esc(parsed.emotion ?? '')}</span>
-            <span class="sim-feed-badge emotion-neutral">${esc(parsed.action ?? '')}</span>
+            ${metaBadges}
             <span class="ctx-targets">→ ${esc(tgt || 'system')}</span>
           </div>`;
       } else {
@@ -795,21 +1024,15 @@ function renderContextMessages(messages, trimmed = 0) {
     container.appendChild(div);
   });
 
-  // 마지막 메시지로 스크롤
   container.lastElementChild?.scrollIntoView({ block: 'end' });
 }
 
 // ── Panel resize ──────────────────────────────────────────────────────────────
 function initResizeHandles() {
   setupResize(
-    document.getElementById('sim-resize-l'),
-    document.getElementById('sim-config'),
-    'right'   // 오른쪽으로 드래그 → config 패널 확장
-  );
-  setupResize(
     document.getElementById('sim-resize-r'),
     document.getElementById('sim-graph-panel'),
-    'left'    // 왼쪽으로 드래그 → 우측 패널 확장
+    'left'
   );
 }
 
@@ -818,7 +1041,7 @@ function setupResize(handle, panel, growDir) {
     const startX = e.clientX;
     const startW = panel.offsetWidth;
     handle.classList.add('dragging');
-    document.body.style.cursor    = 'col-resize';
+    document.body.style.cursor     = 'col-resize';
     document.body.style.userSelect = 'none';
 
     const onMove = ev => {
@@ -829,7 +1052,7 @@ function setupResize(handle, panel, growDir) {
     };
     const onUp = () => {
       handle.classList.remove('dragging');
-      document.body.style.cursor    = '';
+      document.body.style.cursor     = '';
       document.body.style.userSelect = '';
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup',   onUp);
@@ -844,28 +1067,40 @@ function setupResize(handle, panel, growDir) {
 export function initSimulationEvents() {
   document.getElementById('sim-btn').addEventListener('click', showSimView);
   document.getElementById('sim-back-btn').addEventListener('click', hideSimView);
+  document.getElementById('sim-settings-btn').addEventListener('click', showSettingsView);
+  document.getElementById('sim-settings-back-btn').addEventListener('click', hideSettingsView);
   document.getElementById('sim-start-btn').addEventListener('click', startSimulation);
   document.getElementById('sim-stop-btn').addEventListener('click', stopSimulation);
   document.getElementById('sim-save-scenario-btn').addEventListener('click', saveScenario);
+  document.getElementById('sim-delete-scenario-btn').addEventListener('click', deleteScenario);
   document.getElementById('sim-export-graph-btn').addEventListener('click', exportGraph);
 
-  // 시나리오 이벤트 추가
+  document.getElementById('sim-add-agent-btn').addEventListener('click', () => {
+    const newName = `agent${sim.agents.length + 1}`;
+    sim.agents.push({ name: newName, display_name: '', icon: '🤖', system_prompt: '', initial_active: true });
+    _expandedAgents.add(newName);
+    renderAgentListInConfig();
+    renderStartAgentSelect();
+  });
+
+  document.getElementById('sim-add-field-btn').addEventListener('click', () => {
+    sim.extra_fields.push({ name: '', default: '' });
+    renderOutputFields();
+  });
+
   document.getElementById('sim-add-event-btn').addEventListener('click', () => {
     sim.events.push({ wave: 1, type: 'system_message', message: '', targets: ['all'], agent: '' });
     renderScenarioEvents();
   });
 
-  // 탭 전환
   document.querySelectorAll('.sim-tab').forEach(btn => {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
   });
 
-  // context refresh
   document.getElementById('sim-context-refresh-btn').addEventListener('click', () => {
     if (sim.selectedAgent) fetchAgentContext(sim.selectedAgent);
   });
 
-  // resize handles
   initResizeHandles();
 
   document.getElementById('sim-start-agent').addEventListener('change', e => {
@@ -875,5 +1110,17 @@ export function initSimulationEvents() {
   document.getElementById('sim-scenario-select').addEventListener('change', e => {
     const found = sim.scenarios.find(s => s.id === e.target.value);
     if (found) { applyScenario(found); e.target.value = ''; }
+  });
+
+  document.getElementById('sim-reset-format-btn').addEventListener('click', async () => {
+    try {
+      const res = await fetch('/api/simulation/default-output-format');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      document.getElementById('sim-output-format').value = data.template;
+      sim.output_format_template = data.template;
+    } catch (e) {
+      console.error('[sim] 기본 출력 포맷 불러오기 실패:', e);
+    }
   });
 }
