@@ -1,0 +1,134 @@
+"""SQLite schema DDL and lightweight migrations for the ABM database."""
+
+import sqlite3
+
+SCHEMA = """
+PRAGMA journal_mode=WAL;
+
+CREATE TABLE IF NOT EXISTS messages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    sim_id      TEXT    NOT NULL,
+    agent_key   TEXT    NOT NULL,
+    role        TEXT    NOT NULL,
+    content     TEXT    NOT NULL,
+    wave        INTEGER,
+    token_est   INTEGER,
+    created_at  REAL    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS episodic_memory (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    sim_id       TEXT    NOT NULL,
+    agent_key    TEXT    NOT NULL,
+    wave         INTEGER,
+    event        TEXT    NOT NULL,
+    participants TEXT,
+    importance   INTEGER DEFAULT 3,
+    created_at   REAL    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS semantic_memory (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    sim_id          TEXT    NOT NULL,
+    agent_key       TEXT    NOT NULL,
+    fact            TEXT    NOT NULL,
+    confidence      REAL    NOT NULL DEFAULT 1.0,
+    source_wave     INTEGER,
+    prev_fact       TEXT,
+    prev_confidence REAL,
+    updated_at      REAL    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS relationship_memory (
+    sim_id       TEXT    NOT NULL,
+    agent_key    TEXT    NOT NULL,
+    target_key   TEXT    NOT NULL,
+    stance       TEXT,
+    reason       TEXT,
+    updated_wave INTEGER,
+    updated_at   REAL    NOT NULL,
+    PRIMARY KEY (sim_id, agent_key, target_key)
+);
+
+CREATE TABLE IF NOT EXISTS relationship_history (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    sim_id      TEXT    NOT NULL,
+    agent_key   TEXT    NOT NULL,
+    target_key  TEXT    NOT NULL,
+    stance      TEXT,
+    reason      TEXT,
+    wave        INTEGER,
+    created_at  REAL    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_self_state (
+    sim_id       TEXT    NOT NULL,
+    agent_key    TEXT    NOT NULL,
+    description  TEXT    NOT NULL,
+    updated_wave INTEGER,
+    updated_at   REAL    NOT NULL,
+    PRIMARY KEY (sim_id, agent_key)
+);
+
+CREATE TABLE IF NOT EXISTS compression_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    sim_id      TEXT    NOT NULL,
+    agent_key   TEXT    NOT NULL,
+    msg_count   INTEGER,
+    wave        INTEGER,
+    created_at  REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_msg_sim_agent  ON messages(sim_id, agent_key);
+CREATE INDEX IF NOT EXISTS idx_ep_sim_agent   ON episodic_memory(sim_id, agent_key);
+CREATE INDEX IF NOT EXISTS idx_sem_sim_agent  ON semantic_memory(sim_id, agent_key);
+CREATE INDEX IF NOT EXISTS idx_rel_sim_agent  ON relationship_memory(sim_id, agent_key);
+
+CREATE TABLE IF NOT EXISTS simulation_runs (
+    run_id        TEXT    PRIMARY KEY,
+    scenario_id   TEXT,
+    scenario_name TEXT,
+    run_number    INTEGER DEFAULT 1,
+    status        TEXT    DEFAULT 'running',
+    total_waves   INTEGER DEFAULT 0,
+    total_turns   INTEGER DEFAULT 0,
+    started_at    REAL    NOT NULL,
+    finished_at   REAL,
+    config_json   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_runs_scenario ON simulation_runs(scenario_id);
+
+CREATE TABLE IF NOT EXISTS simulation_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id       TEXT    NOT NULL,
+    wave         INTEGER NOT NULL DEFAULT 0,
+    turn         INTEGER NOT NULL DEFAULT 0,
+    speaker      TEXT    NOT NULL,
+    content      TEXT    NOT NULL,
+    action_note  TEXT    NOT NULL DEFAULT '',
+    meta_json    TEXT    NOT NULL DEFAULT '{}',
+    targets_json TEXT    NOT NULL DEFAULT '[]',
+    timestamp    REAL    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_simlog_run ON simulation_log(run_id, id);
+
+CREATE TABLE IF NOT EXISTS agent_snapshots (
+    run_id      TEXT NOT NULL,
+    agent_key   TEXT NOT NULL,
+    memory_json TEXT NOT NULL,
+    PRIMARY KEY (run_id, agent_key)
+);
+CREATE INDEX IF NOT EXISTS idx_snapshots_run ON agent_snapshots(run_id);
+"""
+
+
+def migrate(conn: sqlite3.Connection) -> None:
+    """Apply additive column migrations on simulation_runs."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(simulation_runs)").fetchall()}
+    for col, ddl in [
+        ("active_agents_json", "ALTER TABLE simulation_runs ADD COLUMN active_agents_json TEXT"),
+        ("pending_wave_json",  "ALTER TABLE simulation_runs ADD COLUMN pending_wave_json TEXT"),
+    ]:
+        if col not in cols:
+            conn.execute(ddl)
+    conn.commit()

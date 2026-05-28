@@ -2,17 +2,13 @@ import json
 import logging
 import re
 
+from .constants import DEFAULT_EXTRA_FIELDS as _DEFAULT_EXTRA_FIELDS
+
 logger = logging.getLogger(__name__)
 
 # Matches a response that is entirely wrapped in a markdown code fence.
 # Anchored to start/end so triple-backticks inside JSON content don't trigger this.
 _CODE_FENCE_RE = re.compile(r'^\s*```(?:json)?\s*\n?([\s\S]*?)\n?```\s*$')
-
-_DEFAULT_EXTRA_FIELDS = [
-    {"name": "emotion",     "default": "neutral"},
-    {"name": "action",      "default": "speak"},
-    {"name": "action_note", "default": ""},
-]
 
 
 def parse_json_response(

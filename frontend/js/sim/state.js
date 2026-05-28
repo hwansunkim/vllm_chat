@@ -1,0 +1,52 @@
+// frontend/js/sim/state.js
+// Shared simulation state and pure helpers (no module imports — avoid cycles).
+
+export const sim = {
+  status:              'idle',
+  selectedAgent:       null,
+  currentScenarioId:   null,
+  currentScenarioName: '',
+  agents:       [],
+  background:   '',
+  start_agent:  '',
+  max_waves:    10,
+  step_delay:   1.0,
+  token_limit:  8192,
+  extra_fields: [
+    { name: 'emotion', default: 'neutral' },
+    { name: 'action',  default: 'speak'   },
+  ],
+  events:       [],
+  output_format_template: '',
+  eventSource:  null,
+  scenarios:    [],
+};
+
+// Accordion expand state (keyed by agent.name)
+export const _expandedAgents = new Set();
+
+// ── Emotion helpers ───────────────────────────────────────────────────────────
+export const EMOTION_COLORS = {
+  angry: '#ef4444', happy: '#22c55e', neutral: '#94a3b8',
+  sad: '#3b82f6', fear: '#f97316',
+};
+const EMOTION_CLASS = ['angry', 'happy', 'neutral', 'sad', 'fear'];
+
+export function emotionColor(e) { return EMOTION_COLORS[e] || '#a78bfa'; }
+export function emotionClass(e) { return EMOTION_CLASS.includes(e) ? `emotion-${e}` : 'emotion-neutral'; }
+
+// ── HTML escape (kept here for zero-dependency module access) ─────────────────
+export function esc(str) {
+  if (str == null) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// ── Misc small helpers ────────────────────────────────────────────────────────
+export function fmtK(n) {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}

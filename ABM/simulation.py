@@ -98,7 +98,7 @@ class Simulation:
         """발화 target 해석 — active_agents 기준."""
         resolved = []
         for t in targets:
-            if t.lower() == "all":
+            if t.strip().lower() == "all":
                 resolved.extend(k for k in self.active_agents if k != speaker_key)
             else:
                 key = self._normalize_target(t)
@@ -108,7 +108,7 @@ class Simulation:
 
     def _resolve_event_targets(self, targets: list[str]) -> list[str]:
         """이벤트 알림 대상 해석 — active_agents 기준 (speaker 제한 없음)."""
-        if any(t.lower() == "all" for t in targets):
+        if any(t.strip().lower() == "all" for t in targets):
             return list(self.active_agents)
         resolved = []
         for t in targets:
@@ -174,6 +174,7 @@ class Simulation:
                 logger.warning(f"agent_exit: '{agent_key}'는 활성 에이전트가 아님")
                 return result
             self.active_agents.discard(agent_key)
+            self._pending_wave.pop(agent_key, None)
             exit_msg = message or f"{agent_key}이(가) 퇴장했다."
             for name in self._resolve_event_targets(targets):
                 self.agents[name].add_to_memory({
@@ -217,22 +218,15 @@ class Simulation:
             logger.warning(f"[{agent_key}] 압축 실패 — 기존 메모리 유지, 강제 트림으로 폴백")
 
     # ------------------------------------------------------------------
-    # 에이전트 단일 스텝
+    # 에이전트 단일 스텝 — _step_agent decomposed into helpers
     # ------------------------------------------------------------------
 
-    def _step_agent(
-        self,
-        agent_key: str,
-        wave: int,
-        turn: int,
-        incoming: list[dict],
-    ) -> dict:
-        """단일 에이전트 한 스텝. 결과 dict 반환."""
-        if self._stop_event.is_set():
-            return {"success": False, "agent_key": agent_key}
+    def _inject_incoming(self, agent: Agent, incoming: list[dict]) -> list[dict]:
+        """Inject incoming utterances into the agent's memory.
 
-        active_agent = self.agents[agent_key]
-
+        Returns the list of formatted user messages that were appended, so the
+        caller can pop them on LLM failure to keep memory clean for retries.
+        """
         incoming_msgs = [
             {
                 "role": "user",
@@ -244,71 +238,82 @@ class Simulation:
             for msg in incoming
         ]
         for msg in incoming_msgs:
-            active_agent.add_to_memory(msg)
+            agent.add_to_memory(msg)
+        return incoming_msgs
 
-        other_agents = [k for k in self.active_agents if k != agent_key]
-
-        # Compression check — runs before trimming so memories are structured, not discarded.
+    def _maybe_compress(
+        self,
+        agent: Agent,
+        agent_key: str,
+        wave: int,
+        other_agents: list[str],
+    ) -> None:
+        """Trigger structured-memory compression if context is approaching the token limit."""
         if (
-            self._db is not None
-            and self._sim_id is not None
-            and len(active_agent.memory) >= _COMPRESSION_MIN_MSGS
+            self._db is None
+            or self._sim_id is None
+            or len(agent.memory) < _COMPRESSION_MIN_MSGS
         ):
-            est = active_agent.estimate_context_tokens(
-                self.background_log, other_agents, self._key_to_alias
-            )
-            if est / active_agent._token_limit >= _COMPRESSION_THRESHOLD:
-                self._compress_agent(active_agent, agent_key, turn)
+            return
+        est = agent.estimate_context_tokens(self.background_log, other_agents, self._key_to_alias)
+        if est / agent._token_limit >= _COMPRESSION_THRESHOLD:
+            self._compress_agent(agent, agent_key, wave)
 
-        # Trim memory to fit within token limit before building the final prompt
-        active_agent.trim_to_token_limit(self.background_log, other_agents, self._key_to_alias)
-        est_tokens    = active_agent.estimate_context_tokens(self.background_log, other_agents, self._key_to_alias)
+    def _call_llm_for_agent(
+        self,
+        agent: Agent,
+        agent_key: str,
+    ) -> tuple[str | None, str, dict, str | None]:
+        """Invoke the LLM for an agent. Returns (content, reasoning, usage, error).
 
-        self._emit("turn_start", {
-            "turn":            turn,
-            "wave":            wave,
-            "speaker":         agent_key,
-            "memory_size":     len(active_agent.memory),
-            "est_tokens":      est_tokens,
-            "token_limit":     active_agent._token_limit,
-        })
-
-        call_messages = active_agent.build_messages(self.background_log, other_agents, self._key_to_alias)
-
+        On success `error` is None. On failure `content` is None and `error`
+        carries a short reason ("exception:..." or "empty"). The caller is
+        responsible for popping injected memory entries and emitting events.
+        """
+        other_agents = [k for k in self.active_agents if k != agent_key]
+        call_messages = agent.build_messages(self.background_log, other_agents, self._key_to_alias)
         try:
             content, reasoning, usage = chat_response(
                 call_messages, self.model, self.base_url, self.api_timeout
             )
         except Exception as e:
-            logger.error(f"응답 생성 실패 ({active_agent.name}): {e}")
-            self._emit("turn_error", {"turn": turn, "speaker": agent_key, "error": str(e)})
-            for _ in incoming_msgs:
-                if active_agent.memory and active_agent.memory[-1]["role"] == "user":
-                    active_agent.memory.pop()
-            return {"success": False, "agent_key": agent_key}
+            logger.error(f"응답 생성 실패 ({agent.name}): {e}")
+            return None, "", {}, f"exception:{e}"
 
         if not content:
-            logger.warning(f"빈 응답 ({active_agent.name}), turn={turn}")
-            self._emit("turn_error", {"turn": turn, "speaker": agent_key, "error": "empty response"})
-            for _ in incoming_msgs:
-                if active_agent.memory and active_agent.memory[-1]["role"] == "user":
-                    active_agent.memory.pop()
-            return {"success": False, "agent_key": agent_key}
+            logger.warning(f"빈 응답 ({agent.name})")
+            return None, reasoning or "", usage or {}, "empty"
 
-        # Record actual prompt tokens from server response
+        return content, reasoning, usage, None
+
+    def _apply_turn_result(
+        self,
+        agent: Agent,
+        agent_key: str,
+        raw_content: str,
+        reasoning: str,
+        usage: dict,
+        wave: int,
+        turn: int,
+        est_tokens: int,
+    ) -> dict:
+        """Parse the LLM response, update memory/log/edges, emit events, persist to DB.
+
+        Returns the per-turn result dict used by the wave coordinator.
+        """
         prompt_tokens = usage.get("prompt_tokens", est_tokens)
-        active_agent._last_prompt_tokens = prompt_tokens
+        agent._last_prompt_tokens = prompt_tokens
 
-        clean_content, meta, parsed_targets = parse_json_response(content, active_agent._extra_fields)
+        clean_content, meta, parsed_targets = parse_json_response(raw_content, agent._extra_fields)
 
-        active_agent.add_to_memory({"role": "assistant", "content": content})
-        active_agent.add_to_log(
+        agent.add_to_memory({"role": "assistant", "content": raw_content})
+        agent.add_to_log(
             content=clean_content, reasoning=reasoning,
             extra=meta, targets=parsed_targets,
         )
 
         self.shared_log.append({
-            "speaker":   active_agent.name,
+            "speaker":   agent.name,
             "content":   clean_content,
             "meta":      dict(meta),
             "targets":   parsed_targets,
@@ -322,7 +327,7 @@ class Simulation:
         new_edges = []
         for target_name in self._resolve_targets(parsed_targets, agent_key):
             edge = {
-                "source":    active_agent.name,
+                "source":    agent.name,
                 "target":    target_name,
                 "emotion":   emotion_val,
                 "meta":      dict(meta),
@@ -336,14 +341,14 @@ class Simulation:
         self._emit("turn_complete", {
             "turn":              turn,
             "wave":              wave,
-            "speaker":           active_agent.name,
+            "speaker":           agent.name,
             "targets":           parsed_targets,
             "content":           clean_content,
             "action_note":       meta.get("action_note", ""),
             "meta":              emit_meta,
-            "memory_size":       len(active_agent.memory),
+            "memory_size":       len(agent.memory),
             "prompt_tokens":     prompt_tokens,
-            "token_limit":       active_agent._token_limit,
+            "token_limit":       agent._token_limit,
             "reasoning_preview": reasoning[:120] if reasoning else "",
             "new_edges":         new_edges,
         })
@@ -351,7 +356,7 @@ class Simulation:
         if self._db is not None and self._sim_id is not None:
             self._db.log_turn(
                 self._sim_id, wave, turn,
-                active_agent.name, clean_content,
+                agent.name, clean_content,
                 meta.get("action_note", ""),
                 emit_meta, parsed_targets,
             )
@@ -363,6 +368,66 @@ class Simulation:
             "action_note":   meta.get("action_note", ""),
             "targets":       parsed_targets,
         }
+
+    def _rollback_incoming(self, agent: Agent, incoming_msgs: list[dict]) -> None:
+        """Pop the just-injected incoming messages off the agent's memory tail.
+
+        Used after an LLM failure so a future retry doesn't double-consume the same input.
+        """
+        for _ in incoming_msgs:
+            if agent.memory and agent.memory[-1]["role"] == "user":
+                agent.memory.pop()
+
+    def _step_agent(
+        self,
+        agent_key: str,
+        wave: int,
+        turn: int,
+        incoming: list[dict],
+    ) -> dict:
+        """단일 에이전트 한 스텝. 결과 dict 반환.
+
+        Coordinator: inject -> (compress?) -> trim -> emit start -> call LLM
+                     -> on failure rollback, on success apply result.
+        """
+        if self._stop_event.is_set():
+            return {"success": False, "agent_key": agent_key}
+
+        active_agent = self.agents[agent_key]
+        incoming_msgs = self._inject_incoming(active_agent, incoming)
+        other_agents  = [k for k in self.active_agents if k != agent_key]
+
+        # Compression runs before trimming so memories are structured, not discarded.
+        self._maybe_compress(active_agent, agent_key, wave, other_agents)
+
+        # Trim memory to fit within token limit before building the final prompt.
+        active_agent.trim_to_token_limit(self.background_log, other_agents, self._key_to_alias)
+        est_tokens = active_agent.estimate_context_tokens(
+            self.background_log, other_agents, self._key_to_alias
+        )
+
+        self._emit("turn_start", {
+            "turn":        turn,
+            "wave":        wave,
+            "speaker":     agent_key,
+            "memory_size": len(active_agent.memory),
+            "est_tokens":  est_tokens,
+            "token_limit": active_agent._token_limit,
+        })
+
+        content, reasoning, usage, error = self._call_llm_for_agent(active_agent, agent_key)
+        if error is not None:
+            self._emit("turn_error", {
+                "turn":    turn,
+                "speaker": agent_key,
+                "error":   "empty response" if error == "empty" else error.split(":", 1)[-1],
+            })
+            self._rollback_incoming(active_agent, incoming_msgs)
+            return {"success": False, "agent_key": agent_key}
+
+        return self._apply_turn_result(
+            active_agent, agent_key, content, reasoning, usage, wave, turn, est_tokens,
+        )
 
     # ------------------------------------------------------------------
     # 시뮬레이션 실행

@@ -4,16 +4,11 @@ import os
 import logging
 from datetime import datetime
 from .config import TOKEN_LIMIT
+from .constants import DEFAULT_EXTRA_FIELDS as _DEFAULT_EXTRA_FIELDS
 
 logger = logging.getLogger(__name__)
 
 _RESERVED_LOG_KEYS = frozenset({"timestamp", "datetime_str", "content", "reasoning", "targets"})
-
-_DEFAULT_EXTRA_FIELDS = [
-    {"name": "emotion",     "default": "neutral"},
-    {"name": "action",      "default": "speak"},
-    {"name": "action_note", "default": ""},
-]
 
 DEFAULT_OUTPUT_FORMAT_TEMPLATE = """
 
