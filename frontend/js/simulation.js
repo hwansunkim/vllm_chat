@@ -519,6 +519,7 @@ async function startSimulation() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      scenario_id:            sim.currentScenarioId || null,
       agents:                 sim.agents,
       background:             sim.background,
       start_agent:            sim.start_agent,
@@ -570,6 +571,9 @@ async function loadScenarios() {
     opt.textContent = s.name;
     sel.appendChild(opt);
   });
+  // 현재 시나리오가 로드된 상태면 이력 버튼 활성화
+  const histBtn = document.getElementById('sim-history-btn');
+  if (histBtn) histBtn.disabled = !sim.currentScenarioId;
 }
 
 async function saveScenario() {
@@ -637,6 +641,73 @@ async function deleteScenario() {
   await loadScenarios();
 }
 
+// ── Run History ───────────────────────────────────────────────────────────────
+async function toggleRunHistory() {
+  const panel = document.getElementById('sim-run-history-panel');
+  if (!panel) return;
+  const isVisible = !panel.classList.contains('sim-hidden');
+  if (isVisible) {
+    panel.classList.add('sim-hidden');
+    return;
+  }
+  if (!sim.currentScenarioId) return;
+  panel.classList.remove('sim-hidden');
+  await refreshRunHistory();
+}
+
+async function refreshRunHistory() {
+  if (!sim.currentScenarioId) return;
+  const panel = document.getElementById('sim-run-history-panel');
+  if (!panel || panel.classList.contains('sim-hidden')) return;
+
+  const res  = await fetch(`/api/simulation/runs?scenario_id=${encodeURIComponent(sim.currentScenarioId)}`);
+  const runs = await res.json();
+
+  const statusIcon = { running: '🔄', done: '✅', stopped: '⏹', error: '❌' };
+  const fmtTime = ts => {
+    if (!ts) return '—';
+    const d = new Date(ts * 1000);
+    return `${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} `
+         + `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  };
+
+  const histBtn = document.getElementById('sim-history-btn');
+  if (histBtn) histBtn.textContent = `📋 이력 (${runs.length})`;
+
+  if (!runs.length) {
+    panel.innerHTML = '<div class="sim-run-history-empty">아직 실행 이력이 없습니다.</div>';
+    return;
+  }
+
+  const rows = runs.map(r => `
+    <tr>
+      <td class="rh-num">${r.run_number}</td>
+      <td class="rh-time">${fmtTime(r.started_at)}</td>
+      <td class="rh-waves">${r.total_waves}</td>
+      <td class="rh-turns">${r.total_turns}</td>
+      <td class="rh-status">${statusIcon[r.status] || r.status}</td>
+      <td class="rh-del">
+        <button class="sim-run-del-btn" data-run-id="${esc(r.run_id)}">🗑</button>
+      </td>
+    </tr>`).join('');
+
+  panel.innerHTML = `
+    <table class="sim-run-history-table">
+      <thead><tr>
+        <th>#</th><th>시작</th><th>Wave</th><th>Turn</th><th>상태</th><th></th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+
+  panel.querySelectorAll('.sim-run-del-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('이 실행 이력과 메모리 데이터를 삭제하시겠습니까?')) return;
+      await fetch(`/api/simulation/runs/${btn.dataset.runId}`, { method: 'DELETE' });
+      await refreshRunHistory();
+    });
+  });
+}
+
 function applyScenario(s) {
   const cfg = s.config;
   sim.currentScenarioId   = s.id;
@@ -656,6 +727,13 @@ function applyScenario(s) {
   sim.events                 = cfg.events                 || [];
   sim.output_format_template = cfg.output_format_template || '';
   _expandedAgents.clear();
+  const histBtn = document.getElementById('sim-history-btn');
+  if (histBtn) {
+    histBtn.disabled = false;
+    histBtn.textContent = '📋 이력';
+  }
+  // 이력 패널이 열려있으면 갱신
+  refreshRunHistory();
   renderSettingsPage();
 }
 
@@ -1073,6 +1151,7 @@ export function initSimulationEvents() {
   document.getElementById('sim-stop-btn').addEventListener('click', stopSimulation);
   document.getElementById('sim-save-scenario-btn').addEventListener('click', saveScenario);
   document.getElementById('sim-delete-scenario-btn').addEventListener('click', deleteScenario);
+  document.getElementById('sim-history-btn')?.addEventListener('click', toggleRunHistory);
   document.getElementById('sim-export-graph-btn').addEventListener('click', exportGraph);
 
   document.getElementById('sim-add-agent-btn').addEventListener('click', () => {

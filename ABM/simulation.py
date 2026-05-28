@@ -13,6 +13,10 @@ from .config import LOG_DIR, MODEL, BASE_URL, API_TIMEOUT
 logger = logging.getLogger(__name__)
 
 
+_COMPRESSION_THRESHOLD = 0.70   # trigger compression at this fraction of token_limit
+_COMPRESSION_MIN_MSGS  = 4      # don't compress until agent has at least this many memory entries
+
+
 class Simulation:
     def __init__(
         self,
@@ -26,6 +30,8 @@ class Simulation:
         stop_event:      threading.Event | None = None,
         initial_agents:  list[str] | None       = None,
         name_aliases:    dict[str, str] | None  = None,
+        sim_id:          str | None             = None,
+        db=None,  # SimDB | None — avoid import cycle with type annotation
     ):
         self.agents         = agents
         self.background_log = background_log
@@ -43,6 +49,10 @@ class Simulation:
         self._alias_to_key: dict[str, str] = name_aliases or {}
         # key → display_name (OUTPUT FORMAT에 표시)
         self._key_to_alias: dict[str, str] = {v: k for k, v in self._alias_to_key.items()}
+
+        self._sim_id = sim_id
+        self._db     = db
+        self.completed_waves: int = 0
 
         # 초기 활성 에이전트 — None이면 전체 활성
         if initial_agents is not None:
@@ -179,6 +189,33 @@ class Simulation:
         return result
 
     # ------------------------------------------------------------------
+    # 메모리 압축
+    # ------------------------------------------------------------------
+
+    def _compress_agent(self, agent: Agent, agent_key: str, wave: int):
+        """Compress agent.memory into structured DB memory, then clear memory."""
+        from .memory_compressor import compress
+        self._emit("compression_start", {"agent": agent_key, "wave": wave, "msg_count": len(agent.memory)})
+        new_block = compress(
+            agent_name=agent.name,
+            agent_key=agent_key,
+            sim_id=self._sim_id,
+            messages=list(agent.memory),
+            wave=wave,
+            db=self._db,
+            model=self.model,
+            base_url=self.base_url,
+            api_timeout=self.api_timeout,
+            key_to_alias=self._key_to_alias,
+        )
+        if new_block is not None:
+            agent._memory_block = new_block
+            agent.memory.clear()
+            self._emit("compression_done", {"agent": agent_key, "wave": wave})
+        else:
+            logger.warning(f"[{agent_key}] 압축 실패 — 기존 메모리 유지, 강제 트림으로 폴백")
+
+    # ------------------------------------------------------------------
     # 에이전트 단일 스텝
     # ------------------------------------------------------------------
 
@@ -195,13 +232,31 @@ class Simulation:
         active_agent = self.agents[agent_key]
 
         incoming_msgs = [
-            {"role": "user", "content": f"[{msg['speaker']}] {msg['content']}"}
+            {
+                "role": "user",
+                "content": (
+                    f"[{msg['speaker']}] {msg['content']}"
+                    + (f"\n({msg['action_note']})" if msg.get("action_note") else "")
+                ),
+            }
             for msg in incoming
         ]
         for msg in incoming_msgs:
             active_agent.add_to_memory(msg)
 
         other_agents = [k for k in self.active_agents if k != agent_key]
+
+        # Compression check — runs before trimming so memories are structured, not discarded.
+        if (
+            self._db is not None
+            and self._sim_id is not None
+            and len(active_agent.memory) >= _COMPRESSION_MIN_MSGS
+        ):
+            est = active_agent.estimate_context_tokens(
+                self.background_log, other_agents, self._key_to_alias
+            )
+            if est / active_agent._token_limit >= _COMPRESSION_THRESHOLD:
+                self._compress_agent(active_agent, agent_key, turn)
 
         # Trim memory to fit within token limit before building the final prompt
         active_agent.trim_to_token_limit(self.background_log, other_agents, self._key_to_alias)
@@ -293,6 +348,7 @@ class Simulation:
             "success":       True,
             "agent_key":     agent_key,
             "clean_content": clean_content,
+            "action_note":   meta.get("action_note", ""),
             "targets":       parsed_targets,
         }
 
@@ -355,6 +411,7 @@ class Simulation:
 
             turn_counter += len(current_wave)
             total_turns  += len(current_wave)
+            self.completed_waves = wave_num + 1
 
             next_wave: dict[str, list] = {}
             for speaker_key, result in results.items():
@@ -364,8 +421,9 @@ class Simulation:
                     if target_key not in next_wave:
                         next_wave[target_key] = []
                     next_wave[target_key].append({
-                        "speaker": speaker_key,
-                        "content": result["clean_content"],
+                        "speaker":     speaker_key,
+                        "content":     result["clean_content"],
+                        "action_note": result.get("action_note", ""),
                     })
 
             current_wave = next_wave

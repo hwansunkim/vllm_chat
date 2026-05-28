@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import queue
 import threading
 import uuid
@@ -14,6 +15,14 @@ from pydantic import BaseModel
 from ..db.database import get_db
 
 router = APIRouter(prefix="/api/simulation")
+
+
+def _get_sim_db():
+    """Return a SimDB instance for the shared simulation.db file."""
+    from ABM.db import SimDB
+    from ABM.config import LOG_DIR
+    return SimDB(os.path.join(LOG_DIR, "simulation.db"))
+
 
 # ── Global simulation state (single-process only) ─────────────────────────────
 _sim: dict = {
@@ -53,6 +62,7 @@ class ExtraField(BaseModel):
 
 
 class SimStartConfig(BaseModel):
+    scenario_id:            str | None       = None
     agents:                 list[AgentConfig]
     background:             str
     start_agent:            str
@@ -105,7 +115,25 @@ def start_simulation(cfg: SimStartConfig):
         try:
             from ABM.agent import Agent
             from ABM.simulation import Simulation
+            from ABM.db import SimDB
             from ABM.config import MODEL, BASE_URL, API_TIMEOUT, LOG_DIR
+
+            run_sim_id    = str(uuid.uuid4())
+            db            = SimDB(os.path.join(LOG_DIR, "simulation.db"))
+            scenario_name = None
+            if cfg.scenario_id:
+                try:
+                    chat_conn = get_db()
+                    row = chat_conn.execute(
+                        "SELECT name FROM simulation_scenarios WHERE id=?",
+                        (cfg.scenario_id,),
+                    ).fetchone()
+                    chat_conn.close()
+                    if row:
+                        scenario_name = row["name"]
+                except Exception:
+                    pass
+            db.create_run(run_sim_id, cfg.scenario_id, scenario_name, cfg.model_dump_json())
 
             agents = {
                 a.name: Agent(a.name, a.system_prompt, LOG_DIR,
@@ -130,6 +158,8 @@ def start_simulation(cfg: SimStartConfig):
                 stop_event=stop_ev,
                 initial_agents=init_param,
                 name_aliases=alias_map,
+                sim_id=run_sim_id,
+                db=db,
             )
             _sim["agents"]         = sim.agents
             _sim["background_log"] = sim.background_log
@@ -144,9 +174,20 @@ def start_simulation(cfg: SimStartConfig):
             _sim["shared_log"] = sim.shared_log
             _sim["edges"]      = sim.edges
             _sim["status"]     = "stopped" if stop_ev.is_set() else "done"
+            final_status = _sim["status"]
+            db.finish_run(
+                run_sim_id,
+                final_status,
+                sim.completed_waves,
+                len(sim.shared_log),
+            )
         except Exception as e:
             _sim["status"] = "error"
             eq.put({"type": "error", "data": {"message": str(e)}})
+            try:
+                db.finish_run(run_sim_id, "error", 0, 0)
+            except Exception:
+                pass
         finally:
             eq.put(None)  # sentinel: SSE 스트림 종료 신호
 
@@ -226,6 +267,31 @@ def get_agent_context(name: str):
         "token_limit":    agent._token_limit,
         "messages":       messages,
     }
+
+
+# ── Simulation Runs ───────────────────────────────────────────────────────────
+
+@router.get("/runs")
+def list_runs(scenario_id: str | None = None):
+    db = _get_sim_db()
+    return db.get_runs(scenario_id)
+
+
+@router.delete("/runs/{run_id}", status_code=204)
+def delete_run(run_id: str):
+    db = _get_sim_db()
+    db.delete_run(run_id)
+
+
+@router.get("/agents/{name}/memory")
+def get_agent_memory(name: str):
+    """Return the agent's structured DB memory (episodes, facts, relationships, self_state)."""
+    sim_obj = _sim.get("sim_obj")
+    if sim_obj is None or sim_obj._db is None or sim_obj._sim_id is None:
+        raise HTTPException(404, "No active simulation with memory DB")
+    if name not in sim_obj.agents:
+        raise HTTPException(404, f"Agent '{name}' not found")
+    return sim_obj._db.get_full_memory(sim_obj._sim_id, name)
 
 
 @router.get("/logs")

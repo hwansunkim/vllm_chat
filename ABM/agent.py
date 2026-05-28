@@ -93,6 +93,7 @@ class Agent:
         self._trimmed_count: int  = 0
         self._total_added:   int  = 0
         self._last_prompt_tokens: int | None = None
+        self._memory_block: str | None = None   # populated after compression
         self._init_log_file()
 
     def _init_log_file(self):
@@ -174,5 +175,9 @@ class Agent:
         available_targets: list[str],
         key_to_alias: dict[str, str] | None = None,
     ) -> list:
-        """[system] + background_log + agent memory"""
-        return [self.get_system_message(available_targets, key_to_alias)] + background_log + self.memory
+        """[system] + background_log + [memory_block?] + agent memory"""
+        msgs = [self.get_system_message(available_targets, key_to_alias)] + background_log
+        if self._memory_block:
+            msgs.append({"role": "user", "content": self._memory_block})
+        msgs.extend(self.memory)
+        return msgs
