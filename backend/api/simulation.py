@@ -26,15 +26,17 @@ def _get_sim_db():
 
 # ── Global simulation state (single-process only) ─────────────────────────────
 _sim: dict = {
-    "status":       "idle",   # idle | running | done | stopped | error
-    "event_queue":  None,
-    "stop_event":   None,
-    "thread":       None,
-    "shared_log":   [],
-    "edges":        [],
-    "agents":       {},
+    "status":         "idle",   # idle | running | done | stopped | error
+    "event_queue":    None,
+    "stop_event":     None,
+    "thread":         None,
+    "shared_log":     [],
+    "edges":          [],
+    "agents":         {},
     "background_log": [],
-    "sim_obj":      None,
+    "sim_obj":        None,
+    "scenario_id":    None,
+    "scenario_name":  None,
 }
 
 
@@ -81,6 +83,13 @@ class ScenarioSave(BaseModel):
     name:        str
     description: str = ""
     config:      SimStartConfig
+
+
+class SimContinueConfig(BaseModel):
+    start_agent: str
+    max_waves:   int              = 10
+    step_delay:  float            = 1.0
+    events:      list[ScenarioEvent] = []
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -164,6 +173,8 @@ def start_simulation(cfg: SimStartConfig):
             _sim["agents"]         = sim.agents
             _sim["background_log"] = sim.background_log
             _sim["sim_obj"]        = sim
+            _sim["scenario_id"]    = cfg.scenario_id
+            _sim["scenario_name"]  = scenario_name
             sim.run(
                 cfg.start_agent,
                 max_waves=cfg.max_waves,
@@ -176,10 +187,8 @@ def start_simulation(cfg: SimStartConfig):
             _sim["status"]     = "stopped" if stop_ev.is_set() else "done"
             final_status = _sim["status"]
             db.finish_run(
-                run_sim_id,
-                final_status,
-                sim.completed_waves,
-                len(sim.shared_log),
+                run_sim_id, final_status, sim.completed_waves, len(sim.shared_log),
+                active_agents=sim.active_agents, pending_wave=sim._pending_wave,
             )
         except Exception as e:
             _sim["status"] = "error"
@@ -204,6 +213,71 @@ def stop_simulation():
         ev.set()
     _sim["status"] = "stopped"
     return {"status": "stopping"}
+
+
+@router.post("/continue")
+def continue_simulation(cfg: SimContinueConfig):
+    if _sim["status"] not in ("done", "stopped"):
+        raise HTTPException(409, "이어서 실행은 완료 또는 중지된 시뮬레이션에서만 가능합니다")
+    sim_obj = _sim.get("sim_obj")
+    if sim_obj is None:
+        raise HTTPException(409, "이어서 실행할 시뮬레이션 상태가 없습니다")
+
+    eq      = queue.Queue()
+    stop_ev = threading.Event()
+    _sim.update(status="running", event_queue=eq, stop_event=stop_ev)
+
+    def _run():
+        run_sim_id = None
+        db = sim_obj._db
+        try:
+            run_sim_id    = str(uuid.uuid4())
+            scenario_id   = _sim.get("scenario_id")
+            scenario_name = _sim.get("scenario_name")
+
+            sim_obj._event_queue    = eq
+            sim_obj._stop_event     = stop_ev
+            sim_obj._sim_id         = run_sim_id
+            sim_obj.completed_waves = 0
+
+            if db is not None:
+                db.create_run(run_sim_id, scenario_id, scenario_name, "{}")
+
+            # Use pending wave (agents targeted last but not yet responded) if available,
+            # otherwise start fresh from cfg.start_agent.
+            pending = getattr(sim_obj, "_pending_wave", None) or None
+            sim_obj.run(
+                cfg.start_agent,
+                max_waves=cfg.max_waves,
+                step_delay=cfg.step_delay,
+                events=[e.model_dump() for e in cfg.events],
+                resume_wave=pending,
+            )
+
+            _sim["shared_log"] = sim_obj.shared_log
+            _sim["edges"]      = sim_obj.edges
+            final_status       = "stopped" if stop_ev.is_set() else "done"
+            _sim["status"]     = final_status
+            if db is not None:
+                db.finish_run(
+                    run_sim_id, final_status, sim_obj.completed_waves, len(sim_obj.shared_log),
+                    active_agents=sim_obj.active_agents, pending_wave=sim_obj._pending_wave,
+                )
+        except Exception as e:
+            _sim["status"] = "error"
+            eq.put({"type": "error", "data": {"message": str(e)}})
+            try:
+                if db is not None and run_sim_id:
+                    db.finish_run(run_sim_id, "error", 0, 0)
+            except Exception:
+                pass
+        finally:
+            eq.put(None)
+
+    t = threading.Thread(target=_run, daemon=True)
+    _sim["thread"] = t
+    t.start()
+    return {"status": "continuing"}
 
 
 @router.get("/status")
@@ -275,6 +349,135 @@ def get_agent_context(name: str):
 def list_runs(scenario_id: str | None = None):
     db = _get_sim_db()
     return db.get_runs(scenario_id)
+
+
+@router.get("/runs/{run_id}")
+def get_run(run_id: str):
+    db = _get_sim_db()
+    run = db.get_run(run_id)
+    if run is None:
+        raise HTTPException(404, "Run not found")
+    return run
+
+
+@router.get("/runs/{run_id}/log")
+def get_run_log(run_id: str):
+    db = _get_sim_db()
+    return db.get_run_log(run_id)
+
+
+@router.post("/resume/{run_id}")
+def resume_simulation(run_id: str):
+    """과거 실행 상태를 복원해 이어서 실행."""
+    if _sim["status"] == "running":
+        raise HTTPException(409, "Simulation already running")
+
+    db = _get_sim_db()
+    run = db.get_run(run_id)
+    if run is None:
+        raise HTTPException(404, "Run not found")
+
+    config_json = run.get("config_json") or "{}"
+    try:
+        cfg_dict = json.loads(config_json)
+        if not cfg_dict.get("agents"):
+            raise ValueError("empty config")
+        cfg = SimStartConfig(**cfg_dict)
+    except Exception:
+        raise HTTPException(400, "이 실행은 설정 스냅샷이 없어 재개할 수 없습니다")
+
+    snapshots        = db.get_agent_snapshots(run_id)
+    active_json      = run.get("active_agents_json")
+    pending_json     = run.get("pending_wave_json")
+    saved_active     = set(json.loads(active_json))  if active_json  else None
+    saved_pending    = json.loads(pending_json)       if pending_json else None
+
+    eq      = queue.Queue()
+    stop_ev = threading.Event()
+    _sim.update(status="running", event_queue=eq, stop_event=stop_ev,
+                shared_log=[], edges=[], sim_obj=None)
+
+    def _run():
+        new_db     = None
+        run_sim_id = None
+        try:
+            from ABM.agent import Agent
+            from ABM.simulation import Simulation
+            from ABM.db import SimDB
+            from ABM.config import MODEL, BASE_URL, API_TIMEOUT, LOG_DIR
+            from ABM.memory_compressor import build_memory_block
+
+            run_sim_id    = str(uuid.uuid4())
+            new_db        = SimDB(os.path.join(LOG_DIR, "simulation.db"))
+            scenario_name = run.get("scenario_name")
+            new_db.create_run(run_sim_id, run.get("scenario_id"), scenario_name, config_json)
+
+            alias_map    = {a.display_name: a.name for a in cfg.agents if a.display_name.strip()}
+            key_to_alias = {v: k for k, v in alias_map.items()}
+
+            agents = {}
+            for a in cfg.agents:
+                agent = Agent(
+                    a.name, a.system_prompt, LOG_DIR,
+                    token_limit=cfg.token_limit,
+                    extra_fields=[f.model_dump() for f in cfg.extra_fields],
+                    output_format_template=cfg.output_format_template or None,
+                )
+                if a.name in snapshots:
+                    agent.memory = list(snapshots[a.name])
+                block = build_memory_block(run_id, a.name, db, key_to_alias=key_to_alias)
+                if block:
+                    agent._memory_block = block
+                agents[a.name] = agent
+
+            background_log = [{"role": "user", "content": f"[배경] {cfg.background}"}]
+            init_agents    = list(saved_active) if saved_active is not None else None
+
+            sim = Simulation(
+                agents, background_log, LOG_DIR,
+                MODEL, BASE_URL, API_TIMEOUT,
+                event_queue=eq, stop_event=stop_ev,
+                initial_agents=init_agents,
+                name_aliases=alias_map,
+                sim_id=run_sim_id, db=new_db,
+            )
+            _sim["agents"]         = sim.agents
+            _sim["background_log"] = sim.background_log
+            _sim["sim_obj"]        = sim
+            _sim["scenario_id"]    = run.get("scenario_id")
+            _sim["scenario_name"]  = scenario_name
+
+            sim.run(
+                cfg.start_agent,
+                max_waves=cfg.max_waves,
+                step_delay=cfg.step_delay,
+                events=[e.model_dump() for e in cfg.events],
+                resume_wave=saved_pending,
+            )
+
+            _sim["shared_log"] = sim.shared_log
+            _sim["edges"]      = sim.edges
+            final_status       = "stopped" if stop_ev.is_set() else "done"
+            _sim["status"]     = final_status
+            new_db.finish_run(
+                run_sim_id, final_status, sim.completed_waves, len(sim.shared_log),
+                active_agents=sim.active_agents, pending_wave=sim._pending_wave,
+            )
+        except Exception as e:
+            _sim["status"] = "error"
+            eq.put({"type": "error", "data": {"message": str(e)}})
+            try:
+                if new_db and run_sim_id:
+                    new_db.finish_run(run_sim_id, "error", 0, 0)
+            except Exception:
+                pass
+        finally:
+            eq.put(None)
+
+    t = threading.Thread(target=_run, daemon=True)
+    _sim["thread"] = t
+    t.start()
+    return {"status": "resuming"}
 
 
 @router.delete("/runs/{run_id}", status_code=204)

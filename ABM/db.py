@@ -102,6 +102,28 @@ CREATE TABLE IF NOT EXISTS simulation_runs (
     config_json   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_scenario ON simulation_runs(scenario_id);
+
+CREATE TABLE IF NOT EXISTS simulation_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id       TEXT    NOT NULL,
+    wave         INTEGER NOT NULL DEFAULT 0,
+    turn         INTEGER NOT NULL DEFAULT 0,
+    speaker      TEXT    NOT NULL,
+    content      TEXT    NOT NULL,
+    action_note  TEXT    NOT NULL DEFAULT '',
+    meta_json    TEXT    NOT NULL DEFAULT '{}',
+    targets_json TEXT    NOT NULL DEFAULT '[]',
+    timestamp    REAL    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_simlog_run ON simulation_log(run_id, id);
+
+CREATE TABLE IF NOT EXISTS agent_snapshots (
+    run_id      TEXT NOT NULL,
+    agent_key   TEXT NOT NULL,
+    memory_json TEXT NOT NULL,
+    PRIMARY KEY (run_id, agent_key)
+);
+CREATE INDEX IF NOT EXISTS idx_snapshots_run ON agent_snapshots(run_id);
 """
 
 # Confidence delta required to overwrite an existing fact with new evidence.
@@ -119,8 +141,19 @@ class SimDB:
         # Apply schema once on a temporary connection.
         conn = sqlite3.connect(db_path)
         conn.executescript(_SCHEMA)
+        self._migrate(conn)
         conn.close()
         logger.info(f"SimDB initialised: {db_path}")
+
+    def _migrate(self, conn: sqlite3.Connection):
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(simulation_runs)").fetchall()}
+        for col, ddl in [
+            ("active_agents_json", "ALTER TABLE simulation_runs ADD COLUMN active_agents_json TEXT"),
+            ("pending_wave_json",  "ALTER TABLE simulation_runs ADD COLUMN pending_wave_json TEXT"),
+        ]:
+            if col not in cols:
+                conn.execute(ddl)
+        conn.commit()
 
     # ------------------------------------------------------------------
     # Connection management (one connection per thread)
@@ -376,6 +409,55 @@ class SimDB:
         }
 
     # ------------------------------------------------------------------
+    # Simulation log (per-turn conversation records)
+    # ------------------------------------------------------------------
+
+    def log_turn(
+        self,
+        run_id: str,
+        wave: int,
+        turn: int,
+        speaker: str,
+        content: str,
+        action_note: str,
+        meta: dict,
+        targets: list,
+    ):
+        conn = self._conn()
+        conn.execute(
+            "INSERT INTO simulation_log "
+            "(run_id, wave, turn, speaker, content, action_note, meta_json, targets_json, timestamp) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                run_id, wave, turn, speaker, content, action_note,
+                json.dumps(meta, ensure_ascii=False),
+                json.dumps(targets, ensure_ascii=False),
+                time.time(),
+            ),
+        )
+        conn.commit()
+
+    def get_run_log(self, run_id: str) -> list[dict]:
+        rows = self._conn().execute(
+            "SELECT wave, turn, speaker, content, action_note, meta_json, targets_json, timestamp "
+            "FROM simulation_log WHERE run_id=? ORDER BY id",
+            (run_id,),
+        ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["meta"]    = json.loads(d.pop("meta_json"))
+            d["targets"] = json.loads(d.pop("targets_json"))
+            result.append(d)
+        return result
+
+    def get_run(self, run_id: str) -> dict | None:
+        row = self._conn().execute(
+            "SELECT * FROM simulation_runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    # ------------------------------------------------------------------
     # Simulation runs
     # ------------------------------------------------------------------
 
@@ -408,14 +490,39 @@ class SimDB:
         status: str,
         total_waves: int,
         total_turns: int,
+        active_agents: set | None = None,
+        pending_wave:  dict | None = None,
     ):
         conn = self._conn()
         conn.execute(
-            "UPDATE simulation_runs SET status=?, total_waves=?, total_turns=?, finished_at=? "
+            "UPDATE simulation_runs "
+            "SET status=?, total_waves=?, total_turns=?, finished_at=?, "
+            "active_agents_json=?, pending_wave_json=? "
             "WHERE run_id=?",
-            (status, total_waves, total_turns, time.time(), run_id),
+            (
+                status, total_waves, total_turns, time.time(),
+                json.dumps(list(active_agents), ensure_ascii=False) if active_agents is not None else None,
+                json.dumps(pending_wave, ensure_ascii=False) if pending_wave is not None else None,
+                run_id,
+            ),
         )
         conn.commit()
+
+    def save_agent_snapshots(self, run_id: str, snapshots: dict[str, list]):
+        """Persist each agent's working memory list for potential resume."""
+        conn = self._conn()
+        conn.executemany(
+            "INSERT OR REPLACE INTO agent_snapshots (run_id, agent_key, memory_json) "
+            "VALUES (?,?,?)",
+            [(run_id, key, json.dumps(mem, ensure_ascii=False)) for key, mem in snapshots.items()],
+        )
+        conn.commit()
+
+    def get_agent_snapshots(self, run_id: str) -> dict[str, list]:
+        rows = self._conn().execute(
+            "SELECT agent_key, memory_json FROM agent_snapshots WHERE run_id=?", (run_id,)
+        ).fetchall()
+        return {r["agent_key"]: json.loads(r["memory_json"]) for r in rows}
 
     def get_runs(self, scenario_id: str | None = None) -> list[dict]:
         conn = self._conn()
@@ -435,9 +542,10 @@ class SimDB:
         tables = [
             "messages", "episodic_memory", "semantic_memory",
             "relationship_memory", "relationship_history",
-            "agent_self_state", "compression_log",
+            "agent_self_state", "compression_log", "simulation_log",
         ]
         for table in tables:
             conn.execute(f"DELETE FROM {table} WHERE sim_id=?", (run_id,))
+        conn.execute("DELETE FROM agent_snapshots WHERE run_id=?", (run_id,))
         conn.execute("DELETE FROM simulation_runs WHERE run_id=?", (run_id,))
         conn.commit()

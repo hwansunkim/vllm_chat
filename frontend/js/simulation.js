@@ -555,8 +555,37 @@ function setStatus(status) {
   const labels = { idle: '대기 중', running: '실행 중', done: '완료', stopped: '중지됨', error: '오류' };
   badge.textContent = labels[status] || status;
   badge.className   = `sim-status-badge ${status}`;
-  document.getElementById('sim-start-btn').disabled = status === 'running';
-  document.getElementById('sim-stop-btn').disabled  = status !== 'running';
+  document.getElementById('sim-start-btn').disabled    = status === 'running';
+  document.getElementById('sim-continue-btn').disabled = !['done', 'stopped'].includes(status);
+  document.getElementById('sim-stop-btn').disabled     = status !== 'running';
+}
+
+async function continueSimulation() {
+  readConfigFromUI();
+  if (!sim.start_agent) { alert('시작 에이전트를 선택하세요.'); return; }
+  if (!sim.agents.find(a => a.name === sim.start_agent)) {
+    alert(`시작 에이전트 '${sim.start_agent}'가 에이전트 목록에 없습니다.`); return;
+  }
+
+  const res = await fetch('/api/simulation/continue', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      start_agent: sim.start_agent,
+      max_waves:   sim.max_waves,
+      step_delay:  sim.step_delay,
+      events:      sim.events,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    alert(`이어서 실행 실패: ${err.detail || '서버 오류'}`);
+    return;
+  }
+
+  setStatus('running');
+  connectSSE();
 }
 
 // ── Scenarios ─────────────────────────────────────────────────────────────────
@@ -686,6 +715,9 @@ async function refreshRunHistory() {
       <td class="rh-waves">${r.total_waves}</td>
       <td class="rh-turns">${r.total_turns}</td>
       <td class="rh-status">${statusIcon[r.status] || r.status}</td>
+      <td class="rh-view">
+        <button class="sim-run-view-btn" data-run-id="${esc(r.run_id)}" data-run-num="${r.run_number}">👁 보기</button>
+      </td>
       <td class="rh-del">
         <button class="sim-run-del-btn" data-run-id="${esc(r.run_id)}">🗑</button>
       </td>
@@ -694,10 +726,14 @@ async function refreshRunHistory() {
   panel.innerHTML = `
     <table class="sim-run-history-table">
       <thead><tr>
-        <th>#</th><th>시작</th><th>Wave</th><th>Turn</th><th>상태</th><th></th>
+        <th>#</th><th>시작</th><th>Wave</th><th>Turn</th><th>상태</th><th></th><th></th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
+
+  panel.querySelectorAll('.sim-run-view-btn').forEach(btn => {
+    btn.addEventListener('click', () => openRunReplay(btn.dataset.runId, btn.dataset.runNum));
+  });
 
   panel.querySelectorAll('.sim-run-del-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -706,6 +742,233 @@ async function refreshRunHistory() {
       await refreshRunHistory();
     });
   });
+}
+
+async function openAllRunsModal() {
+  document.getElementById('sim-all-runs-modal')?.remove();
+
+  const res = await fetch('/api/simulation/runs');
+  if (!res.ok) { alert('이력을 불러오지 못했습니다.'); return; }
+  const runs = await res.json();
+
+  const statusIcon = { running: '🔄', done: '✅', stopped: '⏹', error: '❌' };
+  const fmtTime = ts => {
+    if (!ts) return '—';
+    const d = new Date(ts * 1000);
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} `
+         + `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  };
+  const canResume = r => { try { const c = JSON.parse(r.config_json||'{}'); return !!(c.agents?.length); } catch(_){return false;} };
+
+  const modal = document.createElement('div');
+  modal.id = 'sim-all-runs-modal';
+  modal.className = 'sim-replay-modal-overlay';
+
+  const rows = runs.length ? runs.map(r => `
+    <tr>
+      <td class="rh-num">${r.run_number}</td>
+      <td class="rh-time">${fmtTime(r.started_at)}</td>
+      <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px">${esc(r.scenario_name || '—')}</td>
+      <td class="rh-waves">${r.total_waves}</td>
+      <td class="rh-turns">${r.total_turns}</td>
+      <td class="rh-status">${statusIcon[r.status] || r.status}</td>
+      <td><button class="sim-run-view-btn" data-run-id="${esc(r.run_id)}" data-run-num="${r.run_number}">👁 보기</button></td>
+      <td><button class="sim-run-del-btn all-modal-del" data-run-id="${esc(r.run_id)}">🗑</button></td>
+    </tr>`).join('') :
+    '<tr><td colspan="8" style="text-align:center;color:#94a3b8;padding:24px">실행 이력이 없습니다</td></tr>';
+
+  modal.innerHTML = `
+    <div class="sim-replay-modal-box" style="width:min(900px,96vw)">
+      <div class="sim-replay-header">
+        <div class="sim-replay-title">
+          <span style="font-size:15px">📋</span> 전체 실행 이력
+          <span class="sim-replay-meta">${runs.length}건</span>
+        </div>
+        <button id="sim-all-runs-close-btn" class="sim-ctrl-btn settings" style="font-size:12px;padding:4px 10px">✕ 닫기</button>
+      </div>
+      <div style="flex:1;overflow-y:auto;padding:12px 16px">
+        <table class="sim-run-history-table" style="width:100%">
+          <thead><tr>
+            <th>#</th><th>시작</th><th>시나리오</th><th>Wave</th><th>Turn</th><th>상태</th><th></th><th></th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+
+  document.body.appendChild(modal);
+
+  document.getElementById('sim-all-runs-close-btn').addEventListener('click', () => modal.remove());
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+
+  modal.querySelectorAll('.sim-run-view-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      modal.remove();
+      openRunReplay(btn.dataset.runId, btn.dataset.runNum);
+    });
+  });
+
+  modal.querySelectorAll('.all-modal-del').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('이 실행 이력과 메모리 데이터를 삭제하시겠습니까?')) return;
+      await fetch(`/api/simulation/runs/${btn.dataset.runId}`, { method: 'DELETE' });
+      modal.remove();
+      openAllRunsModal();
+    });
+  });
+}
+
+async function openRunReplay(runId, runNum) {
+  // 기존 모달 제거
+  document.getElementById('sim-replay-modal')?.remove();
+
+  const [runRes, logRes] = await Promise.all([
+    fetch(`/api/simulation/runs/${encodeURIComponent(runId)}`),
+    fetch(`/api/simulation/runs/${encodeURIComponent(runId)}/log`),
+  ]);
+  if (!runRes.ok || !logRes.ok) { alert('대화 기록을 불러오지 못했습니다.'); return; }
+
+  const run = await runRes.json();
+  const log = await logRes.json();
+
+  const statusIcon = { running: '🔄', done: '✅', stopped: '⏹', error: '❌' };
+  const fmtTime = ts => {
+    if (!ts) return '—';
+    const d = new Date(ts * 1000);
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} `
+         + `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  };
+
+  // config_json 파싱 (빈 객체면 재시작 불가)
+  let parsedConfig = null;
+  try {
+    const c = JSON.parse(run.config_json || '{}');
+    if (c.agents && c.agents.length) parsedConfig = c;
+  } catch (_) {}
+
+  const modal = document.createElement('div');
+  modal.id = 'sim-replay-modal';
+  modal.className = 'sim-replay-modal-overlay';
+  modal.innerHTML = `
+    <div class="sim-replay-modal-box">
+      <div class="sim-replay-header">
+        <div class="sim-replay-title">
+          <span class="sim-replay-run-badge">#${runNum}</span>
+          <span>${esc(run.scenario_name || '직접 실행')}</span>
+          <span class="sim-replay-status">${statusIcon[run.status] || run.status}</span>
+          <span class="sim-replay-meta">${fmtTime(run.started_at)} · ${run.total_waves}wave · ${run.total_turns}turn</span>
+        </div>
+        <div class="sim-replay-actions">
+          ${parsedConfig ? `<button id="sim-replay-resume-btn" class="sim-ctrl-btn continue" style="font-size:12px;padding:4px 10px">↩ 이어서</button>` : ''}
+          ${parsedConfig ? `<button id="sim-replay-restart-btn" class="sim-ctrl-btn start" style="font-size:12px;padding:4px 10px">▶ 새로 시작</button>` : ''}
+          <button id="sim-replay-close-btn" class="sim-ctrl-btn settings" style="font-size:12px;padding:4px 10px">✕ 닫기</button>
+        </div>
+      </div>
+      <div class="sim-replay-feed" id="sim-replay-feed">
+        ${log.length === 0 ? '<div class="sim-feed-empty-msg">저장된 대화 기록이 없습니다.</div>' : ''}
+      </div>
+    </div>`;
+
+  document.body.appendChild(modal);
+
+  // 피드 렌더링
+  const feedEl = document.getElementById('sim-replay-feed');
+  log.forEach(entry => {
+    const div = document.createElement('div');
+    div.className = 'sim-feed-item';
+    const agentObj = sim.agents.find(a => a.name === entry.speaker);
+    const icon = agentObj?.icon || '🤖';
+    const label = agentObj?.display_name || entry.speaker;
+    const actionNote = entry.action_note || '';
+    const extraFields = sim.extra_fields || [];
+    const metaBadges = extraFields
+      .filter(f => entry.meta && entry.meta[f.name] != null)
+      .map(f => {
+        const val = String(entry.meta[f.name]);
+        const cls = f.name === 'emotion' ? emotionClass(val) : 'emotion-neutral';
+        return `<span class="sim-feed-badge ${cls}">${esc(val)}</span>`;
+      }).join('');
+    const targets = Array.isArray(entry.targets) ? entry.targets.join(', ') : '';
+    div.innerHTML = `
+      <div class="sim-feed-speaker">
+        <span class="sim-feed-icon">${esc(icon)}</span>
+        <span class="sim-feed-name">${esc(label)}</span>
+        <span class="sim-feed-wave-badge">W${entry.wave}</span>
+      </div>
+      <div class="sim-feed-body">
+        <div class="sim-feed-content">${esc(entry.content)}</div>
+        ${actionNote ? `<div class="sim-feed-action">*${esc(actionNote)}*</div>` : ''}
+        <div class="sim-feed-meta">
+          ${metaBadges}
+          ${targets ? `<span class="sim-feed-target">→ ${esc(targets)}</span>` : ''}
+        </div>
+      </div>`;
+    feedEl.appendChild(div);
+  });
+
+  // 닫기
+  document.getElementById('sim-replay-close-btn').addEventListener('click', () => modal.remove());
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+
+  // 이어서 실행 — 에이전트 메모리 복원 후 이어서
+  const resumeBtn = document.getElementById('sim-replay-resume-btn');
+  if (resumeBtn && parsedConfig) {
+    resumeBtn.addEventListener('click', async () => {
+      resumeBtn.disabled = true;
+      resumeBtn.textContent = '복원 중...';
+      const res = await fetch(`/api/simulation/resume/${encodeURIComponent(runId)}`, { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(`재개 실패: ${err.detail || '서버 오류'}`);
+        resumeBtn.disabled = false;
+        resumeBtn.textContent = '↩ 이어서';
+        return;
+      }
+      // 설정 반영 (에이전트 카드 등 UI 동기화)
+      applyScenario({ id: run.scenario_id, name: run.scenario_name || '', config: parsedConfig });
+      renderAgentCards();
+      modal.remove();
+      setStatus('running');
+      connectSSE();
+    });
+  }
+
+  // 새로 시작 — 같은 설정으로 처음부터
+  const restartBtn = document.getElementById('sim-replay-restart-btn');
+  if (restartBtn && parsedConfig) {
+    restartBtn.addEventListener('click', () => {
+      applyScenario({ id: run.scenario_id, name: run.scenario_name || '', config: parsedConfig });
+      renderAgentCards();
+      renderSettingsPage();
+      modal.remove();
+    });
+  }
+}
+
+function newScenario() {
+  sim.currentScenarioId   = null;
+  sim.currentScenarioName = '';
+  sim.agents              = [];
+  sim.background          = '';
+  sim.start_agent         = '';
+  sim.max_waves           = 10;
+  sim.step_delay          = 1.0;
+  sim.token_limit         = 8192;
+  sim.extra_fields        = [
+    { name: 'emotion', default: 'neutral' },
+    { name: 'action',  default: 'speak'   },
+  ];
+  sim.events                 = [];
+  sim.output_format_template = '';
+  _expandedAgents.clear();
+  document.getElementById('sim-scenario-name').value = '';
+  document.getElementById('sim-scenario-select').value = '';
+  const delBtn = document.getElementById('sim-delete-scenario-btn');
+  if (delBtn) delBtn.disabled = true;
+  const histBtn = document.getElementById('sim-history-btn');
+  if (histBtn) { histBtn.disabled = true; histBtn.textContent = '📋 이력'; }
+  document.getElementById('sim-run-history-panel')?.classList.add('sim-hidden');
+  renderSettingsPage();
 }
 
 function applyScenario(s) {
@@ -1054,11 +1317,15 @@ function renderContextMessages(messages, trimmed = 0, promptTokens = 0, tokenLim
           <div class="ctx-role ctx-role-background">배경</div>
           <div class="ctx-content">${esc(bgMatch[1])}</div>`;
       } else if (spkMatch) {
+        const inActionMatch = spkMatch[2].match(/^([\s\S]*?)\n\(([^)]+)\)\s*$/);
+        const inContent    = inActionMatch ? inActionMatch[1] : spkMatch[2];
+        const inActionNote = inActionMatch ? inActionMatch[2] : '';
         div.innerHTML = `
           <div class="ctx-role ctx-role-incoming">
             <span class="ctx-speaker-badge">${esc(spkMatch[1])}</span>incoming
           </div>
-          <div class="ctx-content">${esc(spkMatch[2])}</div>`;
+          <div class="ctx-content">${esc(inContent)}</div>
+          ${inActionNote ? `<div class="sim-feed-action">*${esc(inActionNote)}*</div>` : ''}`;
       } else {
         div.innerHTML = `
           <div class="ctx-role ctx-role-incoming">user</div>
@@ -1147,11 +1414,23 @@ export function initSimulationEvents() {
   document.getElementById('sim-back-btn').addEventListener('click', hideSimView);
   document.getElementById('sim-settings-btn').addEventListener('click', showSettingsView);
   document.getElementById('sim-settings-back-btn').addEventListener('click', hideSettingsView);
+  document.getElementById('sim-new-scenario-btn').addEventListener('click', () => {
+    if (sim.agents.length || sim.background) {
+      if (!confirm('현재 설정을 초기화하고 새 시나리오를 만드시겠습니까?')) return;
+    }
+    newScenario();
+  });
+  document.getElementById('sim-settings-start-btn').addEventListener('click', () => {
+    hideSettingsView();
+    startSimulation();
+  });
   document.getElementById('sim-start-btn').addEventListener('click', startSimulation);
+  document.getElementById('sim-continue-btn').addEventListener('click', continueSimulation);
   document.getElementById('sim-stop-btn').addEventListener('click', stopSimulation);
   document.getElementById('sim-save-scenario-btn').addEventListener('click', saveScenario);
   document.getElementById('sim-delete-scenario-btn').addEventListener('click', deleteScenario);
   document.getElementById('sim-history-btn')?.addEventListener('click', toggleRunHistory);
+  document.getElementById('sim-all-runs-btn').addEventListener('click', openAllRunsModal);
   document.getElementById('sim-export-graph-btn').addEventListener('click', exportGraph);
 
   document.getElementById('sim-add-agent-btn').addEventListener('click', () => {

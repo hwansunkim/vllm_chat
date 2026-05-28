@@ -90,7 +90,9 @@
     <span id="sim-status-badge" class="sim-status-badge">대기 중</span>
     <div class="sim-header-controls">
       <button id="sim-settings-btn" class="sim-ctrl-btn settings">⚙ 설정</button>
+      <button id="sim-all-runs-btn" class="sim-ctrl-btn history">📋 이력</button>
       <button id="sim-start-btn" class="sim-ctrl-btn start">▶ 시작</button>
+      <button id="sim-continue-btn" class="sim-ctrl-btn continue" disabled>↩ 이어서</button>
       <button id="sim-stop-btn" class="sim-ctrl-btn stop" disabled>■ 중지</button>
     </div>
   </div>
@@ -151,9 +153,11 @@
     <div class="sim-settings-hdr-controls">
       <input id="sim-scenario-name" type="text" placeholder="시나리오 이름..."/>
       <select id="sim-scenario-select"><option value="">-- 불러오기 --</option></select>
+      <button id="sim-new-scenario-btn" class="sim-ctrl-btn new-scenario">＋ 새 시나리오</button>
       <button id="sim-save-scenario-btn" class="sim-ctrl-btn save">💾 저장</button>
       <button id="sim-delete-scenario-btn" class="sim-ctrl-btn delete" disabled>🗑 삭제</button>
       <button id="sim-history-btn" class="sim-ctrl-btn history" disabled>📋 이력</button>
+      <button id="sim-settings-start-btn" class="sim-ctrl-btn start">▶ 시작</button>
     </div>
   </div>
 

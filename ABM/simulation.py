@@ -53,6 +53,7 @@ class Simulation:
         self._sim_id = sim_id
         self._db     = db
         self.completed_waves: int = 0
+        self._pending_wave: dict  = {}  # last targeted agents not yet responded
 
         # 초기 활성 에이전트 — None이면 전체 활성
         if initial_agents is not None:
@@ -222,6 +223,7 @@ class Simulation:
     def _step_agent(
         self,
         agent_key: str,
+        wave: int,
         turn: int,
         incoming: list[dict],
     ) -> dict:
@@ -264,6 +266,7 @@ class Simulation:
 
         self._emit("turn_start", {
             "turn":            turn,
+            "wave":            wave,
             "speaker":         agent_key,
             "memory_size":     len(active_agent.memory),
             "est_tokens":      est_tokens,
@@ -332,6 +335,7 @@ class Simulation:
         emit_meta = {k: v for k, v in meta.items() if k != "action_note"}
         self._emit("turn_complete", {
             "turn":              turn,
+            "wave":              wave,
             "speaker":           active_agent.name,
             "targets":           parsed_targets,
             "content":           clean_content,
@@ -343,6 +347,14 @@ class Simulation:
             "reasoning_preview": reasoning[:120] if reasoning else "",
             "new_edges":         new_edges,
         })
+
+        if self._db is not None and self._sim_id is not None:
+            self._db.log_turn(
+                self._sim_id, wave, turn,
+                active_agent.name, clean_content,
+                meta.get("action_note", ""),
+                emit_meta, parsed_targets,
+            )
 
         return {
             "success":       True,
@@ -358,10 +370,11 @@ class Simulation:
 
     def run(
         self,
-        start_agent: str,
-        max_waves:   int   = 10,
-        step_delay:  float = 1.0,
-        events:      list  = None,
+        start_agent:  str,
+        max_waves:    int        = 10,
+        step_delay:   float      = 1.0,
+        events:       list       = None,
+        resume_wave:  dict | None = None,
     ):
         """Wave-based BFS + 시나리오 이벤트 실행."""
         # wave → event list 인덱스 구성
@@ -370,7 +383,7 @@ class Simulation:
             w = e.get("wave", 0) if isinstance(e, dict) else 0
             events_by_wave.setdefault(w, []).append(e)
 
-        current_wave: dict[str, list] = {start_agent: []}
+        current_wave: dict[str, list] = resume_wave if resume_wave else {start_agent: []}
         turn_counter = 0
         total_turns  = 0
 
@@ -397,7 +410,7 @@ class Simulation:
             with ThreadPoolExecutor(max_workers=len(current_wave)) as executor:
                 future_map = {
                     executor.submit(
-                        self._step_agent, agent_key, turn_counter + i, incoming
+                        self._step_agent, agent_key, wave_num, turn_counter + i, incoming
                     ): agent_key
                     for i, (agent_key, incoming) in enumerate(current_wave.items())
                 }
@@ -431,7 +444,15 @@ class Simulation:
             if current_wave:
                 time.sleep(step_delay)
 
+        self._pending_wave = current_wave  # agents targeted but not yet responded
         self._save_edges()
+
+        if self._db is not None and self._sim_id is not None:
+            self._db.save_agent_snapshots(
+                self._sim_id,
+                {key: list(agent.memory) for key, agent in self.agents.items()},
+            )
+
         self._emit("simulation_end", {
             "total_turns": total_turns,
             "edges_count": len(self.edges),
