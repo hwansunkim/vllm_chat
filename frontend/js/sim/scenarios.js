@@ -130,6 +130,10 @@ export function applyScenario(s) {
     { name: 'action',      default: 'speak'   },
     { name: 'action_note', default: ''        },
   ];
+  // Back-compat: ensure action_note exists even in scenarios saved before it was added.
+  if (!sim.extra_fields.some(f => f.name === 'action_note')) {
+    sim.extra_fields.push({ name: 'action_note', default: '' });
+  }
   sim.events                 = cfg.events                 || [];
   sim.output_format_template = cfg.output_format_template || '';
   _expandedAgents.clear();

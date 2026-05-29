@@ -3,6 +3,7 @@
 
 import { sim, esc, emotionClass, agentLabel } from './state.js';
 import { stripCodeFence } from './utils/json.js';
+import { exportAgentContextMarkdown } from './export/markdown.js';
 
 export function switchTab(tabName) {
   document.querySelectorAll('.sim-tab').forEach(btn => {
@@ -25,6 +26,16 @@ export async function openAgentContext(name) {
     : `🤖 ${name}`;
   document.getElementById('sim-context-agent-name').textContent = label;
   document.getElementById('sim-context-refresh-btn').classList.remove('sim-hidden');
+
+  const ctxMdBtn = document.getElementById('sim-export-ctx-md-btn');
+  if (ctxMdBtn) {
+    ctxMdBtn.classList.remove('sim-hidden');
+    // 클릭마다 올바른 에이전트를 내보내도록 리스너 교체
+    const newBtn = ctxMdBtn.cloneNode(true);
+    ctxMdBtn.replaceWith(newBtn);
+    newBtn.addEventListener('click', () => exportAgentContextMarkdown(name));
+  }
+
   await fetchAgentContext(name);
 }
 

@@ -17,6 +17,9 @@ export function setStatus(status) {
   document.getElementById('sim-start-btn').disabled    = status === 'running';
   document.getElementById('sim-continue-btn').disabled = !['done', 'stopped'].includes(status);
   document.getElementById('sim-stop-btn').disabled     = status !== 'running';
+  // MD 내보내기 버튼: 대화 기록이 있을 때(done/stopped/running) 표시
+  const mdBtn = document.getElementById('sim-export-md-btn');
+  if (mdBtn) mdBtn.classList.toggle('sim-hidden', status === 'idle');
 }
 
 export async function startSimulation() {

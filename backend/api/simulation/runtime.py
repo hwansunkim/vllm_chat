@@ -99,6 +99,7 @@ def start_simulation(cfg: SimStartConfig):
             _sim["sim_obj"]        = sim
             _sim["scenario_id"]    = cfg.scenario_id
             _sim["scenario_name"]  = scenario_name
+            _sim["config_json"]    = cfg.model_dump_json()
             sim.run(
                 cfg.start_agent,
                 max_waves=cfg.max_waves,
@@ -157,7 +158,8 @@ def continue_simulation(cfg: SimContinueConfig):
             sim_obj.completed_waves = 0
 
             if db is not None:
-                db.create_run(run_sim_id, scenario_id, scenario_name, "{}")
+                config_json = _sim.get("config_json") or "{}"
+                db.create_run(run_sim_id, scenario_id, scenario_name, config_json)
 
             # Use pending wave (agents targeted last but not yet responded) if available,
             # otherwise start fresh from cfg.start_agent.
@@ -279,6 +281,7 @@ def load_simulation(run_id: str):
             _sim["sim_obj"]        = sim_obj
             _sim["scenario_id"]    = run.get("scenario_id")
             _sim["scenario_name"]  = run.get("scenario_name")
+            _sim["config_json"]    = config_json
             _sim["shared_log"]     = shared_log
             _sim["edges"]          = []
             _sim["status"]         = "done"
@@ -384,6 +387,7 @@ def resume_simulation(run_id: str):
             _sim["sim_obj"]        = sim
             _sim["scenario_id"]    = run.get("scenario_id")
             _sim["scenario_name"]  = scenario_name
+            _sim["config_json"]    = config_json
 
             # B9 fix: do NOT replay the original scenario events on resume.
             # Resume picks up from ``saved_pending`` (the wave the previous

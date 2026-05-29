@@ -23,7 +23,7 @@ DEFAULT_OUTPUT_FORMAT_TEMPLATE = """
 - content: 말하거나 행동하는 내용
 <FIELD_HINTS>
 - target: 반드시 아래 시스템 ID만 사용 (표시 이름 절대 금지):
-<TARGETS>  전체에게: "all" / 혼잣말·내면 행동: "system"
+<TARGETS><TARGETS_FOOTER>
 """
 
 
@@ -50,14 +50,41 @@ def _build_output_format(
             lines.append(f'  - ID: "{t}"' + (f'  ({alias})' if alias else ""))
         targets_block = ("\n".join(lines) + "\n") if lines else "  (없음)\n"
 
-    field_lines = "\n".join(
-        f'    "{f["name"]}": "{f["default"]}",'
-        for f in extra_fields
-    )
-    field_hints = "\n".join(
-        f'- {f["name"]}: 적절한 값 (기본값 예시: "{f["default"]}")'
-        for f in extra_fields
-    )
+    # Special-purpose descriptions for reserved fields.
+    _FIELD_DESCS: dict[str, str] = {
+        "action_note": (
+            "말 이외의 신체 동작·표정·제스처를 간략히 서술 "
+            "(예: '책상을 두드리며', '미소를 지으며'). "
+            "비언어적 행동이 없으면 빈 문자열."
+        ),
+    }
+
+    def _line(f: dict) -> str:
+        if f["name"] == "action_note":
+            return '    "action_note": "비언어적 행동 묘사 (없으면 빈 문자열)",'
+        return f'    "{f["name"]}": "{f["default"]}",'
+
+    def _hint(f: dict) -> str:
+        desc = _FIELD_DESCS.get(f["name"])
+        if desc:
+            return f'- {f["name"]}: {desc}'
+        return f'- {f["name"]}: 적절한 값 (기본값 예시: "{f["default"]}")'
+
+    field_lines = "\n".join(_line(f) for f in extra_fields)
+    field_hints = "\n".join(_hint(f) for f in extra_fields)
+
+    # 그룹이 2개 이상일 때 그룹별 단축 표기 추가 (브릿지 에이전트용)
+    named_sections = [
+        label for label, _ in (target_sections or [])
+        if label != "기타"
+    ]
+    if len(named_sections) >= 2:
+        group_shortcuts = " / ".join(
+            f'[{label}] 전체: "group:{label}"' for label in named_sections
+        )
+        targets_footer = f'  {group_shortcuts} / 모두에게: "all" / 혼잣말·내면 행동: "system"\n'
+    else:
+        targets_footer = '  전체에게: "all" / 혼잣말·내면 행동: "system"\n'
 
     tmpl = template if template is not None else DEFAULT_OUTPUT_FORMAT_TEMPLATE
     return (
@@ -65,6 +92,7 @@ def _build_output_format(
         .replace("<FIELD_LINES>", field_lines)
         .replace("<FIELD_HINTS>", field_hints)
         .replace("<TARGETS>", targets_block)
+        .replace("<TARGETS_FOOTER>", targets_footer)
     )
 
 

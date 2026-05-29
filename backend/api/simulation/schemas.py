@@ -35,8 +35,9 @@ class SimStartConfig(BaseModel):
     step_delay:             float            = 1.0
     token_limit:            int              = 8192
     extra_fields:           list[ExtraField] = [
-        ExtraField(name="emotion", default="neutral"),
-        ExtraField(name="action",  default="speak"),
+        ExtraField(name="emotion",     default="neutral"),
+        ExtraField(name="action",      default="speak"),
+        ExtraField(name="action_note", default=""),
     ]
     events:                 list[ScenarioEvent] = []
     output_format_template: str              = ""

@@ -34,3 +34,13 @@ def get_run_log(run_id: str):
 def delete_run(run_id: str):
     db = get_sim_db()
     db.delete_run(run_id)
+
+
+@router.post("/runs/bulk-delete", status_code=204)
+def bulk_delete_runs(body: dict):
+    ids = body.get("run_ids", [])
+    if not ids:
+        return
+    db = get_sim_db()
+    for run_id in ids:
+        db.delete_run(run_id)

@@ -69,14 +69,39 @@
 .sim-run-history-table th { text-align: left; color: #64748b; font-weight: 600; padding: 4px 8px; border-bottom: 1px solid #e2e8f0; }
 .sim-run-history-table td { padding: 5px 8px; border-bottom: 1px solid #f1f5f9; color: #334155; }
 .sim-run-history-table tr:last-child td { border-bottom: none; }
+.sim-run-history-table tr:has(.rh-check:checked) td { background: #f0f9ff; }
 .rh-num, .rh-waves, .rh-turns { text-align: center; }
 .rh-status { text-align: center; font-size: 14px; }
 .rh-del { text-align: center; }
+.rh-chk-cell { width: 28px; text-align: center; padding: 4px 4px !important; }
+.rh-scenario { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.rh-empty-cell { text-align: center; color: #94a3b8; padding: 24px !important; }
 .sim-run-del-btn {
   background: none; border: none; cursor: pointer; color: #94a3b8;
   font-size: 13px; padding: 2px 6px; border-radius: 4px;
 }
 .sim-run-del-btn:hover { background: #fee2e2; color: #dc2626; }
+
+/* 체크박스 툴바 */
+.rh-toolbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border-bottom: 1px solid #f1f5f9;
+}
+.rh-modal-toolbar {
+  display: flex; align-items: center;
+  padding: 6px 16px; border-bottom: 1px solid #f1f5f9; flex-shrink: 0;
+}
+.rh-select-all-label {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 12px; color: #64748b; cursor: pointer; user-select: none;
+}
+.rh-bulk-del-btn {
+  padding: 3px 10px; font-size: 11px; font-weight: 600;
+  background: #fee2e2; color: #dc2626;
+  border: 1px solid #fca5a5; border-radius: 5px; cursor: pointer;
+}
+.rh-bulk-del-btn:hover { background: #fecaca; }
+.rh-check { cursor: pointer; accent-color: #4f46e5; width: 14px; height: 14px; }
 
 #sim-body { flex: 1; display: flex; overflow: hidden; }
 
@@ -538,6 +563,7 @@
   border-radius: 5px; cursor: pointer; color: #475569;
 }
 .sim-export-btn:hover { background: #e2e8f0; }
+#sim-export-md-btn { margin-left: 4px; border-left: 1px solid #e2e8f0; padding-left: 12px; }
 
 .sim-tab-pane  { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
 #sim-graph-svg { flex: 1; width: 100%; }
@@ -547,7 +573,8 @@
   display: flex; align-items: center; justify-content: space-between;
   padding: 8px 12px; border-bottom: 1px solid #f1f5f9; flex-shrink: 0;
 }
-#sim-context-agent-name { font-size: 12px; font-weight: 600; color: #475569; }
+#sim-context-agent-name { font-size: 12px; font-weight: 600; color: #475569; flex: 1; min-width: 0; }
+.sim-context-header-btns { display: flex; gap: 4px; flex-shrink: 0; }
 
 /* Context token banner */
 .ctx-token-banner {

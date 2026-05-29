@@ -93,9 +93,11 @@ export function addFeedMessage(data) {
   const el = document.createElement('div');
   el.className = 'sim-feed-msg';
   const meta = data.meta || {};
-  const metaBadges = Object.entries(meta).map(([k, v]) =>
-    `<span class="sim-feed-badge ${k === 'emotion' ? emotionClass(String(v)) : 'emotion-neutral'}">${esc(String(v))}</span>`
-  ).join('');
+  const metaBadges = Object.entries(meta)
+    .filter(([k]) => k !== 'action_note')
+    .map(([k, v]) =>
+      `<span class="sim-feed-badge ${k === 'emotion' ? emotionClass(String(v)) : 'emotion-neutral'}">${esc(String(v))}</span>`
+    ).join('');
 
   const actionNote = data.action_note || '';
   el.innerHTML = `

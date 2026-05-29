@@ -153,13 +153,33 @@ class Simulation:
         return sections or None
 
     def _resolve_targets(self, targets: list[str], speaker_key: str) -> list[str]:
-        """발화 target 해석 — active_agents 기준."""
+        """발화 target 해석 — active_agents 기준.
+
+        지원 형식:
+          "all"       → 화자 그룹 내 활성 에이전트 (그룹 미소속 시 전체)
+          "group:X"   → 그룹 X 소속 활성 에이전트 중 화자가 볼 수 있는 멤버만
+          "<key>"     → 특정 에이전트
+        브릿지 에이전트(복수 그룹)는 "all" 시 모든 가시 에이전트, "group:X" 시 해당 그룹만.
+        """
         resolved = []
+        visible_set = set(self._visible_targets.get(speaker_key, []))
         for t in targets:
-            if t.strip().lower() == "all":
-                resolved.extend(k for k in self.active_agents if k != speaker_key)
+            t_s = t.strip()
+            if t_s.lower() == "all":
+                my_groups = self._agent_groups.get(speaker_key, [])
+                if my_groups:
+                    resolved.extend(k for k in visible_set if k in self.active_agents)
+                else:
+                    resolved.extend(k for k in self.active_agents if k != speaker_key)
+            elif t_s.lower().startswith("group:"):
+                gid = t_s[6:]
+                # 화자가 볼 수 있는 에이전트 중 해당 그룹 소속만 전달
+                resolved.extend(
+                    k for k in visible_set
+                    if k in self.active_agents and gid in self._agent_groups.get(k, [])
+                )
             else:
-                key = self._normalize_target(t)
+                key = self._normalize_target(t_s)
                 if key in self.active_agents and key != speaker_key:
                     resolved.append(key)
         return list(dict.fromkeys(resolved))
