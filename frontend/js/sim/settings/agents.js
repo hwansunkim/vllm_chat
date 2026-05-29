@@ -1,7 +1,7 @@
 // frontend/js/sim/settings/agents.js
 // Accordion editor for the agents list (settings view).
 
-import { sim, esc, _expandedAgents } from '../state.js';
+import { sim, esc, _expandedAgents, getAllGroups } from '../state.js';
 import { renderScenarioEvents } from './events.js';
 
 export function renderStartAgentSelect() {
@@ -69,6 +69,24 @@ export function renderAgentListInConfig() {
                  value="${esc(agent.display_name || '')}" placeholder="한국어 이름 (선택)"/>
         </div>
       </div>
+      <div class="agent-groups-row">
+        <label>그룹</label>
+        <div class="agent-groups-chips" data-agent-idx="${idx}">
+          ${(agent.groups || []).map(g => `
+            <span class="group-chip">
+              ${esc(g)}
+              <button class="group-chip-remove" data-agent-idx="${idx}" data-group="${esc(g)}" title="그룹 제거">×</button>
+            </span>
+          `).join('')}
+          <input class="group-chip-input" type="text"
+                 placeholder="그룹 추가..."
+                 data-agent-idx="${idx}"
+                 list="sim-groups-datalist-${idx}">
+          <datalist id="sim-groups-datalist-${idx}">
+            ${getAllGroups().map(g => `<option value="${esc(g)}">`).join('')}
+          </datalist>
+        </div>
+      </div>
       <div class="sim-acrd-prompt-row">
         <label>시스템 프롬프트</label>
         <textarea class="sim-acrd-prompt" data-idx="${idx}" data-field="system_prompt"
@@ -104,6 +122,30 @@ export function renderAgentListInConfig() {
       sim.agents.splice(idx, 1);
       renderAgentListInConfig();
       renderStartAgentSelect();
+    });
+
+    // Group chip — Enter or comma adds a group
+    body.querySelector('.group-chip-input')?.addEventListener('keydown', e => {
+      if (e.key !== 'Enter' && e.key !== ',') return;
+      e.preventDefault();
+      const val = e.target.value.trim().replace(/,/g, '');
+      if (!val) return;
+      const i = +e.target.dataset.agentIdx;
+      if (!sim.agents[i].groups) sim.agents[i].groups = [];
+      if (!sim.agents[i].groups.includes(val)) sim.agents[i].groups.push(val);
+      e.target.value = '';
+      renderAgentListInConfig();
+    });
+
+    // Group chip — × button removes a group
+    body.querySelectorAll('.group-chip-remove').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const i = +btn.dataset.agentIdx;
+        const g = btn.dataset.group;
+        sim.agents[i].groups = (sim.agents[i].groups || []).filter(x => x !== g);
+        renderAgentListInConfig();
+      });
     });
 
     // Body field inputs — live-update sim state and header display

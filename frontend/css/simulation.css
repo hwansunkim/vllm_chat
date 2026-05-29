@@ -619,3 +619,66 @@
   white-space: nowrap;
 }
 .sim-run-view-btn:hover { background: #eef2ff; }
+
+/* ── Agent group chips ───────────────────────────────────────────────────────── */
+.agent-groups-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 0 4px;
+}
+.agent-groups-row > label {
+  min-width: 40px;
+  font-size: 12px;
+  color: #6b7280;
+  padding-top: 5px;
+  flex-shrink: 0;
+}
+.agent-groups-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  flex: 1;
+}
+.group-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 10px 3px 8px;
+  background: #ede9fe;
+  color: #5b21b6;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.group-chip-remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #7c3aed;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 1px;
+  opacity: 0.55;
+  transition: opacity .15s;
+}
+.group-chip-remove:hover { opacity: 1; }
+.group-chip-input {
+  border: 1px dashed #c4b5fd;
+  border-radius: 12px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: #5b21b6;
+  background: transparent;
+  outline: none;
+  width: 96px;
+  transition: border-color .15s, background .15s;
+}
+.group-chip-input:focus {
+  border-color: #7c3aed;
+  background: #f5f3ff;
+}
+.group-chip-input::placeholder { color: #a78bfa; }

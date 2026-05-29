@@ -80,6 +80,8 @@ def start_simulation(cfg: SimStartConfig):
 
             # display_name → key 매핑 (한국어 이름을 target으로 사용해도 올바른 키로 resolve)
             alias_map = {a.display_name: a.name for a in cfg.agents if a.display_name.strip()}
+            # 그룹 가시성 맵 — groups 빈 에이전트는 전체 노출 (하위 호환)
+            agent_groups = {a.name: a.groups for a in cfg.agents}
 
             sim = Simulation(
                 agents, background_log, LOG_DIR,
@@ -90,6 +92,7 @@ def start_simulation(cfg: SimStartConfig):
                 name_aliases=alias_map,
                 sim_id=run_sim_id,
                 db=db,
+                agent_groups=agent_groups,
             )
             _sim["agents"]         = sim.agents
             _sim["background_log"] = sim.background_log
@@ -253,6 +256,8 @@ def resume_simulation(run_id: str):
             background_log = [{"role": "user", "content": f"[배경] {cfg.background}"}]
             init_agents    = list(saved_active) if saved_active is not None else None
 
+            agent_groups = {a.name: a.groups for a in cfg.agents}
+
             sim = Simulation(
                 agents, background_log, LOG_DIR,
                 MODEL, BASE_URL, API_TIMEOUT,
@@ -260,6 +265,7 @@ def resume_simulation(run_id: str):
                 initial_agents=init_agents,
                 name_aliases=alias_map,
                 sim_id=run_sim_id, db=new_db,
+                agent_groups=agent_groups,
             )
             _sim["agents"]         = sim.agents
             _sim["background_log"] = sim.background_log

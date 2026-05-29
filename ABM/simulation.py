@@ -32,6 +32,7 @@ class Simulation:
         name_aliases:    dict[str, str] | None  = None,
         sim_id:          str | None             = None,
         db=None,  # SimDB | None — avoid import cycle with type annotation
+        agent_groups:    dict[str, list[str]] | None = None,  # key → group IDs
     ):
         self.agents         = agents
         self.background_log = background_log
@@ -61,6 +62,11 @@ class Simulation:
         else:
             self.active_agents = set(agents.keys())
 
+        # 그룹 기반 <TARGETS> 가시성 — 에이전트별 볼 수 있는 다른 에이전트 목록
+        self._visible_targets: dict[str, list[str]] = self._build_visible_targets(
+            agent_groups or {}
+        )
+
         os.makedirs(log_dir, exist_ok=True)
         self._save_shared_log()
 
@@ -87,6 +93,29 @@ class Simulation:
     # ------------------------------------------------------------------
     # 대상 해석
     # ------------------------------------------------------------------
+
+    def _build_visible_targets(self, agent_groups: dict[str, list[str]]) -> dict[str, list[str]]:
+        """에이전트별 <TARGETS>에 노출할 다른 에이전트 key 목록 계산.
+
+        groups가 빈 에이전트는 모든 에이전트를 볼 수 있음 (하위 호환).
+        groups가 있으면 같은 그룹에 속한 에이전트만 노출.
+        """
+        all_keys = list(self.agents.keys())
+        result: dict[str, list[str]] = {}
+        for key in all_keys:
+            groups = agent_groups.get(key, [])
+            if not groups:
+                # 그룹 미설정 → 전체 노출 (기존 동작)
+                result[key] = [k for k in all_keys if k != key]
+            else:
+                visible: set[str] = set()
+                for gid in groups:
+                    for other_key in all_keys:
+                        if gid in agent_groups.get(other_key, []):
+                            visible.add(other_key)
+                visible.discard(key)
+                result[key] = sorted(visible)
+        return result
 
     def _normalize_target(self, t: str) -> str:
         """한국어 display_name → 시스템 key 정규화. 이미 key면 그대로 반환."""
@@ -270,8 +299,10 @@ class Simulation:
         carries a short reason ("exception:..." or "empty"). The caller is
         responsible for popping injected memory entries and emitting events.
         """
-        other_agents = [k for k in self.active_agents if k != agent_key]
-        call_messages = agent.build_messages(self.background_log, other_agents, self._key_to_alias)
+        other_agents   = [k for k in self.active_agents if k != agent_key]
+        visible_agents = [k for k in self._visible_targets.get(agent_key, other_agents)
+                          if k in self.active_agents]
+        call_messages = agent.build_messages(self.background_log, visible_agents, self._key_to_alias)
         try:
             content, reasoning, usage = chat_response(
                 call_messages, self.model, self.base_url, self.api_timeout
@@ -396,14 +427,17 @@ class Simulation:
         active_agent = self.agents[agent_key]
         incoming_msgs = self._inject_incoming(active_agent, incoming)
         other_agents  = [k for k in self.active_agents if k != agent_key]
+        # 그룹 필터 적용: 이 에이전트가 볼 수 있는 활성 에이전트만 <TARGETS>에 노출
+        visible_agents = [k for k in self._visible_targets.get(agent_key, other_agents)
+                          if k in self.active_agents]
 
         # Compression runs before trimming so memories are structured, not discarded.
-        self._maybe_compress(active_agent, agent_key, wave, other_agents)
+        self._maybe_compress(active_agent, agent_key, wave, visible_agents)
 
         # Trim memory to fit within token limit before building the final prompt.
-        active_agent.trim_to_token_limit(self.background_log, other_agents, self._key_to_alias)
+        active_agent.trim_to_token_limit(self.background_log, visible_agents, self._key_to_alias)
         est_tokens = active_agent.estimate_context_tokens(
-            self.background_log, other_agents, self._key_to_alias
+            self.background_log, visible_agents, self._key_to_alias
         )
 
         self._emit("turn_start", {

@@ -50,3 +50,13 @@ export function esc(str) {
 export function fmtK(n) {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 }
+
+// ── Group helpers ─────────────────────────────────────────────────────────────
+/** 현재 에이전트 목록에서 사용 중인 그룹 ID를 수집 (자동완성용) */
+export function getAllGroups() {
+  const groups = new Set();
+  for (const agent of sim.agents) {
+    for (const g of (agent.groups || [])) groups.add(g);
+  }
+  return [...groups].sort();
+}
