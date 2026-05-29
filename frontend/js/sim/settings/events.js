@@ -44,7 +44,7 @@ export function renderScenarioEvents() {
     row.className = 'sim-event-row';
 
     const agentOptions = sim.agents
-      .map(a => `<option value="${esc(a.name)}" ${a.name === ev.agent ? 'selected' : ''}>${esc(a.icon)} ${esc(a.name)}</option>`)
+      .map(a => `<option value="${esc(a.name)}" ${a.name === ev.agent ? 'selected' : ''}>${esc(a.icon)} ${esc(a.display_name || a.name)}</option>`)
       .join('');
 
     const isAgentEvent  = ev.type === 'agent_enter' || ev.type === 'agent_exit';

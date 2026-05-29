@@ -51,6 +51,20 @@ export function fmtK(n) {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 }
 
+// ── Agent display helpers ──────────────────────────────────────────────────────
+/** display_name이 있으면 display_name, 없으면 name(ID) 반환 */
+export function agentLabel(key) {
+  const a = sim.agents.find(ag => ag.name === key);
+  return (a && a.display_name) ? a.display_name : (a ? a.name : key);
+}
+
+/** 아이콘 + 표시 이름 */
+export function agentLabelWithIcon(key) {
+  const a = sim.agents.find(ag => ag.name === key);
+  if (!a) return key;
+  return `${a.icon} ${a.display_name || a.name}`;
+}
+
 // ── Group helpers ─────────────────────────────────────────────────────────────
 /** 현재 에이전트 목록에서 사용 중인 그룹 ID를 수집 (자동완성용) */
 export function getAllGroups() {

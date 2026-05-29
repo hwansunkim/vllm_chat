@@ -11,7 +11,7 @@ export function renderStartAgentSelect() {
   sim.agents.forEach(a => {
     const opt = document.createElement('option');
     opt.value = a.name;
-    opt.textContent = `${a.icon} ${a.name}`;
+    opt.textContent = `${a.icon} ${a.display_name || a.name}`;
     sel.appendChild(opt);
   });
   if (prev && sim.agents.find(a => a.name === prev)) sel.value = prev;

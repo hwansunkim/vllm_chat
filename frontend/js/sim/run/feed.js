@@ -1,7 +1,7 @@
 // frontend/js/sim/run/feed.js
 // Live feed: typing indicator, agent messages, scene events, wave indicator.
 
-import { sim, esc, emotionClass } from '../state.js';
+import { sim, esc, emotionClass, agentLabel } from '../state.js';
 
 export function removeFeedEmpty() {
   const el = document.getElementById('sim-feed-empty');
@@ -17,7 +17,7 @@ export function addTypingIndicator(speaker) {
   el.className = 'sim-typing-row';
   el.innerHTML = `
     <div class="sim-feed-header">
-      <span class="sim-feed-speaker">${esc(agent.icon)} ${esc(agent.name)}</span>
+      <span class="sim-feed-speaker">${esc(agent.icon)} ${esc(agent.display_name || agent.name)}</span>
     </div>
     <div class="sim-typing-bubble">
       <div class="sim-typing-dots"><span></span><span></span><span></span></div>
@@ -41,8 +41,12 @@ export function addFeedMessage(data) {
   removeTypingIndicator(data.speaker);
   const agent = sim.agents.find(a => a.name === data.speaker) || { icon: '🤖', name: data.speaker };
   const targets = data.targets.filter(t => t !== 'system');
+  const targetLabels = targets.map(t => {
+    if (t === 'all') return '전체';
+    return agentLabel(t);
+  });
   const targetStr = targets.length
-    ? (targets.includes('all') ? '→ (전체)' : `→ ${targets.join(', ')}`)
+    ? `→ ${targetLabels.join(', ')}`
     : '(독백)';
   const el = document.createElement('div');
   el.className = 'sim-feed-msg';
@@ -54,7 +58,7 @@ export function addFeedMessage(data) {
   const actionNote = data.action_note || '';
   el.innerHTML = `
     <div class="sim-feed-header">
-      <span class="sim-feed-speaker">${esc(agent.icon)} ${esc(agent.name)}</span>
+      <span class="sim-feed-speaker">${esc(agent.icon)} ${esc(agent.display_name || agent.name)}</span>
       <span class="sim-feed-target">${esc(targetStr)}</span>
     </div>
     <div class="sim-feed-bubble">${esc(data.content)}</div>
@@ -74,7 +78,7 @@ export function addSceneEventToFeed(d) {
   const labels = { system_message: '시스템', agent_enter: '등장', agent_exit: '퇴장' };
   const icon  = icons[d.event_type]  || '📌';
   const label = labels[d.event_type] || d.event_type;
-  const agentHint = d.agent ? ` (${d.agent})` : '';
+  const agentHint = d.agent ? ` (${agentLabel(d.agent)})` : '';
   const el = document.createElement('div');
   el.className = 'sim-scene-event';
   el.innerHTML = `
@@ -89,7 +93,8 @@ export function addSceneEventToFeed(d) {
 }
 
 export function updateWaveIndicator(waveNum, agents) {
+  const labels = agents.map(k => agentLabel(k));
   document.getElementById('sim-turn-text').textContent =
-    `Wave ${waveNum}  |  ${agents.join(', ')}`;
+    `Wave ${waveNum}  |  ${labels.join(', ')}`;
   document.getElementById('sim-progress-fill').style.width = '30%';
 }

@@ -1,7 +1,7 @@
 // frontend/js/sim/context.js
 // Agent context-window viewer (right panel "context" tab).
 
-import { sim, esc, emotionClass } from './state.js';
+import { sim, esc, emotionClass, agentLabel } from './state.js';
 import { stripCodeFence } from './utils/json.js';
 
 export function switchTab(tabName) {
@@ -100,7 +100,7 @@ function renderContextMessages(messages, trimmed = 0, promptTokens = 0, tokenLim
         const inActionNote  = inActionMatch ? inActionMatch[2] : '';
         div.innerHTML = `
           <div class="ctx-role ctx-role-incoming">
-            <span class="ctx-speaker-badge">${esc(spkMatch[1])}</span>incoming
+            <span class="ctx-speaker-badge">${esc(agentLabel(spkMatch[1]))}</span>incoming
           </div>
           <div class="ctx-content">${esc(inContent)}</div>
           ${inActionNote ? `<div class="sim-feed-action">*${esc(inActionNote)}*</div>` : ''}`;
@@ -118,7 +118,8 @@ function renderContextMessages(messages, trimmed = 0, promptTokens = 0, tokenLim
       } catch (_) {}
 
       if (parsed) {
-        const tgt = Array.isArray(parsed.target) ? parsed.target.join(', ') : (parsed.target ?? '');
+        const rawTargets = Array.isArray(parsed.target) ? parsed.target : (parsed.target ? [parsed.target] : []);
+        const tgt = rawTargets.map(t => (t === 'all' ? '전체' : t === 'system' ? '(독백)' : agentLabel(t))).join(', ');
         const ctxActionNote = parsed.action_note || '';
         const metaBadges = sim.extra_fields
           .filter(f => f.name !== 'action_note' && parsed[f.name] != null)
