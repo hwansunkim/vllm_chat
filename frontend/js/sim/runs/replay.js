@@ -4,8 +4,6 @@
 import { sim, esc, emotionClass, agentLabel } from '../state.js';
 import { fmtTime, statusIcon } from '../utils/time.js';
 import { applyScenario } from '../scenarios.js';
-import { renderAgentCards } from '../run/cards.js';
-import { renderSettingsPage } from '../settings/page.js';
 import { setStatus } from '../run/control.js';
 import { connectSSE } from '../run/sse.js';
 
@@ -43,7 +41,7 @@ export async function openRunReplay(runId, runNum) {
         </div>
         <div class="sim-replay-actions">
           ${parsedConfig ? `<button id="sim-replay-resume-btn" class="sim-ctrl-btn continue" style="font-size:12px;padding:4px 10px">↩ 이어서</button>` : ''}
-          ${parsedConfig ? `<button id="sim-replay-restart-btn" class="sim-ctrl-btn start" style="font-size:12px;padding:4px 10px">▶ 새로 시작</button>` : ''}
+          ${parsedConfig ? `<button id="sim-replay-restart-btn" class="sim-ctrl-btn settings" style="font-size:12px;padding:4px 10px">설정 불러오기</button>` : ''}
           <button id="sim-replay-close-btn" class="sim-ctrl-btn settings" style="font-size:12px;padding:4px 10px">✕ 닫기</button>
         </div>
       </div>
@@ -117,13 +115,11 @@ export async function openRunReplay(runId, runNum) {
     });
   }
 
-  // 새로 시작 — 같은 설정으로 처음부터
+  // 설정 불러오기 — 시나리오 설정만 로드, 실행은 사용자가 직접 시작
   const restartBtn = document.getElementById('sim-replay-restart-btn');
   if (restartBtn && parsedConfig) {
     restartBtn.addEventListener('click', () => {
       applyScenario({ id: run.scenario_id, name: run.scenario_name || '', config: parsedConfig });
-      renderAgentCards();
-      renderSettingsPage();
       modal.remove();
     });
   }
