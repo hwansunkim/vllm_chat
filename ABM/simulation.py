@@ -63,8 +63,9 @@ class Simulation:
             self.active_agents = set(agents.keys())
 
         # 그룹 기반 <TARGETS> 가시성 — 에이전트별 볼 수 있는 다른 에이전트 목록
+        self._agent_groups: dict[str, list[str]] = agent_groups or {}
         self._visible_targets: dict[str, list[str]] = self._build_visible_targets(
-            agent_groups or {}
+            self._agent_groups
         )
 
         os.makedirs(log_dir, exist_ok=True)
@@ -123,6 +124,34 @@ class Simulation:
             return t
         return self._alias_to_key.get(t, t)
 
+    def _get_visible_sections(
+        self, agent_key: str, visible_agents: list[str]
+    ) -> list[tuple[str, list[str]]] | None:
+        """그룹 소속 에이전트의 <TARGETS>를 그룹-섹션으로 분류.
+
+        그룹 미설정 에이전트는 None 반환 (flat 목록 유지, 하위 호환).
+        """
+        my_groups = self._agent_groups.get(agent_key, [])
+        if not my_groups:
+            return None
+
+        sections: list[tuple[str, list[str]]] = []
+        seen: set[str] = set()
+        for gid in my_groups:
+            members = [
+                k for k in visible_agents
+                if k not in seen and gid in self._agent_groups.get(k, [])
+            ]
+            if members:
+                sections.append((gid, members))
+                seen.update(members)
+
+        ungrouped = [k for k in visible_agents if k not in seen]
+        if ungrouped:
+            sections.append(("기타", ungrouped))
+
+        return sections or None
+
     def _resolve_targets(self, targets: list[str], speaker_key: str) -> list[str]:
         """발화 target 해석 — active_agents 기준."""
         resolved = []
@@ -136,15 +165,28 @@ class Simulation:
         return list(dict.fromkeys(resolved))
 
     def _resolve_event_targets(self, targets: list[str]) -> list[str]:
-        """이벤트 알림 대상 해석 — active_agents 기준 (speaker 제한 없음)."""
+        """이벤트 알림 대상 해석 — active_agents 기준 (speaker 제한 없음).
+
+        지원 형식:
+          "all"      → 모든 활성 에이전트
+          "group:X"  → 그룹 X 소속 활성 에이전트 전원
+          "<key>"    → 특정 에이전트
+        """
         if any(t.strip().lower() == "all" for t in targets):
             return list(self.active_agents)
         resolved = []
         for t in targets:
-            key = self._normalize_target(t)
-            if key in self.active_agents:
-                resolved.append(key)
-        return resolved
+            t_s = t.strip()
+            if t_s.lower().startswith("group:"):
+                gid = t_s[6:]
+                for key in self.active_agents:
+                    if gid in self._agent_groups.get(key, []):
+                        resolved.append(key)
+            else:
+                key = self._normalize_target(t_s)
+                if key in self.active_agents:
+                    resolved.append(key)
+        return list(dict.fromkeys(resolved))
 
     # ------------------------------------------------------------------
     # 시나리오 이벤트 실행
@@ -276,6 +318,7 @@ class Simulation:
         agent_key: str,
         wave: int,
         other_agents: list[str],
+        target_sections: list[tuple[str, list[str]]] | None = None,
     ) -> None:
         """Trigger structured-memory compression if context is approaching the token limit."""
         if (
@@ -284,7 +327,9 @@ class Simulation:
             or len(agent.memory) < _COMPRESSION_MIN_MSGS
         ):
             return
-        est = agent.estimate_context_tokens(self.background_log, other_agents, self._key_to_alias)
+        est = agent.estimate_context_tokens(
+            self.background_log, other_agents, self._key_to_alias, target_sections
+        )
         if est / agent._token_limit >= _COMPRESSION_THRESHOLD:
             self._compress_agent(agent, agent_key, wave)
 
@@ -292,6 +337,8 @@ class Simulation:
         self,
         agent: Agent,
         agent_key: str,
+        visible_agents: list[str],
+        target_sections: list[tuple[str, list[str]]] | None = None,
     ) -> tuple[str | None, str, dict, str | None]:
         """Invoke the LLM for an agent. Returns (content, reasoning, usage, error).
 
@@ -299,10 +346,9 @@ class Simulation:
         carries a short reason ("exception:..." or "empty"). The caller is
         responsible for popping injected memory entries and emitting events.
         """
-        other_agents   = [k for k in self.active_agents if k != agent_key]
-        visible_agents = [k for k in self._visible_targets.get(agent_key, other_agents)
-                          if k in self.active_agents]
-        call_messages = agent.build_messages(self.background_log, visible_agents, self._key_to_alias)
+        call_messages = agent.build_messages(
+            self.background_log, visible_agents, self._key_to_alias, target_sections
+        )
         try:
             content, reasoning, usage = chat_response(
                 call_messages, self.model, self.base_url, self.api_timeout
@@ -428,16 +474,20 @@ class Simulation:
         incoming_msgs = self._inject_incoming(active_agent, incoming)
         other_agents  = [k for k in self.active_agents if k != agent_key]
         # 그룹 필터 적용: 이 에이전트가 볼 수 있는 활성 에이전트만 <TARGETS>에 노출
-        visible_agents = [k for k in self._visible_targets.get(agent_key, other_agents)
-                          if k in self.active_agents]
+        visible_agents  = [k for k in self._visible_targets.get(agent_key, other_agents)
+                           if k in self.active_agents]
+        # 그룹 소속이 있으면 섹션 구조로 <TARGETS> 렌더링
+        target_sections = self._get_visible_sections(agent_key, visible_agents)
 
         # Compression runs before trimming so memories are structured, not discarded.
-        self._maybe_compress(active_agent, agent_key, wave, visible_agents)
+        self._maybe_compress(active_agent, agent_key, wave, visible_agents, target_sections)
 
         # Trim memory to fit within token limit before building the final prompt.
-        active_agent.trim_to_token_limit(self.background_log, visible_agents, self._key_to_alias)
+        active_agent.trim_to_token_limit(
+            self.background_log, visible_agents, self._key_to_alias, target_sections
+        )
         est_tokens = active_agent.estimate_context_tokens(
-            self.background_log, visible_agents, self._key_to_alias
+            self.background_log, visible_agents, self._key_to_alias, target_sections
         )
 
         self._emit("turn_start", {
@@ -449,7 +499,9 @@ class Simulation:
             "token_limit": active_agent._token_limit,
         })
 
-        content, reasoning, usage, error = self._call_llm_for_agent(active_agent, agent_key)
+        content, reasoning, usage, error = self._call_llm_for_agent(
+            active_agent, agent_key, visible_agents, target_sections
+        )
         if error is not None:
             self._emit("turn_error", {
                 "turn":    turn,

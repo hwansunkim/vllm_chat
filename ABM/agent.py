@@ -32,13 +32,23 @@ def _build_output_format(
     extra_fields: list[dict],
     key_to_alias: dict[str, str] | None = None,
     template: str | None = None,
+    target_sections: list[tuple[str, list[str]]] | None = None,
 ) -> str:
     """Dynamically build the JSON output format instruction from configured fields."""
-    lines = []
-    for t in available_targets:
-        alias = (key_to_alias or {}).get(t, "")
-        lines.append(f'  - ID: "{t}"' + (f'  ({alias})' if alias else ""))
-    targets_block = ("\n".join(lines) + "\n") if lines else "  (없음)\n"
+    if target_sections:
+        parts: list[str] = []
+        for section_label, members in target_sections:
+            parts.append(f"[{section_label}]")
+            for t in members:
+                alias = (key_to_alias or {}).get(t, "")
+                parts.append(f'  - ID: "{t}"' + (f'  ({alias})' if alias else ""))
+        targets_block = ("\n".join(parts) + "\n") if parts else "  (없음)\n"
+    else:
+        lines: list[str] = []
+        for t in available_targets:
+            alias = (key_to_alias or {}).get(t, "")
+            lines.append(f'  - ID: "{t}"' + (f'  ({alias})' if alias else ""))
+        targets_block = ("\n".join(lines) + "\n") if lines else "  (없음)\n"
 
     field_lines = "\n".join(
         f'    "{f["name"]}": "{f["default"]}",'
@@ -118,12 +128,14 @@ class Agent:
         self,
         available_targets: list[str],
         key_to_alias: dict[str, str] | None = None,
+        target_sections: list[tuple[str, list[str]]] | None = None,
     ) -> dict:
         return {
             "role": "system",
             "content": self.system_prompt + _build_output_format(
                 available_targets, self._extra_fields, key_to_alias,
                 template=self._output_format_template,
+                target_sections=target_sections,
             ),
         }
 
@@ -136,9 +148,10 @@ class Agent:
         background_log: list,
         available_targets: list[str],
         key_to_alias: dict[str, str] | None = None,
+        target_sections: list[tuple[str, list[str]]] | None = None,
     ) -> int:
         """Estimate total prompt tokens for the next LLM call."""
-        msgs = self.build_messages(background_log, available_targets, key_to_alias)
+        msgs = self.build_messages(background_log, available_targets, key_to_alias, target_sections)
         return sum(_msg_tokens(m) for m in msgs)
 
     def trim_to_token_limit(
@@ -146,17 +159,18 @@ class Agent:
         background_log: list,
         available_targets: list[str],
         key_to_alias: dict[str, str] | None = None,
+        target_sections: list[tuple[str, list[str]]] | None = None,
     ):
         """Remove oldest memory messages until estimated tokens fit within _token_limit."""
         while self.memory:
-            if self.estimate_context_tokens(background_log, available_targets, key_to_alias) <= self._token_limit:
+            if self.estimate_context_tokens(background_log, available_targets, key_to_alias, target_sections) <= self._token_limit:
                 break
             self.memory.pop(0)
             self._trimmed_count += 1
 
         # Warn when system+background alone exceeds the limit — trimming can't help further.
         if not self.memory:
-            est = self.estimate_context_tokens(background_log, available_targets, key_to_alias)
+            est = self.estimate_context_tokens(background_log, available_targets, key_to_alias, target_sections)
             if est > self._token_limit:
                 logger.warning(
                     f"[{self.name}] Context exceeds token_limit even with empty memory "
@@ -169,9 +183,10 @@ class Agent:
         background_log: list,
         available_targets: list[str],
         key_to_alias: dict[str, str] | None = None,
+        target_sections: list[tuple[str, list[str]]] | None = None,
     ) -> list:
         """[system] + background_log + [memory_block?] + agent memory"""
-        msgs = [self.get_system_message(available_targets, key_to_alias)] + background_log
+        msgs = [self.get_system_message(available_targets, key_to_alias, target_sections)] + background_log
         if self._memory_block:
             msgs.append({"role": "user", "content": self._memory_block})
         msgs.extend(self.memory)

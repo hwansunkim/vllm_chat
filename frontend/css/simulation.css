@@ -335,6 +335,28 @@
 .sim-event-field input:focus,
 .sim-event-field select:focus { border-color: #6366f1; }
 
+/* ── Event target chip selector ──────────────────────────────────────────────── */
+.sim-event-targets-row {
+  display: flex; align-items: flex-start; gap: 6px;
+}
+.sim-event-targets-label {
+  font-size: 10px; color: #94a3b8; white-space: nowrap; min-width: 38px; padding-top: 4px;
+}
+.evt-target-chips {
+  display: flex; flex-wrap: wrap; gap: 4px; flex: 1;
+}
+.evt-target-chip {
+  font-size: 11px; padding: 3px 9px; border-radius: 10px; cursor: pointer;
+  border: 1px solid #e2e8f0; background: #f8fafc; color: #64748b;
+  user-select: none; transition: background .12s, color .12s, border-color .12s;
+  white-space: nowrap;
+}
+.evt-target-chip:hover { background: #f1f5f9; border-color: #cbd5e1; }
+.evt-target-chip.selected { border-color: transparent; font-weight: 500; }
+.evt-target-chip.evt-target-all.selected  { background: #dbeafe; color: #1d4ed8; }
+.evt-target-chip.evt-target-group.selected { background: #ede9fe; color: #5b21b6; }
+.evt-target-chip.evt-target-agent.selected { background: #dcfce7; color: #15803d; }
+
 /* ── Center panel ─────────────────────────────────────────────────────────────── */
 #sim-center {
   flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0;

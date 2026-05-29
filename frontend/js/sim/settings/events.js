@@ -1,13 +1,34 @@
 // frontend/js/sim/settings/events.js
 // Scenario events editor (wave-keyed system messages / agent enter/exit).
 
-import { sim, esc } from '../state.js';
+import { sim, esc, getAllGroups } from '../state.js';
 
 const EVENT_LABELS = {
   system_message: '📢 시스템 메시지',
   agent_enter:    '🎭 에이전트 등장',
   agent_exit:     '🚪 에이전트 퇴장',
 };
+
+// Build the ordered list of selectable targets for system_message events.
+function _buildTargetOptions() {
+  const opts = [{ value: 'all', label: '전체', cls: 'evt-target-all' }];
+  for (const g of getAllGroups()) {
+    opts.push({ value: `group:${g}`, label: `그룹 ${g}`, cls: 'evt-target-group' });
+  }
+  for (const a of sim.agents) {
+    opts.push({ value: a.name, label: `${a.icon} ${a.name}`, cls: 'evt-target-agent' });
+  }
+  return opts;
+}
+
+function _renderTargetChips(idx, currentTargets) {
+  const targets = currentTargets && currentTargets.length ? currentTargets : ['all'];
+  return _buildTargetOptions().map(opt => {
+    const sel = targets.includes(opt.value);
+    return `<span class="evt-target-chip ${opt.cls}${sel ? ' selected' : ''}"
+                  data-idx="${idx}" data-value="${esc(opt.value)}">${esc(opt.label)}</span>`;
+  }).join('');
+}
 
 export function renderScenarioEvents() {
   const list = document.getElementById('sim-events-list');
@@ -47,10 +68,11 @@ export function renderScenarioEvents() {
         <select data-idx="${idx}" data-field="agent">${agentOptions}</select>
       </div>` : ''}
       ${isSysMsgEvent ? `
-      <div class="sim-event-field">
-        <label>대상</label>
-        <input type="text" data-idx="${idx}" data-field="targets_str"
-               value="${(ev.targets || ['all']).join(',')}" placeholder="all 또는 boss,lee"/>
+      <div class="sim-event-targets-row">
+        <span class="sim-event-targets-label">대상</span>
+        <div class="evt-target-chips" data-idx="${idx}">
+          ${_renderTargetChips(idx, ev.targets)}
+        </div>
       </div>` : ''}
       <div class="sim-event-field">
         <label>메시지</label>
@@ -73,6 +95,29 @@ export function renderScenarioEvents() {
       renderScenarioEvents();
     });
   });
+
+  // Target chip toggle
+  list.querySelectorAll('.evt-target-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const idx = +chip.dataset.idx;
+      const val = chip.dataset.value;
+      let targets = [...(sim.events[idx].targets || ['all'])];
+
+      if (val === 'all') {
+        targets = ['all'];
+      } else {
+        targets = targets.filter(t => t !== 'all');
+        if (targets.includes(val)) {
+          targets = targets.filter(t => t !== val);
+        } else {
+          targets.push(val);
+        }
+        if (!targets.length) targets = ['all'];
+      }
+      sim.events[idx].targets = targets;
+      renderScenarioEvents();
+    });
+  });
 }
 
 function syncEventField(el) {
@@ -83,9 +128,6 @@ function syncEventField(el) {
   } else if (field === 'type') {
     sim.events[idx].type = el.value;
     renderScenarioEvents();
-  } else if (field === 'targets_str') {
-    sim.events[idx].targets = el.value.split(',').map(s => s.trim()).filter(Boolean);
-    if (!sim.events[idx].targets.length) sim.events[idx].targets = ['all'];
   } else {
     sim.events[idx][field] = el.value;
   }
