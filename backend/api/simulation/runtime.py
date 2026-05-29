@@ -315,13 +315,15 @@ def get_agent_context(name: str):
     agent = agents[name]
     sim_obj = _sim.get("sim_obj")
     if sim_obj is not None:
-        other_names = [k for k in sim_obj.active_agents if k != name]
+        all_others   = [k for k in sim_obj.active_agents if k != name]
+        visible_names = [k for k in sim_obj._visible_targets.get(name, all_others)
+                         if k in sim_obj.active_agents]
         key_to_alias = sim_obj._key_to_alias
     else:
-        other_names = [k for k in agents if k != name]
+        visible_names = [k for k in agents if k != name]
         key_to_alias = {}
-    messages      = agent.build_messages(bg_log, other_names, key_to_alias)
-    est_tokens    = agent.estimate_context_tokens(bg_log, other_names, key_to_alias)
+    messages      = agent.build_messages(bg_log, visible_names, key_to_alias)
+    est_tokens    = agent.estimate_context_tokens(bg_log, visible_names, key_to_alias)
     prompt_tokens = agent._last_prompt_tokens if agent._last_prompt_tokens is not None else est_tokens
     return {
         "name":           name,
