@@ -1,7 +1,7 @@
 // frontend/js/sim/runs/replay.js
 // Run replay modal: read-only feed + resume / restart actions.
 
-import { sim, esc, emotionClass } from '../state.js';
+import { sim, esc, emotionClass, agentLabel } from '../state.js';
 import { fmtTime, statusIcon } from '../utils/time.js';
 import { applyScenario } from '../scenarios.js';
 import { renderAgentCards } from '../run/cards.js';
@@ -65,13 +65,14 @@ export async function openRunReplay(runId, runNum) {
     const actionNote = entry.action_note || '';
     const extraFields = sim.extra_fields || [];
     const metaBadges = extraFields
-      .filter(f => entry.meta && entry.meta[f.name] != null)
+      .filter(f => f.name !== 'action_note' && entry.meta && entry.meta[f.name] != null)
       .map(f => {
         const val = String(entry.meta[f.name]);
         const cls = f.name === 'emotion' ? emotionClass(val) : 'emotion-neutral';
         return `<span class="sim-feed-badge ${cls}">${esc(val)}</span>`;
       }).join('');
-    const targets = Array.isArray(entry.targets) ? entry.targets.join(', ') : '';
+    const targetArr = Array.isArray(entry.targets) ? entry.targets : [];
+    const targets = targetArr.map(t => t === 'all' ? '전체' : agentLabel(t)).join(', ');
     div.innerHTML = `
       <div class="sim-feed-speaker">
         <span class="sim-feed-icon">${esc(icon)}</span>

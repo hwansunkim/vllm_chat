@@ -96,8 +96,9 @@ export function newScenario() {
   sim.step_delay          = 1.0;
   sim.token_limit         = 8192;
   sim.extra_fields        = [
-    { name: 'emotion', default: 'neutral' },
-    { name: 'action',  default: 'speak'   },
+    { name: 'emotion',     default: 'neutral' },
+    { name: 'action',      default: 'speak'   },
+    { name: 'action_note', default: ''        },
   ];
   sim.events                 = [];
   sim.output_format_template = '';
@@ -125,8 +126,9 @@ export function applyScenario(s) {
   // Old default was 20 messages; ~400 tokens/message is a reasonable estimate.
   sim.token_limit  = cfg.token_limit ?? (cfg.memory_limit ? cfg.memory_limit * 400 : 8192);
   sim.extra_fields = cfg.extra_fields || [
-    { name: 'emotion', default: 'neutral' },
-    { name: 'action',  default: 'speak'   },
+    { name: 'emotion',     default: 'neutral' },
+    { name: 'action',      default: 'speak'   },
+    { name: 'action_note', default: ''        },
   ];
   sim.events                 = cfg.events                 || [];
   sim.output_format_template = cfg.output_format_template || '';

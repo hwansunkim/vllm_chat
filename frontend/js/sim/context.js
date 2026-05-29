@@ -95,7 +95,7 @@ function renderContextMessages(messages, trimmed = 0, promptTokens = 0, tokenLim
           <div class="ctx-role ctx-role-background">배경</div>
           <div class="ctx-content">${esc(bgMatch[1])}</div>`;
       } else if (spkMatch) {
-        const inActionMatch = spkMatch[2].match(/^([\s\S]*?)\n\(([^)]+)\)\s*$/);
+        const inActionMatch = spkMatch[2].match(/^([\s\S]*)\n\(([^)]*)\)\s*$/);
         const inContent     = inActionMatch ? inActionMatch[1] : spkMatch[2];
         const inActionNote  = inActionMatch ? inActionMatch[2] : '';
         div.innerHTML = `

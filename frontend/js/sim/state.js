@@ -13,8 +13,9 @@ export const sim = {
   step_delay:   1.0,
   token_limit:  8192,
   extra_fields: [
-    { name: 'emotion', default: 'neutral' },
-    { name: 'action',  default: 'speak'   },
+    { name: 'emotion',     default: 'neutral' },
+    { name: 'action',      default: 'speak'   },
+    { name: 'action_note', default: ''        },
   ],
   events:       [],
   output_format_template: '',

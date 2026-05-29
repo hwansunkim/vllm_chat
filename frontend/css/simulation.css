@@ -137,6 +137,14 @@
   padding: 7px 16px; border-bottom: 1px solid #f1f5f9;
 }
 .sim-field-row:last-child { border-bottom: none; }
+.sim-field-row-action-note { background: #faf5ff; }
+.sim-field-name-locked {
+  width: 130px; font-size: 12px; padding: 5px 8px;
+  color: #6d28d9; font-weight: 500; font-style: italic;
+}
+.sim-field-action-note-hint {
+  flex: 1; font-size: 11px; color: #a78bfa; font-style: italic;
+}
 .sim-field-name {
   width: 130px; font-size: 12px; padding: 5px 8px;
   border: 1px solid #e2e8f0; border-radius: 5px; outline: none; color: #334155;
@@ -444,7 +452,12 @@
 }
 .sim-feed-meta    { display: flex; gap: 5px; margin-top: 4px; padding-left: 2px; flex-wrap: wrap; }
 .sim-feed-badge   { font-size: 10px; padding: 1px 7px; border-radius: 8px; }
-.sim-feed-action  { font-size: 11px; color: #94a3b8; margin-top: 5px; padding: 0 4px; font-style: italic; line-height: 1.4; }
+.sim-feed-action {
+  display: inline-block; font-size: 11px; font-style: italic; line-height: 1.4;
+  color: #6d28d9; background: #f5f3ff;
+  margin-top: 5px; padding: 2px 8px; border-radius: 4px;
+  border-left: 2px solid #c4b5fd;
+}
 .sim-feed-thinking { font-size: 10px; color: #94a3b8; margin-top: 3px; padding-left: 2px; font-style: italic; }
 
 /* Typing indicator */
