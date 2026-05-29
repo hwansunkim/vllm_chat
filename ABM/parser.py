@@ -11,6 +11,44 @@ logger = logging.getLogger(__name__)
 _CODE_FENCE_RE = re.compile(r'^\s*```(?:json)?\s*\n?([\s\S]*?)\n?```\s*$')
 
 
+def _sanitize_json_strings(raw: str) -> str:
+    """Escape literal control characters inside JSON string values.
+
+    LLMs sometimes emit raw newlines / tabs inside strings instead of \\n / \\t,
+    which makes json.loads() raise a JSONDecodeError.  Walk the text character-by-
+    character, tracking whether we are inside a JSON string, and replace bare
+    newline/carriage-return/tab with their JSON escape sequences.
+    """
+    out: list[str] = []
+    in_str = False
+    skip   = False
+    for ch in raw:
+        if skip:
+            out.append(ch)
+            skip = False
+            continue
+        if ch == '\\':
+            out.append(ch)
+            skip = True   # next char is escaped — don't flip in_str
+            continue
+        if ch == '"':
+            in_str = not in_str
+            out.append(ch)
+            continue
+        if in_str:
+            if ch == '\n':
+                out.append('\\n')
+                continue
+            if ch == '\r':
+                out.append('\\r')
+                continue
+            if ch == '\t':
+                out.append('\\t')
+                continue
+        out.append(ch)
+    return ''.join(out)
+
+
 def parse_json_response(
     content: str,
     extra_fields: list[dict] | None = None,
@@ -29,7 +67,8 @@ def parse_json_response(
         if m:
             raw = m.group(1)
 
-        data          = json.loads(raw.strip())
+        raw  = _sanitize_json_strings(raw.strip())
+        data = json.loads(raw)
         clean_content = data.get("content", "")
         meta_values   = {f["name"]: data.get(f["name"], f["default"]) for f in _fields}
         targets       = data.get("target", [])
