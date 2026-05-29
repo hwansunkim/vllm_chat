@@ -3,6 +3,48 @@
 
 import { sim, esc, emotionClass, agentLabel } from '../state.js';
 
+export function renderHistoricalFeed(entries) {
+  const feed = document.getElementById('sim-feed');
+  feed.innerHTML = '';
+
+  if (!entries || !entries.length) {
+    feed.innerHTML = '<div id="sim-feed-empty">저장된 대화 기록이 없습니다.</div>';
+    return;
+  }
+
+  entries.forEach(entry => {
+    const agent = sim.agents.find(a => a.name === entry.speaker) || { icon: '🤖', name: entry.speaker };
+    const targets = (entry.targets || []).filter(t => t !== 'system');
+    const targetLabels = targets.map(t => t === 'all' ? '전체' : agentLabel(t));
+    const targetStr = targets.length ? `→ ${targetLabels.join(', ')}` : '(독백)';
+
+    const meta = entry.meta || {};
+    const metaBadges = Object.entries(meta)
+      .filter(([k]) => k !== 'action_note')
+      .map(([k, v]) =>
+        `<span class="sim-feed-badge ${k === 'emotion' ? emotionClass(String(v)) : 'emotion-neutral'}">${esc(String(v))}</span>`)
+      .join('');
+    const actionNote = entry.action_note || '';
+    const waveBadge  = entry.wave != null ? `<span class="sim-feed-wave-mini">W${entry.wave}</span>` : '';
+
+    const div = document.createElement('div');
+    div.className = 'sim-feed-msg sim-feed-msg-history';
+    div.innerHTML = `
+      <div class="sim-feed-header">
+        <span class="sim-feed-speaker">${esc(agent.icon)} ${esc(agent.display_name || agent.name)}</span>
+        ${waveBadge}
+        <span class="sim-feed-target">${esc(targetStr)}</span>
+      </div>
+      <div class="sim-feed-bubble">${esc(entry.content)}</div>
+      ${actionNote ? `<div class="sim-feed-action">*${esc(actionNote)}*</div>` : ''}
+      ${metaBadges ? `<div class="sim-feed-meta">${metaBadges}</div>` : ''}
+    `;
+    feed.appendChild(div);
+  });
+
+  feed.lastElementChild?.scrollIntoView({ block: 'end' });
+}
+
 export function removeFeedEmpty() {
   const el = document.getElementById('sim-feed-empty');
   if (el) el.remove();

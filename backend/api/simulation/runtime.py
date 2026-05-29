@@ -179,6 +179,118 @@ def continue_simulation(cfg: SimContinueConfig):
     return {"status": "continuing"}
 
 
+# ── /load/{run_id} ────────────────────────────────────────────────────────────
+
+@router.post("/load/{run_id}")
+def load_simulation(run_id: str):
+    """과거 실행 상태를 메모리에 복원하되 실행은 시작하지 않음.
+
+    /resume 과 달리 스레드를 생성하지 않고 status='done'으로 설정해
+    프론트엔드에서 '이어서' 버튼으로 계속할 수 있는 상태를 만든다.
+    로그 항목도 반환해 피드를 복원할 수 있게 한다.
+    """
+    with _sim_lock:
+        if _sim["status"] == "running":
+            raise HTTPException(409, "Simulation already running")
+        _sim["status"] = "loading"
+
+    db = get_sim_db()
+    run = db.get_run(run_id)
+    if run is None:
+        with _sim_lock:
+            _sim["status"] = "idle"
+        raise HTTPException(404, "Run not found")
+
+    config_json = run.get("config_json") or "{}"
+    try:
+        cfg_dict = json.loads(config_json)
+        if not cfg_dict.get("agents"):
+            raise ValueError("empty config")
+        cfg = SimStartConfig(**cfg_dict)
+    except Exception:
+        with _sim_lock:
+            _sim["status"] = "idle"
+        raise HTTPException(400, "이 실행은 설정 스냅샷이 없어 불러올 수 없습니다")
+
+    snapshots     = db.get_agent_snapshots(run_id)
+    active_json   = run.get("active_agents_json")
+    pending_json  = run.get("pending_wave_json")
+    saved_active  = set(json.loads(active_json)) if active_json  else None
+    saved_pending = json.loads(pending_json)      if pending_json else None
+    log_entries   = db.get_run_log(run_id)
+
+    try:
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        from ABM.db import SimDB
+        from ABM.config import MODEL, BASE_URL, API_TIMEOUT, LOG_DIR
+        from ABM.memory_compressor import build_memory_block
+
+        alias_map    = {a.display_name: a.name for a in cfg.agents if a.display_name.strip()}
+        key_to_alias = {v: k for k, v in alias_map.items()}
+
+        agents = {}
+        for a in cfg.agents:
+            agent = Agent(
+                a.name, a.system_prompt, LOG_DIR,
+                token_limit=cfg.token_limit,
+                extra_fields=[f.model_dump() for f in cfg.extra_fields],
+                output_format_template=cfg.output_format_template or None,
+            )
+            if a.name in snapshots:
+                agent.memory = list(snapshots[a.name])
+            block = build_memory_block(run_id, a.name, db, key_to_alias=key_to_alias)
+            if block:
+                agent._memory_block = block
+            agents[a.name] = agent
+
+        background_log = [{"role": "user", "content": f"[배경] {cfg.background}"}]
+        init_agents    = list(saved_active) if saved_active is not None else None
+        agent_groups   = {a.name: a.groups for a in cfg.agents}
+
+        sim_obj = Simulation(
+            agents, background_log, LOG_DIR,
+            MODEL, BASE_URL, API_TIMEOUT,
+            initial_agents=init_agents,
+            name_aliases=alias_map,
+            db=SimDB(os.path.join(LOG_DIR, "simulation.db")),
+            agent_groups=agent_groups,
+        )
+        if saved_pending:
+            sim_obj._pending_wave = saved_pending
+
+        # shared_log을 DB 로그로 재구성 (피드 복원용)
+        shared_log = [
+            {
+                "speaker":     e["speaker"],
+                "content":     e["content"],
+                "meta":        e.get("meta", {}),
+                "targets":     e.get("targets", []),
+                "timestamp":   e.get("timestamp", 0),
+                "action_note": e.get("action_note", ""),
+                "wave":        e.get("wave", 0),
+            }
+            for e in log_entries
+        ]
+
+        with _sim_lock:
+            _sim["agents"]         = sim_obj.agents
+            _sim["background_log"] = sim_obj.background_log
+            _sim["sim_obj"]        = sim_obj
+            _sim["scenario_id"]    = run.get("scenario_id")
+            _sim["scenario_name"]  = run.get("scenario_name")
+            _sim["shared_log"]     = shared_log
+            _sim["edges"]          = []
+            _sim["status"]         = "done"
+
+        return {"status": "loaded", "log": log_entries}
+
+    except Exception as e:
+        with _sim_lock:
+            _sim["status"] = "idle"
+        raise HTTPException(500, str(e))
+
+
 # ── /resume/{run_id} ──────────────────────────────────────────────────────────
 
 @router.post("/resume/{run_id}")

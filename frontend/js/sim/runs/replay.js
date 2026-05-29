@@ -5,6 +5,10 @@ import { sim, esc, emotionClass, agentLabel } from '../state.js';
 import { fmtTime, statusIcon } from '../utils/time.js';
 import { applyScenario } from '../scenarios.js';
 import { setStatus } from '../run/control.js';
+import { renderAgentCards } from '../run/cards.js';
+import { renderHistoricalFeed } from '../run/feed.js';
+import { initD3Graph } from '../graph/d3.js';
+import { updateScenarioLabel } from '../views.js';
 import { connectSSE } from '../run/sse.js';
 
 export async function openRunReplay(runId, runNum) {
@@ -41,7 +45,7 @@ export async function openRunReplay(runId, runNum) {
         </div>
         <div class="sim-replay-actions">
           ${parsedConfig ? `<button id="sim-replay-resume-btn" class="sim-ctrl-btn continue" style="font-size:12px;padding:4px 10px">↩ 이어서</button>` : ''}
-          ${parsedConfig ? `<button id="sim-replay-restart-btn" class="sim-ctrl-btn settings" style="font-size:12px;padding:4px 10px">설정 불러오기</button>` : ''}
+          ${parsedConfig ? `<button id="sim-replay-restart-btn" class="sim-ctrl-btn settings" style="font-size:12px;padding:4px 10px">이력 불러오기</button>` : ''}
           <button id="sim-replay-close-btn" class="sim-ctrl-btn settings" style="font-size:12px;padding:4px 10px">✕ 닫기</button>
         </div>
       </div>
@@ -115,11 +119,41 @@ export async function openRunReplay(runId, runNum) {
     });
   }
 
-  // 설정 불러오기 — 시나리오 설정만 로드, 실행은 사용자가 직접 시작
+  // 이력 불러오기 — 에이전트 메모리·피드 복원 후 '이어서' 준비 상태로
   const restartBtn = document.getElementById('sim-replay-restart-btn');
   if (restartBtn && parsedConfig) {
-    restartBtn.addEventListener('click', () => {
+    restartBtn.addEventListener('click', async () => {
+      restartBtn.disabled = true;
+      restartBtn.textContent = '불러오는 중...';
+
+      const res = await fetch(`/api/simulation/load/${encodeURIComponent(runId)}`, { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(`불러오기 실패: ${err.detail || '서버 오류'}`);
+        restartBtn.disabled = false;
+        restartBtn.textContent = '이력 불러오기';
+        return;
+      }
+      const data = await res.json();
+
+      // 시나리오 설정 반영 (sim.* 상태 업데이트)
       applyScenario({ id: run.scenario_id, name: run.scenario_name || '', config: parsedConfig });
+
+      // 에이전트 카드 · 그래프 초기화
+      renderAgentCards();
+      initD3Graph();
+
+      // 과거 대화 피드 복원
+      renderHistoricalFeed(data.log);
+
+      // 시뮬레이션 뷰 표시 (설정창 닫기)
+      document.getElementById('sim-settings-view').classList.add('sim-hidden');
+      document.getElementById('sim-view').classList.remove('sim-hidden');
+      updateScenarioLabel();
+
+      // status='done' → '이어서' 버튼 활성화
+      setStatus('done');
+
       modal.remove();
     });
   }
