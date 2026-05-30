@@ -410,11 +410,13 @@ class Simulation:
         )
 
         self.shared_log.append({
-            "speaker":   agent.name,
-            "content":   clean_content,
-            "meta":      dict(meta),
-            "targets":   parsed_targets,
-            "timestamp": time.time(),
+            "speaker":     agent.name,
+            "content":     clean_content,
+            "meta":        {k: v for k, v in meta.items() if k != "action_note"},
+            "action_note": meta.get("action_note", ""),
+            "targets":     parsed_targets,
+            "wave":        wave,
+            "timestamp":   time.time(),
         })
         self._save_shared_log()
 
