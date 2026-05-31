@@ -94,6 +94,16 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
                 if name:
                     self._location_graph[name] = list(connects)
 
+        # 지도를 각 에이전트 시스템 프롬프트에 정적으로 주입 (에이전트가 처음부터 지도 인식)
+        if self._location_graph:
+            map_lines = ["\n\n[위치 그래프 — 이동 가능한 경로]"]
+            for loc, conns in self._location_graph.items():
+                conn_str = ", ".join(conns) if conns else "(연결 없음)"
+                map_lines.append(f"  {loc}: {conn_str}")
+            map_section = "\n".join(map_lines)
+            for agent in self.agents.values():
+                agent.system_prompt += map_section
+
         self._agent_path: dict[str, list[str]] = {}
 
         self._agent_location:  dict[str, str]  = {}

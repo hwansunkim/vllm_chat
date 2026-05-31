@@ -76,13 +76,6 @@ class _LocationMixin:
 
         lines = ["[현재 상황]", f"현재 위치: {my_loc}"]
 
-        if self._location_graph:
-            lines.append("")
-            lines.append("[지도]")
-            for loc_name, connections in self._location_graph.items():
-                conn_str = ", ".join(connections) if connections else "(연결 없음)"
-                lines.append(f"  {loc_name}: {conn_str}")
-
         adjacent = self._get_adjacent(my_loc)
         if adjacent:
             lines.append(f"이동 가능한 장소: {', '.join(adjacent)}")
