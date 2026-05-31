@@ -58,16 +58,28 @@ class _TargetsMixin:
         return sections or None
 
     def _resolve_targets(self, targets: list[str], speaker_key: str) -> list[str]:
-        """발화 target 해석 — active_agents 기준.
+        """발화 target 해석 — active_agents 기준, 위치 기반 필터링 적용.
 
         지원 형식:
-          "all"        → 화자 그룹 내 활성 에이전트 (그룹 미소속 시 전체)
-          "group:X"    → 그룹 X 소속 활성 에이전트 중 화자가 볼 수 있는 멤버만
-          "stranger_N" → 해당 낯선 이 (real_key 로 변환 + knowledge 확장)
-          "<key>"      → 특정 에이전트
+          "all"        → 화자와 같은 위치의 활성 에이전트
+          "group:X"    → 그룹 X 소속 + 같은 위치 에이전트
+          "stranger_N" → 해당 낯선 이 (real_key 변환 + knowledge 확장)
+          "<key>"      → 특정 에이전트 (같은 위치일 때만)
+        위치 미설정 에이전트는 기존 동작 유지 (하위 호환).
         """
-        resolved   = []
+        resolved    = []
         visible_set = set(self._visible_targets.get(speaker_key, []))
+        speaker_loc = self._agent_location.get(speaker_key, "")
+
+        def _same_loc(key: str) -> bool:
+            """위치 시스템 활성 시 같은 위치인지 확인. 위치 미설정이면 항상 True."""
+            if not speaker_loc:
+                return True
+            other_loc = self._agent_location.get(key, "")
+            if not other_loc:
+                return True
+            return speaker_loc == other_loc
+
         for t in targets:
             t_s = t.strip()
             if t_s.lower() in ("self", "system"):
@@ -75,14 +87,17 @@ class _TargetsMixin:
             elif t_s.lower() == "all":
                 my_groups = self._agent_groups.get(speaker_key, [])
                 if my_groups:
-                    resolved.extend(k for k in visible_set if k in self.active_agents)
+                    candidates = (k for k in visible_set if k in self.active_agents)
                 else:
-                    resolved.extend(k for k in self.active_agents if k != speaker_key)
+                    candidates = (k for k in self.active_agents if k != speaker_key)
+                resolved.extend(k for k in candidates if _same_loc(k))
             elif t_s.lower().startswith("group:"):
                 gid = t_s[6:]
                 resolved.extend(
                     k for k in visible_set
-                    if k in self.active_agents and gid in self._agent_groups.get(k, [])
+                    if k in self.active_agents
+                    and gid in self._agent_groups.get(k, [])
+                    and _same_loc(k)
                 )
             elif t_s.startswith("stranger_"):
                 real_key = self._stranger_map.get(speaker_key, {}).get(t_s)
@@ -92,7 +107,7 @@ class _TargetsMixin:
                     resolved.append(real_key)
             else:
                 key = self._normalize_target(t_s)
-                if key in self.active_agents and key != speaker_key:
+                if key in self.active_agents and key != speaker_key and _same_loc(key):
                     resolved.append(key)
         return list(dict.fromkeys(resolved))
 
