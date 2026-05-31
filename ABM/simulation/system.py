@@ -18,7 +18,7 @@ class _SystemMixin:
             agent_name = self.agents[key].name
             recent = [
                 e["content"] for e in self.shared_log[-30:]
-                if e["speaker"] == agent_name
+                if e.get("speaker") == agent_name
             ][-_REPEAT_WINDOW:]
             score = _repetition_score(recent)
             if score >= _REPEAT_THRESHOLD:

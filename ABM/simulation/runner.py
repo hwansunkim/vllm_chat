@@ -159,16 +159,27 @@ class _RunnerMixin:
                     })
 
             current_wave = next_wave
+            logger.info(f"[W{wave_num}] next_wave: {list(current_wave.keys())}")
 
             if self._summary_interval > 0 and not self._stop_event.is_set():
                 waves_since = wave_num - self._last_summarized_wave
                 if waves_since >= self._summary_interval:
-                    self._run_wave_summary(self._last_summarized_wave + 1, wave_num)
-                    self._last_summarized_wave = wave_num
+                    logger.info(f"[W{wave_num}] 요약 에이전트 호출 시작")
+                    try:
+                        self._run_wave_summary(self._last_summarized_wave + 1, wave_num)
+                        self._last_summarized_wave = wave_num
+                        logger.info(f"[W{wave_num}] 요약 에이전트 완료")
+                    except Exception as e:
+                        logger.error(f"[W{wave_num}] 요약 에이전트 예외: {e}", exc_info=True)
 
             if self._sys_enabled and not self._stop_event.is_set():
                 if (wave_num + 1) % self._sys_interval == 0:
-                    current_wave = self._run_system_agent(wave_num, current_wave)
+                    logger.info(f"[W{wave_num}] system 에이전트 호출 시작, current_wave={list(current_wave.keys())}")
+                    try:
+                        current_wave = self._run_system_agent(wave_num, current_wave)
+                        logger.info(f"[W{wave_num}] system 에이전트 완료, current_wave={list(current_wave.keys())}")
+                    except Exception as e:
+                        logger.error(f"[W{wave_num}] system 에이전트 예외: {e}", exc_info=True)
 
             if current_wave and not self._stop_event.is_set():
                 elapsed  = 0.0
