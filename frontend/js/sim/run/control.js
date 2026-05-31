@@ -55,6 +55,9 @@ export async function startSimulation() {
       summary_interval:       sim.summary_interval || 0,
       server_id:              sim.server_id || null,
       system_agent:           sim.system_agent,
+      lang_fix_enabled:       sim.lang_fix_enabled ?? true,
+      lang_fix_retries:       sim.lang_fix_retries ?? 2,
+      location_graph:         sim.location_graph || [],
     }),
   });
 
