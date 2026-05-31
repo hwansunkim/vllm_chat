@@ -196,7 +196,8 @@ class _StepMixin:
                               if k in self.active_agents]
             target_sections = self._get_visible_sections(agent_key, visible_agents)
 
-        sit_targets = bool(my_loc)
+        # 동석자가 있을 때만 상황 컨텍스트로 target 제공 — 혼자면 기존 <TARGETS> 블록 유지
+        sit_targets = bool(my_loc and (known or strangers))
 
         self._maybe_compress(active_agent, agent_key, wave, visible_agents, target_sections, sit_targets)
 
