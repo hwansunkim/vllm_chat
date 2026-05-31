@@ -100,6 +100,7 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
             for loc, conns in self._location_graph.items():
                 conn_str = ", ".join(conns) if conns else "(연결 없음)"
                 map_lines.append(f"  {loc}: {conn_str}")
+            map_lines.append("※ move_to 필드에는 반드시 위 그래프에 있는 장소명만 사용할 것. 그 외 장소로의 이동은 무시됩니다.")
             map_section = "\n".join(map_lines)
             for agent in self.agents.values():
                 agent.system_prompt += map_section

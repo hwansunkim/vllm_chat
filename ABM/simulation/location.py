@@ -5,11 +5,19 @@ class _LocationMixin:
     """위치 그래프, BFS 경로 탐색, 상황 컨텍스트 관련 메서드."""
 
     def _find_path(self, start: str, goal: str) -> list[str]:
-        """BFS 최단 경로. 시작 제외, 목표 포함. 그래프 없으면 [goal] 반환."""
+        """BFS 최단 경로. 시작 제외, 목표 포함.
+
+        그래프 없음 → [goal] (하위 호환 직접 이동).
+        그래프 있는데 goal이 지도 밖 → [] (이동 무시).
+        """
         if start == goal:
             return []
-        if not self._location_graph or start not in self._location_graph or goal not in self._location_graph:
-            return [goal]  # 그래프 없음 또는 미등록 위치 → 직접 이동 (하위 호환)
+        if not self._location_graph:
+            return [goal]  # 그래프 미설정 → 직접 이동 (하위 호환)
+        if goal not in self._location_graph:
+            return []  # 지도에 없는 목적지 → 이동 무시
+        if start not in self._location_graph:
+            return [goal]  # 시작 위치가 지도 밖인 예외 상황 → 직접 이동
         visited = {start}
         q = deque([(start, [])])
         while q:
@@ -21,7 +29,7 @@ class _LocationMixin:
                 if nb not in visited:
                     visited.add(nb)
                     q.append((nb, new_path))
-        return [goal]  # 연결 경로 없음 → 직접 이동
+        return []  # 연결 경로 없음 → 이동 무시
 
     def _get_adjacent(self, location: str) -> list[str]:
         """현재 위치에서 이동 가능한 인접 장소 목록."""
@@ -100,6 +108,9 @@ class _LocationMixin:
                 for sid, _, visual in strangers:
                     lines.append(f'  - ID: "{sid}"  {visual}' if visual else f'  - ID: "{sid}"')
         else:
-            lines.append("이 자리에는 아무도 없다.")
+            alone_msg = "이 자리에는 아무도 없다."
+            if adjacent:
+                alone_msg += f" move_to로 인접 장소({', '.join(adjacent)})로 이동할 수 있다."
+            lines.append(alone_msg)
 
         return "\n".join(lines)
