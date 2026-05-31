@@ -8,7 +8,7 @@ import {
   updateWaveIndicator, addSummaryCard, addInterventionCard, addWorldEventCard,
   addMovementCard, addAppearanceCard,
 } from './feed.js';
-import { updateAgentCard, getCardEl } from './cards.js';
+import { updateAgentCard, updateAgentLocation, getCardEl } from './cards.js';
 import { addD3Edge } from '../graph/d3.js';
 import { setStatus } from './control.js';
 import { fetchAgentContext } from '../context.js';
@@ -83,6 +83,7 @@ export function connectSSE() {
   es.addEventListener('agent_move', e => {
     const d = JSON.parse(e.data);
     addMovementCard(d);
+    updateAgentLocation(d.agent, d.to);
   });
 
   es.addEventListener('appearance_update', e => {

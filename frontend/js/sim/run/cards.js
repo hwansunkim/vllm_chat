@@ -24,11 +24,15 @@ export function renderAgentCards() {
         : 'sim-feed-badge emotion-neutral';
       return `<span class="${cls}" id="simc-meta-${esc(f.name)}-${esc(agent.name)}">${esc(f.default)}</span>`;
     }).join('');
+    const locHtml = agent.location
+      ? `<span class="sim-card-location" id="simc-loc-${esc(agent.name)}">📍 ${esc(agent.location)}</span>`
+      : `<span class="sim-card-location sim-hidden" id="simc-loc-${esc(agent.name)}"></span>`;
 
     card.innerHTML = `
       <div class="sim-card-header">
         <span class="sim-card-icon">${esc(agent.icon)}</span>
         <span class="sim-card-name">${displayLabel}</span>
+        ${locHtml}
       </div>
       <div class="sim-card-meta">${metaHtml}</div>
       <div class="sim-card-token-row">
@@ -67,6 +71,16 @@ export function updateAgentCard(speaker, meta, promptTokens, tokenLimit, preview
 
   const preEl = document.getElementById(`simc-pre-${speaker}`);
   if (preEl && preview) preEl.textContent = preview.slice(0, 42);
+}
+
+/** Update the location badge on an agent card after a move event. */
+export function updateAgentLocation(agentName, location) {
+  const el = document.getElementById(`simc-loc-${CSS.escape(agentName)}`);
+  if (!el) return;
+  if (location) {
+    el.textContent = `📍 ${location}`;
+    el.classList.remove('sim-hidden');
+  }
 }
 
 /** Lookup the live card element by agent name, handling special characters. */

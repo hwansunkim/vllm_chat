@@ -427,6 +427,11 @@
 .sim-card-header  { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
 .sim-card-icon    { font-size: 17px; }
 .sim-card-name    { font-size: 12px; font-weight: 600; color: #1e293b; }
+.sim-card-location {
+  margin-left: auto; font-size: 10px; color: #6366f1;
+  background: rgba(99,102,241,0.08); border-radius: 4px;
+  padding: 1px 5px; white-space: nowrap; flex-shrink: 0;
+}
 .sim-card-meta    { display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 4px; }
 .emotion-angry   { background: #fee2e2; color: #b91c1c; }
 .emotion-happy   { background: #dcfce7; color: #15803d; }
