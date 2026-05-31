@@ -38,6 +38,8 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
         agent_locations:  dict[str, str] | None       = None,
         agent_visuals:    dict[str, str] | None       = None,
         location_graph:   list[dict] | None           = None,
+        lang_fix_enabled: bool                        = True,
+        lang_fix_retries: int                         = 2,
     ):
         self.agents         = agents
         self.background_log = background_log
@@ -84,6 +86,10 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
         self._director_memo: str  = ""
 
         self._last_spoke_wave: dict[str, int] = {}
+
+        # 언어 교잡 수정 설정
+        self._lang_fix_enabled: bool = lang_fix_enabled
+        self._lang_fix_retries: int  = max(1, int(lang_fix_retries))
 
         # 위치 그래프 (인접 리스트)
         self._location_graph: dict[str, list[str]] = {}

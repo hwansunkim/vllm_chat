@@ -41,6 +41,8 @@ export async function saveScenario() {
       extra_fields:           sim.extra_fields,
       events:                 sim.events,
       location_graph:         sim.location_graph || [],
+      lang_fix_enabled:       sim.lang_fix_enabled ?? true,
+      lang_fix_retries:       sim.lang_fix_retries ?? 2,
       output_format_template: sim.output_format_template || '',
       summary_interval:       sim.summary_interval ?? 0,
       server_id:              sim.server_id ?? null,
@@ -106,6 +108,8 @@ export function newScenario() {
   ];
   sim.events                 = [];
   sim.location_graph         = [];
+  sim.lang_fix_enabled       = true;
+  sim.lang_fix_retries       = 2;
   sim.output_format_template = '';
   sim.summary_interval       = 0;
   sim.server_id              = null;
@@ -149,6 +153,8 @@ export function applyScenario(s) {
   }
   sim.events                 = cfg.events                 || [];
   sim.location_graph = (cfg.location_graph || []).map(n => ({ ...n, connects_to: [...(n.connects_to || [])] }));
+  sim.lang_fix_enabled       = cfg.lang_fix_enabled       ?? true;
+  sim.lang_fix_retries       = cfg.lang_fix_retries       ?? 2;
   sim.output_format_template = cfg.output_format_template || '';
   sim.summary_interval       = cfg.summary_interval       ?? 0;
   sim.server_id              = cfg.server_id              ?? null;

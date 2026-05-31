@@ -14,6 +14,10 @@ export function renderSettingsPage() {
   document.getElementById('sim-token-limit').value    = sim.token_limit;
   document.getElementById('sim-output-format').value    = sim.output_format_template || '';
   document.getElementById('sim-summary-interval').value = sim.summary_interval ?? 0;
+  const langFixEl = document.getElementById('sim-lang-fix-enabled');
+  if (langFixEl) langFixEl.checked = sim.lang_fix_enabled ?? true;
+  const langRetEl = document.getElementById('sim-lang-fix-retries');
+  if (langRetEl) langRetEl.value = sim.lang_fix_retries ?? 2;
   const delBtn = document.getElementById('sim-delete-scenario-btn');
   if (delBtn) delBtn.disabled = !sim.currentScenarioId;
   renderOutputFields();
@@ -35,7 +39,9 @@ export function readConfigFromUI() {
   sim.summary_interval       = parseInt(document.getElementById('sim-summary-interval').value) || 0;
   const sel = document.getElementById('sim-server-select');
   sim.server_id              = sel?.value || null;
-  sim.location_graph = _readLocationGraph();
+  sim.location_graph   = _readLocationGraph();
+  sim.lang_fix_enabled = document.getElementById('sim-lang-fix-enabled')?.checked ?? true;
+  sim.lang_fix_retries = parseInt(document.getElementById('sim-lang-fix-retries')?.value) || 2;
   // system 에이전트 설정 읽기
   sim.system_agent = {
     enabled:               document.getElementById('sim-sys-enabled')?.checked           ?? false,

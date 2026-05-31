@@ -131,6 +131,8 @@ def start_simulation(cfg: SimStartConfig):
                 agent_locations=agent_locations,
                 agent_visuals=agent_visuals,
                 location_graph=[{"name": n.name, "connects_to": n.connects_to} for n in cfg.location_graph],
+                lang_fix_enabled=cfg.lang_fix_enabled,
+                lang_fix_retries=cfg.lang_fix_retries,
             )
             _sim["agents"]         = sim.agents
             _sim["background_log"] = sim.background_log

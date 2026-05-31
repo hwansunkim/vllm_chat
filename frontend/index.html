@@ -245,6 +245,19 @@
           <input type="number" id="sim-summary-interval" value="0" min="0" max="20" step="1"
                  title="0 = 요약 비활성, N = N웨이브마다 LLM 요약"/>
         </div>
+        <div class="sim-option-row">
+          <label>언어 교잡 수정</label>
+          <div class="sim-lang-fix-row">
+            <label class="sim-toggle-small">
+              <input type="checkbox" id="sim-lang-fix-enabled" checked>
+              <span>활성화</span>
+            </label>
+            <span class="sim-lang-fix-sep">재시도</span>
+            <input type="number" id="sim-lang-fix-retries" value="2" min="1" max="10" step="1"
+                   class="sim-lang-fix-count" title="외국어 감지 시 최대 재시도 횟수"/>
+            <span class="sim-lang-fix-unit">회</span>
+          </div>
+        </div>
       </div>
     </div>
 

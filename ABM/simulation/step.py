@@ -240,11 +240,12 @@ class _StepMixin:
             self._rollback_incoming(active_agent, incoming_msgs)
             return {"success": False, "agent_key": agent_key}
 
-        if content and _has_foreign_chars(content):
+        if content and self._lang_fix_enabled and _has_foreign_chars(content):
             logger.warning(f"언어 교잡 감지 ({agent_key}): 재시도 시작")
             self._emit("turn_language_fix", {"speaker": agent_key, "wave": wave, "turn": turn})
             content, reasoning, usage, error = self._retry_language_fix(
                 active_agent, agent_key, visible_agents, target_sections, content,
+                max_retries=self._lang_fix_retries,
                 key_to_alias=extended_alias, location_name=my_loc,
                 situation_targets=sit_targets, ephemeral_msgs=ephemeral_msgs or None,
             )
