@@ -28,6 +28,7 @@ export const sim = {
     system_prompt:         '',    // 비어있으면 백엔드 DEFAULT_SYSTEM_AGENT_PROMPT 사용
     intervention_interval: 1,
     silence_threshold:     3,
+    director_note:         '',   // 시뮬레이션 서사 목표
   },
   eventSource:  null,
   scenarios:    [],

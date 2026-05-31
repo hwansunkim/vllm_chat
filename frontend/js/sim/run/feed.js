@@ -155,6 +155,24 @@ export function addSummaryCard(d) {
   el.scrollIntoView({ behavior: 'smooth', block: 'end' });
 }
 
+export function addWorldEventCard(d) {
+  removeFeedEmpty();
+  const targetStr = (d.target_aliases || d.targets || []).join(', ') || '전체';
+  const el = document.createElement('div');
+  el.className = 'sim-world-event-card';
+  el.innerHTML = `
+    <div class="sim-world-event-header">
+      <span class="sim-world-event-icon">🌍</span>
+      <span class="sim-world-event-label">세계 사건</span>
+      <span class="sim-world-event-targets">→ ${esc(targetStr)}</span>
+      <span class="sim-world-event-wave">W${d.wave}</span>
+    </div>
+    <div class="sim-world-event-content">${esc(d.content || '')}</div>
+    ${d.reason ? `<div class="sim-world-event-reason">${esc(d.reason)}</div>` : ''}`;
+  document.getElementById('sim-feed').appendChild(el);
+  el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
 export function addSceneEventToFeed(d) {
   removeFeedEmpty();
   const icons  = { system_message: '📢', agent_enter: '🎭', agent_exit: '🚪' };

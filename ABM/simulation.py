@@ -1,6 +1,7 @@
 import json
 import re
 import time
+from difflib import SequenceMatcher
 import os
 import queue
 import threading
@@ -18,6 +19,23 @@ _CJK_RE = re.compile(r'[一-鿿㐀-䶿豈-﫿]')
 
 def _has_foreign_chars(text: str) -> bool:
     return bool(_CJK_RE.search(text or ''))
+
+
+_REPEAT_WINDOW    = 4     # 최근 N발언 비교
+_REPEAT_THRESHOLD = 0.65  # 유사도 이 이상이면 반복으로 판단
+_MEMO_MAX_LINES   = 12    # director_memo 최대 보존 줄 수
+
+def _repetition_score(texts: list[str]) -> float:
+    """최근 발언 목록에서 최대 쌍별 유사도(0–1) 반환."""
+    if len(texts) < 2:
+        return 0.0
+    best = 0.0
+    for i in range(len(texts)):
+        for j in range(i + 1, len(texts)):
+            s = SequenceMatcher(None, texts[i], texts[j]).ratio()
+            if s > best:
+                best = s
+    return best
 
 
 _COMPRESSION_THRESHOLD = 0.70   # trigger compression at this fraction of token_limit
@@ -90,6 +108,8 @@ class Simulation:
         self._sys_name:      str   = sa.get("display_name", "내레이터")
         self._sys_interval:  int   = max(1, int(sa.get("intervention_interval", 1)))
         self._sys_threshold: int   = max(1, int(sa.get("silence_threshold", 3)))
+        self._director_note: str   = sa.get("director_note", "")
+        self._director_memo: str   = ""  # system 에이전트가 매 호출마다 누적 갱신
 
         # 에이전트별 마지막 발화 웨이브 추적
         self._last_spoke_wave: dict[str, int] = {}
@@ -763,13 +783,25 @@ class Simulation:
             })
 
     def _run_system_agent(self, wave_num: int, current_wave: dict) -> dict:
-        """system 에이전트를 실행해 침묵 에이전트에 메시지를 주입. 수정된 current_wave 반환."""
+        """system 에이전트를 실행해 개입/월드이벤트를 주입. 수정된 current_wave 반환."""
         from .system_agent import run_system_agent
 
         silent = [
             key for key in self.active_agents
             if wave_num - self._last_spoke_wave.get(key, -1) >= self._sys_threshold
         ]
+
+        # 반복 감지: 에이전트별 최근 WINDOW개 발언 유사도 계산
+        repetition_info: dict[str, float] = {}
+        for key in self.active_agents:
+            agent_name = self.agents[key].name
+            recent = [
+                e["content"] for e in self.shared_log[-30:]
+                if e["speaker"] == agent_name
+            ][-_REPEAT_WINDOW:]
+            score = _repetition_score(recent)
+            if score >= _REPEAT_THRESHOLD:
+                repetition_info[key] = round(score, 2)
 
         result = run_system_agent(
             system_prompt     = self._sys_prompt,
@@ -778,32 +810,40 @@ class Simulation:
             active_agents     = {k: self._key_to_alias.get(k, k) for k in self.active_agents},
             silent_agents     = silent,
             silence_threshold = self._sys_threshold,
+            repetition_info   = repetition_info,
+            director_note     = self._director_note,
+            director_memo     = self._director_memo,
             key_to_alias      = self._key_to_alias,
             model             = self.model,
             base_url          = self.base_url,
             api_timeout       = self.api_timeout,
         )
-        if not result or not result.get("interventions"):
+        if not result:
             return current_wave
 
         wave_copy = {k: list(v) for k, v in current_wave.items()}
-        reason = result.get("reason", "")
+        reason    = result.get("reason", "")
 
-        for iv in result["interventions"]:
+        # ── director_memo 누적 갱신 ──────────────────────────────────────────
+        new_memo = (result.get("director_memo") or "").strip()
+        if new_memo:
+            entry = f"Wave {wave_num}: {new_memo}"
+            lines = [l for l in self._director_memo.splitlines() if l.strip()]
+            if len(lines) >= _MEMO_MAX_LINES:
+                lines = lines[-(  _MEMO_MAX_LINES - 1):]
+            self._director_memo = "\n".join(lines + [entry])
+
+        # ── interventions: 특정 에이전트에 1:1 주입 ──────────────────────────
+        for iv in (result.get("interventions") or []):
             agent_key = self._normalize_target(iv.get("agent", ""))
-            message   = iv.get("message", "").strip()
+            message   = (iv.get("message") or "").strip()
             if not agent_key or agent_key not in self.active_agents or not message:
                 continue
-
-            # 타겟 에이전트의 다음 웨이브 incoming에 주입
-            if agent_key not in wave_copy:
-                wave_copy[agent_key] = []
-            wave_copy[agent_key].append({
+            wave_copy.setdefault(agent_key, []).append({
                 "speaker":     self._sys_name,
                 "content":     message,
                 "action_note": "",
             })
-
             self._emit("system_intervention", {
                 "wave":         wave_num,
                 "target":       agent_key,
@@ -813,6 +853,42 @@ class Simulation:
                 "icon":         self._sys_icon,
                 "display_name": self._sys_name,
             })
+
+        # ── world_event: 타겟 그룹/에이전트에 브로드캐스트 ──────────────────
+        we = result.get("world_event")
+        if we and isinstance(we, dict):
+            we_content = (we.get("content") or "").strip()
+            we_targets = we.get("targets") or ["all"]
+            if we_content:
+                target_keys: set[str] = set()
+                for t in we_targets:
+                    if t == "all":
+                        target_keys.update(self.active_agents)
+                    elif isinstance(t, str) and t.startswith("group:"):
+                        gname = t[6:]
+                        for k in self.active_agents:
+                            if gname in self._agent_groups.get(k, []):
+                                target_keys.add(k)
+                    elif t in self.active_agents:
+                        target_keys.add(t)
+
+                for key in target_keys:
+                    wave_copy.setdefault(key, []).append({
+                        "speaker":     "세계 사건",
+                        "content":     we_content,
+                        "action_note": "",
+                    })
+
+                sorted_targets = sorted(target_keys)
+                self._emit("world_event", {
+                    "wave":           wave_num,
+                    "content":        we_content,
+                    "targets":        sorted_targets,
+                    "target_aliases": [self._key_to_alias.get(k, k) for k in sorted_targets],
+                    "icon":           self._sys_icon,
+                    "display_name":   self._sys_name,
+                    "reason":         reason,
+                })
 
         return wave_copy
 

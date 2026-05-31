@@ -36,12 +36,13 @@ export function readConfigFromUI() {
   sim.server_id              = sel?.value || null;
   // system 에이전트 설정 읽기
   sim.system_agent = {
-    enabled:               document.getElementById('sim-sys-enabled')?.checked       ?? false,
-    icon:                  document.getElementById('sim-sys-icon')?.value.trim()     || '🎬',
+    enabled:               document.getElementById('sim-sys-enabled')?.checked           ?? false,
+    icon:                  document.getElementById('sim-sys-icon')?.value.trim()         || '🎬',
     display_name:          document.getElementById('sim-sys-display-name')?.value.trim() || '내레이터',
-    system_prompt:         document.getElementById('sim-sys-prompt')?.value          || '',
-    intervention_interval: parseInt(document.getElementById('sim-sys-interval')?.value) || 1,
-    silence_threshold:     parseInt(document.getElementById('sim-sys-silence')?.value)  || 3,
+    system_prompt:         document.getElementById('sim-sys-prompt')?.value              || '',
+    intervention_interval: parseInt(document.getElementById('sim-sys-interval')?.value)  || 1,
+    silence_threshold:     parseInt(document.getElementById('sim-sys-silence')?.value)   || 3,
+    director_note:         document.getElementById('sim-sys-director-note')?.value       || '',
   };
 }
 
@@ -57,11 +58,12 @@ function renderSystemAgentConfig() {
   chk.checked = enabled;
   cfg.classList.toggle('sim-hidden', !enabled);
 
-  document.getElementById('sim-sys-icon').value         = sa.icon         || '🎬';
-  document.getElementById('sim-sys-display-name').value = sa.display_name || '내레이터';
-  document.getElementById('sim-sys-prompt').value       = sa.system_prompt || '';
-  document.getElementById('sim-sys-interval').value     = sa.intervention_interval ?? 1;
-  document.getElementById('sim-sys-silence').value      = sa.silence_threshold    ?? 3;
+  document.getElementById('sim-sys-icon').value          = sa.icon                  || '🎬';
+  document.getElementById('sim-sys-display-name').value  = sa.display_name          || '내레이터';
+  document.getElementById('sim-sys-prompt').value        = sa.system_prompt         || '';
+  document.getElementById('sim-sys-interval').value      = sa.intervention_interval ?? 1;
+  document.getElementById('sim-sys-silence').value       = sa.silence_threshold     ?? 3;
+  document.getElementById('sim-sys-director-note').value = sa.director_note         || '';
 
   chk.onchange = () => {
     sim.system_agent.enabled = chk.checked;

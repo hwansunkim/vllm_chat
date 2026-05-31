@@ -43,6 +43,7 @@ class SystemAgentConfig(BaseModel):
     system_prompt:         str   = DEFAULT_SYSTEM_AGENT_PROMPT
     intervention_interval: int   = 1   # N웨이브마다 실행
     silence_threshold:     int   = 3   # N웨이브 미발화 = 침묵
+    director_note:         str   = ""  # 시뮬레이션 서사 목표 (불변 나침반)
 
 
 class SimStartConfig(BaseModel):

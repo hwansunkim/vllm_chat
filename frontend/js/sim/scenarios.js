@@ -104,7 +104,7 @@ export function newScenario() {
   sim.output_format_template = '';
   sim.summary_interval       = 0;
   sim.server_id              = null;
-  sim.system_agent           = { enabled: false, icon: '🎬', display_name: '내레이터', system_prompt: '', intervention_interval: 1, silence_threshold: 3 };
+  sim.system_agent           = { enabled: false, icon: '🎬', display_name: '내레이터', system_prompt: '', intervention_interval: 1, silence_threshold: 3, director_note: '' };
   _expandedAgents.clear();
   document.getElementById('sim-scenario-name').value = '';
   document.getElementById('sim-scenario-select').value = '';
@@ -141,7 +141,16 @@ export function applyScenario(s) {
   sim.output_format_template = cfg.output_format_template || '';
   sim.summary_interval       = cfg.summary_interval       ?? 0;
   sim.server_id              = cfg.server_id              ?? null;
-  sim.system_agent           = cfg.system_agent ?? { enabled: false, icon: '🎬', display_name: '내레이터', system_prompt: '', intervention_interval: 1, silence_threshold: 3 };
+  const sa = cfg.system_agent ?? {};
+  sim.system_agent = {
+    enabled:               sa.enabled               ?? false,
+    icon:                  sa.icon                  ?? '🎬',
+    display_name:          sa.display_name          ?? '내레이터',
+    system_prompt:         sa.system_prompt         ?? '',
+    intervention_interval: sa.intervention_interval ?? 1,
+    silence_threshold:     sa.silence_threshold     ?? 3,
+    director_note:         sa.director_note         ?? '',
+  };
   _expandedAgents.clear();
   const histBtn = document.getElementById('sim-history-btn');
   if (histBtn) {

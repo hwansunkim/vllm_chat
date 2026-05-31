@@ -818,3 +818,49 @@
   background: #f5f3ff;
 }
 .group-chip-input::placeholder { color: #a78bfa; }
+
+/* ── World Event Card ─────────────────────────────────────────────────────── */
+.sim-world-event-card {
+  margin: 10px 0;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
+  border: 1px solid #6ee7b7;
+  padding: 10px 14px;
+  font-size: 12px;
+}
+.sim-world-event-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.sim-world-event-icon { font-size: 15px; }
+.sim-world-event-label {
+  font-weight: 700;
+  color: #065f46;
+  font-size: 12px;
+}
+.sim-world-event-targets {
+  color: #047857;
+  font-size: 11px;
+  flex: 1;
+}
+.sim-world-event-wave {
+  font-size: 10px;
+  color: #6ee7b7;
+  font-weight: 600;
+}
+.sim-world-event-content {
+  color: #064e3b;
+  font-size: 12.5px;
+  line-height: 1.5;
+  padding: 4px 6px;
+  background: rgba(255,255,255,0.6);
+  border-radius: 6px;
+}
+.sim-world-event-reason {
+  margin-top: 5px;
+  font-size: 10.5px;
+  color: #6b7280;
+  font-style: italic;
+}
