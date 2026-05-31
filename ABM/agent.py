@@ -14,7 +14,7 @@ DEFAULT_OUTPUT_FORMAT_TEMPLATE = """
 
 [Important Output Format]
 반드시 아래 JSON 형식으로만 응답하세요. 다른 텍스트는 출력하지 마세요.
-<LOCATION>{
+{
     "content": "당신의 말이나 행동을 자신의 말투로 (반드시 한국어로만)",
 <FIELD_LINES>
     "target": ["id1", "id2"] 또는 "all" 또는 "system",
@@ -92,12 +92,9 @@ def _build_output_format(
     else:
         targets_footer = '  전체에게: "all" / 혼잣말·내면 행동: "self"\n'
 
-    location_line = f"[현재 위치: {location_name}]\n" if location_name else ""
-
     tmpl = template if template is not None else DEFAULT_OUTPUT_FORMAT_TEMPLATE
     return (
         tmpl
-        .replace("<LOCATION>", location_line)
         .replace("<FIELD_LINES>", field_lines)
         .replace("<FIELD_HINTS>", field_hints)
         .replace("<TARGETS>", targets_block)

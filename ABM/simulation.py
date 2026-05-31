@@ -244,6 +244,34 @@ class Simulation:
 
         return sections or None
 
+    def _build_situation_context(
+        self,
+        agent_key: str,
+        known: list[str],
+        strangers: list[tuple],
+    ) -> str | None:
+        """현재 위치·동석자 정보를 내러티브 user 메시지로 구성."""
+        my_loc = self._agent_location.get(agent_key, "")
+        if not my_loc:
+            return None  # 위치 미설정 시 주입하지 않음
+
+        lines = [f"[현재 상황]", f"현재 위치: {my_loc}"]
+
+        if known or strangers:
+            lines.append("")
+            lines.append("[이 자리의 사람들]")
+            if known:
+                labels = [self._key_to_alias.get(k, k) for k in known]
+                lines.append(f"아는 사람: {', '.join(labels)}")
+            if strangers:
+                lines.append("처음 보는 사람:")
+                for sid, _, visual in strangers:
+                    lines.append(f"  - {sid}: {visual}" if visual else f"  - {sid}")
+        else:
+            lines.append("이 자리에는 아무도 없다.")
+
+        return "\n".join(lines)
+
     def _get_or_assign_stranger_id(self, observer_key: str, target_key: str) -> str:
         """observer가 target을 처음 보는 경우 stranger_N ID를 할당, 이미 있으면 기존 ID 반환."""
         self._stranger_map.setdefault(observer_key, {})
@@ -712,6 +740,14 @@ class Simulation:
         # 위치 기반 대화 가능 에이전트 계산
         known, strangers = self._compute_wave_targets(agent_key)
 
+        # 현재 위치·동석자 상황을 user 메시지로 주입 (위치 설정된 에이전트만)
+        situation_text = self._build_situation_context(agent_key, known, strangers)
+        situation_msgs: list[dict] = []
+        if situation_text:
+            sit_msg = {"role": "user", "content": situation_text}
+            active_agent.add_to_memory(sit_msg)
+            situation_msgs = [sit_msg]
+
         # extended alias: stranger_id → visual_description (표시용)
         extended_alias = dict(self._key_to_alias)
         for sid, _, visual in strangers:
@@ -771,7 +807,7 @@ class Simulation:
                 "speaker": agent_key,
                 "error":   "empty response" if error == "empty" else error.split(":", 1)[-1],
             })
-            self._rollback_incoming(active_agent, incoming_msgs)
+            self._rollback_incoming(active_agent, situation_msgs + incoming_msgs)
             return {"success": False, "agent_key": agent_key}
 
         # 외국어(한자 등) 감지 시 자동 재시도
@@ -788,7 +824,7 @@ class Simulation:
                     "speaker": agent_key,
                     "error":   error.split(":", 1)[-1],
                 })
-                self._rollback_incoming(active_agent, incoming_msgs)
+                self._rollback_incoming(active_agent, situation_msgs + incoming_msgs)
                 return {"success": False, "agent_key": agent_key}
 
         # move_to, update_appearance 추출
