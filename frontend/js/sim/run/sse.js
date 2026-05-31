@@ -5,7 +5,7 @@ import { sim } from '../state.js';
 import {
   addFeedMessage, addSceneEventToFeed,
   addTypingIndicator, removeTypingIndicator,
-  updateWaveIndicator,
+  updateWaveIndicator, addSummaryCard,
 } from './feed.js';
 import { updateAgentCard, getCardEl } from './cards.js';
 import { addD3Edge } from '../graph/d3.js';
@@ -62,6 +62,11 @@ export function connectSSE() {
       const card = getCardEl(d.agent);
       if (card) { card.classList.remove('speaking'); card.classList.add('exited'); }
     }
+  });
+
+  es.addEventListener('wave_summary', e => {
+    const d = JSON.parse(e.data);
+    addSummaryCard(d);
   });
 
   es.addEventListener('simulation_end', e => {

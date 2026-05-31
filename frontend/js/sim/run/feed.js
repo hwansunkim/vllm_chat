@@ -116,6 +116,26 @@ export function addFeedMessage(data) {
   el.scrollIntoView({ behavior: 'smooth', block: 'end' });
 }
 
+export function addSummaryCard(d) {
+  removeFeedEmpty();
+  const range      = d.wave_start === d.wave_end ? `Wave ${d.wave_start}` : `Wave ${d.wave_start}–${d.wave_end}`;
+  const keyEvents  = (d.key_events || []).map(e => `<li>${esc(e)}</li>`).join('');
+  const el         = document.createElement('div');
+  el.className     = 'sim-summary-card';
+  el.innerHTML = `
+    <div class="sim-summary-header">
+      <span class="sim-summary-icon">📊</span>
+      <span class="sim-summary-range">${esc(range)} 요약</span>
+      ${d.mood ? `<span class="sim-summary-mood">${esc(d.mood)}</span>` : ''}
+    </div>
+    <div class="sim-summary-body">
+      <p class="sim-summary-text">${esc(d.summary || '')}</p>
+      ${keyEvents ? `<ul class="sim-summary-events">${keyEvents}</ul>` : ''}
+    </div>`;
+  document.getElementById('sim-feed').appendChild(el);
+  el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
 export function addSceneEventToFeed(d) {
   removeFeedEmpty();
   const icons  = { system_message: '📢', agent_enter: '🎭', agent_exit: '🚪' };

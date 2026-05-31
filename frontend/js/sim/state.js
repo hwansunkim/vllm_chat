@@ -19,6 +19,8 @@ export const sim = {
   ],
   events:       [],
   output_format_template: '',
+  summary_interval: 0,
+  server_id:        null,   // null = 기본 서버, string = 특정 서버 ID
   eventSource:  null,
   scenarios:    [],
 };

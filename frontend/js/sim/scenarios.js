@@ -102,6 +102,8 @@ export function newScenario() {
   ];
   sim.events                 = [];
   sim.output_format_template = '';
+  sim.summary_interval       = 0;
+  sim.server_id              = null;
   _expandedAgents.clear();
   document.getElementById('sim-scenario-name').value = '';
   document.getElementById('sim-scenario-select').value = '';
@@ -136,6 +138,8 @@ export function applyScenario(s) {
   }
   sim.events                 = cfg.events                 || [];
   sim.output_format_template = cfg.output_format_template || '';
+  sim.summary_interval       = cfg.summary_interval       ?? 0;
+  sim.server_id              = cfg.server_id              ?? null;
   _expandedAgents.clear();
   const histBtn = document.getElementById('sim-history-btn');
   if (histBtn) {

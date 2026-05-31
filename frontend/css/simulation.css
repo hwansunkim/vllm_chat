@@ -232,10 +232,15 @@
   border: 1px solid #e2e8f0; border-radius: 5px; text-align: right; outline: none;
 }
 .sim-option-row input[type=number]:focus { border-color: #6366f1; }
-#sim-start-agent {
+#sim-start-agent, #sim-server-select {
   font-size: 12px; padding: 5px 7px;
   border: 1px solid #e2e8f0; border-radius: 5px; background: white; outline: none;
-  max-width: 130px;
+  max-width: 150px;
+}
+.sim-server-hint {
+  font-size: 11px; color: #94a3b8;
+  padding: 0 16px 8px; line-height: 1.4;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
 /* ── Accordion agent rows ─────────────────────────────────────────────────────── */
@@ -525,6 +530,39 @@
   font-size: 9px; letter-spacing: 0.5px; color: #6366f1; margin-bottom: 2px;
 }
 .sim-scene-event-msg { line-height: 1.4; }
+
+/* ── Wave summary card ───────────────────────────────────────────────────────── */
+.sim-summary-card {
+  margin: 10px 0; border-radius: 10px;
+  background: linear-gradient(135deg, #eef2ff 0%, #f0fdfa 100%);
+  border: 1px solid #c7d2fe;
+  overflow: hidden;
+}
+.sim-summary-header {
+  display: flex; align-items: center; gap: 7px;
+  padding: 7px 12px 6px;
+  background: rgba(99,102,241,0.08);
+  border-bottom: 1px solid #c7d2fe;
+}
+.sim-summary-icon { font-size: 14px; }
+.sim-summary-range {
+  font-size: 11px; font-weight: 700; color: #4338ca;
+  text-transform: uppercase; letter-spacing: 0.4px;
+}
+.sim-summary-mood {
+  margin-left: auto; font-size: 11px;
+  color: #0891b2; background: #e0f2fe;
+  padding: 1px 7px; border-radius: 10px; font-weight: 600;
+}
+.sim-summary-body { padding: 9px 12px 10px; }
+.sim-summary-text {
+  margin: 0 0 6px; font-size: 12px; line-height: 1.6;
+  color: #1e293b;
+}
+.sim-summary-events {
+  margin: 0; padding-left: 16px;
+  font-size: 11px; color: #475569; line-height: 1.7;
+}
 
 /* ── Resize handle ────────────────────────────────────────────────────────────── */
 .sim-resize-handle {

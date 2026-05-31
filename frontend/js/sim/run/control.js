@@ -52,6 +52,8 @@ export async function startSimulation() {
       extra_fields:           sim.extra_fields,
       events:                 sim.events,
       output_format_template: sim.output_format_template || '',
+      summary_interval:       sim.summary_interval || 0,
+      server_id:              sim.server_id || null,
     }),
   });
 

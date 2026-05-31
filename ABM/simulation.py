@@ -32,7 +32,8 @@ class Simulation:
         name_aliases:    dict[str, str] | None  = None,
         sim_id:          str | None             = None,
         db=None,  # SimDB | None — avoid import cycle with type annotation
-        agent_groups:    dict[str, list[str]] | None = None,  # key → group IDs
+        agent_groups:     dict[str, list[str]] | None = None,  # key → group IDs
+        summary_interval: int                         = 0,     # 0 = 비활성, N = N웨이브마다 요약
     ):
         self.agents         = agents
         self.background_log = background_log
@@ -67,6 +68,10 @@ class Simulation:
         self._visible_targets: dict[str, list[str]] = self._build_visible_targets(
             self._agent_groups
         )
+
+        # 웨이브 요약 설정
+        self._summary_interval: int = max(0, summary_interval)
+        self._last_summarized_wave: int = -1  # 마지막으로 요약된 웨이브 번호
 
         os.makedirs(log_dir, exist_ok=True)
         self._save_shared_log()
@@ -594,6 +599,13 @@ class Simulation:
                     except Exception as e:
                         logger.error(f"Wave {wave_num} agent {agent_key} 예외: {e}")
                         results[agent_key] = {"success": False, "agent_key": agent_key}
+                    # 에이전트 완료마다 stop 확인 — 나머지 future는 LLM 콜 중이므로
+                    # cancel()은 효과 없지만 더 이상 결과를 기다리지 않고 빠르게 루프를 탈출
+                    if self._stop_event.is_set():
+                        break
+
+            if self._stop_event.is_set():
+                break
 
             turn_counter += len(current_wave)
             total_turns  += len(current_wave)
@@ -614,11 +626,57 @@ class Simulation:
 
             current_wave = next_wave
 
-            if current_wave:
-                time.sleep(step_delay)
+            # 웨이브 요약 트리거 — stop 요청 시 스킵
+            if self._summary_interval > 0 and not self._stop_event.is_set():
+                waves_since = wave_num - self._last_summarized_wave
+                if waves_since >= self._summary_interval:
+                    self._run_wave_summary(self._last_summarized_wave + 1, wave_num)
+                    self._last_summarized_wave = wave_num
+
+            # step_delay를 짧은 슬립 단위로 분할해 stop 응답성 확보
+            if current_wave and not self._stop_event.is_set():
+                elapsed = 0.0
+                interval = 0.1
+                while elapsed < step_delay and not self._stop_event.is_set():
+                    time.sleep(interval)
+                    elapsed += interval
 
         self._pending_wave = current_wave  # agents targeted but not yet responded
         self._save_edges()
+
+    def _run_wave_summary(self, wave_start: int, wave_end: int) -> None:
+        """shared_log에서 해당 웨이브 구간 엔트리를 추출해 LLM 요약 후 이벤트를 emit."""
+        if self._stop_event.is_set():
+            return
+        from .summarizer import summarize_waves
+        entries = [
+            e for e in self.shared_log
+            if isinstance(e.get("wave"), int)
+            and wave_start <= e["wave"] <= wave_end
+        ]
+        bg_text = ""
+        if self.background_log:
+            first = self.background_log[0].get("content", "")
+            bg_text = first.removeprefix("[배경]").strip()
+
+        result = summarize_waves(
+            entries      = entries,
+            background   = bg_text,
+            wave_start   = wave_start,
+            wave_end     = wave_end,
+            model        = self.model,
+            base_url     = self.base_url,
+            api_timeout  = self.api_timeout,
+            key_to_alias = self._key_to_alias,
+        )
+        if result:
+            self._emit("wave_summary", {
+                "wave_start":  wave_start,
+                "wave_end":    wave_end,
+                "summary":     result.get("summary", ""),
+                "key_events":  result.get("key_events", []),
+                "mood":        result.get("mood", ""),
+            })
 
         if self._db is not None and self._sim_id is not None:
             self._db.save_agent_snapshots(

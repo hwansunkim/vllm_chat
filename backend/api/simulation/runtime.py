@@ -18,6 +18,35 @@ from .state import _sim, _sim_lock, get_sim_db
 router = APIRouter()
 
 
+def _resolve_server(server_id: str | None) -> tuple[str, str, int]:
+    """서버 ID로 (base_url, model, api_timeout) 반환.
+
+    우선순위:
+      1. server_id가 있으면 해당 서버
+      2. server_id가 None이면 is_default=1 서버
+      3. DB에 서버가 없으면 ABM/config.py 환경변수 폴백
+    """
+    from ABM.config import BASE_URL, MODEL, API_TIMEOUT
+    try:
+        conn = get_db()
+        if server_id:
+            row = conn.execute(
+                "SELECT base_url, model FROM servers WHERE id=? AND enabled=1",
+                (server_id,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT base_url, model FROM servers WHERE is_default=1 AND enabled=1 LIMIT 1",
+            ).fetchone()
+        conn.close()
+        if row:
+            return row["base_url"], row["model"], API_TIMEOUT
+    except Exception:
+        pass
+    return BASE_URL, MODEL, API_TIMEOUT
+
+
+
 # ── /start ────────────────────────────────────────────────────────────────────
 
 @router.post("/start")
@@ -46,7 +75,9 @@ def start_simulation(cfg: SimStartConfig):
             from ABM.agent import Agent
             from ABM.simulation import Simulation
             from ABM.db import SimDB
-            from ABM.config import MODEL, BASE_URL, API_TIMEOUT, LOG_DIR
+            from ABM.config import LOG_DIR
+
+            base_url, model, api_timeout = _resolve_server(cfg.server_id)
 
             run_sim_id    = str(uuid.uuid4())
             db            = SimDB(os.path.join(LOG_DIR, "simulation.db"))
@@ -85,7 +116,7 @@ def start_simulation(cfg: SimStartConfig):
 
             sim = Simulation(
                 agents, background_log, LOG_DIR,
-                MODEL, BASE_URL, API_TIMEOUT,
+                model, base_url, api_timeout,
                 event_queue=eq,
                 stop_event=stop_ev,
                 initial_agents=init_param,
@@ -93,6 +124,7 @@ def start_simulation(cfg: SimStartConfig):
                 sim_id=run_sim_id,
                 db=db,
                 agent_groups=agent_groups,
+                summary_interval=cfg.summary_interval,
             )
             _sim["agents"]         = sim.agents
             _sim["background_log"] = sim.background_log
@@ -225,9 +257,10 @@ def load_simulation(run_id: str):
         from ABM.agent import Agent
         from ABM.simulation import Simulation
         from ABM.db import SimDB
-        from ABM.config import MODEL, BASE_URL, API_TIMEOUT, LOG_DIR
+        from ABM.config import LOG_DIR
         from ABM.memory_compressor import build_memory_block
 
+        base_url, model, api_timeout = _resolve_server(cfg.server_id)
         alias_map    = {a.display_name: a.name for a in cfg.agents if a.display_name.strip()}
         key_to_alias = {v: k for k, v in alias_map.items()}
 
@@ -252,11 +285,12 @@ def load_simulation(run_id: str):
 
         sim_obj = Simulation(
             agents, background_log, LOG_DIR,
-            MODEL, BASE_URL, API_TIMEOUT,
+            model, base_url, api_timeout,
             initial_agents=init_agents,
             name_aliases=alias_map,
             db=SimDB(os.path.join(LOG_DIR, "simulation.db")),
             agent_groups=agent_groups,
+            summary_interval=cfg.summary_interval,
         )
         if saved_pending:
             sim_obj._pending_wave = saved_pending
@@ -342,9 +376,10 @@ def resume_simulation(run_id: str):
             from ABM.agent import Agent
             from ABM.simulation import Simulation
             from ABM.db import SimDB
-            from ABM.config import MODEL, BASE_URL, API_TIMEOUT, LOG_DIR
+            from ABM.config import LOG_DIR
             from ABM.memory_compressor import build_memory_block
 
+            base_url, model, api_timeout = _resolve_server(cfg.server_id)
             run_sim_id    = str(uuid.uuid4())
             new_db        = SimDB(os.path.join(LOG_DIR, "simulation.db"))
             scenario_name = run.get("scenario_name")
@@ -375,12 +410,13 @@ def resume_simulation(run_id: str):
 
             sim = Simulation(
                 agents, background_log, LOG_DIR,
-                MODEL, BASE_URL, API_TIMEOUT,
+                model, base_url, api_timeout,
                 event_queue=eq, stop_event=stop_ev,
                 initial_agents=init_agents,
                 name_aliases=alias_map,
                 sim_id=run_sim_id, db=new_db,
                 agent_groups=agent_groups,
+                summary_interval=cfg.summary_interval,
             )
             _sim["agents"]         = sim.agents
             _sim["background_log"] = sim.background_log
