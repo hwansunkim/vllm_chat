@@ -13,16 +13,18 @@ _RESERVED_LOG_KEYS = frozenset({"timestamp", "datetime_str", "content", "reasoni
 DEFAULT_OUTPUT_FORMAT_TEMPLATE = """
 
 [Important Output Format]
-반드시 아래 JSON 형식으로만 응답하세요. 다른 텍스트는 출력하지 마세요.
+당신의 응답은 반드시 다음 JSON 형식이어야 합니다. 다른 텍스트는 출력하지 마세요.
 {
     "content": "당신의 말이나 행동을 자신의 말투로 (반드시 한국어로만)",
+    "action_note": "행동이나 생각, 상황 묘사. 텍스트로 서술. 예: '한숨을 쉰다', '눈을 흘김'",
 <FIELD_LINES>
-    "target": ["id1", "id2"] 또는 "all" 또는 "system",
+    "target": ["id1", "id2"] 또는 "all" 또는 "self",
     "move_to": null,
     "update_appearance": null
 }
 
-- content: 말하거나 행동하는 내용. **반드시 한국어로만 작성. 중국어 한자·영어 등 외국어 절대 금지.**
+- content: 당신의 말, 대사. **반드시 한국어로만 작성. 중국어 한자·영어 등 외국어 절대 금지.**
+- action_note: 행동이나 생각 묘사. 이 내용은 다른 에이전트에게 **시각적 정보**로 전달됨.
 <FIELD_HINTS>
 - move_to: 이동할 위치 이름 (이동 없으면 null)
 - update_appearance: 외모 변화가 있을 때 새 외모 전체 묘사 (없으면 null)
@@ -56,18 +58,13 @@ def _build_output_format(
             lines.append(f'  - ID: "{t}"' + (f'  ({alias})' if alias else ""))
         targets_block = ("\n".join(lines) + "\n") if lines else "  (없음)\n"
 
-    # Special-purpose descriptions for reserved fields.
     _FIELD_DESCS: dict[str, str] = {
-        "action_note": (
-            "말 이외의 신체 동작·표정·제스처를 간략히 서술 "
-            "(예: '책상을 두드리며', '미소를 지으며'). "
-            "비언어적 행동이 없으면 빈 문자열."
-        ),
+        "action_note": "행동이나 생각 묘사. 이 내용은 다른 에이전트에게 **시각적 정보**로 전달됨.",
     }
 
     def _line(f: dict) -> str:
         if f["name"] == "action_note":
-            return '    "action_note": "비언어적 행동 묘사 (없으면 빈 문자열)",'
+            return '    "action_note": "행동이나 생각, 상황 묘사. 텍스트로 서술. 예: \'한숨을 쉰다\', \'눈을 흘김\'",'
         return f'    "{f["name"]}": "{f["default"]}",'
 
     def _hint(f: dict) -> str:
@@ -76,8 +73,13 @@ def _build_output_format(
             return f'- {f["name"]}: {desc}'
         return f'- {f["name"]}: 적절한 값 (기본값 예시: "{f["default"]}")'
 
-    field_lines = "\n".join(_line(f) for f in extra_fields)
-    field_hints = "\n".join(_hint(f) for f in extra_fields)
+    tmpl = template if template is not None else DEFAULT_OUTPUT_FORMAT_TEMPLATE
+    # 템플릿에 action_note가 이미 하드코딩돼 있으면 <FIELD_LINES>/<FIELD_HINTS>에서 제외 (중복 방지)
+    hardcoded = {name for name in ("action_note",) if f'"{name}"' in tmpl}
+    active_fields = [f for f in extra_fields if f["name"] not in hardcoded]
+
+    field_lines = "\n".join(_line(f) for f in active_fields)
+    field_hints = "\n".join(_hint(f) for f in active_fields)
 
     # 그룹이 2개 이상일 때 그룹별 단축 표기 추가 (브릿지 에이전트용)
     named_sections = [
@@ -88,11 +90,10 @@ def _build_output_format(
         group_shortcuts = " / ".join(
             f'[{label}] 전체: "group:{label}"' for label in named_sections
         )
-        targets_footer = f'  {group_shortcuts} / 모두에게: "all" / 혼잣말·내면 행동: "self"\n'
+        targets_footer = f'  {group_shortcuts} / 모두에게: "all" / 혼잣말·독백·탄식 등: "self"\n'
     else:
-        targets_footer = '  전체에게: "all" / 혼잣말·내면 행동: "self"\n'
+        targets_footer = '  전체에게: "all" / 혼잣말·독백·탄식 등: "self"\n'
 
-    tmpl = template if template is not None else DEFAULT_OUTPUT_FORMAT_TEMPLATE
     return (
         tmpl
         .replace("<FIELD_LINES>", field_lines)
