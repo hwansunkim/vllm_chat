@@ -194,9 +194,13 @@ class Agent:
         target_sections: list[tuple[str, list[str]]] | None = None,
         location_name: str = "",
         situation_targets: bool = False,
+        ephemeral_msgs: list[dict] | None = None,
     ) -> int:
         """Estimate total prompt tokens for the next LLM call."""
-        msgs = self.build_messages(background_log, available_targets, key_to_alias, target_sections, location_name, situation_targets)
+        msgs = self.build_messages(
+            background_log, available_targets, key_to_alias, target_sections,
+            location_name, situation_targets, ephemeral_msgs,
+        )
         return sum(_msg_tokens(m) for m in msgs)
 
     def trim_to_token_limit(
@@ -207,17 +211,24 @@ class Agent:
         target_sections: list[tuple[str, list[str]]] | None = None,
         location_name: str = "",
         situation_targets: bool = False,
+        ephemeral_msgs: list[dict] | None = None,
     ):
         """Remove oldest memory messages until estimated tokens fit within _token_limit."""
         while self.memory:
-            if self.estimate_context_tokens(background_log, available_targets, key_to_alias, target_sections, location_name, situation_targets) <= self._token_limit:
+            if self.estimate_context_tokens(
+                background_log, available_targets, key_to_alias, target_sections,
+                location_name, situation_targets, ephemeral_msgs,
+            ) <= self._token_limit:
                 break
             self.memory.pop(0)
             self._trimmed_count += 1
 
         # Warn when system+background alone exceeds the limit — trimming can't help further.
         if not self.memory:
-            est = self.estimate_context_tokens(background_log, available_targets, key_to_alias, target_sections, location_name, situation_targets)
+            est = self.estimate_context_tokens(
+                background_log, available_targets, key_to_alias, target_sections,
+                location_name, situation_targets, ephemeral_msgs,
+            )
             if est > self._token_limit:
                 logger.warning(
                     f"[{self.name}] Context exceeds token_limit even with empty memory "
@@ -233,10 +244,13 @@ class Agent:
         target_sections: list[tuple[str, list[str]]] | None = None,
         location_name: str = "",
         situation_targets: bool = False,
+        ephemeral_msgs: list[dict] | None = None,
     ) -> list:
-        """[system] + background_log + [memory_block?] + agent memory"""
+        """[system] + background_log + [memory_block?] + agent memory + [ephemeral_msgs]"""
         msgs = [self.get_system_message(available_targets, key_to_alias, target_sections, location_name, situation_targets)] + background_log
         if self._memory_block:
             msgs.append({"role": "user", "content": self._memory_block})
         msgs.extend(self.memory)
+        if ephemeral_msgs:
+            msgs.extend(ephemeral_msgs)
         return msgs

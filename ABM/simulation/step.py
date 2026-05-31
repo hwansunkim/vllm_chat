@@ -56,12 +56,13 @@ class _StepMixin:
 
     def _maybe_compress(
         self,
-        agent:            Agent,
-        agent_key:        str,
-        wave:             int,
-        other_agents:     list[str],
-        target_sections:  list[tuple[str, list[str]]] | None = None,
+        agent:             Agent,
+        agent_key:         str,
+        wave:              int,
+        other_agents:      list[str],
+        target_sections:   list[tuple[str, list[str]]] | None = None,
         situation_targets: bool = False,
+        ephemeral_msgs:    list[dict] | None = None,
     ) -> None:
         """Trigger structured-memory compression if context is approaching the token limit."""
         if (
@@ -72,7 +73,7 @@ class _StepMixin:
             return
         est = agent.estimate_context_tokens(
             self.background_log, other_agents, self._key_to_alias, target_sections,
-            situation_targets=situation_targets,
+            situation_targets=situation_targets, ephemeral_msgs=ephemeral_msgs,
         )
         if est / agent._token_limit >= _COMPRESSION_THRESHOLD:
             self._compress_agent(agent, agent_key, wave)
@@ -118,10 +119,11 @@ class _StepMixin:
         visible_agents:    list[str],
         target_sections,
         bad_content:       str,
-        max_retries:       int        = 2,
-        key_to_alias:      dict | None = None,
-        location_name:     str        = "",
-        situation_targets: bool       = False,
+        max_retries:       int             = 2,
+        key_to_alias:      dict | None     = None,
+        location_name:     str             = "",
+        situation_targets: bool            = False,
+        ephemeral_msgs:    list[dict] | None = None,
     ) -> tuple[str | None, str, dict, str | None]:
         """한자 등 외국어가 섞인 응답을 최대 max_retries회 재시도로 교정."""
         CORRECTION_MSG = (
@@ -134,7 +136,7 @@ class _StepMixin:
         for attempt in range(1, max_retries + 1):
             fix_msgs = agent.build_messages(
                 self.background_log, visible_agents, alias, target_sections,
-                location_name, situation_targets,
+                location_name, situation_targets, ephemeral_msgs,
             )
             fix_msgs.append({"role": "assistant", "content": current_bad})
             fix_msgs.append({"role": "user",      "content": CORRECTION_MSG})
@@ -168,12 +170,11 @@ class _StepMixin:
 
         known, strangers = self._compute_wave_targets(agent_key)
 
-        situation_text  = self._build_situation_context(agent_key, known, strangers)
-        situation_msgs: list[dict] = []
-        if situation_text:
-            sit_msg = {"role": "user", "content": situation_text}
-            active_agent.add_to_memory(sit_msg)
-            situation_msgs = [sit_msg]
+        # 상황 컨텍스트는 메모리에 저장하지 않고 매 호출 시 ephemeral로 주입 (중복 누적 방지)
+        situation_text = self._build_situation_context(agent_key, known, strangers)
+        ephemeral_msgs: list[dict] = (
+            [{"role": "user", "content": situation_text}] if situation_text else []
+        )
 
         extended_alias = dict(self._key_to_alias)
         for sid, _, visual in strangers:
@@ -199,13 +200,18 @@ class _StepMixin:
         # 동석자가 있을 때만 상황 컨텍스트로 target 제공 — 혼자면 기존 <TARGETS> 블록 유지
         sit_targets = bool(my_loc and (known or strangers))
 
-        self._maybe_compress(active_agent, agent_key, wave, visible_agents, target_sections, sit_targets)
+        self._maybe_compress(
+            active_agent, agent_key, wave, visible_agents, target_sections,
+            sit_targets, ephemeral_msgs or None,
+        )
 
         active_agent.trim_to_token_limit(
-            self.background_log, visible_agents, extended_alias, target_sections, my_loc, sit_targets
+            self.background_log, visible_agents, extended_alias, target_sections,
+            my_loc, sit_targets, ephemeral_msgs or None,
         )
         est_tokens = active_agent.estimate_context_tokens(
-            self.background_log, visible_agents, extended_alias, target_sections, my_loc, sit_targets
+            self.background_log, visible_agents, extended_alias, target_sections,
+            my_loc, sit_targets, ephemeral_msgs or None,
         )
 
         self._emit("turn_start", {
@@ -218,7 +224,8 @@ class _StepMixin:
         })
 
         call_messages = active_agent.build_messages(
-            self.background_log, visible_agents, extended_alias, target_sections, my_loc, sit_targets
+            self.background_log, visible_agents, extended_alias, target_sections,
+            my_loc, sit_targets, ephemeral_msgs or None,
         )
 
         content, reasoning, usage, error = self._call_llm_for_agent_msgs(
@@ -230,7 +237,7 @@ class _StepMixin:
                 "speaker": agent_key,
                 "error":   "empty response" if error == "empty" else error.split(":", 1)[-1],
             })
-            self._rollback_incoming(active_agent, situation_msgs + incoming_msgs)
+            self._rollback_incoming(active_agent, incoming_msgs)
             return {"success": False, "agent_key": agent_key}
 
         if content and _has_foreign_chars(content):
@@ -238,7 +245,8 @@ class _StepMixin:
             self._emit("turn_language_fix", {"speaker": agent_key, "wave": wave, "turn": turn})
             content, reasoning, usage, error = self._retry_language_fix(
                 active_agent, agent_key, visible_agents, target_sections, content,
-                key_to_alias=extended_alias, location_name=my_loc, situation_targets=sit_targets,
+                key_to_alias=extended_alias, location_name=my_loc,
+                situation_targets=sit_targets, ephemeral_msgs=ephemeral_msgs or None,
             )
             if error is not None:
                 self._emit("turn_error", {
@@ -246,7 +254,7 @@ class _StepMixin:
                     "speaker": agent_key,
                     "error":   error.split(":", 1)[-1],
                 })
-                self._rollback_incoming(active_agent, situation_msgs + incoming_msgs)
+                self._rollback_incoming(active_agent, incoming_msgs)
                 return {"success": False, "agent_key": agent_key}
 
         extras = parse_json_extras(content)
