@@ -1,4 +1,5 @@
 import json
+import re
 import time
 import os
 import queue
@@ -11,6 +12,12 @@ from .parser import parse_json_response
 from .config import LOG_DIR, MODEL, BASE_URL, API_TIMEOUT
 
 logger = logging.getLogger(__name__)
+
+# CJK Unified / Extension-A / Compatibility Ideographs
+_CJK_RE = re.compile(r'[一-鿿㐀-䶿豈-﫿]')
+
+def _has_foreign_chars(text: str) -> bool:
+    return bool(_CJK_RE.search(text or ''))
 
 
 _COMPRESSION_THRESHOLD = 0.70   # trigger compression at this fraction of token_limit
@@ -404,6 +411,42 @@ class Simulation:
 
         return content, reasoning, usage, None
 
+    def _retry_language_fix(
+        self,
+        agent: Agent,
+        agent_key: str,
+        visible_agents: list[str],
+        target_sections,
+        bad_content: str,
+        max_retries: int = 2,
+    ) -> tuple[str | None, str, dict, str | None]:
+        """한자 등 외국어가 섞인 응답을 최대 max_retries회 재시도로 교정."""
+        CORRECTION_MSG = (
+            "⚠ 방금 응답에 한국어가 아닌 문자(한자, 영어 등)가 포함되어 있습니다. "
+            "content 필드를 반드시 한국어로만 다시 작성해주세요."
+        )
+        current_bad = bad_content
+        reasoning, usage = "", {}
+        for attempt in range(1, max_retries + 1):
+            fix_msgs = agent.build_messages(
+                self.background_log, visible_agents, self._key_to_alias, target_sections
+            )
+            fix_msgs.append({"role": "assistant", "content": current_bad})
+            fix_msgs.append({"role": "user",      "content": CORRECTION_MSG})
+            try:
+                content, reasoning, usage = chat_response(
+                    fix_msgs, self.model, self.base_url, self.api_timeout
+                )
+            except Exception as e:
+                logger.error(f"언어 교잡 재시도 실패 ({agent.name}) attempt={attempt}: {e}")
+                return None, "", {}, f"exception:{e}"
+            if content and not _has_foreign_chars(content):
+                logger.info(f"언어 교잡 수정 성공 ({agent.name}) attempt={attempt}")
+                return content, reasoning, usage, None
+            current_bad = content or current_bad
+        logger.warning(f"언어 교잡 수정 미완 ({agent.name}): {max_retries}회 재시도 후 외국어 잔존")
+        return current_bad, reasoning, usage, None
+
     def _apply_turn_result(
         self,
         agent: Agent,
@@ -556,6 +599,22 @@ class Simulation:
             })
             self._rollback_incoming(active_agent, incoming_msgs)
             return {"success": False, "agent_key": agent_key}
+
+        # 외국어(한자 등) 감지 시 자동 재시도
+        if content and _has_foreign_chars(content):
+            logger.warning(f"언어 교잡 감지 ({agent_key}): 재시도 시작")
+            self._emit("turn_language_fix", {"speaker": agent_key, "wave": wave, "turn": turn})
+            content, reasoning, usage, error = self._retry_language_fix(
+                active_agent, agent_key, visible_agents, target_sections, content
+            )
+            if error is not None:
+                self._emit("turn_error", {
+                    "turn":    turn,
+                    "speaker": agent_key,
+                    "error":   error.split(":", 1)[-1],
+                })
+                self._rollback_incoming(active_agent, incoming_msgs)
+                return {"success": False, "agent_key": agent_key}
 
         return self._apply_turn_result(
             active_agent, agent_key, content, reasoning, usage, wave, turn, est_tokens,

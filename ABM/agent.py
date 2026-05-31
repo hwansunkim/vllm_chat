@@ -15,15 +15,16 @@ DEFAULT_OUTPUT_FORMAT_TEMPLATE = """
 [Important Output Format]
 반드시 아래 JSON 형식으로만 응답하세요. 다른 텍스트는 출력하지 마세요.
 {
-    "content": "당신의 말이나 행동을 자신의 말투로",
+    "content": "당신의 말이나 행동을 자신의 말투로 (반드시 한국어로만)",
 <FIELD_LINES>
     "target": ["id1", "id2"] 또는 "all" 또는 "system"
 }
 
-- content: 말하거나 행동하는 내용
+- content: 말하거나 행동하는 내용. **반드시 한국어로만 작성. 중국어 한자·영어 등 외국어 절대 금지.**
 <FIELD_HINTS>
 - target: 반드시 아래 시스템 ID만 사용 (표시 이름 절대 금지):
 <TARGETS><TARGETS_FOOTER>
+⚠ content 필드는 반드시 한국어로만 작성하십시오. 외국어·한자 사용 금지.
 """
 
 
