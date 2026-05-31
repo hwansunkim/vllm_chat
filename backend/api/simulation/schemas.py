@@ -26,6 +26,25 @@ class ExtraField(BaseModel):
     default: str = ""
 
 
+DEFAULT_SYSTEM_AGENT_PROMPT = (
+    "당신은 멀티에이전트 시뮬레이션의 내레이터이자 진행자입니다.\n"
+    "주어진 시뮬레이션 요약과 침묵 중인 에이전트 목록을 분석하여\n"
+    "이야기 흐름을 자연스럽게 이어가기 위한 개입이 필요한지 판단하세요.\n\n"
+    "개입이 필요한 경우, 해당 에이전트에게 이야기 흐름에 맞는\n"
+    "상황 묘사·사건·주변 변화·대화 유도 등의 메시지를 전달하세요.\n"
+    "개입이 불필요한 경우(이야기가 자연스럽게 흐르고 있다면) interventions를 빈 배열로 반환하세요."
+)
+
+
+class SystemAgentConfig(BaseModel):
+    enabled:               bool  = False
+    icon:                  str   = "🎬"
+    display_name:          str   = "내레이터"
+    system_prompt:         str   = DEFAULT_SYSTEM_AGENT_PROMPT
+    intervention_interval: int   = 1   # N웨이브마다 실행
+    silence_threshold:     int   = 3   # N웨이브 미발화 = 침묵
+
+
 class SimStartConfig(BaseModel):
     scenario_id:            str | None       = None
     agents:                 list[AgentConfig]
@@ -43,6 +62,7 @@ class SimStartConfig(BaseModel):
     output_format_template: str              = ""
     summary_interval:       int              = 0   # 0 = 비활성, N = N웨이브마다 LLM 요약
     server_id:              str | None       = None  # None = DB default 서버, 미설정 시 env 폴백
+    system_agent:           SystemAgentConfig = SystemAgentConfig()
 
 
 class ScenarioSave(BaseModel):

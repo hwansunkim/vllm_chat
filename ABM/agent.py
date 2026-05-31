@@ -82,9 +82,9 @@ def _build_output_format(
         group_shortcuts = " / ".join(
             f'[{label}] 전체: "group:{label}"' for label in named_sections
         )
-        targets_footer = f'  {group_shortcuts} / 모두에게: "all" / 혼잣말·내면 행동: "system"\n'
+        targets_footer = f'  {group_shortcuts} / 모두에게: "all" / 혼잣말·내면 행동: "self"\n'
     else:
-        targets_footer = '  전체에게: "all" / 혼잣말·내면 행동: "system"\n'
+        targets_footer = '  전체에게: "all" / 혼잣말·내면 행동: "self"\n'
 
     tmpl = template if template is not None else DEFAULT_OUTPUT_FORMAT_TEMPLATE
     return (

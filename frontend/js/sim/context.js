@@ -130,7 +130,7 @@ function renderContextMessages(messages, trimmed = 0, promptTokens = 0, tokenLim
 
       if (parsed) {
         const rawTargets = Array.isArray(parsed.target) ? parsed.target : (parsed.target ? [parsed.target] : []);
-        const tgt = rawTargets.map(t => (t === 'all' ? '전체' : t === 'system' ? '(독백)' : agentLabel(t))).join(', ');
+        const tgt = rawTargets.map(t => (t === 'all' ? '전체' : (t === 'self' || t === 'system') ? '(독백)' : agentLabel(t))).join(', ');
         const ctxActionNote = parsed.action_note || '';
         const metaBadges = sim.extra_fields
           .filter(f => f.name !== 'action_note' && parsed[f.name] != null)

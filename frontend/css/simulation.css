@@ -531,6 +531,36 @@
 }
 .sim-scene-event-msg { line-height: 1.4; }
 
+/* ── System intervention card ────────────────────────────────────────────────── */
+.sim-intervention-card {
+  margin: 8px 0; border-radius: 8px;
+  background: #fdf4ff; border: 1px solid #e9d5ff;
+  overflow: hidden;
+}
+.sim-intervention-header {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px; background: rgba(139,92,246,0.08);
+  border-bottom: 1px solid #e9d5ff; font-size: 11px;
+}
+.sim-intervention-icon { font-size: 14px; }
+.sim-intervention-name { font-weight: 700; color: #7c3aed; }
+.sim-intervention-arrow { color: #a78bfa; }
+.sim-intervention-target { font-weight: 600; color: #4c1d95; }
+.sim-intervention-wave { margin-left: auto; color: #a78bfa; font-size: 10px; }
+.sim-intervention-msg {
+  padding: 8px 12px 6px; font-size: 12px; line-height: 1.6; color: #1e293b;
+}
+.sim-intervention-reason {
+  padding: 0 12px 8px; font-size: 10px; color: #9ca3af; font-style: italic;
+}
+
+/* ── System agent settings ───────────────────────────────────────────────────── */
+.sim-sys-toggle {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 12px; color: #7c3aed; cursor: pointer; user-select: none;
+}
+.sim-sys-toggle input[type=checkbox] { accent-color: #7c3aed; width: 14px; height: 14px; }
+
 /* ── Wave summary card ───────────────────────────────────────────────────────── */
 .sim-summary-card {
   margin: 10px 0; border-radius: 10px;

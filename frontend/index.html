@@ -248,6 +248,39 @@
       </div>
     </div>
 
+    <!-- System Agent -->
+    <div class="sim-settings-section">
+      <div class="sim-settings-section-title">
+        <span>🎬 system 에이전트</span>
+        <label class="sim-sys-toggle">
+          <input type="checkbox" id="sim-sys-enabled">
+          <span>활성화</span>
+        </label>
+      </div>
+      <div id="sim-sys-config" class="sim-hidden">
+        <div class="sim-option-row">
+          <label>아이콘</label>
+          <input type="text" id="sim-sys-icon" value="🎬" maxlength="4" style="width:44px;text-align:center"/>
+          <label style="margin-left:12px">표시 이름</label>
+          <input type="text" id="sim-sys-display-name" value="내레이터" style="flex:1;max-width:120px"/>
+        </div>
+        <div class="sim-option-row">
+          <label>개입 주기 (wave)</label>
+          <input type="number" id="sim-sys-interval" value="1" min="1" max="20"/>
+        </div>
+        <div class="sim-option-row">
+          <label>침묵 기준 (wave)</label>
+          <input type="number" id="sim-sys-silence" value="3" min="1" max="20"
+                 title="N웨이브 동안 발화 없으면 침묵으로 판단"/>
+        </div>
+        <div class="sim-settings-section-body">
+          <textarea id="sim-sys-prompt" rows="6"
+            placeholder="비워두면 기본 내레이터 페르소나를 사용합니다."></textarea>
+        </div>
+        <div class="sim-fields-hint">비워두면 기본 페르소나: 이야기 흐름 분석 → 침묵 에이전트에 상황 전달</div>
+      </div>
+    </div>
+
     <!-- Events -->
     <div class="sim-settings-section">
       <div class="sim-settings-section-title">

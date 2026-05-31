@@ -34,6 +34,7 @@ class Simulation:
         db=None,  # SimDB | None — avoid import cycle with type annotation
         agent_groups:     dict[str, list[str]] | None = None,  # key → group IDs
         summary_interval: int                         = 0,     # 0 = 비활성, N = N웨이브마다 요약
+        system_agent:     dict | None                 = None,  # system 에이전트 설정
     ):
         self.agents         = agents
         self.background_log = background_log
@@ -72,6 +73,19 @@ class Simulation:
         # 웨이브 요약 설정
         self._summary_interval: int = max(0, summary_interval)
         self._last_summarized_wave: int = -1  # 마지막으로 요약된 웨이브 번호
+        self._last_summary: dict | None = None  # 가장 최근 요약 결과
+
+        # system 에이전트 설정
+        sa = system_agent or {}
+        self._sys_enabled:   bool  = bool(sa.get("enabled", False))
+        self._sys_prompt:    str   = sa.get("system_prompt", "")
+        self._sys_icon:      str   = sa.get("icon", "🎬")
+        self._sys_name:      str   = sa.get("display_name", "내레이터")
+        self._sys_interval:  int   = max(1, int(sa.get("intervention_interval", 1)))
+        self._sys_threshold: int   = max(1, int(sa.get("silence_threshold", 3)))
+
+        # 에이전트별 마지막 발화 웨이브 추적
+        self._last_spoke_wave: dict[str, int] = {}
 
         os.makedirs(log_dir, exist_ok=True)
         self._save_shared_log()
@@ -170,7 +184,9 @@ class Simulation:
         visible_set = set(self._visible_targets.get(speaker_key, []))
         for t in targets:
             t_s = t.strip()
-            if t_s.lower() == "all":
+            if t_s.lower() in ("self", "system"):  # 혼잣말 — 전달 대상 없음
+                continue
+            elif t_s.lower() == "all":
                 my_groups = self._agent_groups.get(speaker_key, [])
                 if my_groups:
                     resolved.extend(k for k in visible_set if k in self.active_agents)
@@ -414,6 +430,9 @@ class Simulation:
             extra=meta, targets=parsed_targets,
         )
 
+        # 발화 기록 업데이트 (self/독백 포함 — 에이전트가 활동했으므로)
+        self._last_spoke_wave[agent.name] = wave
+
         self.shared_log.append({
             "speaker":     agent.name,
             "content":     clean_content,
@@ -633,6 +652,11 @@ class Simulation:
                     self._run_wave_summary(self._last_summarized_wave + 1, wave_num)
                     self._last_summarized_wave = wave_num
 
+            # system 에이전트 — 개입 여부 판단 및 다음 웨이브에 메시지 주입
+            if self._sys_enabled and not self._stop_event.is_set():
+                if (wave_num + 1) % self._sys_interval == 0:
+                    current_wave = self._run_system_agent(wave_num, current_wave)
+
             # step_delay를 짧은 슬립 단위로 분할해 stop 응답성 확보
             if current_wave and not self._stop_event.is_set():
                 elapsed = 0.0
@@ -670,6 +694,7 @@ class Simulation:
             key_to_alias = self._key_to_alias,
         )
         if result:
+            self._last_summary = result  # system 에이전트에 전달
             self._emit("wave_summary", {
                 "wave_start":  wave_start,
                 "wave_end":    wave_end,
@@ -677,6 +702,60 @@ class Simulation:
                 "key_events":  result.get("key_events", []),
                 "mood":        result.get("mood", ""),
             })
+
+    def _run_system_agent(self, wave_num: int, current_wave: dict) -> dict:
+        """system 에이전트를 실행해 침묵 에이전트에 메시지를 주입. 수정된 current_wave 반환."""
+        from .system_agent import run_system_agent
+
+        silent = [
+            key for key in self.active_agents
+            if wave_num - self._last_spoke_wave.get(key, -1) >= self._sys_threshold
+        ]
+
+        result = run_system_agent(
+            system_prompt     = self._sys_prompt,
+            wave              = wave_num,
+            summary           = self._last_summary,
+            active_agents     = {k: self._key_to_alias.get(k, k) for k in self.active_agents},
+            silent_agents     = silent,
+            silence_threshold = self._sys_threshold,
+            key_to_alias      = self._key_to_alias,
+            model             = self.model,
+            base_url          = self.base_url,
+            api_timeout       = self.api_timeout,
+        )
+        if not result or not result.get("interventions"):
+            return current_wave
+
+        wave_copy = {k: list(v) for k, v in current_wave.items()}
+        reason = result.get("reason", "")
+
+        for iv in result["interventions"]:
+            agent_key = self._normalize_target(iv.get("agent", ""))
+            message   = iv.get("message", "").strip()
+            if not agent_key or agent_key not in self.active_agents or not message:
+                continue
+
+            # 타겟 에이전트의 다음 웨이브 incoming에 주입
+            if agent_key not in wave_copy:
+                wave_copy[agent_key] = []
+            wave_copy[agent_key].append({
+                "speaker":     self._sys_name,
+                "content":     message,
+                "action_note": "",
+            })
+
+            self._emit("system_intervention", {
+                "wave":         wave_num,
+                "target":       agent_key,
+                "target_alias": self._key_to_alias.get(agent_key, agent_key),
+                "message":      message,
+                "reason":       reason,
+                "icon":         self._sys_icon,
+                "display_name": self._sys_name,
+            })
+
+        return wave_copy
 
         if self._db is not None and self._sim_id is not None:
             self._db.save_agent_snapshots(

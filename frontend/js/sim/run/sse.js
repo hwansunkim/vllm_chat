@@ -5,7 +5,7 @@ import { sim } from '../state.js';
 import {
   addFeedMessage, addSceneEventToFeed,
   addTypingIndicator, removeTypingIndicator,
-  updateWaveIndicator, addSummaryCard,
+  updateWaveIndicator, addSummaryCard, addInterventionCard,
 } from './feed.js';
 import { updateAgentCard, getCardEl } from './cards.js';
 import { addD3Edge } from '../graph/d3.js';
@@ -67,6 +67,11 @@ export function connectSSE() {
   es.addEventListener('wave_summary', e => {
     const d = JSON.parse(e.data);
     addSummaryCard(d);
+  });
+
+  es.addEventListener('system_intervention', e => {
+    const d = JSON.parse(e.data);
+    addInterventionCard(d);
   });
 
   es.addEventListener('simulation_end', e => {

@@ -67,14 +67,14 @@ export function addD3Edge(source, target, emotion) {
   if (!gEl) return;
 
   [source, target].forEach(name => {
-    if (name === 'system' || name === 'all' || _d3Data.nodeMap[name]) return;
+    if (name === 'self' || name === 'system' || name === 'all' || _d3Data.nodeMap[name]) return;
     const agent = sim.agents.find(a => a.name === name) || { icon: '🤖', name };
     const node  = { id: name, icon: agent.icon };
     _d3Data.nodes.push(node);
     _d3Data.nodeMap[name] = node;
   });
 
-  if (target !== 'system' && target !== 'all') {
+  if (target !== 'self' && target !== 'system' && target !== 'all') {
     _d3Data.links.push({ source, target, emotion: emotion || 'neutral' });
   }
 

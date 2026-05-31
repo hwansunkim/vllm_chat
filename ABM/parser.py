@@ -75,17 +75,20 @@ def parse_json_response(
 
         if isinstance(targets, str):
             tl = targets.lower().strip()
-            if tl == "system":
-                targets = ["system"]
+            if tl in ("system", "self"):   # "system" 은 하위 호환
+                targets = ["self"]
             elif tl == "all":
                 targets = ["all"]
             else:
                 targets = [t.strip() for t in targets.split(',') if t.strip()]
         elif not targets:
-            targets = ["system"]
+            targets = ["self"]
+        else:
+            # 리스트 내 "system" 값을 "self"로 정규화
+            targets = ["self" if t.lower() in ("system", "self") else t for t in targets]
 
         return clean_content, meta_values, targets
 
     except Exception:
         logger.warning(f"JSON 파싱 실패. 원본: {content[:200]}")
-        return content, defaults, ["system"]
+        return content, defaults, ["self"]

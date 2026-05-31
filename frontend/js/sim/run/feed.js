@@ -14,7 +14,7 @@ export function renderHistoricalFeed(entries) {
 
   entries.forEach(entry => {
     const agent = sim.agents.find(a => a.name === entry.speaker) || { icon: '🤖', name: entry.speaker };
-    const targets = (entry.targets || []).filter(t => t !== 'system');
+    const targets = (entry.targets || []).filter(t => t !== 'self' && t !== 'system');
     const targetLabels = targets.map(t => t === 'all' ? '전체' : agentLabel(t));
     const targetStr = targets.length ? `→ ${targetLabels.join(', ')}` : '(독백)';
 
@@ -82,7 +82,7 @@ export function removeTypingIndicator(speaker) {
 export function addFeedMessage(data) {
   removeTypingIndicator(data.speaker);
   const agent = sim.agents.find(a => a.name === data.speaker) || { icon: '🤖', name: data.speaker };
-  const targets = data.targets.filter(t => t !== 'system');
+  const targets = data.targets.filter(t => t !== 'self' && t !== 'system');
   const targetLabels = targets.map(t => {
     if (t === 'all') return '전체';
     return agentLabel(t);
@@ -112,6 +112,25 @@ export function addFeedMessage(data) {
       ? `<div class="sim-feed-thinking">🧠 ${esc(data.reasoning_preview)}...</div>`
       : ''}
   `;
+  document.getElementById('sim-feed').appendChild(el);
+  el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
+export function addInterventionCard(d) {
+  removeFeedEmpty();
+  const targetLabel = d.target_alias || d.target;
+  const el          = document.createElement('div');
+  el.className      = 'sim-intervention-card';
+  el.innerHTML = `
+    <div class="sim-intervention-header">
+      <span class="sim-intervention-icon">${esc(d.icon || '🎬')}</span>
+      <span class="sim-intervention-name">${esc(d.display_name || '내레이터')}</span>
+      <span class="sim-intervention-arrow">→</span>
+      <span class="sim-intervention-target">${esc(targetLabel)}</span>
+      <span class="sim-intervention-wave">W${d.wave}</span>
+    </div>
+    <div class="sim-intervention-msg">${esc(d.message || '')}</div>
+    ${d.reason ? `<div class="sim-intervention-reason">${esc(d.reason)}</div>` : ''}`;
   document.getElementById('sim-feed').appendChild(el);
   el.scrollIntoView({ behavior: 'smooth', block: 'end' });
 }

@@ -21,6 +21,14 @@ export const sim = {
   output_format_template: '',
   summary_interval: 0,
   server_id:        null,   // null = 기본 서버, string = 특정 서버 ID
+  system_agent: {
+    enabled:               false,
+    icon:                  '🎬',
+    display_name:          '내레이터',
+    system_prompt:         '',    // 비어있으면 백엔드 DEFAULT_SYSTEM_AGENT_PROMPT 사용
+    intervention_interval: 1,
+    silence_threshold:     3,
+  },
   eventSource:  null,
   scenarios:    [],
 };

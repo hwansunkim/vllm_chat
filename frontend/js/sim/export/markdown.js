@@ -109,7 +109,7 @@ export async function exportScenarioMarkdown() {
       const agent     = sim.agents.find(a => a.name === entry.speaker);
       const icon      = agent?.icon || '🤖';
       const name      = agent?.display_name || entry.speaker;
-      const targets   = (entry.targets || []).filter(t => t !== 'system');
+      const targets   = (entry.targets || []).filter(t => t !== 'self' && t !== 'system');
       const targetStr = targets.length
         ? `→ *${targets.map(t => t === 'all' ? '전체' : agentLabel(t)).join(', ')}*`
         : '*(독백)*';
@@ -201,7 +201,7 @@ export async function exportAgentContextMarkdown(agentName) {
           ? parsed.target
           : (parsed.target ? [parsed.target] : []);
         const tgt = rawTargets
-          .map(t => t === 'all' ? '전체' : t === 'system' ? '(독백)' : agentLabel(t))
+          .map(t => t === 'all' ? '전체' : ( t === 'self' || t === 'system') ? '(독백)' : agentLabel(t))
           .join(', ') || '(독백)';
         const meta       = metaLine(parsed);
         const actionNote = parsed.action_note || '';

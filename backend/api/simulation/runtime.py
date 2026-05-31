@@ -125,6 +125,7 @@ def start_simulation(cfg: SimStartConfig):
                 db=db,
                 agent_groups=agent_groups,
                 summary_interval=cfg.summary_interval,
+                system_agent=cfg.system_agent.model_dump(),
             )
             _sim["agents"]         = sim.agents
             _sim["background_log"] = sim.background_log
@@ -417,6 +418,7 @@ def resume_simulation(run_id: str):
                 sim_id=run_sim_id, db=new_db,
                 agent_groups=agent_groups,
                 summary_interval=cfg.summary_interval,
+                system_agent=cfg.system_agent.model_dump(),
             )
             _sim["agents"]         = sim.agents
             _sim["background_log"] = sim.background_log
