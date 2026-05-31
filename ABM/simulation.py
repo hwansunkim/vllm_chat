@@ -968,6 +968,12 @@ class Simulation:
         self._pending_wave = current_wave  # agents targeted but not yet responded
         self._save_edges()
 
+        self._emit("simulation_end", {
+            "total_turns": total_turns,
+            "edges_count": len(self.edges),
+            "log_count":   len(self.shared_log),
+        })
+
     def _run_wave_summary(self, wave_start: int, wave_end: int) -> None:
         """shared_log에서 해당 웨이브 구간 엔트리를 추출해 LLM 요약 후 이벤트를 emit."""
         if self._stop_event.is_set():
