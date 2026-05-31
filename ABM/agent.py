@@ -41,9 +41,13 @@ def _build_output_format(
     template: str | None = None,
     target_sections: list[tuple[str, list[str]]] | None = None,
     location_name: str = "",
+    situation_targets: bool = False,
 ) -> str:
     """Dynamically build the JSON output format instruction from configured fields."""
-    if target_sections:
+    if situation_targets:
+        # 위치 기반 모드: 대화 상대는 상황 컨텍스트에서 ID 포함하여 제공됨
+        targets_block = "  ([현재 상황] 컨텍스트에서 대화 상대와 ID를 확인하세요)\n"
+    elif target_sections:
         parts: list[str] = []
         for section_label, members in target_sections:
             parts.append(f"[{section_label}]")
@@ -165,6 +169,7 @@ class Agent:
         key_to_alias: dict[str, str] | None = None,
         target_sections: list[tuple[str, list[str]]] | None = None,
         location_name: str = "",
+        situation_targets: bool = False,
     ) -> dict:
         return {
             "role": "system",
@@ -173,6 +178,7 @@ class Agent:
                 template=self._output_format_template,
                 target_sections=target_sections,
                 location_name=location_name,
+                situation_targets=situation_targets,
             ),
         }
 
@@ -187,9 +193,10 @@ class Agent:
         key_to_alias: dict[str, str] | None = None,
         target_sections: list[tuple[str, list[str]]] | None = None,
         location_name: str = "",
+        situation_targets: bool = False,
     ) -> int:
         """Estimate total prompt tokens for the next LLM call."""
-        msgs = self.build_messages(background_log, available_targets, key_to_alias, target_sections, location_name)
+        msgs = self.build_messages(background_log, available_targets, key_to_alias, target_sections, location_name, situation_targets)
         return sum(_msg_tokens(m) for m in msgs)
 
     def trim_to_token_limit(
@@ -199,17 +206,18 @@ class Agent:
         key_to_alias: dict[str, str] | None = None,
         target_sections: list[tuple[str, list[str]]] | None = None,
         location_name: str = "",
+        situation_targets: bool = False,
     ):
         """Remove oldest memory messages until estimated tokens fit within _token_limit."""
         while self.memory:
-            if self.estimate_context_tokens(background_log, available_targets, key_to_alias, target_sections, location_name) <= self._token_limit:
+            if self.estimate_context_tokens(background_log, available_targets, key_to_alias, target_sections, location_name, situation_targets) <= self._token_limit:
                 break
             self.memory.pop(0)
             self._trimmed_count += 1
 
         # Warn when system+background alone exceeds the limit — trimming can't help further.
         if not self.memory:
-            est = self.estimate_context_tokens(background_log, available_targets, key_to_alias, target_sections, location_name)
+            est = self.estimate_context_tokens(background_log, available_targets, key_to_alias, target_sections, location_name, situation_targets)
             if est > self._token_limit:
                 logger.warning(
                     f"[{self.name}] Context exceeds token_limit even with empty memory "
@@ -224,9 +232,10 @@ class Agent:
         key_to_alias: dict[str, str] | None = None,
         target_sections: list[tuple[str, list[str]]] | None = None,
         location_name: str = "",
+        situation_targets: bool = False,
     ) -> list:
         """[system] + background_log + [memory_block?] + agent memory"""
-        msgs = [self.get_system_message(available_targets, key_to_alias, target_sections, location_name)] + background_log
+        msgs = [self.get_system_message(available_targets, key_to_alias, target_sections, location_name, situation_targets)] + background_log
         if self._memory_block:
             msgs.append({"role": "user", "content": self._memory_block})
         msgs.extend(self.memory)

@@ -130,6 +130,7 @@ def start_simulation(cfg: SimStartConfig):
                 system_agent=cfg.system_agent.model_dump(),
                 agent_locations=agent_locations,
                 agent_visuals=agent_visuals,
+                location_graph=[{"name": n.name, "connects_to": n.connects_to} for n in cfg.location_graph],
             )
             _sim["agents"]         = sim.agents
             _sim["background_log"] = sim.background_log

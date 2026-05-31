@@ -19,6 +19,7 @@ import {
   saveScenario, deleteScenario,
   newScenario, applyScenario,
 } from './scenarios.js';
+import { addLocationNode } from './settings/page.js';
 import { toggleRunHistory, openAllRunsModal } from './runs/history.js';
 import { exportGraph } from './graph/d3.js';
 import { switchTab, fetchAgentContext } from './context.js';
@@ -69,6 +70,8 @@ export function initSimulationEvents() {
     sim.events.push({ wave: 1, type: 'system_message', message: '', targets: ['all'], agent: '' });
     renderScenarioEvents();
   });
+
+  document.getElementById('sim-add-location-btn').addEventListener('click', addLocationNode);
 
   document.querySelectorAll('.sim-tab').forEach(btn => {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));

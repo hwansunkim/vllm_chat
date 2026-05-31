@@ -23,6 +23,11 @@ class ScenarioEvent(BaseModel):
     agent:   str       = ""  # agent_enter / agent_exit / update_appearance 전용
 
 
+class LocationNode(BaseModel):
+    name:        str
+    connects_to: list[str] = []
+
+
 class ExtraField(BaseModel):
     name:    str
     default: str = ""
@@ -62,6 +67,7 @@ class SimStartConfig(BaseModel):
         ExtraField(name="action_note", default=""),
     ]
     events:                 list[ScenarioEvent] = []
+    location_graph:         list[LocationNode]  = []
     output_format_template: str              = ""
     summary_interval:       int              = 0   # 0 = 비활성, N = N웨이브마다 LLM 요약
     server_id:              str | None       = None  # None = DB default 서버, 미설정 시 env 폴백

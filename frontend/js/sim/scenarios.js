@@ -40,6 +40,7 @@ export async function saveScenario() {
       token_limit:            sim.token_limit,
       extra_fields:           sim.extra_fields,
       events:                 sim.events,
+      location_graph:         sim.location_graph || [],
       output_format_template: sim.output_format_template || '',
     },
   };
@@ -101,6 +102,7 @@ export function newScenario() {
     { name: 'action_note', default: ''        },
   ];
   sim.events                 = [];
+  sim.location_graph         = [];
   sim.output_format_template = '';
   sim.summary_interval       = 0;
   sim.server_id              = null;
@@ -143,6 +145,7 @@ export function applyScenario(s) {
     sim.extra_fields.push({ name: 'action_note', default: '' });
   }
   sim.events                 = cfg.events                 || [];
+  sim.location_graph = (cfg.location_graph || []).map(n => ({ ...n, connects_to: [...(n.connects_to || [])] }));
   sim.output_format_template = cfg.output_format_template || '';
   sim.summary_interval       = cfg.summary_interval       ?? 0;
   sim.server_id              = cfg.server_id              ?? null;

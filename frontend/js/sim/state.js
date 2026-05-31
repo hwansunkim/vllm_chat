@@ -18,6 +18,7 @@ export const sim = {
     { name: 'action_note', default: ''        },
   ],
   events:       [],
+  location_graph: [],
   output_format_template: '',
   summary_interval: 0,
   server_id:        null,   // null = 기본 서버, string = 특정 서버 ID

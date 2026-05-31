@@ -952,3 +952,98 @@
   background: rgba(255,255,255,0.6);
   border-radius: 6px;
 }
+
+/* ── 위치 그래프 에디터 ────────────────────────────────────────────────── */
+.sim-location-graph-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0;
+}
+.sim-loc-empty {
+  color: var(--text-muted, #94a3b8);
+  font-size: 13px;
+  padding: 8px 4px;
+}
+.sim-loc-node-row {
+  background: var(--surface-2, #1e293b);
+  border: 1px solid var(--border, #334155);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sim-loc-node-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sim-loc-node-icon {
+  font-size: 14px;
+}
+.sim-loc-node-name {
+  flex: 1;
+  background: var(--surface-1, #0f172a);
+  border: 1px solid var(--border, #334155);
+  border-radius: 6px;
+  padding: 4px 8px;
+  color: var(--text-primary, #f1f5f9);
+  font-size: 13px;
+}
+.sim-loc-node-del {
+  background: none;
+  border: none;
+  color: var(--text-muted, #94a3b8);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  line-height: 1;
+}
+.sim-loc-node-del:hover { color: #ef4444; background: rgba(239,68,68,0.1); }
+.sim-loc-conns {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.sim-loc-conns-label {
+  color: var(--text-muted, #94a3b8);
+  font-size: 12px;
+}
+.sim-loc-no-conn {
+  color: var(--text-muted, #94a3b8);
+  font-style: italic;
+}
+.sim-loc-conn-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(99,102,241,0.15);
+  border: 1px solid rgba(99,102,241,0.35);
+  border-radius: 12px;
+  padding: 2px 8px 2px 10px;
+  color: #a5b4fc;
+  font-size: 12px;
+}
+.sim-loc-conn-del {
+  background: none;
+  border: none;
+  color: #a5b4fc;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0 2px;
+  line-height: 1;
+}
+.sim-loc-conn-del:hover { color: #ef4444; }
+.sim-loc-add-conn {
+  background: var(--surface-1, #0f172a);
+  border: 1px dashed var(--border, #334155);
+  border-radius: 6px;
+  padding: 3px 8px;
+  color: var(--text-secondary, #94a3b8);
+  font-size: 12px;
+  cursor: pointer;
+}

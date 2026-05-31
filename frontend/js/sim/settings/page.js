@@ -1,7 +1,7 @@
 // frontend/js/sim/settings/page.js
 // Top-level orchestration for the settings page (form ↔ sim state sync).
 
-import { sim } from '../state.js';
+import { sim, esc } from '../state.js';
 import { renderOutputFields } from './output-fields.js';
 import { renderAgentListInConfig, renderStartAgentSelect } from './agents.js';
 import { renderScenarioEvents } from './events.js';
@@ -20,6 +20,7 @@ export function renderSettingsPage() {
   renderAgentListInConfig();
   renderStartAgentSelect();
   renderScenarioEvents();
+  renderLocationGraph();
   renderServerSelect();        // 비동기 — 드롭다운 별도 렌더링
   renderSystemAgentConfig();   // system 에이전트 설정 동기 렌더링
 }
@@ -34,6 +35,7 @@ export function readConfigFromUI() {
   sim.summary_interval       = parseInt(document.getElementById('sim-summary-interval').value) || 0;
   const sel = document.getElementById('sim-server-select');
   sim.server_id              = sel?.value || null;
+  sim.location_graph = _readLocationGraph();
   // system 에이전트 설정 읽기
   sim.system_agent = {
     enabled:               document.getElementById('sim-sys-enabled')?.checked           ?? false,
@@ -112,4 +114,110 @@ function updateServerHint(serverId, servers) {
     const s = servers.find(s => s.id === serverId);
     hint.textContent = s ? `${s.model.split('/').pop()} · ${s.base_url}` : '';
   }
+}
+
+// ── 위치 그래프 에디터 ─────────────────────────────────────────────────────────
+
+function renderLocationGraph() {
+  const container = document.getElementById('sim-location-graph');
+  if (!container) return;
+  const graph = sim.location_graph || [];
+  const nodeNames = graph.map(n => n.name);
+  container.innerHTML = '';
+
+  graph.forEach((node, idx) => {
+    const row = document.createElement('div');
+    row.className = 'sim-loc-node-row';
+    const connBadges = (node.connects_to || []).map(c => `
+      <span class="sim-loc-conn-badge">
+        ${esc(c)}
+        <button class="sim-loc-conn-del" data-node="${idx}" data-conn="${esc(c)}" title="연결 제거">×</button>
+      </span>`).join('');
+    const otherNodes = nodeNames.filter(n => n !== node.name && !(node.connects_to || []).includes(n));
+    const addConnOpts = otherNodes.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+    row.innerHTML = `
+      <div class="sim-loc-node-header">
+        <span class="sim-loc-node-icon">📍</span>
+        <input class="sim-loc-node-name" data-idx="${idx}" value="${esc(node.name)}" placeholder="장소 이름" />
+        <button class="sim-loc-node-del" data-idx="${idx}" title="장소 삭제">×</button>
+      </div>
+      <div class="sim-loc-conns">
+        <span class="sim-loc-conns-label">연결:</span>
+        ${connBadges || '<span class="sim-loc-no-conn">(없음)</span>'}
+        ${addConnOpts ? `<select class="sim-loc-add-conn" data-node="${idx}">
+          <option value="">+ 연결 추가</option>
+          ${addConnOpts}
+        </select>` : ''}
+      </div>`;
+    container.appendChild(row);
+  });
+
+  // 이벤트 위임
+  container.onclick = e => {
+    const delNode = e.target.closest('.sim-loc-node-del');
+    if (delNode) {
+      const i = parseInt(delNode.dataset.idx);
+      const name = sim.location_graph[i].name;
+      sim.location_graph.splice(i, 1);
+      sim.location_graph.forEach(n => {
+        n.connects_to = (n.connects_to || []).filter(c => c !== name);
+      });
+      renderLocationGraph();
+      return;
+    }
+    const delConn = e.target.closest('.sim-loc-conn-del');
+    if (delConn) {
+      const ni = parseInt(delConn.dataset.node);
+      const conn = delConn.dataset.conn;
+      sim.location_graph[ni].connects_to = (sim.location_graph[ni].connects_to || []).filter(c => c !== conn);
+      const other = sim.location_graph.find(n => n.name === conn);
+      if (other) other.connects_to = (other.connects_to || []).filter(c => c !== sim.location_graph[ni].name);
+      renderLocationGraph();
+      return;
+    }
+  };
+
+  container.onchange = e => {
+    const nameInput = e.target.closest('.sim-loc-node-name');
+    if (nameInput) {
+      const i = parseInt(nameInput.dataset.idx);
+      const oldName = sim.location_graph[i].name;
+      const newName = nameInput.value.trim();
+      if (newName && newName !== oldName) {
+        sim.location_graph.forEach(n => {
+          n.connects_to = (n.connects_to || []).map(c => c === oldName ? newName : c);
+        });
+        sim.location_graph[i].name = newName;
+        renderLocationGraph();
+      }
+      return;
+    }
+    const addConn = e.target.closest('.sim-loc-add-conn');
+    if (addConn) {
+      const ni = parseInt(addConn.dataset.node);
+      const target = addConn.value;
+      if (!target) return;
+      const nodeA = sim.location_graph[ni];
+      const nodeB = sim.location_graph.find(n => n.name === target);
+      if (!nodeA.connects_to) nodeA.connects_to = [];
+      if (!nodeA.connects_to.includes(target)) nodeA.connects_to.push(target);
+      if (nodeB) {
+        if (!nodeB.connects_to) nodeB.connects_to = [];
+        if (!nodeB.connects_to.includes(nodeA.name)) nodeB.connects_to.push(nodeA.name);
+      }
+      renderLocationGraph();
+      return;
+    }
+  };
+}
+
+function _readLocationGraph() {
+  return (sim.location_graph || []).map(n => ({ name: n.name, connects_to: [...(n.connects_to || [])] }));
+}
+
+// 위치 그래프 "+ 장소 추가" 버튼
+export function addLocationNode() {
+  if (!sim.location_graph) sim.location_graph = [];
+  sim.location_graph.push({ name: `장소${sim.location_graph.length + 1}`, connects_to: [] });
+  renderLocationGraph();
 }
