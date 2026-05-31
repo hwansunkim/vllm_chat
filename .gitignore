@@ -2,3 +2,11 @@ __pycache__/
 *.pyc
 memory.db
 .env
+_workspace*/
+graphify-out/
+logs_graph/
+*.db
+*.db-shm
+*.db-wal
+make_graph.py
+simulator.py
