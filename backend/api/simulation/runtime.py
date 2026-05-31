@@ -112,7 +112,9 @@ def start_simulation(cfg: SimStartConfig):
             # display_name → key 매핑 (한국어 이름을 target으로 사용해도 올바른 키로 resolve)
             alias_map = {a.display_name: a.name for a in cfg.agents if a.display_name.strip()}
             # 그룹 가시성 맵 — groups 빈 에이전트는 전체 노출 (하위 호환)
-            agent_groups = {a.name: a.groups for a in cfg.agents}
+            agent_groups    = {a.name: a.groups            for a in cfg.agents}
+            agent_locations = {a.name: a.location          for a in cfg.agents}
+            agent_visuals   = {a.name: a.visual_description for a in cfg.agents}
 
             sim = Simulation(
                 agents, background_log, LOG_DIR,
@@ -126,6 +128,8 @@ def start_simulation(cfg: SimStartConfig):
                 agent_groups=agent_groups,
                 summary_interval=cfg.summary_interval,
                 system_agent=cfg.system_agent.model_dump(),
+                agent_locations=agent_locations,
+                agent_visuals=agent_visuals,
             )
             _sim["agents"]         = sim.agents
             _sim["background_log"] = sim.background_log
@@ -280,9 +284,11 @@ def load_simulation(run_id: str):
                 agent._memory_block = block
             agents[a.name] = agent
 
-        background_log = [{"role": "user", "content": f"[배경] {cfg.background}"}]
-        init_agents    = list(saved_active) if saved_active is not None else None
-        agent_groups   = {a.name: a.groups for a in cfg.agents}
+        background_log  = [{"role": "user", "content": f"[배경] {cfg.background}"}]
+        init_agents     = list(saved_active) if saved_active is not None else None
+        agent_groups    = {a.name: a.groups            for a in cfg.agents}
+        agent_locations = {a.name: a.location          for a in cfg.agents}
+        agent_visuals   = {a.name: a.visual_description for a in cfg.agents}
 
         sim_obj = Simulation(
             agents, background_log, LOG_DIR,
@@ -292,6 +298,8 @@ def load_simulation(run_id: str):
             db=SimDB(os.path.join(LOG_DIR, "simulation.db")),
             agent_groups=agent_groups,
             summary_interval=cfg.summary_interval,
+            agent_locations=agent_locations,
+            agent_visuals=agent_visuals,
         )
         if saved_pending:
             sim_obj._pending_wave = saved_pending
@@ -404,10 +412,12 @@ def resume_simulation(run_id: str):
                     agent._memory_block = block
                 agents[a.name] = agent
 
-            background_log = [{"role": "user", "content": f"[배경] {cfg.background}"}]
-            init_agents    = list(saved_active) if saved_active is not None else None
+            background_log  = [{"role": "user", "content": f"[배경] {cfg.background}"}]
+            init_agents     = list(saved_active) if saved_active is not None else None
 
-            agent_groups = {a.name: a.groups for a in cfg.agents}
+            agent_groups    = {a.name: a.groups            for a in cfg.agents}
+            agent_locations = {a.name: a.location          for a in cfg.agents}
+            agent_visuals   = {a.name: a.visual_description for a in cfg.agents}
 
             sim = Simulation(
                 agents, background_log, LOG_DIR,
@@ -419,6 +429,8 @@ def resume_simulation(run_id: str):
                 agent_groups=agent_groups,
                 summary_interval=cfg.summary_interval,
                 system_agent=cfg.system_agent.model_dump(),
+                agent_locations=agent_locations,
+                agent_visuals=agent_visuals,
             )
             _sim["agents"]         = sim.agents
             _sim["background_log"] = sim.background_log

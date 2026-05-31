@@ -92,3 +92,19 @@ def parse_json_response(
     except Exception:
         logger.warning(f"JSON 파싱 실패. 원본: {content[:200]}")
         return content, defaults, ["self"]
+
+
+def parse_json_extras(content: str) -> dict:
+    """Extract move_to and update_appearance from LLM response without breaking existing API."""
+    try:
+        raw = content
+        m = _CODE_FENCE_RE.match(raw)
+        if m:
+            raw = m.group(1)
+        data = json.loads(_sanitize_json_strings(raw.strip()))
+        return {
+            "move_to":           (data.get("move_to") or "").strip() or None,
+            "update_appearance": (data.get("update_appearance") or "").strip() or None,
+        }
+    except Exception:
+        return {}

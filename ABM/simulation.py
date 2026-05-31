@@ -9,7 +9,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .agent import Agent
 from .llm import chat_response
-from .parser import parse_json_response
+from .parser import parse_json_response, parse_json_extras
 from .config import LOG_DIR, MODEL, BASE_URL, API_TIMEOUT
 
 logger = logging.getLogger(__name__)
@@ -60,6 +60,8 @@ class Simulation:
         agent_groups:     dict[str, list[str]] | None = None,  # key → group IDs
         summary_interval: int                         = 0,     # 0 = 비활성, N = N웨이브마다 요약
         system_agent:     dict | None                 = None,  # system 에이전트 설정
+        agent_locations:  dict[str, str] | None       = None,  # key → 초기 위치
+        agent_visuals:    dict[str, str] | None       = None,  # key → 초기 외모
     ):
         self.agents         = agents
         self.background_log = background_log
@@ -113,6 +115,50 @@ class Simulation:
 
         # 에이전트별 마지막 발화 웨이브 추적
         self._last_spoke_wave: dict[str, int] = {}
+
+        # 위치 기반 시스템 상태
+        self._agent_location: dict[str, str] = {}   # 현재 위치 (동적)
+        self._agent_visual:   dict[str, str] = {}   # 현재 외모 (동적)
+        self._agent_knowledge: dict[str, set] = {}  # 아는 사람 set (knowledge 확장)
+        self._stranger_map:  dict[str, dict] = {}   # observer → {stranger_id → real_key}
+        self._stranger_rmap: dict[str, dict] = {}   # observer → {real_key → stranger_id}
+
+        # 위치 초기화: agent_locations 파라미터 값, 없으면 첫 번째 그룹, 그것도 없으면 ""
+        _groups = self._agent_groups
+        for key in self.agents:
+            if agent_locations and key in agent_locations:
+                self._agent_location[key] = agent_locations[key]
+            else:
+                first_group = (_groups.get(key) or [None])[0]
+                self._agent_location[key] = first_group if first_group else ""
+
+        # 외모 초기화
+        for key in self.agents:
+            if agent_visuals and key in agent_visuals:
+                self._agent_visual[key] = agent_visuals[key]
+            else:
+                self._agent_visual[key] = ""
+
+        # knowledge 초기화: 같은 그룹 에이전트끼리 서로 앎
+        all_keys = list(self.agents.keys())
+        for key in all_keys:
+            self._agent_knowledge[key] = set()
+            self._stranger_map[key] = {}
+            self._stranger_rmap[key] = {}
+        for key in all_keys:
+            my_groups = _groups.get(key, [])
+            if my_groups:
+                for other_key in all_keys:
+                    if other_key == key:
+                        continue
+                    other_groups = _groups.get(other_key, [])
+                    if any(g in other_groups for g in my_groups):
+                        self._agent_knowledge[key].add(other_key)
+            else:
+                # 그룹 미설정 에이전트는 모든 에이전트를 앎
+                for other_key in all_keys:
+                    if other_key != key:
+                        self._agent_knowledge[key].add(other_key)
 
         os.makedirs(log_dir, exist_ok=True)
         self._save_shared_log()
@@ -198,13 +244,50 @@ class Simulation:
 
         return sections or None
 
+    def _get_or_assign_stranger_id(self, observer_key: str, target_key: str) -> str:
+        """observer가 target을 처음 보는 경우 stranger_N ID를 할당, 이미 있으면 기존 ID 반환."""
+        self._stranger_map.setdefault(observer_key, {})
+        self._stranger_rmap.setdefault(observer_key, {})
+        if target_key in self._stranger_rmap[observer_key]:
+            return self._stranger_rmap[observer_key][target_key]
+        n = len(self._stranger_map[observer_key]) + 1
+        sid = f"stranger_{n}"
+        self._stranger_map[observer_key][sid] = target_key
+        self._stranger_rmap[observer_key][target_key] = sid
+        return sid
+
+    def _compute_wave_targets(self, agent_key: str):
+        """현재 위치 기준 대화 가능 에이전트 계산.
+        Returns (known: list[str], strangers: list[tuple[stranger_id, real_key, visual]])
+        위치가 설정된 경우에만 필터링, 미설정 시 기존 동작.
+        """
+        my_loc = self._agent_location.get(agent_key, "")
+        knowledge = self._agent_knowledge.get(agent_key, set())
+        known: list[str] = []
+        strangers: list[tuple[str, str, str]] = []
+        for other_key in self.active_agents:
+            if other_key == agent_key:
+                continue
+            other_loc = self._agent_location.get(other_key, "")
+            # 위치가 설정된 경우에만 필터링 (둘 다 위치가 있고 다른 곳이면 제외)
+            if my_loc and other_loc and my_loc != other_loc:
+                continue
+            if other_key in knowledge:
+                known.append(other_key)
+            else:
+                sid = self._get_or_assign_stranger_id(agent_key, other_key)
+                visual = self._agent_visual.get(other_key, "") or self._key_to_alias.get(other_key, other_key)
+                strangers.append((sid, other_key, visual))
+        return known, strangers
+
     def _resolve_targets(self, targets: list[str], speaker_key: str) -> list[str]:
         """발화 target 해석 — active_agents 기준.
 
         지원 형식:
-          "all"       → 화자 그룹 내 활성 에이전트 (그룹 미소속 시 전체)
-          "group:X"   → 그룹 X 소속 활성 에이전트 중 화자가 볼 수 있는 멤버만
-          "<key>"     → 특정 에이전트
+          "all"        → 화자 그룹 내 활성 에이전트 (그룹 미소속 시 전체)
+          "group:X"    → 그룹 X 소속 활성 에이전트 중 화자가 볼 수 있는 멤버만
+          "stranger_N" → 해당 낯선 이 (real_key 로 변환 + knowledge 확장)
+          "<key>"      → 특정 에이전트
         브릿지 에이전트(복수 그룹)는 "all" 시 모든 가시 에이전트, "group:X" 시 해당 그룹만.
         """
         resolved = []
@@ -226,6 +309,13 @@ class Simulation:
                     k for k in visible_set
                     if k in self.active_agents and gid in self._agent_groups.get(k, [])
                 )
+            elif t_s.startswith("stranger_"):
+                # stranger_N → real_key 변환 + 상호 knowledge 확장
+                real_key = self._stranger_map.get(speaker_key, {}).get(t_s)
+                if real_key and real_key in self.active_agents:
+                    self._agent_knowledge.setdefault(speaker_key, set()).add(real_key)
+                    self._agent_knowledge.setdefault(real_key, set()).add(speaker_key)
+                    resolved.append(real_key)
             else:
                 key = self._normalize_target(t_s)
                 if key in self.active_agents and key != speaker_key:
@@ -327,6 +417,31 @@ class Simulation:
             })
             logger.info(f"[에이전트 퇴장] {agent_key}: {exit_msg}")
 
+        elif etype == "update_appearance":
+            if not agent_key or agent_key not in self.agents:
+                logger.warning(f"update_appearance: 알 수 없는 에이전트 '{agent_key}'")
+                return result
+            self._agent_visual[agent_key] = message
+            display = self._key_to_alias.get(agent_key, agent_key)
+            self._emit("appearance_update", {
+                "wave": 0, "agent": agent_key,
+                "display_name": display,
+                "description": message,
+            })
+            # 같은 위치 에이전트들에게 알림 주입
+            my_loc = self._agent_location.get(agent_key, "")
+            for name in self._resolve_event_targets(targets):
+                if name == agent_key:
+                    continue
+                other_loc = self._agent_location.get(name, "")
+                if my_loc and other_loc and my_loc != other_loc:
+                    continue
+                self.agents[name].add_to_memory({
+                    "role": "user",
+                    "content": f"[씬] {display}의 외모가 변했다: {message}",
+                })
+            logger.info(f"[외모 변경] {agent_key}: {message}")
+
         return result
 
     # ------------------------------------------------------------------
@@ -417,6 +532,15 @@ class Simulation:
         call_messages = agent.build_messages(
             self.background_log, visible_agents, self._key_to_alias, target_sections
         )
+        return self._call_llm_for_agent_msgs(agent, agent_key, call_messages)
+
+    def _call_llm_for_agent_msgs(
+        self,
+        agent: Agent,
+        agent_key: str,
+        call_messages: list,
+    ) -> tuple[str | None, str, dict, str | None]:
+        """Invoke the LLM with pre-built messages. Returns (content, reasoning, usage, error)."""
         try:
             content, reasoning, usage = chat_response(
                 call_messages, self.model, self.base_url, self.api_timeout
@@ -439,17 +563,20 @@ class Simulation:
         target_sections,
         bad_content: str,
         max_retries: int = 2,
+        key_to_alias: dict | None = None,
+        location_name: str = "",
     ) -> tuple[str | None, str, dict, str | None]:
         """한자 등 외국어가 섞인 응답을 최대 max_retries회 재시도로 교정."""
         CORRECTION_MSG = (
             "⚠ 방금 응답에 한국어가 아닌 문자(한자, 영어 등)가 포함되어 있습니다. "
             "content 필드를 반드시 한국어로만 다시 작성해주세요."
         )
+        alias = key_to_alias if key_to_alias is not None else self._key_to_alias
         current_bad = bad_content
         reasoning, usage = "", {}
         for attempt in range(1, max_retries + 1):
             fix_msgs = agent.build_messages(
-                self.background_log, visible_agents, self._key_to_alias, target_sections
+                self.background_log, visible_agents, alias, target_sections, location_name
             )
             fix_msgs.append({"role": "assistant", "content": current_bad})
             fix_msgs.append({"role": "user",      "content": CORRECTION_MSG})
@@ -581,22 +708,44 @@ class Simulation:
 
         active_agent = self.agents[agent_key]
         incoming_msgs = self._inject_incoming(active_agent, incoming)
-        other_agents  = [k for k in self.active_agents if k != agent_key]
-        # 그룹 필터 적용: 이 에이전트가 볼 수 있는 활성 에이전트만 <TARGETS>에 노출
-        visible_agents  = [k for k in self._visible_targets.get(agent_key, other_agents)
-                           if k in self.active_agents]
-        # 그룹 소속이 있으면 섹션 구조로 <TARGETS> 렌더링
-        target_sections = self._get_visible_sections(agent_key, visible_agents)
+
+        # 위치 기반 대화 가능 에이전트 계산
+        known, strangers = self._compute_wave_targets(agent_key)
+
+        # extended alias: stranger_id → visual_description (표시용)
+        extended_alias = dict(self._key_to_alias)
+        for sid, _, visual in strangers:
+            extended_alias[sid] = visual
+
+        # visible agents = known keys + stranger IDs
+        visible_agents = known + [sid for sid, _, _ in strangers]
+
+        # target_sections 구성
+        my_loc = self._agent_location.get(agent_key, "")
+        target_sections: list[tuple[str, list[str]]] | None = None
+        if known or strangers:
+            sections: list[tuple[str, list[str]]] = []
+            if known:
+                sections.append(("아는 사람", known))
+            if strangers:
+                sections.append(("처음 보는 사람", [sid for sid, _, _ in strangers]))
+            target_sections = sections if sections else None
+        else:
+            # 위치 기반 필터링 없이 기존 그룹 기반 섹션으로 폴백
+            other_agents = [k for k in self.active_agents if k != agent_key]
+            visible_agents = [k for k in self._visible_targets.get(agent_key, other_agents)
+                              if k in self.active_agents]
+            target_sections = self._get_visible_sections(agent_key, visible_agents)
 
         # Compression runs before trimming so memories are structured, not discarded.
         self._maybe_compress(active_agent, agent_key, wave, visible_agents, target_sections)
 
         # Trim memory to fit within token limit before building the final prompt.
         active_agent.trim_to_token_limit(
-            self.background_log, visible_agents, self._key_to_alias, target_sections
+            self.background_log, visible_agents, extended_alias, target_sections, my_loc
         )
         est_tokens = active_agent.estimate_context_tokens(
-            self.background_log, visible_agents, self._key_to_alias, target_sections
+            self.background_log, visible_agents, extended_alias, target_sections, my_loc
         )
 
         self._emit("turn_start", {
@@ -608,8 +757,13 @@ class Simulation:
             "token_limit": active_agent._token_limit,
         })
 
-        content, reasoning, usage, error = self._call_llm_for_agent(
-            active_agent, agent_key, visible_agents, target_sections
+        # build_messages에 location_name 전달 (system message에 현재 위치 표시)
+        call_messages = active_agent.build_messages(
+            self.background_log, visible_agents, extended_alias, target_sections, my_loc
+        )
+
+        content, reasoning, usage, error = self._call_llm_for_agent_msgs(
+            active_agent, agent_key, call_messages
         )
         if error is not None:
             self._emit("turn_error", {
@@ -625,7 +779,8 @@ class Simulation:
             logger.warning(f"언어 교잡 감지 ({agent_key}): 재시도 시작")
             self._emit("turn_language_fix", {"speaker": agent_key, "wave": wave, "turn": turn})
             content, reasoning, usage, error = self._retry_language_fix(
-                active_agent, agent_key, visible_agents, target_sections, content
+                active_agent, agent_key, visible_agents, target_sections, content,
+                key_to_alias=extended_alias, location_name=my_loc,
             )
             if error is not None:
                 self._emit("turn_error", {
@@ -636,9 +791,15 @@ class Simulation:
                 self._rollback_incoming(active_agent, incoming_msgs)
                 return {"success": False, "agent_key": agent_key}
 
-        return self._apply_turn_result(
+        # move_to, update_appearance 추출
+        extras = parse_json_extras(content)
+
+        result = self._apply_turn_result(
             active_agent, agent_key, content, reasoning, usage, wave, turn, est_tokens,
         )
+        result["move_to"] = extras.get("move_to")
+        result["update_appearance"] = extras.get("update_appearance")
+        return result
 
     # ------------------------------------------------------------------
     # 시뮬레이션 실행
@@ -709,7 +870,67 @@ class Simulation:
             total_turns  += len(current_wave)
             self.completed_waves = wave_num + 1
 
+            # move_to / update_appearance 처리 (next_wave 구성 전에 상태 갱신)
+            scene_injections: dict[str, list] = {}  # agent_key → [씬 메시지들]
+            for speaker_key, result in results.items():
+                if not result.get("success"):
+                    continue
+
+                move_to = result.get("move_to")
+                if move_to:
+                    old_loc = self._agent_location.get(speaker_key, "")
+                    self._agent_location[speaker_key] = move_to
+                    display = self._key_to_alias.get(speaker_key, speaker_key)
+                    self._emit("agent_move", {
+                        "wave": wave_num, "agent": speaker_key,
+                        "display_name": display,
+                        "from": old_loc, "to": move_to,
+                    })
+                    # 새 위치 에이전트들에게 다음 웨이브에 [씬] 알림
+                    mover_visual = self._agent_visual.get(speaker_key, "") or display
+                    for other_key in self.active_agents:
+                        if other_key == speaker_key:
+                            continue
+                        if self._agent_location.get(other_key, "") == move_to:
+                            if speaker_key in self._agent_knowledge.get(other_key, set()):
+                                scene_msg = f"[씬] {display}이(가) 이곳에 도착했다."
+                            else:
+                                scene_msg = (
+                                    f"[씬] 낯선 이가 나타났다: {mover_visual}"
+                                    if mover_visual else "[씬] 낯선 이가 나타났다."
+                                )
+                            scene_injections.setdefault(other_key, []).append({
+                                "speaker": "씬", "content": scene_msg, "action_note": ""
+                            })
+
+                update_appearance = result.get("update_appearance")
+                if update_appearance:
+                    self._agent_visual[speaker_key] = update_appearance
+                    display = self._key_to_alias.get(speaker_key, speaker_key)
+                    self._emit("appearance_update", {
+                        "wave": wave_num, "agent": speaker_key,
+                        "display_name": display,
+                        "description": update_appearance,
+                    })
+                    # 같은 위치 에이전트들에게 [씬] 알림
+                    my_loc = self._agent_location.get(speaker_key, "")
+                    for other_key in self.active_agents:
+                        if other_key == speaker_key:
+                            continue
+                        other_loc = self._agent_location.get(other_key, "")
+                        if my_loc and other_loc and my_loc != other_loc:
+                            continue
+                        scene_msg = f"[씬] {display}의 외모가 변했다: {update_appearance}"
+                        scene_injections.setdefault(other_key, []).append({
+                            "speaker": "씬", "content": scene_msg, "action_note": ""
+                        })
+
             next_wave: dict[str, list] = {}
+            # 씬 알림을 next_wave에 먼저 추가
+            for agent_key, msgs in scene_injections.items():
+                if agent_key in self.active_agents:
+                    next_wave.setdefault(agent_key, []).extend(msgs)
+
             for speaker_key, result in results.items():
                 if not result.get("success"):
                     continue

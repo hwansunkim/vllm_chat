@@ -87,6 +87,18 @@ export function renderAgentListInConfig() {
           </datalist>
         </div>
       </div>
+      <div class="sim-acrd-field-row">
+        <div class="sim-acrd-field" style="flex:1">
+          <label>위치</label>
+          <input class="sim-acrd-input" data-idx="${idx}" data-field="location"
+                 value="${esc(agent.location || '')}" placeholder="위치 (예: 화산파)"/>
+        </div>
+      </div>
+      <div class="sim-acrd-prompt-row">
+        <label>외모 묘사 <span style="font-weight:400;color:#94a3b8">(모르는 사람에게 보이는 외모)</span></label>
+        <textarea class="sim-acrd-prompt" data-idx="${idx}" data-field="visual_description"
+                  rows="2" placeholder="키가 크고 검은 도복을 입은 청년...">${esc(agent.visual_description || '')}</textarea>
+      </div>
       <div class="sim-acrd-prompt-row">
         <label>시스템 프롬프트</label>
         <textarea class="sim-acrd-prompt" data-idx="${idx}" data-field="system_prompt"

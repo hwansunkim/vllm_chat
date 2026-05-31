@@ -6,6 +6,7 @@ import {
   addFeedMessage, addSceneEventToFeed,
   addTypingIndicator, removeTypingIndicator,
   updateWaveIndicator, addSummaryCard, addInterventionCard, addWorldEventCard,
+  addMovementCard, addAppearanceCard,
 } from './feed.js';
 import { updateAgentCard, getCardEl } from './cards.js';
 import { addD3Edge } from '../graph/d3.js';
@@ -77,6 +78,16 @@ export function connectSSE() {
   es.addEventListener('world_event', e => {
     const d = JSON.parse(e.data);
     addWorldEventCard(d);
+  });
+
+  es.addEventListener('agent_move', e => {
+    const d = JSON.parse(e.data);
+    addMovementCard(d);
+  });
+
+  es.addEventListener('appearance_update', e => {
+    const d = JSON.parse(e.data);
+    addAppearanceCard(d);
   });
 
   es.addEventListener('simulation_end', e => {

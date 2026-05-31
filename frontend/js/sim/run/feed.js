@@ -193,6 +193,40 @@ export function addSceneEventToFeed(d) {
   el.scrollIntoView({ behavior: 'smooth', block: 'end' });
 }
 
+export function addMovementCard(d) {
+  removeFeedEmpty();
+  const fromStr = d.from ? esc(d.from) : '(미설정)';
+  const toStr   = esc(d.to || '');
+  const el      = document.createElement('div');
+  el.className  = 'sim-movement-card';
+  el.innerHTML = `
+    <div class="sim-movement-header">
+      <span class="sim-movement-icon">🚶</span>
+      <span class="sim-movement-name">${esc(d.display_name || d.agent)}</span>
+      <span class="sim-movement-arrow">이동</span>
+      <span class="sim-movement-route">${fromStr} → ${toStr}</span>
+      <span class="sim-movement-wave">W${d.wave}</span>
+    </div>`;
+  document.getElementById('sim-feed').appendChild(el);
+  el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
+export function addAppearanceCard(d) {
+  removeFeedEmpty();
+  const el     = document.createElement('div');
+  el.className = 'sim-appearance-card';
+  el.innerHTML = `
+    <div class="sim-appearance-header">
+      <span class="sim-appearance-icon">🪞</span>
+      <span class="sim-appearance-name">${esc(d.display_name || d.agent)}</span>
+      <span class="sim-appearance-label">외모 변경</span>
+      <span class="sim-appearance-wave">W${d.wave}</span>
+    </div>
+    <div class="sim-appearance-desc">${esc(d.description || '')}</div>`;
+  document.getElementById('sim-feed').appendChild(el);
+  el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
 export function updateWaveIndicator(waveNum, agents) {
   const labels = agents.map(k => agentLabel(k));
   document.getElementById('sim-turn-text').textContent =

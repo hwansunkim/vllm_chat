@@ -5,20 +5,22 @@ from pydantic import BaseModel
 
 
 class AgentConfig(BaseModel):
-    name:           str
-    system_prompt:  str
-    icon:           str       = "🤖"
-    initial_active: bool      = True
-    display_name:   str       = ""
-    groups:         list[str] = []   # 소속 그룹 ID 목록. 빈 배열 = 전체 에이전트 노출 (하위 호환)
+    name:               str
+    system_prompt:      str
+    icon:               str       = "🤖"
+    initial_active:     bool      = True
+    display_name:       str       = ""
+    groups:             list[str] = []   # 소속 그룹 ID 목록. 빈 배열 = 전체 에이전트 노출 (하위 호환)
+    location:           str       = ""  # 초기 위치 (빈값이면 위치 미설정 = 전체 노출)
+    visual_description: str       = ""  # 모르는 사람에게 보이는 외모 묘사
 
 
 class ScenarioEvent(BaseModel):
     wave:    int
-    type:    str             # "system_message" | "agent_enter" | "agent_exit"
+    type:    str             # "system_message" | "agent_enter" | "agent_exit" | "update_appearance"
     message: str       = ""
     targets: list[str] = ["all"]
-    agent:   str       = ""  # agent_enter / agent_exit 전용
+    agent:   str       = ""  # agent_enter / agent_exit / update_appearance 전용
 
 
 class ExtraField(BaseModel):

@@ -120,7 +120,12 @@ export function applyScenario(s) {
   const cfg = s.config;
   sim.currentScenarioId   = s.id;
   sim.currentScenarioName = s.name;
-  sim.agents       = (cfg.agents || []).map(a => ({ ...a, groups: a.groups || [] }));
+  sim.agents       = (cfg.agents || []).map(a => ({
+    ...a,
+    groups:             a.groups             || [],
+    location:           a.location           ?? '',
+    visual_description: a.visual_description ?? '',
+  }));
   sim.background   = cfg.background   || '';
   sim.start_agent  = cfg.start_agent  || (cfg.agents?.[0]?.name ?? '');
   sim.max_waves    = cfg.max_waves    || 10;

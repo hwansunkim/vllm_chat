@@ -14,14 +14,18 @@ DEFAULT_OUTPUT_FORMAT_TEMPLATE = """
 
 [Important Output Format]
 반드시 아래 JSON 형식으로만 응답하세요. 다른 텍스트는 출력하지 마세요.
-{
+<LOCATION>{
     "content": "당신의 말이나 행동을 자신의 말투로 (반드시 한국어로만)",
 <FIELD_LINES>
-    "target": ["id1", "id2"] 또는 "all" 또는 "system"
+    "target": ["id1", "id2"] 또는 "all" 또는 "system",
+    "move_to": null,
+    "update_appearance": null
 }
 
 - content: 말하거나 행동하는 내용. **반드시 한국어로만 작성. 중국어 한자·영어 등 외국어 절대 금지.**
 <FIELD_HINTS>
+- move_to: 이동할 위치 이름 (이동 없으면 null)
+- update_appearance: 외모 변화가 있을 때 새 외모 전체 묘사 (없으면 null)
 - target: 반드시 아래 시스템 ID만 사용 (표시 이름 절대 금지):
 <TARGETS><TARGETS_FOOTER>
 ⚠ content 필드는 반드시 한국어로만 작성하십시오. 외국어·한자 사용 금지.
@@ -34,6 +38,7 @@ def _build_output_format(
     key_to_alias: dict[str, str] | None = None,
     template: str | None = None,
     target_sections: list[tuple[str, list[str]]] | None = None,
+    location_name: str = "",
 ) -> str:
     """Dynamically build the JSON output format instruction from configured fields."""
     if target_sections:
@@ -87,9 +92,12 @@ def _build_output_format(
     else:
         targets_footer = '  전체에게: "all" / 혼잣말·내면 행동: "self"\n'
 
+    location_line = f"[현재 위치: {location_name}]\n" if location_name else ""
+
     tmpl = template if template is not None else DEFAULT_OUTPUT_FORMAT_TEMPLATE
     return (
         tmpl
+        .replace("<LOCATION>", location_line)
         .replace("<FIELD_LINES>", field_lines)
         .replace("<FIELD_HINTS>", field_hints)
         .replace("<TARGETS>", targets_block)
@@ -158,6 +166,7 @@ class Agent:
         available_targets: list[str],
         key_to_alias: dict[str, str] | None = None,
         target_sections: list[tuple[str, list[str]]] | None = None,
+        location_name: str = "",
     ) -> dict:
         return {
             "role": "system",
@@ -165,6 +174,7 @@ class Agent:
                 available_targets, self._extra_fields, key_to_alias,
                 template=self._output_format_template,
                 target_sections=target_sections,
+                location_name=location_name,
             ),
         }
 
@@ -178,9 +188,10 @@ class Agent:
         available_targets: list[str],
         key_to_alias: dict[str, str] | None = None,
         target_sections: list[tuple[str, list[str]]] | None = None,
+        location_name: str = "",
     ) -> int:
         """Estimate total prompt tokens for the next LLM call."""
-        msgs = self.build_messages(background_log, available_targets, key_to_alias, target_sections)
+        msgs = self.build_messages(background_log, available_targets, key_to_alias, target_sections, location_name)
         return sum(_msg_tokens(m) for m in msgs)
 
     def trim_to_token_limit(
@@ -189,17 +200,18 @@ class Agent:
         available_targets: list[str],
         key_to_alias: dict[str, str] | None = None,
         target_sections: list[tuple[str, list[str]]] | None = None,
+        location_name: str = "",
     ):
         """Remove oldest memory messages until estimated tokens fit within _token_limit."""
         while self.memory:
-            if self.estimate_context_tokens(background_log, available_targets, key_to_alias, target_sections) <= self._token_limit:
+            if self.estimate_context_tokens(background_log, available_targets, key_to_alias, target_sections, location_name) <= self._token_limit:
                 break
             self.memory.pop(0)
             self._trimmed_count += 1
 
         # Warn when system+background alone exceeds the limit — trimming can't help further.
         if not self.memory:
-            est = self.estimate_context_tokens(background_log, available_targets, key_to_alias, target_sections)
+            est = self.estimate_context_tokens(background_log, available_targets, key_to_alias, target_sections, location_name)
             if est > self._token_limit:
                 logger.warning(
                     f"[{self.name}] Context exceeds token_limit even with empty memory "
@@ -213,9 +225,10 @@ class Agent:
         available_targets: list[str],
         key_to_alias: dict[str, str] | None = None,
         target_sections: list[tuple[str, list[str]]] | None = None,
+        location_name: str = "",
     ) -> list:
         """[system] + background_log + [memory_block?] + agent memory"""
-        msgs = [self.get_system_message(available_targets, key_to_alias, target_sections)] + background_log
+        msgs = [self.get_system_message(available_targets, key_to_alias, target_sections, location_name)] + background_log
         if self._memory_block:
             msgs.append({"role": "user", "content": self._memory_block})
         msgs.extend(self.memory)
