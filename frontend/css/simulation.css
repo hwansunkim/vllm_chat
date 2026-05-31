@@ -864,3 +864,14 @@
   color: #6b7280;
   font-style: italic;
 }
+
+/* ── System agent textarea sizing ────────────────────────────────────────── */
+#sim-sys-prompt,
+#sim-sys-director-note {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 120px;
+  font-size: 12px;
+  line-height: 1.55;
+}
