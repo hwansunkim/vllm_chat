@@ -227,6 +227,32 @@ export function addAppearanceCard(d) {
   el.scrollIntoView({ behavior: 'smooth', block: 'end' });
 }
 
+export function addSituationCard(d) {
+  removeFeedEmpty();
+  const agent  = sim.agents.find(a => a.name === d.agent) || { icon: '📍', name: d.agent };
+  const el     = document.createElement('div');
+  el.className = 'sim-situation-card';
+  el.innerHTML = `
+    <div class="sim-situation-header">
+      <span class="sim-situation-icon">📍</span>
+      <span class="sim-situation-name">${esc(agent.display_name || agent.name)}</span>
+      <span class="sim-situation-label">상황 컨텍스트</span>
+      <span class="sim-situation-wave">W${d.wave}</span>
+      <span class="sim-situation-toggle">▶</span>
+    </div>
+    <pre class="sim-situation-body sim-hidden">${esc(d.text)}</pre>
+  `;
+  const header = el.querySelector('.sim-situation-header');
+  const body   = el.querySelector('.sim-situation-body');
+  const toggle = el.querySelector('.sim-situation-toggle');
+  header.addEventListener('click', () => {
+    const hidden = body.classList.toggle('sim-hidden');
+    toggle.textContent = hidden ? '▶' : '▼';
+  });
+  document.getElementById('sim-feed').appendChild(el);
+  el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
 export function updateWaveIndicator(waveNum, agents) {
   const labels = agents.map(k => agentLabel(k));
   document.getElementById('sim-turn-text').textContent =

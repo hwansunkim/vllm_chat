@@ -1067,3 +1067,36 @@
   font-size: 12px;
   cursor: pointer;
 }
+
+/* ── 상황 컨텍스트 카드 ───────────────────────────────────────────────── */
+.sim-situation-card {
+  margin: 2px 8px;
+  border-left: 2px solid #6366f1;
+  border-radius: 4px;
+  background: #1a1a2e;
+  font-size: 0.78rem;
+}
+.sim-situation-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  color: #8080a8;
+  user-select: none;
+}
+.sim-situation-header:hover { background: #22223a; }
+.sim-situation-name  { font-weight: 600; color: #b0b0d0; }
+.sim-situation-label { color: #6366f1; font-size: 0.74rem; }
+.sim-situation-wave  { margin-left: auto; color: #444466; font-size: 0.72rem; }
+.sim-situation-toggle { color: #555577; font-size: 0.72rem; }
+.sim-situation-body {
+  padding: 6px 12px;
+  color: #8888aa;
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: 0.78rem;
+  border-top: 1px solid #22223a;
+  margin: 0;
+  line-height: 1.5;
+}

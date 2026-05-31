@@ -175,6 +175,12 @@ class _StepMixin:
         ephemeral_msgs: list[dict] = (
             [{"role": "user", "content": situation_text}] if situation_text else []
         )
+        if situation_text:
+            self._emit("turn_situation", {
+                "wave":  wave,
+                "agent": agent_key,
+                "text":  situation_text,
+            })
 
         extended_alias = dict(self._key_to_alias)
         for sid, _, visual in strangers:

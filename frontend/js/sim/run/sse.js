@@ -6,7 +6,7 @@ import {
   addFeedMessage, addSceneEventToFeed,
   addTypingIndicator, removeTypingIndicator,
   updateWaveIndicator, addSummaryCard, addInterventionCard, addWorldEventCard,
-  addMovementCard, addAppearanceCard,
+  addMovementCard, addAppearanceCard, addSituationCard,
 } from './feed.js';
 import { updateAgentCard, updateAgentLocation, getCardEl } from './cards.js';
 import { addD3Edge } from '../graph/d3.js';
@@ -27,6 +27,11 @@ export function connectSSE() {
       getCardEl(name)?.classList.add('speaking');
     });
     updateWaveIndicator(d.wave, d.agents);
+  });
+
+  es.addEventListener('turn_situation', e => {
+    const d = JSON.parse(e.data);
+    addSituationCard(d);
   });
 
   es.addEventListener('turn_start', e => {
