@@ -47,6 +47,7 @@ class ServerCreate(BaseModel):
     name: str
     base_url: str
     model: str
+    api_key: str = ""
     weight: int = 1
     is_default: bool = False
     thinking: bool = False
@@ -57,6 +58,7 @@ class ServerUpdate(BaseModel):
     name: str | None = None
     base_url: str | None = None
     model: str | None = None
+    api_key: str | None = None
     weight: int | None = None
     enabled: bool | None = None
     is_default: bool | None = None

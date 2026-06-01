@@ -43,9 +43,9 @@ async def create_server(body: ServerCreate):
         conn.execute("UPDATE servers SET is_default=0")
 
     conn.execute(
-        """INSERT INTO servers (id, name, base_url, model, weight, enabled, is_default, thinking, max_model_len, created_at)
-           VALUES (?,?,?,?,?,1,?,?,?,?)""",
-        (sid, body.name, body.base_url.rstrip("/"), body.model,
+        """INSERT INTO servers (id, name, base_url, model, api_key, weight, enabled, is_default, thinking, max_model_len, created_at)
+           VALUES (?,?,?,?,?,?,1,?,?,?,?)""",
+        (sid, body.name, body.base_url.rstrip("/"), body.model, body.api_key,
          body.weight, int(body.is_default), int(body.thinking), body.max_model_len, now),
     )
     conn.commit()

@@ -53,6 +53,7 @@ class VLLMProvider:
         base_url: str,
         model: str,
         *,
+        api_key: str = "",
         enabled: bool = True,
         is_default: bool = False,
         thinking: bool = False,
@@ -68,6 +69,10 @@ class VLLMProvider:
         self.model_len: int = configured_max_len
         timeout = httpx.Timeout(300.0) if thinking else httpx.Timeout(60.0)
         self._client = httpx.AsyncClient(timeout=timeout)
+        effective_key = api_key or config.VLLM_API_KEY
+        self._headers = {"Content-Type": "application/json"}
+        if effective_key:
+            self._headers["Authorization"] = f"Bearer {effective_key}"
 
     def _chat_url(self) -> str:
         return f"{self.base_url}/v1/chat/completions"
@@ -81,7 +86,7 @@ class VLLMProvider:
     ) -> str:
         response = await self._client.post(
             self._chat_url(),
-            headers={"Content-Type": "application/json"},
+            headers=self._headers,
             json={
                 "model": self.model,
                 "messages": [{"role": "user", "content": prompt}],
@@ -112,7 +117,7 @@ class VLLMProvider:
             try:
                 response = await self._client.post(
                     self._chat_url(),
-                    headers={"Content-Type": "application/json"},
+                    headers=self._headers,
                     json={
                         "model":       self.model,
                         "messages":    current_messages,
@@ -229,7 +234,7 @@ class VLLMProvider:
                     async with self._client.stream(
                         "POST",
                         self._chat_url(),
-                        headers={"Content-Type": "application/json"},
+                        headers=self._headers,
                         json={
                             "model":          self.model,
                             "messages":       current_messages,

@@ -196,7 +196,8 @@ function showServerForm(serverId = null) {
   document.getElementById('sv-url').value     = server?.base_url ?? '';
   document.getElementById('sv-model').value   = server?.model ?? '';
   document.getElementById('sv-weight').value  = server?.weight ?? 1;
-  document.getElementById('sv-max-len').value = server?.max_model_len ?? 0;
+  document.getElementById('sv-api-key').value  = server?.api_key ?? '';
+  document.getElementById('sv-max-len').value   = server?.max_model_len ?? 0;
   document.getElementById('sv-default').checked  = server?.is_default ?? false;
   document.getElementById('sv-enabled').checked  = server?.enabled ?? true;
   document.getElementById('sv-thinking').checked = server?.thinking ?? false;
@@ -225,10 +226,11 @@ async function saveServer() {
 
   const body = {
     name, base_url, model,
-    weight:       parseInt(document.getElementById('sv-weight').value) || 1,
+    api_key:       document.getElementById('sv-api-key').value.trim(),
+    weight:        parseInt(document.getElementById('sv-weight').value) || 1,
     max_model_len: parseInt(document.getElementById('sv-max-len').value) || 0,
-    is_default:   document.getElementById('sv-default').checked,
-    thinking:     document.getElementById('sv-thinking').checked,
+    is_default:    document.getElementById('sv-default').checked,
+    thinking:      document.getElementById('sv-thinking').checked,
   };
   if (_editServerId) body.enabled = document.getElementById('sv-enabled').checked;
 

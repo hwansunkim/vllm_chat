@@ -35,6 +35,7 @@ class ServerRegistry:
             name=row["name"],
             base_url=row["base_url"],
             model=row["model"],
+            api_key=row.get("api_key", ""),
             enabled=bool(row["enabled"]),
             is_default=bool(row.get("is_default", False)),
             thinking=bool(row.get("thinking", False)),

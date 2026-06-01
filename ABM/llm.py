@@ -2,7 +2,7 @@ import requests
 import json
 import logging
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from .config import BASE_URL, MODEL, API_TIMEOUT
+from .config import BASE_URL, MODEL, API_KEY, API_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +29,12 @@ def chat_response(
         "temperature": 0.7,
         "stream":      False,
     }
+    headers = {"Content-Type": "application/json"}
+    if API_KEY:
+        headers["Authorization"] = f"Bearer {API_KEY}"
     r = requests.post(
         f"{base_url}/v1/chat/completions",
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         json=payload,
         timeout=timeout,
     )

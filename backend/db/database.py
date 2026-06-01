@@ -150,6 +150,8 @@ def migrate_db(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE servers ADD COLUMN thinking INTEGER NOT NULL DEFAULT 0")
         if "max_model_len" not in server_cols:
             conn.execute("ALTER TABLE servers ADD COLUMN max_model_len INTEGER NOT NULL DEFAULT 0")
+        if "api_key" not in server_cols:
+            conn.execute("ALTER TABLE servers ADD COLUMN api_key TEXT NOT NULL DEFAULT ''")
 
     turn_cols = {r[1] for r in conn.execute("PRAGMA table_info(turns)").fetchall()}
     if "thinking" not in turn_cols:

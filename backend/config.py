@@ -1,4 +1,7 @@
+import os
 from pathlib import Path
+
+VLLM_API_KEY = os.environ.get("VLLM_API_KEY", "")
 
 MAX_COMPLETION_TOKENS         = 4096
 MAX_COMPLETION_TOKENS_THINKING = 16384

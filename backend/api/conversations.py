@@ -8,7 +8,7 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
-from .. import state
+from .. import state, config
 from .schemas import ChatMessage, NewConversation, UpdateTitle
 from ._conv_helpers import get_active_turns, save_turn, auto_title, _resolve_routing, _maybe_archive
 from ..core.agent import build_agent_system_prompt
