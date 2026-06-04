@@ -33,8 +33,9 @@ export const sim = {
     silence_threshold:     3,
     director_note:         '',   // 시뮬레이션 서사 목표
   },
-  eventSource:  null,
-  scenarios:    [],
+  eventSource:    null,
+  scenarios:      [],
+  agentEmotions:  {},   // { agent_name: latest_emotion } — updated per turn_complete
 };
 
 // Accordion expand state (keyed by agent.name)
@@ -49,6 +50,48 @@ const EMOTION_CLASS = ['angry', 'happy', 'neutral', 'sad', 'fear'];
 
 export function emotionColor(e) { return EMOTION_COLORS[e] || '#a78bfa'; }
 export function emotionClass(e) { return EMOTION_CLASS.includes(e) ? `emotion-${e}` : 'emotion-neutral'; }
+
+// ── Auto-icon system ──────────────────────────────────────────────────────────
+const _GENDER_BASE = { male: '👨', female: '👩', unknown: '🧑' };
+
+const _EMOTION_FACE = {
+  happy:        '😊',
+  sad:          '😢',
+  angry:        '😠',
+  fear:         '😨',
+  surprised:    '😲',
+  excited:      '😄',
+  calm:         '😌',
+  worried:      '😟',
+  anxious:      '😰',
+  embarrassed:  '😳',
+  disappointed: '😞',
+  frustrated:   '😤',
+  confused:     '🤔',
+  proud:        '😎',
+};
+
+const _MALE_KW   = ['남성', '남자', '남편', '아들', '아버지', '아빠', '형', '오빠', '삼촌', '할아버지', '소년', '남학생', '남동생', '사내', '남성형', '그는'];
+const _FEMALE_KW = ['여성', '여자', '아내', '딸', '어머니', '엄마', '언니', '누나', '이모', '할머니', '소녀', '여학생', '여동생', '아가씨', '여인', '그녀는', '그녀의'];
+
+export function detectGender(text) {
+  if (!text) return 'unknown';
+  const m = _MALE_KW.filter(k => text.includes(k)).length;
+  const f = _FEMALE_KW.filter(k => text.includes(k)).length;
+  if (m > f) return 'male';
+  if (f > m) return 'female';
+  return 'unknown';
+}
+
+export function getAgentIcon(agent, emotion) {
+  if (agent.icon && agent.icon !== '🤖') return agent.icon;
+  const g = (agent.gender === 'auto' || !agent.gender)
+    ? detectGender((agent.system_prompt || '') + ' ' + (agent.display_name || ''))
+    : agent.gender;
+  const base = _GENDER_BASE[g] || '🧑';
+  const face = _EMOTION_FACE[emotion || 'neutral'];
+  return face ? base + face : base;
+}
 
 // ── HTML escape (kept here for zero-dependency module access) ─────────────────
 export function esc(str) {
@@ -77,7 +120,7 @@ export function agentLabel(key) {
 export function agentLabelWithIcon(key) {
   const a = sim.agents.find(ag => ag.name === key);
   if (!a) return key;
-  return `${a.icon} ${a.display_name || a.name}`;
+  return `${getAgentIcon(a, sim.agentEmotions[a.name])} ${a.display_name || a.name}`;
 }
 
 // ── Group helpers ─────────────────────────────────────────────────────────────

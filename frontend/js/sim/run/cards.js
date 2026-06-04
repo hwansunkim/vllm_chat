@@ -1,10 +1,11 @@
 // frontend/js/sim/run/cards.js
 // Agent card rendering & live updates on the simulation run view.
 
-import { sim, esc, emotionClass, fmtK } from '../state.js';
+import { sim, esc, emotionClass, fmtK, getAgentIcon } from '../state.js';
 import { openAgentContext } from '../context.js';
 
 export function renderAgentCards() {
+  sim.agentEmotions = {};
   const container = document.getElementById('sim-agent-cards');
   container.innerHTML = '';
   sim.agents.forEach(agent => {
@@ -30,7 +31,7 @@ export function renderAgentCards() {
 
     card.innerHTML = `
       <div class="sim-card-header">
-        <span class="sim-card-icon">${esc(agent.icon)}</span>
+        <span class="sim-card-icon" id="simc-icon-${esc(agent.name)}">${esc(getAgentIcon(agent, 'neutral'))}</span>
         <span class="sim-card-name">${displayLabel}</span>
         ${locHtml}
       </div>
@@ -55,6 +56,11 @@ export function updateAgentCard(speaker, meta, promptTokens, tokenLimit, preview
     el.textContent = value;
     if (field === 'emotion') {
       el.className = `sim-feed-badge ${emotionClass(String(value))}`;
+      const iconEl = document.getElementById(`simc-icon-${speaker}`);
+      if (iconEl) {
+        const agent = sim.agents.find(a => a.name === speaker);
+        if (agent) iconEl.textContent = getAgentIcon(agent, String(value));
+      }
     }
   });
 

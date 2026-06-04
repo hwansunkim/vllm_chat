@@ -324,11 +324,30 @@
 }
 
 .sim-acrd-input-icon {
-  width: 46px; font-size: 18px; text-align: center;
+  width: 54px; font-size: 18px; text-align: center;
   padding: 5px 6px; border: 1px solid #e2e8f0; border-radius: 6px;
   background: white; outline: none; cursor: text;
 }
 .sim-acrd-input-icon:focus { border-color: #6366f1; }
+
+.sim-gender-row {
+  display: flex; align-items: center; gap: 6px;
+}
+.sim-icon-preview {
+  font-size: 22px; line-height: 1; min-width: 28px; text-align: center;
+}
+.sim-gender-btns {
+  display: flex; gap: 3px;
+}
+.sim-gender-btn {
+  font-size: 11px; padding: 3px 7px; border-radius: 5px; cursor: pointer;
+  border: 1px solid #e2e8f0; background: #f8fafc; color: #64748b;
+  transition: background 0.15s, border-color 0.15s;
+}
+.sim-gender-btn:hover { background: #f1f5f9; }
+.sim-gender-btn.active {
+  background: #6366f1; border-color: #6366f1; color: white; font-weight: 600;
+}
 
 .sim-acrd-input-id {
   width: 110px; font-size: 13px; font-weight: 600; color: #1e293b;

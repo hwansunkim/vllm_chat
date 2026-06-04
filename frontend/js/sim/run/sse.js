@@ -41,6 +41,7 @@ export function connectSSE() {
 
   es.addEventListener('turn_complete', e => {
     const d = JSON.parse(e.data);
+    sim.agentEmotions[d.speaker] = (d.meta || {}).emotion || 'neutral';
     addFeedMessage(d);
     updateAgentCard(d.speaker, d.meta || {}, d.prompt_tokens, d.token_limit, d.content);
     d.new_edges?.forEach(edge =>

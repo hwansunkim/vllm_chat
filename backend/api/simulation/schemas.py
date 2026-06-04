@@ -8,6 +8,7 @@ class AgentConfig(BaseModel):
     name:               str
     system_prompt:      str
     icon:               str       = "🤖"
+    gender:             str       = "auto"  # "auto" | "male" | "female" | "unknown"
     initial_active:     bool      = True
     display_name:       str       = ""
     groups:             list[str] = []   # 소속 그룹 ID 목록. 빈 배열 = 전체 에이전트 노출 (하위 호환)

@@ -1,7 +1,7 @@
 // frontend/js/sim/settings/agents.js
 // Accordion editor for the agents list (settings view).
 
-import { sim, esc, _expandedAgents, getAllGroups } from '../state.js';
+import { sim, esc, _expandedAgents, getAllGroups, detectGender, getAgentIcon } from '../state.js';
 import { renderScenarioEvents } from './events.js';
 
 export function renderStartAgentSelect() {
@@ -11,7 +11,7 @@ export function renderStartAgentSelect() {
   sim.agents.forEach(a => {
     const opt = document.createElement('option');
     opt.value = a.name;
-    opt.textContent = `${a.icon} ${a.display_name || a.name}`;
+    opt.textContent = `${getAgentIcon(a, 'neutral')} ${a.display_name || a.name}`;
     sel.appendChild(opt);
   });
   if (prev && sim.agents.find(a => a.name === prev)) sel.value = prev;
@@ -34,7 +34,7 @@ export function renderAgentListInConfig() {
     const header = document.createElement('div');
     header.className = 'sim-acrd-header';
     header.innerHTML = `
-      <span class="sim-acrd-icon">${esc(agent.icon)}</span>
+      <span class="sim-acrd-icon">${esc(getAgentIcon(agent, 'neutral'))}</span>
       <div class="sim-acrd-names">
         <span class="sim-acrd-id">${esc(agent.name)}</span>
         ${agent.display_name ? `<span class="sim-acrd-display">${esc(agent.display_name)}</span>` : ''}
@@ -49,14 +49,25 @@ export function renderAgentListInConfig() {
     `;
 
     // ── Body ──
+    const gender    = agent.gender || 'auto';
+    const autoIcon  = getAgentIcon(agent, 'neutral');
     const body = document.createElement('div');
     body.className = `sim-acrd-body${isExpanded ? '' : ' sim-acrd-collapsed'}`;
     body.innerHTML = `
       <div class="sim-acrd-field-row">
         <div class="sim-acrd-field">
-          <label>아이콘</label>
-          <input class="sim-acrd-input-icon" data-idx="${idx}" data-field="icon"
-                 value="${esc(agent.icon)}" maxlength="4"/>
+          <label>성별 / 아이콘</label>
+          <div class="sim-gender-row">
+            <span class="sim-icon-preview" id="sim-icon-prev-${idx}">${esc(autoIcon)}</span>
+            <div class="sim-gender-btns">
+              <button class="sim-gender-btn${gender === 'auto'   ? ' active' : ''}" data-idx="${idx}" data-gender="auto">자동</button>
+              <button class="sim-gender-btn${gender === 'male'   ? ' active' : ''}" data-idx="${idx}" data-gender="male">👨 남</button>
+              <button class="sim-gender-btn${gender === 'female' ? ' active' : ''}" data-idx="${idx}" data-gender="female">👩 여</button>
+            </div>
+            <input class="sim-acrd-input-icon" data-idx="${idx}" data-field="icon"
+                   value="${agent.icon !== '🤖' ? esc(agent.icon) : ''}"
+                   maxlength="4" placeholder="직접 입력"/>
+          </div>
         </div>
         <div class="sim-acrd-field">
           <label>ID</label>
@@ -160,6 +171,17 @@ export function renderAgentListInConfig() {
       });
     });
 
+    // Gender buttons
+    body.querySelectorAll('.sim-gender-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const i = +btn.dataset.idx;
+        sim.agents[i].gender = btn.dataset.gender;
+        body.querySelectorAll('.sim-gender-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        _updateIconPreview(i, body, header);
+      });
+    });
+
     // Body field inputs — live-update sim state and header display
     body.querySelectorAll('[data-field]').forEach(el => {
       el.addEventListener('input', () => {
@@ -177,7 +199,9 @@ export function renderAgentListInConfig() {
           renderScenarioEvents();
 
         } else if (el.dataset.field === 'icon') {
-          header.querySelector('.sim-acrd-icon').textContent = el.value;
+          // icon override: if empty, revert to '🤖' (triggers auto)
+          if (!el.value.trim()) sim.agents[i].icon = '🤖';
+          _updateIconPreview(i, body, header);
 
         } else if (el.dataset.field === 'display_name') {
           const namesEl = header.querySelector('.sim-acrd-names');
@@ -192,6 +216,10 @@ export function renderAgentListInConfig() {
           } else {
             displayEl?.remove();
           }
+          _updateIconPreview(i, body, header);
+
+        } else if (el.dataset.field === 'system_prompt') {
+          _updateIconPreview(i, body, header);
         }
       });
     });
@@ -208,4 +236,12 @@ function _toggleExpand(agentName, bodyEl, arrowEl) {
     bodyEl.classList.remove('sim-acrd-collapsed');
     arrowEl.textContent = '▲';
   }
+}
+
+function _updateIconPreview(idx, bodyEl, headerEl) {
+  const agent   = sim.agents[idx];
+  const icon    = getAgentIcon(agent, 'neutral');
+  const prevEl  = bodyEl.querySelector(`#sim-icon-prev-${idx}`);
+  if (prevEl) prevEl.textContent = icon;
+  headerEl.querySelector('.sim-acrd-icon').textContent = icon;
 }

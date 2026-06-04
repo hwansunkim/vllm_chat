@@ -1,7 +1,7 @@
 // frontend/js/sim/run/feed.js
 // Live feed: typing indicator, agent messages, scene events, wave indicator.
 
-import { sim, esc, emotionClass, agentLabel } from '../state.js';
+import { sim, esc, emotionClass, agentLabel, getAgentIcon } from '../state.js';
 
 export function renderHistoricalFeed(entries) {
   const feed = document.getElementById('sim-feed');
@@ -19,6 +19,7 @@ export function renderHistoricalFeed(entries) {
     const targetStr = targets.length ? `→ ${targetLabels.join(', ')}` : '(독백)';
 
     const meta = entry.meta || {};
+    const entryEmotion = meta.emotion || 'neutral';
     const metaBadges = Object.entries(meta)
       .filter(([k]) => k !== 'action_note')
       .map(([k, v]) =>
@@ -31,7 +32,7 @@ export function renderHistoricalFeed(entries) {
     div.className = 'sim-feed-msg sim-feed-msg-history';
     div.innerHTML = `
       <div class="sim-feed-header">
-        <span class="sim-feed-speaker">${esc(agent.icon)} ${esc(agent.display_name || agent.name)}</span>
+        <span class="sim-feed-speaker">${esc(getAgentIcon(agent, entryEmotion))} ${esc(agent.display_name || agent.name)}</span>
         ${waveBadge}
         <span class="sim-feed-target">${esc(targetStr)}</span>
       </div>
@@ -59,7 +60,7 @@ export function addTypingIndicator(speaker) {
   el.className = 'sim-typing-row';
   el.innerHTML = `
     <div class="sim-feed-header">
-      <span class="sim-feed-speaker">${esc(agent.icon)} ${esc(agent.display_name || agent.name)}</span>
+      <span class="sim-feed-speaker">${esc(getAgentIcon(agent, sim.agentEmotions[speaker]))} ${esc(agent.display_name || agent.name)}</span>
     </div>
     <div class="sim-typing-bubble">
       <div class="sim-typing-dots"><span></span><span></span><span></span></div>
@@ -93,6 +94,7 @@ export function addFeedMessage(data) {
   const el = document.createElement('div');
   el.className = 'sim-feed-msg';
   const meta = data.meta || {};
+  const msgEmotion = meta.emotion || 'neutral';
   const metaBadges = Object.entries(meta)
     .filter(([k]) => k !== 'action_note')
     .map(([k, v]) =>
@@ -102,7 +104,7 @@ export function addFeedMessage(data) {
   const actionNote = data.action_note || '';
   el.innerHTML = `
     <div class="sim-feed-header">
-      <span class="sim-feed-speaker">${esc(agent.icon)} ${esc(agent.display_name || agent.name)}</span>
+      <span class="sim-feed-speaker">${esc(getAgentIcon(agent, msgEmotion))} ${esc(agent.display_name || agent.name)}</span>
       <span class="sim-feed-target">${esc(targetStr)}</span>
     </div>
     <div class="sim-feed-bubble">${esc(data.content)}</div>
