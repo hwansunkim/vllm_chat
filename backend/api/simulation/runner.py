@@ -61,6 +61,14 @@ def finalize_run(db, run_sim_id: str | None, stop_event: threading.Event,
                     )
                 except Exception:
                     pass
+                try:
+                    snapshots = {
+                        key: agent.memory
+                        for key, agent in sim_obj.agents.items()
+                    }
+                    db.save_agent_snapshots(run_sim_id, snapshots)
+                except Exception:
+                    pass
         elif error is not None:
             _sim["status"] = "error"
             try:
