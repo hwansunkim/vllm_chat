@@ -17,6 +17,7 @@ def chat_response(
     model: str = MODEL,
     base_url: str = BASE_URL,
     timeout: int = API_TIMEOUT,
+    max_tokens: int = 16384,
 ) -> tuple[str, str, dict]:
     """Returns (content, reasoning, usage).
 
@@ -25,7 +26,7 @@ def chat_response(
     payload = {
         "model":       model,
         "messages":    messages,
-        "max_tokens":  16384,
+        "max_tokens":  max_tokens,
         "temperature": 0.7,
         "stream":      False,
     }

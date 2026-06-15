@@ -40,6 +40,7 @@ def summarize_waves(
     base_url: str,
     api_timeout: int,
     key_to_alias: dict[str, str] | None = None,
+    llm_max_tokens: int = 16384,
 ) -> dict | None:
     """Call LLM to summarize a slice of the simulation log.
 
@@ -76,7 +77,8 @@ def summarize_waves(
 
     try:
         content, _, _ = chat_response(
-            messages, model=model, base_url=base_url, timeout=api_timeout
+            messages, model=model, base_url=base_url, timeout=api_timeout,
+            max_tokens=llm_max_tokens,
         )
         raw = content.strip()
         # Strip markdown code fence if present

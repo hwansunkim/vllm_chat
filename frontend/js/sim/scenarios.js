@@ -38,6 +38,7 @@ export async function saveScenario() {
       max_waves:              sim.max_waves,
       step_delay:             sim.step_delay,
       token_limit:            sim.token_limit,
+      llm_max_tokens:         sim.llm_max_tokens,
       extra_fields:           sim.extra_fields,
       events:                 sim.events,
       location_graph:         sim.location_graph || [],
@@ -101,6 +102,7 @@ export function newScenario() {
   sim.max_waves           = 10;
   sim.step_delay          = 1.0;
   sim.token_limit         = 8192;
+  sim.llm_max_tokens      = 16384;
   sim.extra_fields        = [
     { name: 'emotion',     default: 'neutral' },
     { name: 'action',      default: 'speak'   },
@@ -141,7 +143,8 @@ export function applyScenario(s) {
   sim.step_delay   = cfg.step_delay   || 1.0;
   // Migrate legacy memory_limit (message count) to token_limit.
   // Old default was 20 messages; ~400 tokens/message is a reasonable estimate.
-  sim.token_limit  = cfg.token_limit ?? (cfg.memory_limit ? cfg.memory_limit * 400 : 8192);
+  sim.token_limit     = cfg.token_limit ?? (cfg.memory_limit ? cfg.memory_limit * 400 : 8192);
+  sim.llm_max_tokens  = cfg.llm_max_tokens ?? 16384;
   sim.extra_fields = cfg.extra_fields || [
     { name: 'emotion',     default: 'neutral' },
     { name: 'action',      default: 'speak'   },

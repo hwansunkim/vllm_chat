@@ -16,16 +16,17 @@ class _StepMixin:
         from ..memory_compressor import compress
         self._emit("compression_start", {"agent": agent_key, "wave": wave, "msg_count": len(agent.memory)})
         new_block = compress(
-            agent_name   = agent.name,
-            agent_key    = agent_key,
-            sim_id       = self._sim_id,
-            messages     = list(agent.memory),
-            wave         = wave,
-            db           = self._db,
-            model        = self.model,
-            base_url     = self.base_url,
-            api_timeout  = self.api_timeout,
-            key_to_alias = self._key_to_alias,
+            agent_name     = agent.name,
+            agent_key      = agent_key,
+            sim_id         = self._sim_id,
+            messages       = list(agent.memory),
+            wave           = wave,
+            db             = self._db,
+            model          = self.model,
+            base_url       = self.base_url,
+            api_timeout    = self.api_timeout,
+            key_to_alias   = self._key_to_alias,
+            llm_max_tokens = self.llm_max_tokens,
         )
         if new_block is not None:
             agent._memory_block = new_block
@@ -100,7 +101,8 @@ class _StepMixin:
         """Invoke the LLM with pre-built messages. Returns (content, reasoning, usage, error)."""
         try:
             content, reasoning, usage = chat_response(
-                call_messages, self.model, self.base_url, self.api_timeout
+                call_messages, self.model, self.base_url, self.api_timeout,
+                max_tokens=self.llm_max_tokens,
             )
         except Exception as e:
             logger.error(f"응답 생성 실패 ({agent.name}): {e}")
@@ -142,7 +144,8 @@ class _StepMixin:
             fix_msgs.append({"role": "user",      "content": CORRECTION_MSG})
             try:
                 content, reasoning, usage = chat_response(
-                    fix_msgs, self.model, self.base_url, self.api_timeout
+                    fix_msgs, self.model, self.base_url, self.api_timeout,
+                    max_tokens=self.llm_max_tokens,
                 )
             except Exception as e:
                 logger.error(f"언어 교잡 재시도 실패 ({agent.name}) attempt={attempt}: {e}")

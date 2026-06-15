@@ -12,6 +12,7 @@ export function renderSettingsPage() {
   document.getElementById('sim-max-waves').value      = sim.max_waves;
   document.getElementById('sim-step-delay').value     = sim.step_delay;
   document.getElementById('sim-token-limit').value    = sim.token_limit;
+  document.getElementById('sim-llm-max-tokens').value = sim.llm_max_tokens;
   document.getElementById('sim-output-format').value    = sim.output_format_template || '';
   document.getElementById('sim-summary-interval').value = sim.summary_interval ?? 0;
   const langFixEl = document.getElementById('sim-lang-fix-enabled');
@@ -34,7 +35,8 @@ export function readConfigFromUI() {
   sim.start_agent            = document.getElementById('sim-start-agent').value;
   sim.max_waves              = parseInt(document.getElementById('sim-max-waves').value)    || 10;
   sim.step_delay             = parseFloat(document.getElementById('sim-step-delay').value) || 1.0;
-  sim.token_limit            = parseInt(document.getElementById('sim-token-limit').value)  || 8192;
+  sim.token_limit            = parseInt(document.getElementById('sim-token-limit').value)     || 8192;
+  sim.llm_max_tokens         = parseInt(document.getElementById('sim-llm-max-tokens').value) || 16384;
   sim.output_format_template = document.getElementById('sim-output-format').value;
   sim.summary_interval       = parseInt(document.getElementById('sim-summary-interval').value) || 0;
   const sel = document.getElementById('sim-server-select');

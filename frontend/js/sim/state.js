@@ -11,7 +11,8 @@ export const sim = {
   start_agent:  '',
   max_waves:    10,
   step_delay:   1.0,
-  token_limit:  8192,
+  token_limit:    8192,
+  llm_max_tokens: 16384,
   extra_fields: [
     { name: 'emotion',     default: 'neutral' },
     { name: 'action',      default: 'speak'   },

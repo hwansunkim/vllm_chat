@@ -40,6 +40,7 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
         location_graph:   list[dict] | None           = None,
         lang_fix_enabled: bool                        = True,
         lang_fix_retries: int                         = 2,
+        llm_max_tokens:   int                         = 16384,
     ):
         self.agents         = agents
         self.background_log = background_log
@@ -47,6 +48,7 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
         self.model          = model
         self.base_url       = base_url
         self.api_timeout    = api_timeout
+        self.llm_max_tokens = llm_max_tokens
         self.shared_log: list = list(background_log)
         self.edges:      list = []
         self._event_queue = event_queue

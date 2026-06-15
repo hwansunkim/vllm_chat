@@ -62,6 +62,7 @@ class SimStartConfig(BaseModel):
     max_waves:              int              = 10
     step_delay:             float            = 1.0
     token_limit:            int              = 8192
+    llm_max_tokens:         int              = 16384
     extra_fields:           list[ExtraField] = [
         ExtraField(name="emotion",     default="neutral"),
         ExtraField(name="action",      default="speak"),

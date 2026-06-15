@@ -38,6 +38,7 @@ class _SystemMixin:
             model             = self.model,
             base_url          = self.base_url,
             api_timeout       = self.api_timeout,
+            llm_max_tokens    = self.llm_max_tokens,
         )
         if not result:
             return current_wave

@@ -49,6 +49,7 @@ export async function startSimulation() {
       max_waves:              sim.max_waves,
       step_delay:             sim.step_delay,
       token_limit:            sim.token_limit,
+      llm_max_tokens:         sim.llm_max_tokens,
       extra_fields:           sim.extra_fields,
       events:                 sim.events,
       output_format_template: sim.output_format_template || '',

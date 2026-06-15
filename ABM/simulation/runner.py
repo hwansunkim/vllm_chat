@@ -213,14 +213,15 @@ class _RunnerMixin:
             bg_text = first.removeprefix("[배경]").strip()
 
         result = summarize_waves(
-            entries      = entries,
-            background   = bg_text,
-            wave_start   = wave_start,
-            wave_end     = wave_end,
-            model        = self.model,
-            base_url     = self.base_url,
-            api_timeout  = self.api_timeout,
-            key_to_alias = self._key_to_alias,
+            entries        = entries,
+            background     = bg_text,
+            wave_start     = wave_start,
+            wave_end       = wave_end,
+            model          = self.model,
+            base_url       = self.base_url,
+            api_timeout    = self.api_timeout,
+            key_to_alias   = self._key_to_alias,
+            llm_max_tokens = self.llm_max_tokens,
         )
         if result:
             self._last_summary = result

@@ -80,6 +80,7 @@ def run_system_agent(
     model: str,
     base_url: str,
     api_timeout: int,
+    llm_max_tokens: int = 16384,
 ) -> dict | None:
     """Run the system agent LLM call.
 
@@ -144,7 +145,8 @@ def run_system_agent(
 
     try:
         content, _, _ = chat_response(
-            messages, model=model, base_url=base_url, timeout=api_timeout
+            messages, model=model, base_url=base_url, timeout=api_timeout,
+            max_tokens=llm_max_tokens,
         )
         raw = content.strip()
         if raw.startswith("```"):

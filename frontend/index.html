@@ -241,6 +241,11 @@
           <input type="number" id="sim-token-limit" value="8192" min="512" step="512"/>
         </div>
         <div class="sim-option-row">
+          <label>LLM max tokens</label>
+          <input type="number" id="sim-llm-max-tokens" value="16384" min="512" step="512"
+                 title="에이전트 응답 생성 시 최대 출력 토큰 수"/>
+        </div>
+        <div class="sim-option-row">
           <label>요약 간격 (wave)</label>
           <input type="number" id="sim-summary-interval" value="0" min="0" max="20" step="1"
                  title="0 = 요약 비활성, N = N웨이브마다 LLM 요약"/>

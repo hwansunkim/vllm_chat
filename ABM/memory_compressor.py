@@ -158,6 +158,7 @@ def compress(
     base_url: str,
     api_timeout: int,
     key_to_alias: dict | None = None,
+    llm_max_tokens: int = 16384,
 ) -> str | None:
     """Run delta compression for one agent.
 
@@ -189,6 +190,7 @@ def compress(
                 {"role": "user",   "content": prompt},
             ],
             model, base_url, api_timeout,
+            max_tokens=llm_max_tokens,
         )
         data = _parse_compression_result(raw)
     except Exception as exc:
