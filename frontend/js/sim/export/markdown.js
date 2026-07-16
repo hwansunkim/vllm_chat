@@ -72,7 +72,12 @@ export function initExportModal() {
   });
   document.getElementById('sim-export-modal-download')?.addEventListener('click', async () => {
     closeExportModal();
-    await exportScenarioMarkdown(readChecks());
+    try {
+      await exportScenarioMarkdown(readChecks());
+    } catch (e) {
+      console.error('[export] 마크다운 내보내기 실패:', e);
+      alert(`마크다운 내보내기 실패: ${e.message}`);
+    }
   });
 }
 
@@ -133,7 +138,7 @@ function fmtDialogue(entry, checks) {
   let s = `\n**${icon} ${name}** ${targetStr}`;
   if (meta) s += `  \`${meta}\``;
   s += '\n';
-  s += `> ${entry.content.replace(/\n/g, '\n> ')}\n`;
+  s += `> ${(entry.content ?? '').replace(/\n/g, '\n> ')}\n`;
   if (checks.action && entry.action_note) s += `> *(${entry.action_note})*\n`;
   return s;
 }
@@ -174,24 +179,19 @@ function fmtSummary(data) {
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
-export async function exportScenarioMarkdown(checks) {
-  checks = checks ?? readChecks();
-  const { log, status, events } = await fetchAll();
-
+function _buildMarkdown(log, events, statusStr, checks) {
   const scenarioName = sim.currentScenarioName || '시나리오';
   const nowKo = new Date().toLocaleString('ko-KR', {
     year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit',
   });
-  const filename = safeFilename(`${scenarioName}_${nowTag()}`) + '.md';
 
   const startTs     = log[0]?.timestamp;
   const endTs       = log.length > 1 ? log[log.length - 1]?.timestamp : null;
   const maxWave     = log.length ? Math.max(...log.map(e => e.wave ?? 0)) : 0;
-  const statusLabel = { done: '완료 ✅', stopped: '중지 ⏹', running: '실행 중 ▶', error: '오류 ❌' }[status.status] ?? (status.status || '—');
+  const statusLabel = { done: '완료 ✅', stopped: '중지 ⏹', running: '실행 중 ▶', error: '오류 ❌' }[statusStr] ?? (statusStr || '—');
 
   let md = '';
 
-  // ── 제목 + 메타 ──
   md += `# ${scenarioName}\n\n`;
   md += `> **추출 일시** ${nowKo}\n`;
   if (startTs) md += `> **시작** ${fmtKo(startTs)}\n`;
@@ -200,7 +200,6 @@ export async function exportScenarioMarkdown(checks) {
   md += `> **상태** ${statusLabel}\n`;
   md += `\n---\n\n`;
 
-  // ── 등장인물 ──
   md += `## 등장인물\n\n`;
   md += `| 아이콘 | 이름 | ID | 그룹 | 초기 활성 |\n`;
   md += `|--------|------|----|------|-----------|\n`;
@@ -211,21 +210,17 @@ export async function exportScenarioMarkdown(checks) {
   }
   md += `\n`;
 
-  // ── 배경 ──
   if (sim.background) {
     md += `## 배경\n\n${sim.background}\n\n---\n\n`;
   }
 
-  // ── 대화 기록 ──
   md += `## 대화 기록\n\n`;
   if (!log.length) {
     md += `*대화 기록이 없습니다.*\n\n`;
   } else {
-    const stream  = buildStream(log, events, checks);
-    let curWave   = null;
-
+    const stream = buildStream(log, events, checks);
+    let curWave  = null;
     for (const item of stream) {
-      // Wave 헤더 (시간 포함)
       if (item.wave !== curWave) {
         curWave = item.wave;
         const timeLabel = checks.time ? simTimeLabel(curWave) : null;
@@ -234,20 +229,58 @@ export async function exportScenarioMarkdown(checks) {
           : `### 🌊 Wave ${curWave}`;
         md += `\n${waveHead}\n\n---\n`;
       }
-
       switch (item.kind) {
-        case 'dialogue':      md += fmtDialogue(item.payload, checks); break;
-        case 'agent_move':    md += fmtMove(item.payload); break;
-        case 'appearance_update': md += fmtAppearance(item.payload); break;
+        case 'dialogue':            md += fmtDialogue(item.payload, checks); break;
+        case 'agent_move':          md += fmtMove(item.payload); break;
+        case 'appearance_update':   md += fmtAppearance(item.payload); break;
         case 'system_intervention': md += fmtIntervention(item.payload); break;
-        case 'world_event':   md += fmtWorldEvent(item.payload); break;
-        case 'wave_summary':  md += fmtSummary(item.payload); break;
+        case 'world_event':         md += fmtWorldEvent(item.payload); break;
+        case 'wave_summary':        md += fmtSummary(item.payload); break;
       }
     }
     md += '\n';
   }
+  return { md, scenarioName };
+}
 
-  downloadMd(md, filename);
+export async function exportScenarioMarkdown(checks) {
+  checks = checks ?? readChecks();
+  const { log, status, events } = await fetchAll();
+  const { md, scenarioName } = _buildMarkdown(log, events, status.status, checks);
+  downloadMd(md, safeFilename(`${scenarioName}_${nowTag()}`) + '.md');
+}
+
+// 이력 모달에서 직접 내보내기 — DB 데이터를 사용해 in-memory 상태와 무관하게 동작
+export async function exportRunMarkdown(runId, run, preloadedLog) {
+  let parsedConfig = {};
+  try { parsedConfig = JSON.parse(run.config_json || '{}'); } catch (_) {}
+
+  // 필요한 sim.* 필드를 임시로 교체 (formatting 함수들이 sim.*를 직접 참조)
+  const prev = {
+    agents:              sim.agents,
+    background:          sim.background,
+    currentScenarioName: sim.currentScenarioName,
+    sim_start_time:      sim.sim_start_time,
+    time_per_wave:       sim.time_per_wave,
+  };
+  sim.agents              = (parsedConfig.agents || []).map(a => ({
+    icon: '🤖', groups: [], initial_active: true, ...a,
+  }));
+  sim.background          = parsedConfig.background          || '';
+  sim.currentScenarioName = run.scenario_name                || '시나리오';
+  sim.sim_start_time      = parsedConfig.sim_start_time      || '09:00';
+  sim.time_per_wave       = parsedConfig.time_per_wave       ?? 30;
+
+  const defaultChecks = { time: true, action: true, move: true, appearance: true, world: true, intervention: true, summary: false };
+
+  try {
+    const evtRes = await fetch(`/api/simulation/runs/${encodeURIComponent(runId)}/events`);
+    const events = evtRes.ok ? await evtRes.json() : [];
+    const { md, scenarioName } = _buildMarkdown(preloadedLog, events, run.status, defaultChecks);
+    downloadMd(md, safeFilename(`${scenarioName}_${nowTag()}`) + '.md');
+  } finally {
+    Object.assign(sim, prev);
+  }
 }
 
 // ── Agent context window export (unchanged) ───────────────────────────────────

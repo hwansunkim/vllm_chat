@@ -10,6 +10,7 @@ import { renderHistoricalFeed } from '../run/feed.js';
 import { initD3Graph } from '../graph/d3.js';
 import { updateScenarioLabel } from '../views.js';
 import { connectSSE } from '../run/sse.js';
+import { exportRunMarkdown } from '../export/markdown.js';
 
 export async function openRunReplay(runId, runNum) {
   // 기존 모달 제거
@@ -46,6 +47,7 @@ export async function openRunReplay(runId, runNum) {
         <div class="sim-replay-actions">
           ${parsedConfig ? `<button id="sim-replay-resume-btn" class="sim-ctrl-btn continue" style="font-size:12px;padding:4px 10px">↩ 이어서</button>` : ''}
           ${parsedConfig ? `<button id="sim-replay-restart-btn" class="sim-ctrl-btn settings" style="font-size:12px;padding:4px 10px">이력 불러오기</button>` : ''}
+          ${log.length   ? `<button id="sim-replay-md-btn" class="sim-ctrl-btn settings" style="font-size:12px;padding:4px 10px">📥 MD</button>` : ''}
           <button id="sim-replay-close-btn" class="sim-ctrl-btn settings" style="font-size:12px;padding:4px 10px">✕ 닫기</button>
         </div>
       </div>
@@ -90,6 +92,20 @@ export async function openRunReplay(runId, runNum) {
         </div>
       </div>`;
     feedEl.appendChild(div);
+  });
+
+  // MD 내보내기
+  document.getElementById('sim-replay-md-btn')?.addEventListener('click', async () => {
+    const btn = document.getElementById('sim-replay-md-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '...'; }
+    try {
+      await exportRunMarkdown(runId, run, log);
+    } catch (e) {
+      console.error('[replay] MD 내보내기 실패:', e);
+      alert(`MD 내보내기 실패: ${e.message}`);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '📥 MD'; }
+    }
   });
 
   // 닫기

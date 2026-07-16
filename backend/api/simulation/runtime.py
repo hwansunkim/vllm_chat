@@ -325,6 +325,8 @@ def load_simulation(run_id: str):
             }
             for e in log_entries
         ]
+        # sim_obj.shared_log에도 복원 — /logs 엔드포인트가 sim_obj 우선으로 읽기 때문
+        sim_obj.shared_log.extend(shared_log)
 
         with _sim_lock:
             _sim["agents"]         = sim_obj.agents
@@ -526,9 +528,9 @@ def get_agent_memory(name: str):
 @router.get("/logs")
 def get_logs():
     sim_obj = _sim.get("sim_obj")
-    if sim_obj is not None:
-        return sim_obj.shared_log
-    return _sim["shared_log"]
+    log = sim_obj.shared_log if sim_obj is not None else _sim["shared_log"]
+    # background_log 항목(speaker 없음)은 마크다운 내보내기용 로그에서 제외
+    return [e for e in log if "speaker" in e]
 
 
 @router.get("/events")

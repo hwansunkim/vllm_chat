@@ -69,7 +69,7 @@ def parse_json_response(
 
         raw  = _sanitize_json_strings(raw.strip())
         data = json.loads(raw)
-        clean_content = data.get("content", "")
+        clean_content = data.get("content") or ""
         meta_values   = {f["name"]: data.get(f["name"], f["default"]) for f in _fields}
         targets       = data.get("target", [])
 
