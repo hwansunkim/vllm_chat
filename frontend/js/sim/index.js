@@ -19,11 +19,11 @@ import {
   saveScenario, deleteScenario,
   newScenario, applyScenario,
 } from './scenarios.js';
-import { addLocationNode } from './settings/page.js';
+import { addLocationNode, initEarlyStopToggle } from './settings/page.js';
 import { toggleRunHistory, openAllRunsModal } from './runs/history.js';
 import { exportGraph } from './graph/d3.js';
 import { switchTab, fetchAgentContext } from './context.js';
-import { exportScenarioMarkdown } from './export/markdown.js';
+import { openExportModal, initExportModal } from './export/markdown.js';
 import { initResizeHandles } from './resize.js';
 
 export function initSimulationEvents() {
@@ -51,7 +51,9 @@ export function initSimulationEvents() {
   document.getElementById('sim-history-btn')?.addEventListener('click', toggleRunHistory);
   document.getElementById('sim-all-runs-btn').addEventListener('click', openAllRunsModal);
   document.getElementById('sim-export-graph-btn').addEventListener('click', exportGraph);
-  document.getElementById('sim-export-md-btn').addEventListener('click', exportScenarioMarkdown);
+  document.getElementById('sim-export-md-btn').addEventListener('click', openExportModal);
+  initExportModal();
+  initEarlyStopToggle();
 
   document.getElementById('sim-add-agent-btn').addEventListener('click', () => {
     const newName = `agent${sim.agents.length + 1}`;

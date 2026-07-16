@@ -27,6 +27,7 @@ class ScenarioEvent(BaseModel):
 class LocationNode(BaseModel):
     name:        str
     connects_to: list[str] = []
+    is_exterior: bool      = False
 
 
 class ExtraField(BaseModel):
@@ -74,6 +75,10 @@ class SimStartConfig(BaseModel):
     lang_fix_retries:       int              = 2
     output_format_template: str              = ""
     summary_interval:       int              = 0   # 0 = 비활성, N = N웨이브마다 LLM 요약
+    sim_start_time:         str              = "09:00"  # HH:MM, 시뮬레이션 내 시작 시각
+    time_per_wave:          int              = 30        # wave당 경과 시간(분). 0 = 시간 개념 비활성
+    max_silence_waves:      int              = 3         # 연속 침묵 허용 wave 수 (early_stop_enabled + time_per_wave > 0일 때 활성)
+    early_stop_enabled:     bool             = True      # False = 조기 종료 비활성 (max_waves까지 항상 실행)
     server_id:              str | None       = None  # None = DB default 서버, 미설정 시 env 폴백
     system_agent:           SystemAgentConfig = SystemAgentConfig()
 

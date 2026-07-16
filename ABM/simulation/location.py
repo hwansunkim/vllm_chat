@@ -52,8 +52,13 @@ class _LocationMixin:
 
         Returns (known: list[str], strangers: list[tuple[stranger_id, real_key, visual]])
         위치가 설정된 경우에만 필터링, 미설정 시 기존 동작.
+        외부 공간에 있는 에이전트는 서로를 볼 수 없음.
         """
-        my_loc    = self._agent_location.get(agent_key, "")
+        my_loc      = self._agent_location.get(agent_key, "")
+        is_exterior = my_loc in self._exterior_locations
+        if is_exterior:
+            return [], []  # 외부 공간 — 아무도 보이지 않음
+
         knowledge = self._agent_knowledge.get(agent_key, set())
         known:     list[str]                    = []
         strangers: list[tuple[str, str, str]]   = []
@@ -61,6 +66,8 @@ class _LocationMixin:
             if other_key == agent_key:
                 continue
             other_loc = self._agent_location.get(other_key, "")
+            if other_loc in self._exterior_locations:
+                continue  # 외부 공간에 있는 에이전트는 내부에서 보이지 않음
             if my_loc and other_loc and my_loc != other_loc:
                 continue
             if other_key in knowledge:
@@ -82,7 +89,17 @@ class _LocationMixin:
         if not my_loc:
             return None
 
+        is_exterior = my_loc in self._exterior_locations
         lines = ["[현재 상황]", f"현재 위치: {my_loc}"]
+
+        if is_exterior:
+            lines.append("※ 이곳은 시뮬레이션 경계 밖의 공허한 공간입니다.")
+            lines.append("  아무도 없고, 아무도 당신의 존재를 알지 못합니다.")
+            lines.append("  이 공간에서의 말과 행동은 외부로 전달되지 않습니다.")
+            adjacent = self._get_adjacent(my_loc)
+            if adjacent:
+                lines.append(f"  내부로 돌아가려면 move_to로 인접 장소({', '.join(adjacent)})를 선택하세요.")
+            return "\n".join(lines)
 
         adjacent = self._get_adjacent(my_loc)
         if adjacent:

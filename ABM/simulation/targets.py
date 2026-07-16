@@ -66,10 +66,14 @@ class _TargetsMixin:
           "stranger_N" → 해당 낯선 이 (real_key 변환 + knowledge 확장)
           "<key>"      → 특정 에이전트 (같은 위치일 때만)
         위치 미설정 에이전트는 기존 동작 유지 (하위 호환).
+        외부 공간 에이전트는 아무에게도 메시지를 전달할 수 없음.
         """
+        speaker_loc = self._agent_location.get(speaker_key, "")
+        if speaker_loc in self._exterior_locations:
+            return []  # 외부 공간 화자 — 메시지 전달 불가
+
         resolved    = []
         visible_set = set(self._visible_targets.get(speaker_key, []))
-        speaker_loc = self._agent_location.get(speaker_key, "")
 
         def _same_loc(key: str) -> bool:
             """위치 시스템 활성 시 같은 위치인지 확인. 위치 미설정이면 항상 True."""

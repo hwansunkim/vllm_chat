@@ -60,7 +60,9 @@ class _TurnMixin:
             self.edges.append(edge)
             new_edges.append(edge)
 
-        emit_meta = {k: v for k, v in meta.items() if k != "action_note"}
+        emit_meta   = {k: v for k, v in meta.items() if k != "action_note"}
+        agent_loc   = self._agent_location.get(agent_key, "")
+        is_exterior = agent_loc in self._exterior_locations
         self._emit("turn_complete", {
             "turn":              turn,
             "wave":              wave,
@@ -74,6 +76,7 @@ class _TurnMixin:
             "token_limit":       agent._token_limit,
             "reasoning_preview": reasoning[:120] if reasoning else "",
             "new_edges":         new_edges,
+            "is_exterior":       is_exterior,
         })
 
         if self._db is not None and self._sim_id is not None:

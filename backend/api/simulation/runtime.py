@@ -130,10 +130,12 @@ def start_simulation(cfg: SimStartConfig):
                 system_agent=cfg.system_agent.model_dump(),
                 agent_locations=agent_locations,
                 agent_visuals=agent_visuals,
-                location_graph=[{"name": n.name, "connects_to": n.connects_to} for n in cfg.location_graph],
+                location_graph=[{"name": n.name, "connects_to": n.connects_to, "is_exterior": n.is_exterior} for n in cfg.location_graph],
                 lang_fix_enabled=cfg.lang_fix_enabled,
                 lang_fix_retries=cfg.lang_fix_retries,
                 llm_max_tokens=cfg.llm_max_tokens,
+                sim_start_time=cfg.sim_start_time,
+                time_per_wave=cfg.time_per_wave,
             )
             _sim["agents"]         = sim.agents
             _sim["background_log"] = sim.background_log
@@ -146,6 +148,8 @@ def start_simulation(cfg: SimStartConfig):
                 max_waves=cfg.max_waves,
                 step_delay=cfg.step_delay,
                 events=[e.model_dump() for e in cfg.events],
+                max_silence_waves=cfg.max_silence_waves,
+                early_stop_enabled=cfg.early_stop_enabled,
             )
             finalize_run(db, run_sim_id, stop_ev, sim, eq)
         except Exception as e:
@@ -521,7 +525,28 @@ def get_agent_memory(name: str):
 
 @router.get("/logs")
 def get_logs():
+    sim_obj = _sim.get("sim_obj")
+    if sim_obj is not None:
+        return sim_obj.shared_log
     return _sim["shared_log"]
+
+
+@router.get("/events")
+def get_sim_events(types: str = ""):
+    """저장된 SSE 이벤트 반환. types=agent_move,world_event 형태로 필터 가능."""
+    sim_obj = _sim.get("sim_obj")
+    if sim_obj is None or sim_obj._db is None or sim_obj._sim_id is None:
+        return []
+    filter_types = [t.strip() for t in types.split(",") if t.strip()] if types else None
+    return sim_obj._db.get_run_events(sim_obj._sim_id, filter_types)
+
+
+@router.get("/runs/{run_id}/events")
+def get_run_events(run_id: str, types: str = ""):
+    """과거 실행의 SSE 이벤트 반환."""
+    db = get_sim_db()
+    filter_types = [t.strip() for t in types.split(",") if t.strip()] if types else None
+    return db.get_run_events(run_id, filter_types)
 
 
 @router.get("/edges")

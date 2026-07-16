@@ -10,11 +10,13 @@ class _RunnerMixin:
 
     def run(
         self,
-        start_agent:  str,
-        max_waves:    int         = 10,
-        step_delay:   float       = 1.0,
-        events:       list        = None,
-        resume_wave:  dict | None = None,
+        start_agent:       str,
+        max_waves:         int         = 10,
+        step_delay:        float       = 1.0,
+        events:            list        = None,
+        resume_wave:       dict | None = None,
+        max_silence_waves: int         = 3,
+        early_stop_enabled: bool       = True,
     ):
         """Wave-based BFS + 시나리오 이벤트 실행."""
         events_by_wave: dict[int, list] = {}
@@ -23,8 +25,9 @@ class _RunnerMixin:
             events_by_wave.setdefault(w, []).append(e)
 
         current_wave: dict[str, list] = resume_wave if resume_wave else {start_agent: []}
-        turn_counter = 0
-        total_turns  = 0
+        turn_counter  = 0
+        total_turns   = 0
+        silence_count = 0
 
         for wave_num in range(max_waves):
             if self._stop_event.is_set():
@@ -94,27 +97,45 @@ class _RunnerMixin:
                 if old_loc == next_loc:
                     continue
                 self._agent_location[agent_key] = next_loc
-                display = self._key_to_alias.get(agent_key, agent_key)
+                display          = self._key_to_alias.get(agent_key, agent_key)
+                to_exterior      = next_loc in self._exterior_locations
+                from_exterior    = old_loc  in self._exterior_locations
                 self._emit("agent_move", {
                     "wave": wave_num, "agent": agent_key,
                     "display_name": display,
                     "from": old_loc, "to": next_loc,
+                    "to_exterior": to_exterior,
                 })
                 mover_visual = self._agent_visual.get(agent_key, "") or display
                 for other_key in self.active_agents:
                     if other_key == agent_key:
                         continue
-                    if self._agent_location.get(other_key, "") == next_loc:
-                        if agent_key in self._agent_knowledge.get(other_key, set()):
-                            scene_msg = f"[씬] {display}이(가) 이곳에 도착했다."
-                        else:
-                            scene_msg = (
-                                f"[씬] 낯선 이가 나타났다: {mover_visual}"
-                                if mover_visual else "[씬] 낯선 이가 나타났다."
-                            )
-                        scene_injections.setdefault(other_key, []).append({
-                            "speaker": "씬", "content": scene_msg, "action_note": ""
-                        })
+                    other_loc = self._agent_location.get(other_key, "")
+                    if other_loc in self._exterior_locations:
+                        continue  # 외부 공간의 에이전트에게는 씬 메시지 전달 안 함
+                    if to_exterior:
+                        # 내부에서 외부로 나갔을 때 — 출발지 사람들에게만 알림
+                        if other_loc == old_loc and not from_exterior:
+                            if agent_key in self._agent_knowledge.get(other_key, set()):
+                                scene_msg = f"[씬] {display}이(가) 자리를 떠났다."
+                            else:
+                                scene_msg = "[씬] 낯선 이가 자리를 떠났다."
+                            scene_injections.setdefault(other_key, []).append({
+                                "speaker": "씬", "content": scene_msg, "action_note": ""
+                            })
+                    else:
+                        # 일반 이동 (내부 → 내부, 외부 → 내부) — 도착지 사람들에게 알림
+                        if other_loc == next_loc:
+                            if agent_key in self._agent_knowledge.get(other_key, set()):
+                                scene_msg = f"[씬] {display}이(가) 이곳에 도착했다."
+                            else:
+                                scene_msg = (
+                                    f"[씬] 낯선 이가 나타났다: {mover_visual}"
+                                    if mover_visual else "[씬] 낯선 이가 나타났다."
+                                )
+                            scene_injections.setdefault(other_key, []).append({
+                                "speaker": "씬", "content": scene_msg, "action_note": ""
+                            })
 
             for speaker_key, result in results.items():
                 if not result.get("success"):
@@ -157,6 +178,21 @@ class _RunnerMixin:
                         "content":     result["clean_content"],
                         "action_note": result.get("action_note", ""),
                     })
+
+            # ── 조기 종료 / 시간 주도형 루프 ─────────────────────────────────────
+            if not next_wave:
+                if not early_stop_enabled:
+                    # 조기 종료 OFF: 항상 모든 active 에이전트 재투입 (max_waves까지 실행)
+                    next_wave = {key: [] for key in self.active_agents}
+                elif self._time_per_wave > 0:
+                    # 시간 주도형 + 조기 종료 ON: max_silence_waves 초과 시 종료
+                    silence_count += 1
+                    logger.info(f"[W{wave_num}] 침묵 #{silence_count}/{max_silence_waves}")
+                    if silence_count < max_silence_waves:
+                        next_wave = {key: [] for key in self.active_agents}
+                # else: time_per_wave=0, early_stop=ON → 즉시 종료 (원래 동작)
+            elif next_wave:
+                silence_count = 0
 
             current_wave = next_wave
             logger.info(f"[W{wave_num}] next_wave: {list(current_wave.keys())}")

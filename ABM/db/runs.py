@@ -158,6 +158,43 @@ class RunsMixin:
         return {r["agent_key"]: json.loads(r["memory_json"]) for r in rows}
 
     # ------------------------------------------------------------------
+    # Simulation events (SSE 이벤트 영속화)
+    # ------------------------------------------------------------------
+
+    def log_event(self, run_id: str, wave: int, event_type: str, data: dict) -> None:
+        conn = self._conn()
+        conn.execute(
+            "INSERT INTO sim_events (run_id, wave, event_type, data_json, timestamp) VALUES (?,?,?,?,?)",
+            (run_id, wave, event_type, json.dumps(data, ensure_ascii=False), time.time()),
+        )
+        conn.commit()
+
+    def get_run_events(
+        self,
+        run_id: str,
+        event_types: list[str] | None = None,
+    ) -> list[dict]:
+        if event_types:
+            placeholders = ",".join("?" * len(event_types))
+            rows = self._conn().execute(
+                f"SELECT wave, event_type, data_json, timestamp "
+                f"FROM sim_events WHERE run_id=? AND event_type IN ({placeholders}) ORDER BY id",
+                (run_id, *event_types),
+            ).fetchall()
+        else:
+            rows = self._conn().execute(
+                "SELECT wave, event_type, data_json, timestamp "
+                "FROM sim_events WHERE run_id=? ORDER BY id",
+                (run_id,),
+            ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["data"] = json.loads(d.pop("data_json"))
+            result.append(d)
+        return result
+
+    # ------------------------------------------------------------------
     # Cascade delete
     # ------------------------------------------------------------------
 
@@ -175,5 +212,6 @@ class RunsMixin:
         # Run-scoped tables (run_id column).
         conn.execute("DELETE FROM simulation_log    WHERE run_id=?", (run_id,))
         conn.execute("DELETE FROM agent_snapshots   WHERE run_id=?", (run_id,))
+        conn.execute("DELETE FROM sim_events        WHERE run_id=?", (run_id,))
         conn.execute("DELETE FROM simulation_runs   WHERE run_id=?", (run_id,))
         conn.commit()

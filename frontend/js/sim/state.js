@@ -24,6 +24,10 @@ export const sim = {
   lang_fix_retries: 2,
   output_format_template: '',
   summary_interval: 0,
+  sim_start_time:    '09:00',  // 시뮬레이션 시작 시각 (HH:MM)
+  time_per_wave:     30,       // wave당 경과 시간(분). 0 = 시간 개념 비활성
+  max_silence_waves:  3,        // 연속 침묵 허용 wave 수 (early_stop_enabled + time_per_wave > 0일 때 활성)
+  early_stop_enabled: true,    // false = 조기 종료 비활성 (max_waves까지 항상 실행)
   server_id:        null,   // null = 기본 서버, string = 특정 서버 ID
   system_agent: {
     enabled:               false,
@@ -103,6 +107,21 @@ export function esc(str) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+// ── 시뮬레이션 시각 계산 ──────────────────────────────────────────────────────
+export function simTimeLabel(waveNum) {
+  const tpw = sim.time_per_wave ?? 30;
+  if (!tpw) return null;
+  const [h, m] = (sim.sim_start_time || '09:00').split(':').map(Number);
+  const startMin = h * 60 + (m || 0);
+  const total = (startMin + waveNum * tpw) % (24 * 60);
+  const hour = Math.floor(total / 60);
+  const min  = total % 60;
+  const pad  = String(min).padStart(2, '0');
+  if (hour < 12) return `오전 ${hour}시 ${pad}분`;
+  const dh = hour === 12 ? 12 : hour - 12;
+  return `오후 ${dh}시 ${pad}분`;
 }
 
 // ── Misc small helpers ────────────────────────────────────────────────────────

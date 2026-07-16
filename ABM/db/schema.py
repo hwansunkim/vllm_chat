@@ -119,6 +119,16 @@ CREATE TABLE IF NOT EXISTS agent_snapshots (
     PRIMARY KEY (run_id, agent_key)
 );
 CREATE INDEX IF NOT EXISTS idx_snapshots_run ON agent_snapshots(run_id);
+
+CREATE TABLE IF NOT EXISTS sim_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id      TEXT    NOT NULL,
+    wave        INTEGER NOT NULL DEFAULT 0,
+    event_type  TEXT    NOT NULL,
+    data_json   TEXT    NOT NULL DEFAULT '{}',
+    timestamp   REAL    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_simevents_run ON sim_events(run_id, id);
 """
 
 
@@ -131,4 +141,20 @@ def migrate(conn: sqlite3.Connection) -> None:
     ]:
         if col not in cols:
             conn.execute(ddl)
+
+    # sim_events 테이블이 없는 기존 DB를 위한 마이그레이션
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "sim_events" not in tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS sim_events (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id      TEXT    NOT NULL,
+                wave        INTEGER NOT NULL DEFAULT 0,
+                event_type  TEXT    NOT NULL,
+                data_json   TEXT    NOT NULL DEFAULT '{}',
+                timestamp   REAL    NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_simevents_run ON sim_events(run_id, id);
+        """)
+
     conn.commit()

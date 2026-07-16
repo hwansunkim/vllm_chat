@@ -107,6 +107,7 @@
       <div id="sim-agent-cards"></div>
       <div id="sim-turn-indicator">
         <span id="sim-turn-text">대기 중</span>
+        <span id="sim-turn-time" class="sim-turn-time sim-hidden"></span>
         <div class="sim-progress-bar">
           <div class="sim-progress-fill" id="sim-progress-fill"></div>
         </div>
@@ -249,6 +250,30 @@
           <label>요약 간격 (wave)</label>
           <input type="number" id="sim-summary-interval" value="0" min="0" max="20" step="1"
                  title="0 = 요약 비활성, N = N웨이브마다 LLM 요약"/>
+        </div>
+        <div class="sim-option-row">
+          <label>시작 시각</label>
+          <input type="time" id="sim-start-time" value="09:00"
+                 title="시뮬레이션 내 시작 시각 (HH:MM). wave당 시간이 0이면 무시됩니다."/>
+        </div>
+        <div class="sim-option-row">
+          <label>wave당 시간 (분)</label>
+          <input type="number" id="sim-time-per-wave" value="30" min="0" max="720" step="5"
+                 title="wave마다 경과하는 시간(분). 0 = 시간 개념 비활성"/>
+        </div>
+        <div class="sim-option-row">
+          <label>조기 종료</label>
+          <div class="sim-lang-fix-row">
+            <label class="sim-toggle-small">
+              <input type="checkbox" id="sim-early-stop-enabled" checked>
+              <span>활성화</span>
+            </label>
+            <span class="sim-lang-fix-sep">침묵 허용</span>
+            <input type="number" id="sim-max-silence-waves" value="3" min="1" max="20" step="1"
+                   class="sim-lang-fix-count"
+                   title="연속 침묵 wave 수. 이 횟수 이상 침묵하면 종료. (조기 종료 활성 + 시간 개념 활성 시에만 적용)"/>
+            <span class="sim-lang-fix-unit">wave</span>
+          </div>
         </div>
         <div class="sim-option-row">
           <label>언어 교잡 수정</label>
@@ -529,6 +554,65 @@
     <div class="modal-actions">
       <button class="btn-cancel" id="modal-cancel">취소</button>
       <button class="btn-primary" id="modal-create">시작하기</button>
+    </div>
+  </div>
+</div>
+
+<!-- Export Options Modal -->
+<div id="sim-export-modal" class="sim-export-modal-overlay sim-hidden">
+  <div class="sim-export-modal-box">
+    <div class="sim-export-modal-header">
+      <span>📄 마크다운 내보내기</span>
+      <button id="sim-export-modal-close" class="sim-export-modal-close">✕</button>
+    </div>
+    <div class="sim-export-modal-body">
+      <p class="sim-export-modal-hint">포함할 요소를 선택하세요</p>
+      <div class="sim-export-checklist">
+        <label class="sim-export-check-item sim-export-check-fixed">
+          <input type="checkbox" checked disabled>
+          <span class="sim-export-check-label">💬 에이전트 대사</span>
+          <span class="sim-export-check-desc">항상 포함</span>
+        </label>
+        <label class="sim-export-check-item">
+          <input type="checkbox" id="exp-chk-time" checked>
+          <span class="sim-export-check-label">🕐 시간 구분</span>
+          <span class="sim-export-check-desc">Wave별 시뮬레이션 시각</span>
+        </label>
+        <label class="sim-export-check-item">
+          <input type="checkbox" id="exp-chk-action" checked>
+          <span class="sim-export-check-label">📝 지문</span>
+          <span class="sim-export-check-desc">에이전트 행동 묘사 (action_note)</span>
+        </label>
+        <label class="sim-export-check-item">
+          <input type="checkbox" id="exp-chk-move" checked>
+          <span class="sim-export-check-label">🚶 이동/씬</span>
+          <span class="sim-export-check-desc">에이전트 이동 및 씬 전환</span>
+        </label>
+        <label class="sim-export-check-item">
+          <input type="checkbox" id="exp-chk-appearance" checked>
+          <span class="sim-export-check-label">👗 외모 변화</span>
+          <span class="sim-export-check-desc">에이전트 외모 묘사 갱신</span>
+        </label>
+        <label class="sim-export-check-item">
+          <input type="checkbox" id="exp-chk-world" checked>
+          <span class="sim-export-check-label">🌍 세계 사건</span>
+          <span class="sim-export-check-desc">내레이터가 주입한 세계 이벤트</span>
+        </label>
+        <label class="sim-export-check-item">
+          <input type="checkbox" id="exp-chk-intervention" checked>
+          <span class="sim-export-check-label">🎬 내레이터 개입</span>
+          <span class="sim-export-check-desc">시스템 에이전트 개입 메시지</span>
+        </label>
+        <label class="sim-export-check-item">
+          <input type="checkbox" id="exp-chk-summary">
+          <span class="sim-export-check-label">📋 Wave 요약</span>
+          <span class="sim-export-check-desc">LLM이 생성한 구간 요약</span>
+        </label>
+      </div>
+    </div>
+    <div class="sim-export-modal-footer">
+      <button id="sim-export-modal-cancel" class="sim-export-modal-btn-cancel">취소</button>
+      <button id="sim-export-modal-download" class="sim-export-modal-btn-primary">⬇ 다운로드</button>
     </div>
   </div>
 </div>

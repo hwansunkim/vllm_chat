@@ -45,8 +45,12 @@ export async function saveScenario() {
       lang_fix_enabled:       sim.lang_fix_enabled ?? true,
       lang_fix_retries:       sim.lang_fix_retries ?? 2,
       output_format_template: sim.output_format_template || '',
-      summary_interval:       sim.summary_interval ?? 0,
-      server_id:              sim.server_id ?? null,
+      summary_interval:       sim.summary_interval  ?? 0,
+      sim_start_time:         sim.sim_start_time    ?? '09:00',
+      time_per_wave:          sim.time_per_wave     ?? 30,
+      max_silence_waves:      sim.max_silence_waves  ?? 3,
+      early_stop_enabled:     sim.early_stop_enabled ?? true,
+      server_id:              sim.server_id         ?? null,
       system_agent:           sim.system_agent,
     },
   };
@@ -114,6 +118,10 @@ export function newScenario() {
   sim.lang_fix_retries       = 2;
   sim.output_format_template = '';
   sim.summary_interval       = 0;
+  sim.sim_start_time         = '09:00';
+  sim.time_per_wave          = 30;
+  sim.max_silence_waves      = 3;
+  sim.early_stop_enabled     = true;
   sim.server_id              = null;
   sim.system_agent           = { enabled: false, icon: '🎬', display_name: '내레이터', system_prompt: '', intervention_interval: 1, silence_threshold: 3, director_note: '' };
   _expandedAgents.clear();
@@ -155,11 +163,15 @@ export function applyScenario(s) {
     sim.extra_fields.push({ name: 'action_note', default: '' });
   }
   sim.events                 = cfg.events                 || [];
-  sim.location_graph = (cfg.location_graph || []).map(n => ({ ...n, connects_to: [...(n.connects_to || [])] }));
+  sim.location_graph = (cfg.location_graph || []).map(n => ({ ...n, connects_to: [...(n.connects_to || [])], is_exterior: !!n.is_exterior }));
   sim.lang_fix_enabled       = cfg.lang_fix_enabled       ?? true;
   sim.lang_fix_retries       = cfg.lang_fix_retries       ?? 2;
   sim.output_format_template = cfg.output_format_template || '';
   sim.summary_interval       = cfg.summary_interval       ?? 0;
+  sim.sim_start_time         = cfg.sim_start_time         ?? '09:00';
+  sim.time_per_wave          = cfg.time_per_wave          ?? 30;
+  sim.max_silence_waves      = cfg.max_silence_waves      ?? 3;
+  sim.early_stop_enabled     = cfg.early_stop_enabled     ?? true;
   sim.server_id              = cfg.server_id              ?? null;
   const sa = cfg.system_agent ?? {};
   sim.system_agent = {

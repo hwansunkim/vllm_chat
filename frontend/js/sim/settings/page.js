@@ -15,6 +15,17 @@ export function renderSettingsPage() {
   document.getElementById('sim-llm-max-tokens').value = sim.llm_max_tokens;
   document.getElementById('sim-output-format').value    = sim.output_format_template || '';
   document.getElementById('sim-summary-interval').value = sim.summary_interval ?? 0;
+  const startTimeEl = document.getElementById('sim-start-time');
+  if (startTimeEl) startTimeEl.value = sim.sim_start_time ?? '09:00';
+  const timePerWaveEl = document.getElementById('sim-time-per-wave');
+  if (timePerWaveEl) timePerWaveEl.value = sim.time_per_wave ?? 30;
+  const maxSilenceEl = document.getElementById('sim-max-silence-waves');
+  if (maxSilenceEl) maxSilenceEl.value = sim.max_silence_waves ?? 3;
+  const earlyStopEl = document.getElementById('sim-early-stop-enabled');
+  if (earlyStopEl) {
+    earlyStopEl.checked = sim.early_stop_enabled ?? true;
+    _updateEarlyStopUI(earlyStopEl.checked);
+  }
   const langFixEl = document.getElementById('sim-lang-fix-enabled');
   if (langFixEl) langFixEl.checked = sim.lang_fix_enabled ?? true;
   const langRetEl = document.getElementById('sim-lang-fix-retries');
@@ -39,6 +50,10 @@ export function readConfigFromUI() {
   sim.llm_max_tokens         = parseInt(document.getElementById('sim-llm-max-tokens').value) || 16384;
   sim.output_format_template = document.getElementById('sim-output-format').value;
   sim.summary_interval       = parseInt(document.getElementById('sim-summary-interval').value) || 0;
+  sim.sim_start_time    = document.getElementById('sim-start-time')?.value || '09:00';
+  sim.time_per_wave     = parseInt(document.getElementById('sim-time-per-wave')?.value)     || 0;
+  sim.max_silence_waves  = parseInt(document.getElementById('sim-max-silence-waves')?.value)  || 3;
+  sim.early_stop_enabled = document.getElementById('sim-early-stop-enabled')?.checked ?? true;
   const sel = document.getElementById('sim-server-select');
   sim.server_id              = sel?.value || null;
   sim.location_graph   = _readLocationGraph();
@@ -53,6 +68,22 @@ export function readConfigFromUI() {
     intervention_interval: parseInt(document.getElementById('sim-sys-interval')?.value)  || 1,
     silence_threshold:     parseInt(document.getElementById('sim-sys-silence')?.value)   || 3,
     director_note:         document.getElementById('sim-sys-director-note')?.value       || '',
+  };
+}
+
+// ── 조기 종료 토글 UI 연동 ────────────────────────────────────────────────────
+
+function _updateEarlyStopUI(enabled) {
+  const silenceInput = document.getElementById('sim-max-silence-waves');
+  if (silenceInput) silenceInput.disabled = !enabled;
+}
+
+export function initEarlyStopToggle() {
+  const chk = document.getElementById('sim-early-stop-enabled');
+  if (!chk) return;
+  chk.onchange = () => {
+    sim.early_stop_enabled = chk.checked;
+    _updateEarlyStopUI(chk.checked);
   };
 }
 
@@ -135,7 +166,8 @@ function renderLocationGraph() {
 
   graph.forEach((node, idx) => {
     const row = document.createElement('div');
-    row.className = 'sim-loc-node-row';
+    const isExt = !!node.is_exterior;
+    row.className = `sim-loc-node-row${isExt ? ' sim-loc-exterior' : ''}`;
     const connBadges = (node.connects_to || []).map(c => `
       <span class="sim-loc-conn-badge">
         ${esc(c)}
@@ -145,8 +177,12 @@ function renderLocationGraph() {
     const addConnOpts = otherNodes.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
     row.innerHTML = `
       <div class="sim-loc-node-header">
-        <span class="sim-loc-node-icon">📍</span>
+        <span class="sim-loc-node-icon">${isExt ? '🌐' : '📍'}</span>
         <input class="sim-loc-node-name" data-idx="${idx}" value="${esc(node.name)}" placeholder="장소 이름" />
+        <label class="sim-loc-exterior-toggle" title="외부 공간 — 이 장소에 있는 에이전트는 서로를 볼 수 없고 내부와 소통 불가">
+          <input type="checkbox" class="sim-loc-exterior-chk" data-idx="${idx}" ${isExt ? 'checked' : ''}>
+          <span>외부</span>
+        </label>
         <button class="sim-loc-node-del" data-idx="${idx}" title="장소 삭제">×</button>
       </div>
       <div class="sim-loc-conns">
@@ -186,6 +222,13 @@ function renderLocationGraph() {
   };
 
   container.onchange = e => {
+    const extChk = e.target.closest('.sim-loc-exterior-chk');
+    if (extChk) {
+      const i = parseInt(extChk.dataset.idx);
+      sim.location_graph[i].is_exterior = extChk.checked;
+      renderLocationGraph();
+      return;
+    }
     const nameInput = e.target.closest('.sim-loc-node-name');
     if (nameInput) {
       const i = parseInt(nameInput.dataset.idx);
@@ -220,7 +263,11 @@ function renderLocationGraph() {
 }
 
 function _readLocationGraph() {
-  return (sim.location_graph || []).map(n => ({ name: n.name, connects_to: [...(n.connects_to || [])] }));
+  return (sim.location_graph || []).map(n => ({
+    name:        n.name,
+    connects_to: [...(n.connects_to || [])],
+    is_exterior: !!n.is_exterior,
+  }));
 }
 
 // 위치 그래프 "+ 장소 추가" 버튼

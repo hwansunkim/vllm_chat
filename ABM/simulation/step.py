@@ -173,11 +173,22 @@ class _StepMixin:
 
         known, strangers = self._compute_wave_targets(agent_key)
 
+        # 시각 정보 ephemeral 주입
+        ephemeral_msgs: list[dict] = []
+        if self._time_per_wave > 0:
+            total_min = (self._sim_start_minutes + wave * self._time_per_wave) % (24 * 60)
+            hour, minute = divmod(total_min, 60)
+            if hour < 12:
+                time_str = f"오전 {hour}시 {minute:02d}분"
+            else:
+                display_hour = hour if hour == 12 else hour - 12
+                time_str = f"오후 {display_hour}시 {minute:02d}분"
+            ephemeral_msgs.append({"role": "user", "content": f"[현재 시각: {time_str}]"})
+
         # 상황 컨텍스트는 메모리에 저장하지 않고 매 호출 시 ephemeral로 주입 (중복 누적 방지)
         situation_text = self._build_situation_context(agent_key, known, strangers)
-        ephemeral_msgs: list[dict] = (
-            [{"role": "user", "content": situation_text}] if situation_text else []
-        )
+        if situation_text:
+            ephemeral_msgs.append({"role": "user", "content": situation_text})
         if situation_text:
             self._emit("turn_situation", {
                 "wave":  wave,

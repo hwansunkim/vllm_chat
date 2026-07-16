@@ -16,6 +16,15 @@ from .runner import _RunnerMixin
 
 logger = logging.getLogger(__name__)
 
+_PERSIST_EVENTS: frozenset[str] = frozenset({
+    "agent_move",
+    "appearance_update",
+    "system_intervention",
+    "world_event",
+    "scene_event",
+    "wave_summary",
+})
+
 
 class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepMixin, _SystemMixin, _RunnerMixin):
     def __init__(
@@ -41,6 +50,8 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
         lang_fix_enabled: bool                        = True,
         lang_fix_retries: int                         = 2,
         llm_max_tokens:   int                         = 16384,
+        sim_start_time:   str                         = "09:00",
+        time_per_wave:    int                         = 30,
     ):
         self.agents         = agents
         self.background_log = background_log
@@ -93,25 +104,50 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
         self._lang_fix_enabled: bool = lang_fix_enabled
         self._lang_fix_retries: int  = max(1, int(lang_fix_retries))
 
-        # 위치 그래프 (인접 리스트)
-        self._location_graph: dict[str, list[str]] = {}
+        # 시간 개념 설정
+        try:
+            h, m = sim_start_time.split(":")
+            self._sim_start_minutes: int = int(h) * 60 + int(m)
+        except Exception:
+            self._sim_start_minutes = 9 * 60  # fallback: 09:00
+        self._time_per_wave: int = max(0, int(time_per_wave))
+
+        # 위치 그래프 (인접 리스트) + 외부 공간 집합
+        self._location_graph:    dict[str, list[str]] = {}
+        self._exterior_locations: set[str]            = set()
         if location_graph:
             for node in location_graph:
                 name     = node.get("name", "")
                 connects = node.get("connects_to", [])
                 if name:
                     self._location_graph[name] = list(connects)
+                    if node.get("is_exterior", False):
+                        self._exterior_locations.add(name)
 
         # 지도를 각 에이전트 시스템 프롬프트에 정적으로 주입 (에이전트가 처음부터 지도 인식)
         if self._location_graph:
             map_lines = ["\n\n[위치 그래프 — 이동 가능한 경로]"]
             for loc, conns in self._location_graph.items():
                 conn_str = ", ".join(conns) if conns else "(연결 없음)"
-                map_lines.append(f"  {loc}: {conn_str}")
+                exterior_mark = " [외부 공간]" if loc in self._exterior_locations else ""
+                map_lines.append(f"  {loc}{exterior_mark}: {conn_str}")
             map_lines.append("※ move_to 필드에는 반드시 위 그래프에 있는 장소명만 사용할 것. 그 외 장소로의 이동은 무시됩니다.")
+            if self._exterior_locations:
+                map_lines.append("※ [외부 공간]으로 표시된 장소는 시뮬레이션 경계 밖입니다. 그곳에서는 다른 누구도 볼 수 없고, 누구도 당신을 볼 수 없습니다.")
             map_section = "\n".join(map_lines)
             for agent in self.agents.values():
                 agent.system_prompt += map_section
+
+        # 시간 인식 안내를 에이전트 시스템 프롬프트에 정적 주입
+        if self._time_per_wave > 0:
+            time_section = (
+                "\n\n[시간 인식]\n"
+                "매 대화 맥락에 [현재 시각: ...] 정보가 제공됩니다. "
+                "이를 자연스럽게 인지하고 시간대에 맞는 행동을 하세요. "
+                "예) 점심 시간엔 식사를 제안하거나, 퇴근 시간이 다가오면 마무리 행동을 취하는 등."
+            )
+            for agent in self.agents.values():
+                agent.system_prompt += time_section
 
         self._agent_path: dict[str, list[str]] = {}
 
@@ -159,6 +195,9 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
     def _emit(self, event_type: str, data: dict):
         if self._event_queue is not None:
             self._event_queue.put({"type": event_type, "data": data})
+        if event_type in _PERSIST_EVENTS and self._db is not None and self._sim_id is not None:
+            wave = data.get("wave", 0)
+            self._db.log_event(self._sim_id, wave, event_type, data)
 
     def _save_shared_log(self):
         path = os.path.join(self.log_dir, "shared_log.json")

@@ -1,19 +1,19 @@
 // frontend/js/sim/export/markdown.js
-// Markdown export for scenario feed and agent context window.
+// Markdown export: screenplay-style with selectable event types.
 
-import { sim, agentLabel } from '../state.js';
+import { sim, agentLabel, getAgentIcon, simTimeLabel } from '../state.js';
 import { stripCodeFence } from '../utils/json.js';
 
 const EMOTION_EMOJI = { happy: '😊', angry: '😤', sad: '😢', fear: '😨', neutral: '😐' };
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
 
 function downloadMd(content, filename) {
   const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement('a');
-  a.href     = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
@@ -23,8 +23,7 @@ function safeFilename(str) {
 }
 
 function nowTag() {
-  const d = new Date();
-  return d.toISOString().slice(0, 16).replace('T', '_').replace(':', '');
+  return new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '');
 }
 
 function fmtKo(ts) {
@@ -37,29 +36,153 @@ function fmtKo(ts) {
 
 function metaLine(meta) {
   if (!meta) return '';
-  const emotion = meta.emotion;
-  const action  = meta.action;
-  const parts   = [];
-  if (emotion) parts.push(`${EMOTION_EMOJI[emotion] || '😐'} ${emotion}`);
-  if (action && action !== 'speak') parts.push(`· ${action}`);
+  const parts = [];
+  if (meta.emotion) parts.push(`${EMOTION_EMOJI[meta.emotion] || '😐'} ${meta.emotion}`);
+  if (meta.action && meta.action !== 'speak') parts.push(`· ${meta.action}`);
   return parts.join(' ');
 }
 
-// ── Scenario feed export ──────────────────────────────────────────────────────
+// ── Export modal ──────────────────────────────────────────────────────────────
 
-export async function exportScenarioMarkdown() {
-  const [logRes, statusRes] = await Promise.all([
+export function openExportModal() {
+  document.getElementById('sim-export-modal')?.classList.remove('sim-hidden');
+}
+
+function closeExportModal() {
+  document.getElementById('sim-export-modal')?.classList.add('sim-hidden');
+}
+
+function readChecks() {
+  return {
+    time:         document.getElementById('exp-chk-time')?.checked         ?? true,
+    action:       document.getElementById('exp-chk-action')?.checked       ?? true,
+    move:         document.getElementById('exp-chk-move')?.checked         ?? true,
+    appearance:   document.getElementById('exp-chk-appearance')?.checked   ?? true,
+    world:        document.getElementById('exp-chk-world')?.checked        ?? true,
+    intervention: document.getElementById('exp-chk-intervention')?.checked ?? true,
+    summary:      document.getElementById('exp-chk-summary')?.checked      ?? false,
+  };
+}
+
+export function initExportModal() {
+  document.getElementById('sim-export-modal-close')?.addEventListener('click', closeExportModal);
+  document.getElementById('sim-export-modal-cancel')?.addEventListener('click', closeExportModal);
+  document.getElementById('sim-export-modal')?.addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeExportModal();
+  });
+  document.getElementById('sim-export-modal-download')?.addEventListener('click', async () => {
+    closeExportModal();
+    await exportScenarioMarkdown(readChecks());
+  });
+}
+
+// ── Data fetching ─────────────────────────────────────────────────────────────
+
+async function fetchAll() {
+  const [logRes, statusRes, evtRes] = await Promise.all([
     fetch('/api/simulation/logs'),
     fetch('/api/simulation/status'),
+    fetch('/api/simulation/events'),
   ]);
-  const log    = logRes.ok    ? await logRes.json()    : [];
-  const status = statusRes.ok ? await statusRes.json() : {};
+  return {
+    log:    logRes.ok    ? await logRes.json()    : [],
+    status: statusRes.ok ? await statusRes.json() : {},
+    events: evtRes.ok    ? await evtRes.json()    : [],
+  };
+}
+
+// ── Merge logs + events into a single wave-ordered stream ─────────────────────
+
+function buildStream(log, events, checks) {
+  // Collect active event types based on checkboxes
+  const wantTypes = new Set();
+  if (checks.move)         wantTypes.add('agent_move');
+  if (checks.appearance)   wantTypes.add('appearance_update');
+  if (checks.intervention) wantTypes.add('system_intervention');
+  if (checks.world)        wantTypes.add('world_event');
+  if (checks.summary)      wantTypes.add('wave_summary');
+
+  // Normalise events: { wave, sort_key, kind, payload }
+  const items = [];
+
+  for (const entry of log) {
+    items.push({ wave: entry.wave ?? 0, ts: entry.timestamp ?? 0, kind: 'dialogue', payload: entry });
+  }
+  for (const evt of events) {
+    if (!wantTypes.has(evt.event_type)) continue;
+    items.push({ wave: evt.wave ?? 0, ts: evt.timestamp ?? 0, kind: evt.event_type, payload: evt.data });
+  }
+
+  // Sort by (wave, timestamp) so events interleave naturally with dialogue
+  items.sort((a, b) => a.wave !== b.wave ? a.wave - b.wave : a.ts - b.ts);
+  return items;
+}
+
+// ── Markdown formatters per event kind ───────────────────────────────────────
+
+function fmtDialogue(entry, checks) {
+  const agent     = sim.agents.find(a => a.name === entry.speaker);
+  const icon      = getAgentIcon(agent || { name: entry.speaker }, (entry.meta || {}).emotion);
+  const name      = agent?.display_name || entry.speaker;
+  const targets   = (entry.targets || []).filter(t => t !== 'self' && t !== 'system');
+  const targetStr = targets.length
+    ? `→ *${targets.map(t => t === 'all' ? '전체' : agentLabel(t)).join(', ')}*`
+    : '*(독백)*';
+  const meta = metaLine(entry.meta);
+
+  let s = `\n**${icon} ${name}** ${targetStr}`;
+  if (meta) s += `  \`${meta}\``;
+  s += '\n';
+  s += `> ${entry.content.replace(/\n/g, '\n> ')}\n`;
+  if (checks.action && entry.action_note) s += `> *(${entry.action_note})*\n`;
+  return s;
+}
+
+function fmtMove(data) {
+  const name = data.display_name || data.agent;
+  if (data.to_exterior) return `\n> **[씬]** *${name}이(가) 자리를 떴다. (→ ${data.to})*\n`;
+  return `\n> **[씬]** *${name}이(가) ${data.from ? `${data.from}에서 ` : ''}${data.to}(으)로 이동했다.*\n`;
+}
+
+function fmtAppearance(data) {
+  const name = data.display_name || data.agent;
+  return `\n> **[씬]** *${name}의 외모가 변했다: ${data.description}*\n`;
+}
+
+function fmtIntervention(data) {
+  const icon = data.icon || '🎬';
+  const nm   = data.display_name || '내레이터';
+  const tgt  = data.target_alias || data.target || '';
+  return `\n> **[${icon} ${nm}]** → *${tgt}* : ${data.message}\n`;
+}
+
+function fmtWorldEvent(data) {
+  return `\n> **[🌍 세계 사건]** *${data.content}*\n`;
+}
+
+function fmtSummary(data) {
+  const range = data.wave_start === data.wave_end
+    ? `Wave ${data.wave_start}`
+    : `Wave ${data.wave_start}–${data.wave_end}`;
+  let s = `\n<details>\n<summary>📋 ${range} 요약</summary>\n\n`;
+  if (data.summary) s += `${data.summary}\n\n`;
+  if (data.key_events?.length) s += `**주요 사건:** ${data.key_events.join(' / ')}\n\n`;
+  if (data.mood) s += `**분위기:** ${data.mood}\n\n`;
+  s += `</details>\n`;
+  return s;
+}
+
+// ── Main export ───────────────────────────────────────────────────────────────
+
+export async function exportScenarioMarkdown(checks) {
+  checks = checks ?? readChecks();
+  const { log, status, events } = await fetchAll();
 
   const scenarioName = sim.currentScenarioName || '시나리오';
-  const nowKo        = new Date().toLocaleString('ko-KR', {
+  const nowKo = new Date().toLocaleString('ko-KR', {
     year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit',
   });
-  const filename     = safeFilename(`${scenarioName}_${nowTag()}`) + '.md';
+  const filename = safeFilename(`${scenarioName}_${nowTag()}`) + '.md';
 
   const startTs     = log[0]?.timestamp;
   const endTs       = log.length > 1 ? log[log.length - 1]?.timestamp : null;
@@ -68,7 +191,7 @@ export async function exportScenarioMarkdown() {
 
   let md = '';
 
-  // Title + meta block
+  // ── 제목 + 메타 ──
   md += `# ${scenarioName}\n\n`;
   md += `> **추출 일시** ${nowKo}\n`;
   if (startTs) md += `> **시작** ${fmtKo(startTs)}\n`;
@@ -77,7 +200,7 @@ export async function exportScenarioMarkdown() {
   md += `> **상태** ${statusLabel}\n`;
   md += `\n---\n\n`;
 
-  // Agents table
+  // ── 등장인물 ──
   md += `## 등장인물\n\n`;
   md += `| 아이콘 | 이름 | ID | 그룹 | 초기 활성 |\n`;
   md += `|--------|------|----|------|-----------|\n`;
@@ -88,46 +211,46 @@ export async function exportScenarioMarkdown() {
   }
   md += `\n`;
 
-  // Background
+  // ── 배경 ──
   if (sim.background) {
     md += `## 배경\n\n${sim.background}\n\n---\n\n`;
   }
 
-  // Conversation log
+  // ── 대화 기록 ──
   md += `## 대화 기록\n\n`;
   if (!log.length) {
     md += `*대화 기록이 없습니다.*\n\n`;
   } else {
-    let curWave = null;
-    for (const entry of log) {
-      const wave = entry.wave ?? null;
-      if (wave !== curWave) {
-        curWave = wave;
-        md += wave != null ? `### 🌊 Wave ${wave}\n\n` : `### —\n\n`;
+    const stream  = buildStream(log, events, checks);
+    let curWave   = null;
+
+    for (const item of stream) {
+      // Wave 헤더 (시간 포함)
+      if (item.wave !== curWave) {
+        curWave = item.wave;
+        const timeLabel = checks.time ? simTimeLabel(curWave) : null;
+        const waveHead  = timeLabel
+          ? `### 🕐 ${timeLabel}  ·  Wave ${curWave}`
+          : `### 🌊 Wave ${curWave}`;
+        md += `\n${waveHead}\n\n---\n`;
       }
 
-      const agent     = sim.agents.find(a => a.name === entry.speaker);
-      const icon      = agent?.icon || '🤖';
-      const name      = agent?.display_name || entry.speaker;
-      const targets   = (entry.targets || []).filter(t => t !== 'self' && t !== 'system');
-      const targetStr = targets.length
-        ? `→ *${targets.map(t => t === 'all' ? '전체' : agentLabel(t)).join(', ')}*`
-        : '*(독백)*';
-      const meta = metaLine(entry.meta);
-
-      md += `---\n\n`;
-      md += `**${icon} ${name}** \`${entry.speaker}\` ${targetStr}\n`;
-      if (meta) md += `${meta}\n`;
-      md += `\n`;
-      md += `> ${entry.content.replace(/\n/g, '\n> ')}\n\n`;
-      if (entry.action_note) md += `*(${entry.action_note})*\n\n`;
+      switch (item.kind) {
+        case 'dialogue':      md += fmtDialogue(item.payload, checks); break;
+        case 'agent_move':    md += fmtMove(item.payload); break;
+        case 'appearance_update': md += fmtAppearance(item.payload); break;
+        case 'system_intervention': md += fmtIntervention(item.payload); break;
+        case 'world_event':   md += fmtWorldEvent(item.payload); break;
+        case 'wave_summary':  md += fmtSummary(item.payload); break;
+      }
     }
+    md += '\n';
   }
 
   downloadMd(md, filename);
 }
 
-// ── Agent context window export ───────────────────────────────────────────────
+// ── Agent context window export (unchanged) ───────────────────────────────────
 
 export async function exportAgentContextMarkdown(agentName) {
   const res = await fetch(`/api/simulation/agents/${encodeURIComponent(agentName)}/context`);
@@ -141,14 +264,12 @@ export async function exportAgentContextMarkdown(agentName) {
   const nowKo       = new Date().toLocaleString('ko-KR', {
     year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit',
   });
-  const filename    = safeFilename(`${displayName}_컨텍스트_${nowTag()}`) + '.md';
+  const filename = safeFilename(`${displayName}_컨텍스트_${nowTag()}`) + '.md';
 
   const { messages = [], prompt_tokens = 0, token_limit = 0, trimmed = 0, memory_size = 0 } = data;
   const pct = token_limit > 0 ? ((prompt_tokens / token_limit) * 100).toFixed(1) : '—';
 
   let md = '';
-
-  // Title + meta block
   md += `# ${icon} ${displayName} — 컨텍스트 윈도우\n\n`;
   md += `> **에이전트** \`${agentName}\` · **그룹** ${groups}\n`;
   md += `> **메모리** ${memory_size}개 메시지 · **토큰** ${prompt_tokens.toLocaleString()} / ${token_limit.toLocaleString()} (${pct}%)\n`;
@@ -156,24 +277,18 @@ export async function exportAgentContextMarkdown(agentName) {
   md += `> **추출 시각** ${nowKo}\n`;
   md += `\n---\n\n`;
 
-  // Messages
   for (const msg of messages) {
     if (msg.role === 'system') {
-      const splitIdx = msg.content.indexOf('\n[Important Output Format]');
+      const splitIdx    = msg.content.indexOf('\n[Important Output Format]');
       const userPrompt  = splitIdx >= 0 ? msg.content.slice(0, splitIdx).trim() : msg.content.trim();
       const outputFmt   = splitIdx >= 0 ? msg.content.slice(splitIdx).trim()    : '';
-
-      md += `## 시스템 프롬프트\n\n`;
-      md += userPrompt + '\n\n';
+      md += `## 시스템 프롬프트\n\n${userPrompt}\n\n`;
       if (outputFmt) {
-        md += `<details>\n<summary>Output Format 지시문 (펼치기)</summary>\n\n`;
-        md += '```\n' + outputFmt + '\n```\n\n';
-        md += `</details>\n\n`;
+        md += `<details>\n<summary>Output Format 지시문 (펼치기)</summary>\n\n\`\`\`\n${outputFmt}\n\`\`\`\n\n</details>\n\n`;
       }
       md += `---\n\n`;
       continue;
     }
-
     if (msg.role === 'user') {
       const bgMatch  = msg.content.match(/^\[배경\]\s*([\s\S]*)$/);
       const spkMatch = msg.content.match(/^\[([^\]]+)\]\s*([\s\S]*)$/);
@@ -191,21 +306,18 @@ export async function exportAgentContextMarkdown(agentName) {
       }
       continue;
     }
-
     if (msg.role === 'assistant') {
       let parsed = null;
       try { parsed = JSON.parse(stripCodeFence(msg.content).trim()); } catch (_) {}
-
       if (parsed) {
         const rawTargets = Array.isArray(parsed.target)
           ? parsed.target
           : (parsed.target ? [parsed.target] : []);
         const tgt = rawTargets
-          .map(t => t === 'all' ? '전체' : ( t === 'self' || t === 'system') ? '(독백)' : agentLabel(t))
+          .map(t => t === 'all' ? '전체' : (t === 'self' || t === 'system') ? '(독백)' : agentLabel(t))
           .join(', ') || '(독백)';
         const meta       = metaLine(parsed);
         const actionNote = parsed.action_note || '';
-
         md += `### 💬 내 발언 → ${tgt}\n\n`;
         if (meta) md += `${meta}\n\n`;
         md += `> ${(parsed.content || '').replace(/\n/g, '\n> ')}\n\n`;

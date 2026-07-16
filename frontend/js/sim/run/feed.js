@@ -1,7 +1,7 @@
 // frontend/js/sim/run/feed.js
 // Live feed: typing indicator, agent messages, scene events, wave indicator.
 
-import { sim, esc, emotionClass, agentLabel, getAgentIcon } from '../state.js';
+import { sim, esc, emotionClass, agentLabel, getAgentIcon, simTimeLabel } from '../state.js';
 
 export function renderHistoricalFeed(entries) {
   const feed = document.getElementById('sim-feed');
@@ -88,11 +88,13 @@ export function addFeedMessage(data) {
     if (t === 'all') return '전체';
     return agentLabel(t);
   });
-  const targetStr = targets.length
-    ? `→ ${targetLabels.join(', ')}`
-    : '(독백)';
+  const targetStr = data.is_exterior
+    ? '(외부 공간 — 독백)'
+    : targets.length
+      ? `→ ${targetLabels.join(', ')}`
+      : '(독백)';
   const el = document.createElement('div');
-  el.className = 'sim-feed-msg';
+  el.className = data.is_exterior ? 'sim-feed-msg sim-feed-msg-exterior' : 'sim-feed-msg';
   const meta = data.meta || {};
   const msgEmotion = meta.emotion || 'neutral';
   const metaBadges = Object.entries(meta)
@@ -260,4 +262,29 @@ export function updateWaveIndicator(waveNum, agents) {
   document.getElementById('sim-turn-text').textContent =
     `Wave ${waveNum}  |  ${labels.join(', ')}`;
   document.getElementById('sim-progress-fill').style.width = '30%';
+
+  const timeLabel = simTimeLabel(waveNum);
+  const timeEl = document.getElementById('sim-turn-time');
+  if (timeEl) {
+    if (timeLabel) {
+      timeEl.textContent = `🕐 ${timeLabel}`;
+      timeEl.classList.remove('sim-hidden');
+    } else {
+      timeEl.classList.add('sim-hidden');
+    }
+  }
+
+  if (timeLabel) {
+    addWaveDivider(waveNum, timeLabel);
+  }
+}
+
+function addWaveDivider(waveNum, timeLabel) {
+  removeFeedEmpty();
+  const feed = document.getElementById('sim-feed');
+  const div = document.createElement('div');
+  div.className = 'sim-wave-divider';
+  div.dataset.wave = waveNum;
+  div.innerHTML = `<span class="sim-wave-divider-line"></span><span class="sim-wave-divider-label">🕐 ${esc(timeLabel)}</span><span class="sim-wave-divider-line"></span>`;
+  feed.appendChild(div);
 }
