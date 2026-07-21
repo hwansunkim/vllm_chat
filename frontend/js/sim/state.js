@@ -122,10 +122,12 @@ export function esc(str) {
 }
 
 // ── 시뮬레이션 시각 계산 ──────────────────────────────────────────────────────
-// 주의: 이 함수는 fixed 모드 전용 클라이언트 추정치이며 variable 모드를 전혀 모른다.
+// 주의: fixed 모드 전용 클라이언트 추정치. variable 모드에서는 wave당 시간이 균일하지
+// 않아 이 공식으로 계산할 수 없으므로 null을 반환한다(호출부가 "…" 등으로 처리).
 // 서버가 turn_complete 이벤트/로그 항목에 실어 보내는 `time_str`(실제 계산값)이 있으면
 // 항상 그것을 우선 사용하고, 이 함수는 time_str이 없는 구버전 로그에 대한 폴백으로만 쓸 것.
 export function simTimeLabel(waveNum) {
+  if (sim.time_mode === 'variable') return null;
   const tpw = sim.time_per_wave ?? 30;
   if (!tpw) return null;
   const [h, m] = (sim.sim_start_time || '09:00').split(':').map(Number);
