@@ -200,8 +200,17 @@ class _RunnerMixin:
                 silence_count = 0
 
             # ── 시간 누적 (가변 모드) ─────────────────────────────────────────
+            # organically_filled(라우팅으로 next_wave가 자연스럽게 채워짐)가 아니어도,
+            # 이번 wave에 성공한 발화가 있었다면(예: early_stop_enabled=False로 강제
+            # 전원 재투입됐지만 에이전트들이 서로를 타겟하지 않고 각자 행동하는 경우)
+            # 진짜 침묵이 아니므로 LLM 분류 대상에 포함시킨다. forced_silence_reinject
+            # (정말 아무도 응답하지 않아 강제 재투입된 경우)만 결정적 idle 스케줄을 쓴다.
             if self._time_mode == "variable":
-                if organically_filled:
+                has_content = any(r.get("success") for r in results.values())
+                if forced_silence_reinject:
+                    idx = min(silence_count, len(self._idle_minutes_schedule)) - 1
+                    self._elapsed_minutes += self._idle_minutes_schedule[idx]
+                elif organically_filled or has_content:
                     category_id = self._classify_wave_time(wave_num, results)
                     cat = next((c for c in self._time_categories if c["id"] == category_id), None) \
                           or next((c for c in self._time_categories if c["id"] == "normal_scene"), self._time_categories[0])
@@ -209,10 +218,7 @@ class _RunnerMixin:
                     if lo > hi:
                         lo, hi = hi, lo
                     self._elapsed_minutes += random.randint(lo, hi)
-                elif forced_silence_reinject:
-                    idx = min(silence_count, len(self._idle_minutes_schedule)) - 1
-                    self._elapsed_minutes += self._idle_minutes_schedule[idx]
-                # else: early_stop_enabled=False로 인한 강제 전원 재투입 — 시간 미누적 (의도적)
+                # else: 이번 wave에 성공한 발화가 전혀 없음 — 시간 미누적
 
             current_wave = next_wave
             logger.info(f"[W{wave_num}] next_wave: {list(current_wave.keys())}")
