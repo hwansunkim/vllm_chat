@@ -175,14 +175,12 @@ class _StepMixin:
 
         # 시각 정보 ephemeral 주입
         ephemeral_msgs: list[dict] = []
-        if self._time_per_wave > 0:
-            total_min = (self._sim_start_minutes + wave * self._time_per_wave) % (24 * 60)
-            hour, minute = divmod(total_min, 60)
-            if hour < 12:
-                time_str = f"오전 {hour}시 {minute:02d}분"
-            else:
-                display_hour = hour if hour == 12 else hour - 12
-                time_str = f"오후 {display_hour}시 {minute:02d}분"
+        time_str: str | None = None
+        if self._time_mode == "variable":
+            time_str = self._format_time_str(self._sim_start_minutes + self._elapsed_minutes)
+        elif self._time_per_wave > 0:
+            time_str = self._format_time_str(self._sim_start_minutes + wave * self._time_per_wave)
+        if time_str is not None:
             ephemeral_msgs.append({"role": "user", "content": f"[현재 시각: {time_str}]"})
 
         # 상황 컨텍스트는 메모리에 저장하지 않고 매 호출 시 ephemeral로 주입 (중복 누적 방지)
@@ -281,7 +279,9 @@ class _StepMixin:
         extras = parse_json_extras(content)
         result = self._apply_turn_result(
             active_agent, agent_key, content, reasoning, usage, wave, turn, est_tokens,
+            time_str=time_str,
         )
         result["move_to"]            = extras.get("move_to")
         result["update_appearance"]  = extras.get("update_appearance")
+        result["time_str"]           = time_str
         return result

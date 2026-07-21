@@ -1,7 +1,7 @@
 // frontend/js/sim/run/control.js
 // Start / stop / continue / status-badge logic for simulation runs.
 
-import { sim } from '../state.js';
+import { sim, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE } from '../state.js';
 import { readConfigFromUI } from '../settings/page.js';
 import { renderAgentCards } from './cards.js';
 import { removeTypingIndicator } from './feed.js';
@@ -56,6 +56,9 @@ export async function startSimulation() {
       summary_interval:       sim.summary_interval || 0,
       sim_start_time:         sim.sim_start_time    || '09:00',
       time_per_wave:          sim.time_per_wave    ?? 30,
+      time_mode:              sim.time_mode ?? 'fixed',
+      time_categories:        (sim.time_categories?.length ? sim.time_categories : DEFAULT_TIME_CATEGORIES),
+      idle_minutes_schedule:  (sim.idle_minutes_schedule?.length ? sim.idle_minutes_schedule : DEFAULT_IDLE_MINUTES_SCHEDULE),
       max_silence_waves:      sim.max_silence_waves  ?? 3,
       early_stop_enabled:     sim.early_stop_enabled ?? true,
       server_id:              sim.server_id || null,

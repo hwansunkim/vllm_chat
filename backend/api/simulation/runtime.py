@@ -136,6 +136,9 @@ def start_simulation(cfg: SimStartConfig):
                 llm_max_tokens=cfg.llm_max_tokens,
                 sim_start_time=cfg.sim_start_time,
                 time_per_wave=cfg.time_per_wave,
+                time_mode=cfg.time_mode,
+                time_categories=[c.model_dump() for c in cfg.time_categories],
+                idle_minutes_schedule=cfg.idle_minutes_schedule,
             )
             _sim["agents"]         = sim.agents
             _sim["background_log"] = sim.background_log
@@ -306,8 +309,19 @@ def load_simulation(run_id: str):
             db=SimDB(os.path.join(LOG_DIR, "simulation.db")),
             agent_groups=agent_groups,
             summary_interval=cfg.summary_interval,
+            system_agent=cfg.system_agent.model_dump(),
             agent_locations=agent_locations,
             agent_visuals=agent_visuals,
+            location_graph=[{"name": n.name, "connects_to": n.connects_to, "is_exterior": n.is_exterior} for n in cfg.location_graph],
+            lang_fix_enabled=cfg.lang_fix_enabled,
+            lang_fix_retries=cfg.lang_fix_retries,
+            llm_max_tokens=cfg.llm_max_tokens,
+            sim_start_time=cfg.sim_start_time,
+            time_per_wave=cfg.time_per_wave,
+            time_mode=cfg.time_mode,
+            time_categories=[c.model_dump() for c in cfg.time_categories],
+            idle_minutes_schedule=cfg.idle_minutes_schedule,
+            elapsed_minutes_init=run.get("elapsed_minutes") or 0,
         )
         if saved_pending:
             sim_obj._pending_wave = saved_pending
@@ -441,6 +455,16 @@ def resume_simulation(run_id: str):
                 system_agent=cfg.system_agent.model_dump(),
                 agent_locations=agent_locations,
                 agent_visuals=agent_visuals,
+                location_graph=[{"name": n.name, "connects_to": n.connects_to, "is_exterior": n.is_exterior} for n in cfg.location_graph],
+                lang_fix_enabled=cfg.lang_fix_enabled,
+                lang_fix_retries=cfg.lang_fix_retries,
+                llm_max_tokens=cfg.llm_max_tokens,
+                sim_start_time=cfg.sim_start_time,
+                time_per_wave=cfg.time_per_wave,
+                time_mode=cfg.time_mode,
+                time_categories=[c.model_dump() for c in cfg.time_categories],
+                idle_minutes_schedule=cfg.idle_minutes_schedule,
+                elapsed_minutes_init=run.get("elapsed_minutes") or 0,
             )
             _sim["agents"]         = sim.agents
             _sim["background_log"] = sim.background_log

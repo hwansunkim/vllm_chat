@@ -19,7 +19,7 @@ import {
   saveScenario, deleteScenario,
   newScenario, applyScenario,
 } from './scenarios.js';
-import { addLocationNode, initEarlyStopToggle } from './settings/page.js';
+import { addLocationNode, initEarlyStopToggle, initTimeModeToggle } from './settings/page.js';
 import { toggleRunHistory, openAllRunsModal } from './runs/history.js';
 import { exportGraph } from './graph/d3.js';
 import { switchTab, fetchAgentContext } from './context.js';
@@ -54,6 +54,7 @@ export function initSimulationEvents() {
   document.getElementById('sim-export-md-btn').addEventListener('click', openExportModal);
   initExportModal();
   initEarlyStopToggle();
+  initTimeModeToggle();
 
   document.getElementById('sim-add-agent-btn').addEventListener('click', () => {
     const newName = `agent${sim.agents.length + 1}`;

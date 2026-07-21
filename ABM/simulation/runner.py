@@ -1,3 +1,4 @@
+import random
 import time
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -180,19 +181,38 @@ class _RunnerMixin:
                     })
 
             # ── 조기 종료 / 시간 주도형 루프 ─────────────────────────────────────
+            organically_filled = bool(next_wave)
+            forced_silence_reinject = False
+
             if not next_wave:
                 if not early_stop_enabled:
                     # 조기 종료 OFF: 항상 모든 active 에이전트 재투입 (max_waves까지 실행)
                     next_wave = {key: [] for key in self.active_agents}
-                elif self._time_per_wave > 0:
+                elif self._time_per_wave > 0 or self._time_mode == "variable":
                     # 시간 주도형 + 조기 종료 ON: max_silence_waves 초과 시 종료
                     silence_count += 1
+                    forced_silence_reinject = True
                     logger.info(f"[W{wave_num}] 침묵 #{silence_count}/{max_silence_waves}")
                     if silence_count < max_silence_waves:
                         next_wave = {key: [] for key in self.active_agents}
                 # else: time_per_wave=0, early_stop=ON → 즉시 종료 (원래 동작)
             elif next_wave:
                 silence_count = 0
+
+            # ── 시간 누적 (가변 모드) ─────────────────────────────────────────
+            if self._time_mode == "variable":
+                if organically_filled:
+                    category_id = self._classify_wave_time(wave_num, results)
+                    cat = next((c for c in self._time_categories if c["id"] == category_id), None) \
+                          or next((c for c in self._time_categories if c["id"] == "normal_scene"), self._time_categories[0])
+                    lo, hi = cat["min_minutes"], cat["max_minutes"]
+                    if lo > hi:
+                        lo, hi = hi, lo
+                    self._elapsed_minutes += random.randint(lo, hi)
+                elif forced_silence_reinject:
+                    idx = min(silence_count, len(self._idle_minutes_schedule)) - 1
+                    self._elapsed_minutes += self._idle_minutes_schedule[idx]
+                # else: early_stop_enabled=False로 인한 강제 전원 재투입 — 시간 미누적 (의도적)
 
             current_wave = next_wave
             logger.info(f"[W{wave_num}] next_wave: {list(current_wave.keys())}")
@@ -232,6 +252,38 @@ class _RunnerMixin:
             "edges_count": len(self.edges),
             "log_count":   len(self.shared_log),
         })
+
+    def _classify_wave_time(self, wave_num: int, results: dict) -> str:
+        """이번 wave의 발화 결과를 LLM으로 분류해 시간 경과 카테고리 id를 반환.
+
+        절대 예외를 밖으로 던지지 않음 — 실패 시 "normal_scene"으로 폴백.
+        """
+        try:
+            from ..time_classifier import classify_wave_time
+
+            entries = [
+                {
+                    "speaker":     speaker_key,
+                    "content":     result.get("clean_content", ""),
+                    "action_note": result.get("action_note", ""),
+                }
+                for speaker_key, result in results.items()
+                if result.get("success")
+            ]
+            category_id = classify_wave_time(
+                entries, self._time_categories,
+                self.model, self.base_url, self.api_timeout,
+                key_to_alias=self._key_to_alias,
+                llm_max_tokens=min(self.llm_max_tokens, 256),
+            )
+            valid_ids = {c["id"] for c in self._time_categories}
+            if category_id is None or category_id not in valid_ids:
+                logger.warning(f"[W{wave_num}] 시간 분류 실패/알수없는 카테고리({category_id!r}) — normal_scene으로 폴백")
+                return "normal_scene"
+            return category_id
+        except Exception as e:
+            logger.warning(f"[W{wave_num}] 시간 분류 예외 — normal_scene으로 폴백: {e}")
+            return "normal_scene"
 
     def _run_wave_summary(self, wave_start: int, wave_end: int) -> None:
         """shared_log에서 해당 웨이브 구간 엔트리를 추출해 LLM 요약 후 이벤트를 emit."""

@@ -218,12 +218,21 @@ function _buildMarkdown(log, events, statusStr, checks) {
   if (!log.length) {
     md += `*대화 기록이 없습니다.*\n\n`;
   } else {
+    // wave의 첫 병합 항목이 time_str이 없는 이벤트(agent_move 등)일 수 있으므로,
+    // dialogue 로그 전체에서 wave별 time_str을 먼저 찾아둔다 (첫 항목만 보면 놓칠 수 있음).
+    const waveTimeMap = {};
+    for (const entry of log) {
+      if (entry.wave != null && waveTimeMap[entry.wave] == null && entry.time_str) {
+        waveTimeMap[entry.wave] = entry.time_str;
+      }
+    }
     const stream = buildStream(log, events, checks);
     let curWave  = null;
     for (const item of stream) {
       if (item.wave !== curWave) {
         curWave = item.wave;
-        const timeLabel = checks.time ? simTimeLabel(curWave) : null;
+        // 서버가 기록해둔 time_str(정확값)을 우선 사용하고, 없으면(구버전 로그 등) fixed 공식으로 폴백.
+        const timeLabel = checks.time ? (waveTimeMap[curWave] ?? simTimeLabel(curWave)) : null;
         const waveHead  = timeLabel
           ? `### 🕐 ${timeLabel}  ·  Wave ${curWave}`
           : `### 🌊 Wave ${curWave}`;

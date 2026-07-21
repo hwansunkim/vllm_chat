@@ -20,6 +20,7 @@ class _TurnMixin:
         wave:        int,
         turn:        int,
         est_tokens:  int,
+        time_str:    str | None = None,
     ) -> dict:
         """Parse the LLM response, update memory/log/edges, emit events, persist to DB."""
         prompt_tokens = usage.get("prompt_tokens", est_tokens)
@@ -43,6 +44,7 @@ class _TurnMixin:
             "targets":     parsed_targets,
             "wave":        wave,
             "timestamp":   time.time(),
+            "time_str":    time_str,
         })
         self._save_shared_log()
 
@@ -77,6 +79,7 @@ class _TurnMixin:
             "reasoning_preview": reasoning[:120] if reasoning else "",
             "new_edges":         new_edges,
             "is_exterior":       is_exterior,
+            "time_str":          time_str,
         })
 
         if self._db is not None and self._sim_id is not None:
@@ -85,6 +88,7 @@ class _TurnMixin:
                 agent.name, clean_content,
                 meta.get("action_note", ""),
                 emit_meta, parsed_targets,
+                time_str=time_str,
             )
 
         return {

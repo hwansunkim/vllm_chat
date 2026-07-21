@@ -1,7 +1,7 @@
 // frontend/js/sim/scenarios.js
 // Scenario list CRUD + current-scenario selection.
 
-import { sim, _expandedAgents } from './state.js';
+import { sim, _expandedAgents, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE } from './state.js';
 import { renderSettingsPage, readConfigFromUI } from './settings/page.js';
 import { refreshRunHistory } from './runs/history.js';
 
@@ -48,6 +48,9 @@ export async function saveScenario() {
       summary_interval:       sim.summary_interval  ?? 0,
       sim_start_time:         sim.sim_start_time    ?? '09:00',
       time_per_wave:          sim.time_per_wave     ?? 30,
+      time_mode:              sim.time_mode ?? 'fixed',
+      time_categories:        (sim.time_categories?.length ? sim.time_categories : DEFAULT_TIME_CATEGORIES),
+      idle_minutes_schedule:  (sim.idle_minutes_schedule?.length ? sim.idle_minutes_schedule : DEFAULT_IDLE_MINUTES_SCHEDULE),
       max_silence_waves:      sim.max_silence_waves  ?? 3,
       early_stop_enabled:     sim.early_stop_enabled ?? true,
       server_id:              sim.server_id         ?? null,
@@ -120,6 +123,9 @@ export function newScenario() {
   sim.summary_interval       = 0;
   sim.sim_start_time         = '09:00';
   sim.time_per_wave          = 30;
+  sim.time_mode              = 'fixed';
+  sim.time_categories        = DEFAULT_TIME_CATEGORIES.map(c => ({ ...c }));
+  sim.idle_minutes_schedule  = [...DEFAULT_IDLE_MINUTES_SCHEDULE];
   sim.max_silence_waves      = 3;
   sim.early_stop_enabled     = true;
   sim.server_id              = null;
@@ -170,6 +176,9 @@ export function applyScenario(s) {
   sim.summary_interval       = cfg.summary_interval       ?? 0;
   sim.sim_start_time         = cfg.sim_start_time         ?? '09:00';
   sim.time_per_wave          = cfg.time_per_wave          ?? 30;
+  sim.time_mode              = cfg.time_mode === 'variable' ? 'variable' : 'fixed';
+  sim.time_categories        = cfg.time_categories?.length ? cfg.time_categories : DEFAULT_TIME_CATEGORIES.map(c => ({ ...c }));
+  sim.idle_minutes_schedule  = cfg.idle_minutes_schedule?.length ? cfg.idle_minutes_schedule : [...DEFAULT_IDLE_MINUTES_SCHEDULE];
   sim.max_silence_waves      = cfg.max_silence_waves      ?? 3;
   sim.early_stop_enabled     = cfg.early_stop_enabled     ?? true;
   sim.server_id              = cfg.server_id              ?? null;

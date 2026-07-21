@@ -1,7 +1,7 @@
 // frontend/js/sim/settings/page.js
 // Top-level orchestration for the settings page (form ↔ sim state sync).
 
-import { sim, esc } from '../state.js';
+import { sim, esc, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE } from '../state.js';
 import { renderOutputFields } from './output-fields.js';
 import { renderAgentListInConfig, renderStartAgentSelect } from './agents.js';
 import { renderScenarioEvents } from './events.js';
@@ -19,6 +19,17 @@ export function renderSettingsPage() {
   if (startTimeEl) startTimeEl.value = sim.sim_start_time ?? '09:00';
   const timePerWaveEl = document.getElementById('sim-time-per-wave');
   if (timePerWaveEl) timePerWaveEl.value = sim.time_per_wave ?? 30;
+  const timeModeEl = document.getElementById('sim-time-mode');
+  if (timeModeEl) {
+    timeModeEl.value = sim.time_mode === 'variable' ? 'variable' : 'fixed';
+    _updateVariableTimeUI(timeModeEl.value);
+  }
+  _renderTimeCategories();
+  const idleScheduleEl = document.getElementById('sim-idle-schedule');
+  if (idleScheduleEl) {
+    const sched = sim.idle_minutes_schedule?.length ? sim.idle_minutes_schedule : DEFAULT_IDLE_MINUTES_SCHEDULE;
+    idleScheduleEl.value = sched.join(',');
+  }
   const maxSilenceEl = document.getElementById('sim-max-silence-waves');
   if (maxSilenceEl) maxSilenceEl.value = sim.max_silence_waves ?? 3;
   const earlyStopEl = document.getElementById('sim-early-stop-enabled');
@@ -52,6 +63,9 @@ export function readConfigFromUI() {
   sim.summary_interval       = parseInt(document.getElementById('sim-summary-interval').value) || 0;
   sim.sim_start_time    = document.getElementById('sim-start-time')?.value || '09:00';
   sim.time_per_wave     = parseInt(document.getElementById('sim-time-per-wave')?.value)     || 0;
+  sim.time_mode         = document.getElementById('sim-time-mode')?.value === 'variable' ? 'variable' : 'fixed';
+  sim.time_categories   = _readTimeCategories();
+  sim.idle_minutes_schedule = _readIdleSchedule();
   sim.max_silence_waves  = parseInt(document.getElementById('sim-max-silence-waves')?.value)  || 3;
   sim.early_stop_enabled = document.getElementById('sim-early-stop-enabled')?.checked ?? true;
   const sel = document.getElementById('sim-server-select');
@@ -84,6 +98,68 @@ export function initEarlyStopToggle() {
   chk.onchange = () => {
     sim.early_stop_enabled = chk.checked;
     _updateEarlyStopUI(chk.checked);
+  };
+}
+
+// ── 가변 시간 모드 UI 연동 ────────────────────────────────────────────────────
+
+function _updateVariableTimeUI(mode) {
+  const section = document.getElementById('sim-variable-time-section');
+  if (section) section.classList.toggle('sim-hidden', mode !== 'variable');
+}
+
+function _renderTimeCategories() {
+  const cats = sim.time_categories?.length ? sim.time_categories : DEFAULT_TIME_CATEGORIES;
+  document.querySelectorAll('.sim-time-cat-row').forEach(row => {
+    const id = row.dataset.catId;
+    const cat = cats.find(c => c.id === id) || DEFAULT_TIME_CATEGORIES.find(c => c.id === id);
+    if (!cat) return;
+    const labelEl = row.querySelector('.sim-time-cat-label');
+    const minEl   = row.querySelector('.sim-time-cat-min');
+    const maxEl   = row.querySelector('.sim-time-cat-max');
+    if (labelEl) labelEl.value = cat.label;
+    if (minEl)   minEl.value   = cat.min_minutes;
+    if (maxEl)   maxEl.value   = cat.max_minutes;
+  });
+}
+
+// 카테고리는 항상 4개 슬롯이 DOM에 고정되어 있으므로 빈 배열이 나올 일은 없지만,
+// 방어적으로 비어 있으면 기본값으로 폴백한다 (백엔드가 [] 를 422로 거부함).
+function _readTimeCategories() {
+  const rows = document.querySelectorAll('.sim-time-cat-row');
+  const result = [];
+  rows.forEach(row => {
+    const id = row.dataset.catId;
+    if (!id) return;
+    const fallback = DEFAULT_TIME_CATEGORIES.find(c => c.id === id) || {};
+    const labelEl  = row.querySelector('.sim-time-cat-label');
+    const minEl    = row.querySelector('.sim-time-cat-min');
+    const maxEl    = row.querySelector('.sim-time-cat-max');
+    const label    = labelEl?.value.trim() || fallback.label || id;
+    let min = parseInt(minEl?.value);
+    if (isNaN(min) || min < 1) min = fallback.min_minutes ?? 5;
+    let max = parseInt(maxEl?.value);
+    if (isNaN(max) || max < min) max = Math.max(min, fallback.max_minutes ?? min);
+    result.push({ id, label, min_minutes: min, max_minutes: max });
+  });
+  return result.length ? result : DEFAULT_TIME_CATEGORIES.map(c => ({ ...c }));
+}
+
+// idle_minutes_schedule: 콤마 구분 텍스트 → 정수 배열. 빈 배열이 되면 안 됨(백엔드 422 방지).
+function _readIdleSchedule() {
+  const raw = document.getElementById('sim-idle-schedule')?.value || '';
+  const nums = raw.split(',')
+    .map(s => parseInt(s.trim()))
+    .filter(n => !isNaN(n) && n > 0);
+  return nums.length ? nums : [...DEFAULT_IDLE_MINUTES_SCHEDULE];
+}
+
+export function initTimeModeToggle() {
+  const sel = document.getElementById('sim-time-mode');
+  if (!sel) return;
+  sel.onchange = () => {
+    sim.time_mode = sel.value === 'variable' ? 'variable' : 'fixed';
+    _updateVariableTimeUI(sim.time_mode);
   };
 }
 

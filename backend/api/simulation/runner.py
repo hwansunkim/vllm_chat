@@ -58,6 +58,7 @@ def finalize_run(db, run_sim_id: str | None, stop_event: threading.Event,
                         sim_obj.completed_waves, len(sim_obj.shared_log),
                         active_agents=sim_obj.active_agents,
                         pending_wave=sim_obj._pending_wave,
+                        elapsed_minutes=getattr(sim_obj, "_elapsed_minutes", None),
                     )
                 except Exception:
                     pass

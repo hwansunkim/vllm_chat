@@ -25,6 +25,13 @@ _PERSIST_EVENTS: frozenset[str] = frozenset({
     "wave_summary",
 })
 
+_DEFAULT_TIME_CATEGORIES: list[dict] = [
+    {"id": "meal_or_brief",     "label": "식사·짧은 용무 등 스킵되듯 지나가는 장면", "min_minutes": 5,   "max_minutes": 10},
+    {"id": "normal_scene",      "label": "그 외 일반적인 대화/활동이 이어지는 장면",   "min_minutes": 15,  "max_minutes": 30},
+    {"id": "alone_or_offscreen", "label": "혼자 있거나 외부에 나가 직접 대화가 없는 상태", "min_minutes": 60,  "max_minutes": 120},
+    {"id": "night_sleep",       "label": "취침 등 야간 장시간 경과",                   "min_minutes": 240, "max_minutes": 420},
+]
+
 
 class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepMixin, _SystemMixin, _RunnerMixin):
     def __init__(
@@ -52,6 +59,10 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
         llm_max_tokens:   int                         = 16384,
         sim_start_time:   str                         = "09:00",
         time_per_wave:    int                         = 30,
+        time_mode:        str                         = "fixed",
+        time_categories:  list[dict] | None            = None,
+        idle_minutes_schedule: list[int] | None        = None,
+        elapsed_minutes_init: int                      = 0,
     ):
         self.agents         = agents
         self.background_log = background_log
@@ -112,6 +123,12 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
             self._sim_start_minutes = 9 * 60  # fallback: 09:00
         self._time_per_wave: int = max(0, int(time_per_wave))
 
+        # 가변 시간 모드 설정
+        self._time_mode: str = time_mode if time_mode in ("fixed", "variable") else "fixed"
+        self._time_categories: list[dict] = time_categories if time_categories is not None else list(_DEFAULT_TIME_CATEGORIES)
+        self._idle_minutes_schedule: list[int] = idle_minutes_schedule if idle_minutes_schedule is not None else [60, 120, 180]
+        self._elapsed_minutes: int = elapsed_minutes_init
+
         # 위치 그래프 (인접 리스트) + 외부 공간 집합
         self._location_graph:    dict[str, list[str]] = {}
         self._exterior_locations: set[str]            = set()
@@ -139,7 +156,7 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
                 agent.system_prompt += map_section
 
         # 시간 인식 안내를 에이전트 시스템 프롬프트에 정적 주입
-        if self._time_per_wave > 0:
+        if self._time_mode == "variable" or self._time_per_wave > 0:
             time_section = (
                 "\n\n[시간 인식]\n"
                 "매 대화 맥락에 [현재 시각: ...] 정보가 제공됩니다. "
@@ -210,3 +227,12 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
         with self._file_lock:
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(self.edges, f, ensure_ascii=False, indent=2)
+
+    def _format_time_str(self, total_min: int) -> str:
+        """분 단위(0~1439 기준, 자동 wrap) 값을 '오전/오후 N시 M분' 문자열로 변환."""
+        total_min = total_min % (24 * 60)
+        hour, minute = divmod(total_min, 60)
+        if hour < 12:
+            return f"오전 {hour}시 {minute:02d}분"
+        display_hour = hour if hour == 12 else hour - 12
+        return f"오후 {display_hour}시 {minute:02d}분"

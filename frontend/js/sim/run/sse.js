@@ -6,7 +6,7 @@ import {
   addFeedMessage, addSceneEventToFeed,
   addTypingIndicator, removeTypingIndicator,
   updateWaveIndicator, addSummaryCard, addInterventionCard, addWorldEventCard,
-  addMovementCard, addAppearanceCard, addSituationCard,
+  addMovementCard, addAppearanceCard, addSituationCard, applyWaveTimeStr,
 } from './feed.js';
 import { updateAgentCard, updateAgentLocation, getCardEl } from './cards.js';
 import { addD3Edge } from '../graph/d3.js';
@@ -42,6 +42,7 @@ export function connectSSE() {
   es.addEventListener('turn_complete', e => {
     const d = JSON.parse(e.data);
     sim.agentEmotions[d.speaker] = (d.meta || {}).emotion || 'neutral';
+    if (d.time_str) applyWaveTimeStr(d.wave, d.time_str);
     addFeedMessage(d);
     updateAgentCard(d.speaker, d.meta || {}, d.prompt_tokens, d.token_limit, d.content);
     d.new_edges?.forEach(edge =>

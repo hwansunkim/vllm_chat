@@ -12,7 +12,15 @@ export function renderHistoricalFeed(entries) {
     return;
   }
 
+  let curWave = null;
   entries.forEach(entry => {
+    if (entry.wave != null && entry.wave !== curWave) {
+      curWave = entry.wave;
+      // 서버가 저장해둔 time_str(정확값)을 우선 사용하고, 없는 구버전 로그는 fixed 공식으로 폴백.
+      const timeLabel = entry.time_str ?? simTimeLabel(curWave);
+      if (timeLabel) addWaveDivider(curWave, timeLabel);
+    }
+
     const agent = sim.agents.find(a => a.name === entry.speaker) || { icon: '🤖', name: entry.speaker };
     const targets = (entry.targets || []).filter(t => t !== 'self' && t !== 'system');
     const targetLabels = targets.map(t => t === 'all' ? '전체' : agentLabel(t));
@@ -263,19 +271,27 @@ export function updateWaveIndicator(waveNum, agents) {
     `Wave ${waveNum}  |  ${labels.join(', ')}`;
   document.getElementById('sim-progress-fill').style.width = '30%';
 
-  const timeLabel = simTimeLabel(waveNum);
+  // wave_start 시점에는 서버가 아직 이번 wave의 실제 time_str을 계산하지 않았다
+  // (variable 모드는 wave의 대화 내용을 봐야 분류 가능). fixed 모드 폴백 공식으로
+  // 잠정 표시해두고, 이후 turn_complete 이벤트의 time_str이 도착하면 applyWaveTimeStr()가
+  // 정확한 값으로 덮어쓴다.
+  const fallbackLabel = simTimeLabel(waveNum);
   const timeEl = document.getElementById('sim-turn-time');
   if (timeEl) {
-    if (timeLabel) {
-      timeEl.textContent = `🕐 ${timeLabel}`;
+    timeEl.dataset.wave = String(waveNum);
+    if (fallbackLabel) {
+      timeEl.textContent = `🕐 ${fallbackLabel}`;
+      timeEl.classList.remove('sim-hidden');
+    } else if (sim.time_mode === 'variable') {
+      timeEl.textContent = '🕐 …';
       timeEl.classList.remove('sim-hidden');
     } else {
       timeEl.classList.add('sim-hidden');
     }
   }
 
-  if (timeLabel) {
-    addWaveDivider(waveNum, timeLabel);
+  if (fallbackLabel || sim.time_mode === 'variable') {
+    addWaveDivider(waveNum, fallbackLabel);
   }
 }
 
@@ -285,6 +301,20 @@ function addWaveDivider(waveNum, timeLabel) {
   const div = document.createElement('div');
   div.className = 'sim-wave-divider';
   div.dataset.wave = waveNum;
-  div.innerHTML = `<span class="sim-wave-divider-line"></span><span class="sim-wave-divider-label">🕐 ${esc(timeLabel)}</span><span class="sim-wave-divider-line"></span>`;
+  const label = timeLabel || '…';
+  div.innerHTML = `<span class="sim-wave-divider-line"></span><span class="sim-wave-divider-label">🕐 ${esc(label)}</span><span class="sim-wave-divider-line"></span>`;
   feed.appendChild(div);
+}
+
+/** 서버가 보내온 실제 time_str로 해당 wave의 구분선/시간 뱃지를 갱신한다. */
+export function applyWaveTimeStr(waveNum, timeStr) {
+  if (!timeStr) return;
+  const label = `🕐 ${timeStr}`;
+  document.querySelectorAll(`.sim-wave-divider[data-wave="${waveNum}"] .sim-wave-divider-label`)
+    .forEach(el => { el.textContent = label; });
+  const timeEl = document.getElementById('sim-turn-time');
+  if (timeEl && timeEl.dataset.wave === String(waveNum)) {
+    timeEl.textContent = label;
+    timeEl.classList.remove('sim-hidden');
+  }
 }

@@ -1,6 +1,15 @@
 // frontend/js/sim/state.js
 // Shared simulation state and pure helpers (no module imports — avoid cycles).
 
+// ── 가변 시간 모드 기본값 (백엔드 SimStartConfig 기본값과 동일하게 유지) ──────────
+export const DEFAULT_TIME_CATEGORIES = [
+  { id: 'meal_or_brief',      label: '식사·짧은 용무',      min_minutes: 5,   max_minutes: 10  },
+  { id: 'normal_scene',       label: '일반적인 대화/활동',   min_minutes: 15,  max_minutes: 30  },
+  { id: 'alone_or_offscreen', label: '혼자 있음/외출',      min_minutes: 60,  max_minutes: 120 },
+  { id: 'night_sleep',        label: '취침/장시간 경과',     min_minutes: 240, max_minutes: 420 },
+];
+export const DEFAULT_IDLE_MINUTES_SCHEDULE = [60, 120, 180];
+
 export const sim = {
   status:              'idle',
   selectedAgent:       null,
@@ -25,7 +34,10 @@ export const sim = {
   output_format_template: '',
   summary_interval: 0,
   sim_start_time:    '09:00',  // 시뮬레이션 시작 시각 (HH:MM)
-  time_per_wave:     30,       // wave당 경과 시간(분). 0 = 시간 개념 비활성
+  time_per_wave:     30,       // wave당 경과 시간(분). 0 = 시간 개념 비활성 (time_mode='fixed'일 때만 사용)
+  time_mode: 'fixed',          // 'fixed' = wave당 고정 시간, 'variable' = wave 내용을 LLM이 분류해 가변 경과
+  time_categories: DEFAULT_TIME_CATEGORIES.map(c => ({ ...c })),      // time_mode='variable'일 때 분류 카테고리
+  idle_minutes_schedule: [...DEFAULT_IDLE_MINUTES_SCHEDULE],          // 강제 침묵 재투입 시 경과 시간(분) 스케줄
   max_silence_waves:  3,        // 연속 침묵 허용 wave 수 (early_stop_enabled + time_per_wave > 0일 때 활성)
   early_stop_enabled: true,    // false = 조기 종료 비활성 (max_waves까지 항상 실행)
   server_id:        null,   // null = 기본 서버, string = 특정 서버 ID
@@ -110,6 +122,9 @@ export function esc(str) {
 }
 
 // ── 시뮬레이션 시각 계산 ──────────────────────────────────────────────────────
+// 주의: 이 함수는 fixed 모드 전용 클라이언트 추정치이며 variable 모드를 전혀 모른다.
+// 서버가 turn_complete 이벤트/로그 항목에 실어 보내는 `time_str`(실제 계산값)이 있으면
+// 항상 그것을 우선 사용하고, 이 함수는 time_str이 없는 구버전 로그에 대한 폴백으로만 쓸 것.
 export function simTimeLabel(waveNum) {
   const tpw = sim.time_per_wave ?? 30;
   if (!tpw) return null;

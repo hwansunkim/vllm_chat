@@ -59,17 +59,19 @@ class RunsMixin:
         total_turns: int,
         active_agents: set | None = None,
         pending_wave:  dict | None = None,
+        elapsed_minutes: int | None = None,
     ):
         conn = self._conn()
         conn.execute(
             "UPDATE simulation_runs "
             "SET status=?, total_waves=?, total_turns=?, finished_at=?, "
-            "active_agents_json=?, pending_wave_json=? "
+            "active_agents_json=?, pending_wave_json=?, elapsed_minutes=? "
             "WHERE run_id=?",
             (
                 status, total_waves, total_turns, time.time(),
                 json.dumps(list(active_agents), ensure_ascii=False) if active_agents is not None else None,
                 json.dumps(pending_wave, ensure_ascii=False) if pending_wave is not None else None,
+                elapsed_minutes,
                 run_id,
             ),
         )
@@ -108,24 +110,26 @@ class RunsMixin:
         action_note: str,
         meta: dict,
         targets: list,
+        time_str: str | None = None,
     ):
         conn = self._conn()
         conn.execute(
             "INSERT INTO simulation_log "
-            "(run_id, wave, turn, speaker, content, action_note, meta_json, targets_json, timestamp) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
+            "(run_id, wave, turn, speaker, content, action_note, meta_json, targets_json, timestamp, time_str) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 run_id, wave, turn, speaker, content, action_note,
                 json.dumps(meta, ensure_ascii=False),
                 json.dumps(targets, ensure_ascii=False),
                 time.time(),
+                time_str,
             ),
         )
         conn.commit()
 
     def get_run_log(self, run_id: str) -> list[dict]:
         rows = self._conn().execute(
-            "SELECT wave, turn, speaker, content, action_note, meta_json, targets_json, timestamp "
+            "SELECT wave, turn, speaker, content, action_note, meta_json, targets_json, timestamp, time_str "
             "FROM simulation_log WHERE run_id=? ORDER BY id",
             (run_id,),
         ).fetchall()

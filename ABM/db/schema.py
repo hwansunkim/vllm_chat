@@ -108,7 +108,8 @@ CREATE TABLE IF NOT EXISTS simulation_log (
     action_note  TEXT    NOT NULL DEFAULT '',
     meta_json    TEXT    NOT NULL DEFAULT '{}',
     targets_json TEXT    NOT NULL DEFAULT '[]',
-    timestamp    REAL    NOT NULL
+    timestamp    REAL    NOT NULL,
+    time_str     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_simlog_run ON simulation_log(run_id, id);
 
@@ -138,9 +139,15 @@ def migrate(conn: sqlite3.Connection) -> None:
     for col, ddl in [
         ("active_agents_json", "ALTER TABLE simulation_runs ADD COLUMN active_agents_json TEXT"),
         ("pending_wave_json",  "ALTER TABLE simulation_runs ADD COLUMN pending_wave_json TEXT"),
+        ("elapsed_minutes",    "ALTER TABLE simulation_runs ADD COLUMN elapsed_minutes INTEGER"),
     ]:
         if col not in cols:
             conn.execute(ddl)
+
+    # simulation_log 테이블의 time_str 컬럼이 없는 기존 DB를 위한 마이그레이션
+    simlog_cols = {r[1] for r in conn.execute("PRAGMA table_info(simulation_log)").fetchall()}
+    if "time_str" not in simlog_cols:
+        conn.execute("ALTER TABLE simulation_log ADD COLUMN time_str TEXT")
 
     # sim_events 테이블이 없는 기존 DB를 위한 마이그레이션
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
