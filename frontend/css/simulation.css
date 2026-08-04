@@ -56,6 +56,10 @@
 .sim-ctrl-btn.history:hover:not(:disabled) { background: #e0f2fe; }
 .sim-ctrl-btn.new-scenario { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
 .sim-ctrl-btn.new-scenario:hover { background: #dcfce7; }
+.sim-ctrl-btn.export  { background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; }
+.sim-ctrl-btn.export:hover  { background: #e2e8f0; }
+.sim-ctrl-btn.import  { background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; }
+.sim-ctrl-btn.import:hover  { background: #e2e8f0; }
 .sim-ctrl-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 #sim-run-history-panel {

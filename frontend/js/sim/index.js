@@ -18,6 +18,7 @@ import {
 import {
   saveScenario, deleteScenario,
   newScenario, applyScenario,
+  exportScenarioFile, importScenarioFile,
 } from './scenarios.js';
 import { addLocationNode, initEarlyStopToggle, initTimeModeToggle } from './settings/page.js';
 import { toggleRunHistory, openAllRunsModal } from './runs/history.js';
@@ -48,6 +49,15 @@ export function initSimulationEvents() {
   document.getElementById('sim-stop-btn').addEventListener('click', stopSimulation);
   document.getElementById('sim-save-scenario-btn').addEventListener('click', saveScenario);
   document.getElementById('sim-delete-scenario-btn').addEventListener('click', deleteScenario);
+  document.getElementById('sim-export-scenario-btn').addEventListener('click', exportScenarioFile);
+  document.getElementById('sim-import-scenario-btn').addEventListener('click', () => {
+    document.getElementById('sim-import-scenario-input').click();
+  });
+  document.getElementById('sim-import-scenario-input').addEventListener('change', async e => {
+    const file = e.target.files[0];
+    if (file) await importScenarioFile(file);
+    e.target.value = '';
+  });
   document.getElementById('sim-history-btn')?.addEventListener('click', toggleRunHistory);
   document.getElementById('sim-all-runs-btn').addEventListener('click', openAllRunsModal);
   document.getElementById('sim-export-graph-btn').addEventListener('click', exportGraph);

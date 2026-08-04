@@ -4,6 +4,19 @@
 import { sim, _expandedAgents, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE } from './state.js';
 import { renderSettingsPage, readConfigFromUI } from './settings/page.js';
 import { refreshRunHistory } from './runs/history.js';
+import { downloadFile, safeFilename, nowTag } from './utils/download.js';
+
+// 파일로 내보낸 시나리오를 다시 불러올 때 쓰는 스키마 버전.
+// 필드가 추가되고 기본값(??)으로 충분히 처리되는 변경에는 올리지 않는다 — 그건 이미
+// applyScenario()의 낙관적 로딩이 처리한다. 필드의 의미/이름이 바뀌어 자동으로는 채울 수
+// 없는 "진짜 breaking change"가 생겼을 때만 올리고, 아래 MIGRATIONS에 변환 함수를 추가한다.
+const CURRENT_SCHEMA_VERSION = 1;
+
+// 키: 마이그레이션 대상 버전(그 버전에서 다음 버전으로 올리는 변환). 값: config => config.
+// 지금은 필요한 마이그레이션이 없으므로 빈 상태로 시작 — 확장점만 마련해둔다.
+const MIGRATIONS = {};
+
+const APP_ID = 'vllm-chat-sim-scenario';
 
 export async function loadScenarios() {
   const res = await fetch('/api/simulation/scenarios');
@@ -21,6 +34,34 @@ export async function loadScenarios() {
   if (histBtn) histBtn.disabled = !sim.currentScenarioId;
 }
 
+export function buildScenarioConfig() {
+  return {
+    agents:                 sim.agents,
+    background:             sim.background,
+    start_agent:            sim.start_agent,
+    max_waves:              sim.max_waves,
+    step_delay:             sim.step_delay,
+    token_limit:            sim.token_limit,
+    llm_max_tokens:         sim.llm_max_tokens,
+    extra_fields:           sim.extra_fields,
+    events:                 sim.events,
+    location_graph:         sim.location_graph || [],
+    lang_fix_enabled:       sim.lang_fix_enabled ?? true,
+    lang_fix_retries:       sim.lang_fix_retries ?? 2,
+    output_format_template: sim.output_format_template || '',
+    summary_interval:       sim.summary_interval  ?? 0,
+    sim_start_time:         sim.sim_start_time    ?? '09:00',
+    time_per_wave:          sim.time_per_wave     ?? 30,
+    time_mode:              sim.time_mode ?? 'fixed',
+    time_categories:        (sim.time_categories?.length ? sim.time_categories : DEFAULT_TIME_CATEGORIES),
+    idle_minutes_schedule:  (sim.idle_minutes_schedule?.length ? sim.idle_minutes_schedule : DEFAULT_IDLE_MINUTES_SCHEDULE),
+    max_silence_waves:      sim.max_silence_waves  ?? 3,
+    early_stop_enabled:     sim.early_stop_enabled ?? true,
+    server_id:              sim.server_id         ?? null,
+    system_agent:           sim.system_agent,
+  };
+}
+
 export async function saveScenario() {
   readConfigFromUI();
   const nameEl = document.getElementById('sim-scenario-name');
@@ -31,31 +72,7 @@ export async function saveScenario() {
   const payload = {
     name,
     description: '',
-    config: {
-      agents:                 sim.agents,
-      background:             sim.background,
-      start_agent:            sim.start_agent,
-      max_waves:              sim.max_waves,
-      step_delay:             sim.step_delay,
-      token_limit:            sim.token_limit,
-      llm_max_tokens:         sim.llm_max_tokens,
-      extra_fields:           sim.extra_fields,
-      events:                 sim.events,
-      location_graph:         sim.location_graph || [],
-      lang_fix_enabled:       sim.lang_fix_enabled ?? true,
-      lang_fix_retries:       sim.lang_fix_retries ?? 2,
-      output_format_template: sim.output_format_template || '',
-      summary_interval:       sim.summary_interval  ?? 0,
-      sim_start_time:         sim.sim_start_time    ?? '09:00',
-      time_per_wave:          sim.time_per_wave     ?? 30,
-      time_mode:              sim.time_mode ?? 'fixed',
-      time_categories:        (sim.time_categories?.length ? sim.time_categories : DEFAULT_TIME_CATEGORIES),
-      idle_minutes_schedule:  (sim.idle_minutes_schedule?.length ? sim.idle_minutes_schedule : DEFAULT_IDLE_MINUTES_SCHEDULE),
-      max_silence_waves:      sim.max_silence_waves  ?? 3,
-      early_stop_enabled:     sim.early_stop_enabled ?? true,
-      server_id:              sim.server_id         ?? null,
-      system_agent:           sim.system_agent,
-    },
+    config: buildScenarioConfig(),
   };
 
   let res;
@@ -201,4 +218,58 @@ export function applyScenario(s) {
   // 이력 패널이 열려있으면 갱신
   refreshRunHistory();
   renderSettingsPage();
+}
+
+// ── File export/import (백엔드 호출 없음, DB에는 저장하지 않음) ──────────────────
+
+export function exportScenarioFile() {
+  readConfigFromUI();
+  const config = buildScenarioConfig();
+  const envelope = {
+    app: APP_ID,
+    schema_version: CURRENT_SCHEMA_VERSION,
+    exported_at: new Date().toISOString(),
+    name: sim.currentScenarioName || '시나리오',
+    description: '',
+    config,
+  };
+  const filename = `${safeFilename(sim.currentScenarioName || '시나리오')}_${nowTag()}.json`;
+  downloadFile(JSON.stringify(envelope, null, 2), filename, 'application/json;charset=utf-8');
+}
+
+export async function importScenarioFile(file) {
+  let parsed;
+  try {
+    const text = await file.text();
+    parsed = JSON.parse(text);
+  } catch (e) {
+    alert('올바른 JSON 파일이 아닙니다.');
+    return;
+  }
+
+  let config;
+  if (parsed && typeof parsed === 'object' && parsed.config && typeof parsed.config === 'object') {
+    config = parsed.config;
+  } else if (parsed && Array.isArray(parsed.agents)) {
+    // envelope 없는 날것의 config 파일 허용 (구버전/외부 생성 파일).
+    config = parsed;
+  } else {
+    alert('올바른 시나리오 파일이 아닙니다.');
+    return;
+  }
+
+  let version = typeof parsed.schema_version === 'number' ? parsed.schema_version : 0;
+  if (version > CURRENT_SCHEMA_VERSION) {
+    alert('이 파일은 더 최신 버전에서 내보내졌습니다. 일부 설정이 무시됐을 수 있습니다.');
+  } else {
+    while (version < CURRENT_SCHEMA_VERSION) {
+      const migrate = MIGRATIONS[version];
+      if (migrate) config = migrate(config);
+      version += 1;
+    }
+  }
+
+  sim.currentScenarioId = null;
+  applyScenario({ id: null, name: parsed.name || '가져온 시나리오', config });
+  document.getElementById('sim-scenario-name').value = sim.currentScenarioName;
 }

@@ -3,27 +3,14 @@
 
 import { sim, agentLabel, getAgentIcon, simTimeLabel } from '../state.js';
 import { stripCodeFence } from '../utils/json.js';
+import { downloadFile, safeFilename, nowTag } from '../utils/download.js';
 
 const EMOTION_EMOJI = { happy: '😊', angry: '😤', sad: '😢', fear: '😨', neutral: '😐' };
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 function downloadMd(content, filename) {
-  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href = url; a.download = filename;
-  document.body.appendChild(a); a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-function safeFilename(str) {
-  return str.replace(/[/\\:*?"<>|]/g, '_').slice(0, 80);
-}
-
-function nowTag() {
-  return new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '');
+  downloadFile(content, filename, 'text/markdown;charset=utf-8');
 }
 
 function fmtKo(ts) {
