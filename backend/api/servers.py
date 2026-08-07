@@ -5,7 +5,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException
 
-from .schemas import ServerCreate, ServerUpdate
+from .schemas import ServerCreate, ServerHealth, ServerUpdate
 from ..db.database import get_db
 from ..llm.registry import get_registry
 
@@ -118,15 +118,26 @@ async def delete_server(server_id: str):
     await get_registry().unregister(server_id)
 
 
-@router.get("/{server_id}/health")
+@router.get("/{server_id}/health", response_model=ServerHealth)
 async def server_health(server_id: str):
     conn = get_db()
     row = conn.execute("SELECT * FROM servers WHERE id=?", (server_id,)).fetchone()
     conn.close()
     if not row:
         raise HTTPException(404)
+
+    base = {"server_id": server_id, "name": row["name"], "model": row["model"]}
+
     provider = get_registry().get_provider(server_id)
     if provider is None:
-        return {"healthy": False, "reason": "서버가 비활성화 상태입니다."}
-    healthy = await provider.health_check()
-    return {"healthy": healthy, "server_id": server_id, "name": row["name"]}
+        return ServerHealth(
+            **base,
+            status="disabled",
+            healthy=False,
+            reachable=False,
+            model_ok=False,
+            detail="서버가 비활성화 상태입니다.",
+        )
+
+    report = await provider.health_status()
+    return ServerHealth(**base, **report.to_dict())

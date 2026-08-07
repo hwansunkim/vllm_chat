@@ -66,11 +66,6 @@ function renderServerDropdown(servers) {
         </div>
       </div>`;
   }).join('');
-
-  listEl.addEventListener('click', async e => {
-    const item = e.target.closest('.server-dropdown-item');
-    if (item) await switchDefaultServer(item.dataset.id);
-  });
 }
 
 async function switchDefaultServer(serverId) {
@@ -160,28 +155,61 @@ function renderServers() {
         </div>
       </div>`;
   }).join('');
+}
 
-  listEl.addEventListener('click', async e => {
-    const healthBtn = e.target.closest('.server-health-btn');
-    const editBtn   = e.target.closest('[data-edit]');
-    const delBtn    = e.target.closest('[data-del]');
-    if (healthBtn) await checkServerHealth(healthBtn.dataset.id, healthBtn);
-    if (editBtn)   showServerForm(editBtn.dataset.edit);
-    if (delBtn)    await deleteServer(delBtn.dataset.del);
-  });
+// ── Health check ─────────────────────────────────────────────────────────────
+
+// backend: GET /servers/{id}/health → { status, healthy, reachable, model_ok,
+//                                       detail, available_models, ... }
+const HEALTH_UI = {
+  ok:            { label: '🟢 정상',      cls: 'healthy' },
+  model_missing: { label: '🟡 모델 없음', cls: 'model-missing' },
+  unreachable:   { label: '🔴 연결 실패', cls: 'unhealthy' },
+  disabled:      { label: '⚪ 비활성',    cls: 'disabled' },
+};
+// status 필드가 없는 구버전 응답 / 미지의 status 값을 위한 폴백
+const HEALTH_UI_FALLBACK = { label: '🔴 오류', cls: 'unhealthy' };
+
+function resolveHealthUI(data) {
+  const status = data?.status;
+  const known = typeof status === 'string' && Object.hasOwn(HEALTH_UI, status)
+    ? HEALTH_UI[status]
+    : null;
+  if (known) return known;
+  // 구버전 응답(status 없음)이거나 프론트가 모르는 새 status → healthy 로 판단
+  return data?.healthy === true ? HEALTH_UI.ok : HEALTH_UI_FALLBACK;
+}
+
+function buildHealthTitle(data) {
+  const lines = [];
+  if (data?.detail) lines.push(data.detail);
+
+  // 모델을 확인하지 못한 경우에만 실제 모델 목록을 덧붙인다.
+  // (detail 은 5개까지만 나열하므로 전체 목록은 여기서 보여준다)
+  const models = Array.isArray(data?.available_models) ? data.available_models : [];
+  if (data?.model_ok === false && models.length) {
+    if (data?.model) lines.push(`설정된 모델: ${data.model}`);
+    lines.push(`서버가 제공 중인 모델 (${models.length}개): ${models.join(', ')}`);
+  }
+  return lines.join('\n') || '상세 정보가 없습니다.';
 }
 
 async function checkServerHealth(serverId, btn) {
+  if (btn.disabled) return;
   btn.textContent = '● 확인 중...';
   btn.disabled = true;
   btn.className = 'server-health-btn';
+  btn.title     = '';
   try {
     const data = await api('GET', `/servers/${serverId}/health`);
-    btn.textContent = data.healthy ? '🟢 정상' : '🔴 오류';
-    btn.className   = 'server-health-btn ' + (data.healthy ? 'healthy' : 'unhealthy');
-  } catch {
-    btn.textContent = '🔴 오류';
-    btn.className   = 'server-health-btn unhealthy';
+    const ui = resolveHealthUI(data);
+    btn.textContent = ui.label;
+    btn.className   = 'server-health-btn ' + ui.cls;
+    btn.title       = buildHealthTitle(data);
+  } catch (e) {
+    btn.textContent = HEALTH_UI_FALLBACK.label;
+    btn.className   = 'server-health-btn ' + HEALTH_UI_FALLBACK.cls;
+    btn.title       = '연결 확인 요청이 실패했습니다: ' + (e?.message || '알 수 없는 오류');
   } finally {
     btn.disabled = false;
   }
@@ -268,6 +296,21 @@ export function initServerEvents() {
     if (!document.getElementById('server-selector').contains(e.target)) {
       closeServerDropdown();
     }
+  });
+
+  // 정적 컨테이너에 위임 바인딩을 1회만 등록한다.
+  // (렌더 함수 안에서 등록하면 재렌더마다 리스너가 누적되어 1클릭에 N번 실행된다)
+  document.getElementById('server-dropdown-list').addEventListener('click', async e => {
+    const item = e.target.closest('.server-dropdown-item');
+    if (item) await switchDefaultServer(item.dataset.id);
+  });
+  document.getElementById('server-list').addEventListener('click', async e => {
+    const healthBtn = e.target.closest('.server-health-btn');
+    const editBtn   = e.target.closest('[data-edit]');
+    const delBtn    = e.target.closest('[data-del]');
+    if (healthBtn) await checkServerHealth(healthBtn.dataset.id, healthBtn);
+    if (editBtn)   showServerForm(editBtn.dataset.edit);
+    if (delBtn)    await deleteServer(delBtn.dataset.del);
   });
 
   document.getElementById('server-btn').onclick        = openServerModal;

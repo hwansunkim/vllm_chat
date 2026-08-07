@@ -327,6 +327,14 @@
 .server-health-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 .server-health-btn.healthy { color: #16a34a; border-color: #86efac; background: #f0fdf4; }
 .server-health-btn.unhealthy { color: #dc2626; border-color: #fca5a5; background: #fef2f2; }
+/* 서버는 살아있으나 설정된 모델이 없음 — 연결 실패와 원인/해결책이 다르므로 경고색 */
+.server-health-btn.model-missing { color: #d97706; border-color: #fcd34d; background: #fffbeb; }
+.server-health-btn.disabled { color: #94a3b8; border-color: #e2e8f0; background: #f8fafc; }
+/* 확인 결과에는 detail 이 title 로 붙는다 */
+.server-health-btn.healthy,
+.server-health-btn.unhealthy,
+.server-health-btn.model-missing,
+.server-health-btn.disabled { cursor: help; }
 .server-form-body { flex: 1; overflow-y: auto; padding: 16px 24px 24px; display: flex; flex-direction: column; gap: 14px; }
 .server-form-group { display: flex; flex-direction: column; gap: 5px; }
 .server-form-group label { font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }

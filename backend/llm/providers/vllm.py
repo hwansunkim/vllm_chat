@@ -8,6 +8,7 @@ from collections.abc import AsyncGenerator
 import httpx
 
 from ... import config
+from .base import HealthReport
 
 logger = logging.getLogger(__name__)
 
@@ -178,30 +179,102 @@ class VLLMProvider:
         merged["thinking"] = full_thinking
         return full_reply, merged
 
-    async def health_check(self) -> bool:
+    # ── 연결/모델 확인 ────────────────────────────────────────────────
+
+    async def _probe_liveness(self) -> tuple[bool, str]:
+        """GET /health — 프로세스 생존 확인. (살아있음, 실패 사유) 반환."""
         try:
             resp = await self._client.get(
                 f"{self.base_url}/health",
+                headers=self._headers,
                 timeout=httpx.Timeout(5.0),
             )
-            return resp.status_code == 200
-        except Exception:
-            return False
+            if resp.status_code == 200:
+                return True, ""
+            return False, f"/health 가 HTTP {resp.status_code} 를 반환했습니다."
+        except Exception as e:
+            return False, f"{self.base_url} 에 연결할 수 없습니다 [{type(e).__name__}]: {e or '(연결 종료)'}"
 
-    async def fetch_model_len(self) -> int:
+    async def _fetch_model_entries(self) -> list[dict] | None:
+        """GET /v1/models 의 data 배열. 조회 실패 시 None (빈 목록과 구분)."""
         try:
             response = await self._client.get(
                 f"{self.base_url}/v1/models",
+                headers=self._headers,
                 timeout=httpx.Timeout(5.0),
             )
-            for m in response.json().get("data", []):
-                if m["id"] == self.model:
-                    api_len = m.get("max_model_len", 0)
-                    if api_len:
-                        self.model_len = api_len
-                    return self.model_len
+            response.raise_for_status()
+            data = response.json().get("data")
+            if not isinstance(data, list):
+                return None
+            return [m for m in data if isinstance(m, dict)]
         except Exception:
-            pass
+            return None
+
+    def _match_model(self, entries: list[dict]) -> dict | None:
+        """설정된 모델명과 id 가 정확히 일치(exact match)하는 엔트리."""
+        for m in entries:
+            if m.get("id") == self.model:
+                return m
+        return None
+
+    def _apply_model_len(self, entry: dict) -> None:
+        api_len = entry.get("max_model_len", 0)
+        if api_len:
+            self.model_len = api_len
+
+    async def health_check(self) -> bool:
+        """프로세스 생존 여부만 확인 (모델 존재는 보지 않음)."""
+        alive, _ = await self._probe_liveness()
+        return alive
+
+    async def health_status(self) -> HealthReport:
+        """연결 + 모델 존재까지 확인한 3단계 상태를 반환."""
+        alive, reason = await self._probe_liveness()
+        if not alive:
+            return HealthReport(
+                status="unreachable", reachable=False, model_ok=False, detail=reason
+            )
+
+        entries = await self._fetch_model_entries()
+        if entries is None:
+            return HealthReport(
+                status="model_missing",
+                reachable=True,
+                model_ok=False,
+                detail="서버는 응답하지만 모델 목록(/v1/models)을 조회하지 못했습니다.",
+            )
+
+        available = [m["id"] for m in entries if isinstance(m.get("id"), str) and m["id"]]
+        entry = self._match_model(entries)
+        if entry is None:
+            listed = ", ".join(available[:5]) or "(없음)"
+            if len(available) > 5:
+                listed += f" 외 {len(available) - 5}개"
+            return HealthReport(
+                status="model_missing",
+                reachable=True,
+                model_ok=False,
+                detail=f"모델 '{self.model}' 이(가) 서버에 없습니다. 서버가 제공하는 모델: {listed}",
+                available_models=available,
+            )
+
+        self._apply_model_len(entry)
+        return HealthReport(
+            status="ok",
+            reachable=True,
+            model_ok=True,
+            detail=f"모델 '{self.model}' 확인됨.",
+            available_models=available,
+        )
+
+    async def fetch_model_len(self) -> int:
+        entries = await self._fetch_model_entries()
+        if entries is None:
+            return self.model_len
+        entry = self._match_model(entries)
+        if entry is not None:
+            self._apply_model_len(entry)
         return self.model_len
 
     async def stream_chat(
