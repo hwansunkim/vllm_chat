@@ -255,6 +255,19 @@
                  title="0 = 요약 비활성, N = N웨이브마다 LLM 요약"/>
         </div>
         <div class="sim-option-row">
+          <label>시작 요일</label>
+          <select id="sim-start-weekday"
+                  title="시뮬레이션 내 시작 요일. 자정을 넘기면 요일이 자동으로 다음 날로 넘어갑니다.">
+            <option value="mon">월요일</option>
+            <option value="tue">화요일</option>
+            <option value="wed">수요일</option>
+            <option value="thu">목요일</option>
+            <option value="fri">금요일</option>
+            <option value="sat">토요일</option>
+            <option value="sun">일요일</option>
+          </select>
+        </div>
+        <div class="sim-option-row">
           <label>시작 시각</label>
           <input type="time" id="sim-start-time" value="09:00"
                  title="시뮬레이션 내 시작 시각 (HH:MM). wave당 시간이 0이면 무시됩니다."/>

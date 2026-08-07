@@ -1,7 +1,7 @@
 // frontend/js/sim/scenarios.js
 // Scenario list CRUD + current-scenario selection.
 
-import { sim, _expandedAgents, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE } from './state.js';
+import { sim, _expandedAgents, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE, DEFAULT_START_WEEKDAY, normalizeWeekday } from './state.js';
 import { renderSettingsPage, readConfigFromUI } from './settings/page.js';
 import { refreshRunHistory } from './runs/history.js';
 import { downloadFile, safeFilename, nowTag } from './utils/download.js';
@@ -51,6 +51,7 @@ export function buildScenarioConfig() {
     output_format_template: sim.output_format_template || '',
     summary_interval:       sim.summary_interval  ?? 0,
     sim_start_time:         sim.sim_start_time    ?? '09:00',
+    sim_start_weekday:      normalizeWeekday(sim.sim_start_weekday),
     time_per_wave:          sim.time_per_wave     ?? 30,
     time_mode:              sim.time_mode ?? 'fixed',
     time_categories:        (sim.time_categories?.length ? sim.time_categories : DEFAULT_TIME_CATEGORIES),
@@ -139,6 +140,7 @@ export function newScenario() {
   sim.output_format_template = '';
   sim.summary_interval       = 0;
   sim.sim_start_time         = '09:00';
+  sim.sim_start_weekday      = DEFAULT_START_WEEKDAY;
   sim.time_per_wave          = 30;
   sim.time_mode              = 'fixed';
   sim.time_categories        = DEFAULT_TIME_CATEGORIES.map(c => ({ ...c }));
@@ -192,6 +194,8 @@ export function applyScenario(s) {
   sim.output_format_template = cfg.output_format_template || '';
   sim.summary_interval       = cfg.summary_interval       ?? 0;
   sim.sim_start_time         = cfg.sim_start_time         ?? '09:00';
+  // 구버전 시나리오에는 필드가 없다 — normalizeWeekday()가 'mon'으로 폴백한다.
+  sim.sim_start_weekday      = normalizeWeekday(cfg.sim_start_weekday);
   sim.time_per_wave          = cfg.time_per_wave          ?? 30;
   sim.time_mode              = cfg.time_mode === 'variable' ? 'variable' : 'fixed';
   sim.time_categories        = cfg.time_categories?.length ? cfg.time_categories : DEFAULT_TIME_CATEGORIES.map(c => ({ ...c }));

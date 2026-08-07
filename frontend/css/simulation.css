@@ -236,11 +236,16 @@
   border: 1px solid #e2e8f0; border-radius: 5px; text-align: right; outline: none;
 }
 .sim-option-row input[type=number]:focus { border-color: #6366f1; }
-#sim-start-agent, #sim-server-select, #sim-time-mode {
+#sim-start-agent, #sim-server-select, #sim-time-mode, #sim-start-weekday {
   font-size: 12px; padding: 5px 7px;
   border: 1px solid #e2e8f0; border-radius: 5px; background: white; outline: none;
   max-width: 150px;
 }
+#sim-start-time {
+  font-size: 12px; padding: 4px 6px;
+  border: 1px solid #e2e8f0; border-radius: 5px; background: white; outline: none;
+}
+#sim-start-time:focus { border-color: #6366f1; }
 .sim-server-hint {
   font-size: 11px; color: #94a3b8;
   padding: 0 16px 8px; line-height: 1.4;

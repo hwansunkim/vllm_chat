@@ -1,7 +1,7 @@
 // frontend/js/sim/export/markdown.js
 // Markdown export: screenplay-style with selectable event types.
 
-import { sim, agentLabel, getAgentIcon, simTimeLabel } from '../state.js';
+import { sim, agentLabel, getAgentIcon, simTimeLabel, normalizeWeekday } from '../state.js';
 import { stripCodeFence } from '../utils/json.js';
 import { downloadFile, safeFilename, nowTag } from '../utils/download.js';
 
@@ -257,7 +257,9 @@ export async function exportRunMarkdown(runId, run, preloadedLog) {
     background:          sim.background,
     currentScenarioName: sim.currentScenarioName,
     sim_start_time:      sim.sim_start_time,
+    sim_start_weekday:   sim.sim_start_weekday,
     time_per_wave:       sim.time_per_wave,
+    time_mode:           sim.time_mode,
   };
   sim.agents              = (parsedConfig.agents || []).map(a => ({
     icon: '🤖', groups: [], initial_active: true, ...a,
@@ -265,7 +267,9 @@ export async function exportRunMarkdown(runId, run, preloadedLog) {
   sim.background          = parsedConfig.background          || '';
   sim.currentScenarioName = run.scenario_name                || '시나리오';
   sim.sim_start_time      = parsedConfig.sim_start_time      || '09:00';
+  sim.sim_start_weekday   = normalizeWeekday(parsedConfig.sim_start_weekday);
   sim.time_per_wave       = parsedConfig.time_per_wave       ?? 30;
+  sim.time_mode           = parsedConfig.time_mode           || 'fixed';
 
   const defaultChecks = { time: true, action: true, move: true, appearance: true, world: true, intervention: true, summary: false };
 

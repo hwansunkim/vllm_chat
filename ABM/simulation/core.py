@@ -25,6 +25,10 @@ _PERSIST_EVENTS: frozenset[str] = frozenset({
     "wave_summary",
 })
 
+# 시작 요일 키(프론트/스키마와 동일) → 표시 라벨. 인덱스 = 월요일 기준 0~6.
+_WEEKDAY_KEYS: tuple[str, ...] = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_WEEKDAY_LABELS: tuple[str, ...] = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
+
 _DEFAULT_TIME_CATEGORIES: list[dict] = [
     {"id": "meal_or_brief",     "label": "식사·짧은 용무 등 스킵되듯 지나가는 장면", "min_minutes": 5,   "max_minutes": 10},
     {"id": "normal_scene",      "label": "그 외 일반적인 대화/활동이 이어지는 장면",   "min_minutes": 15,  "max_minutes": 30},
@@ -58,6 +62,7 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
         lang_fix_retries: int                         = 2,
         llm_max_tokens:   int                         = 16384,
         sim_start_time:   str                         = "09:00",
+        sim_start_weekday: str                        = "mon",
         time_per_wave:    int                         = 30,
         time_mode:        str                         = "fixed",
         time_categories:  list[dict] | None            = None,
@@ -121,6 +126,11 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
             self._sim_start_minutes: int = int(h) * 60 + int(m)
         except Exception:
             self._sim_start_minutes = 9 * 60  # fallback: 09:00
+        # 시작 요일. 알 수 없는 값/누락(구버전 시나리오)이면 월요일로 폴백.
+        try:
+            self._sim_start_weekday_idx: int = _WEEKDAY_KEYS.index(str(sim_start_weekday).lower())
+        except ValueError:
+            self._sim_start_weekday_idx = 0
         self._time_per_wave: int = max(0, int(time_per_wave))
 
         # 가변 시간 모드 설정
@@ -159,9 +169,12 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
         if self._time_mode == "variable" or self._time_per_wave > 0:
             time_section = (
                 "\n\n[시간 인식]\n"
-                "매 대화 맥락에 [현재 시각: ...] 정보가 제공됩니다. "
+                "매 대화 맥락에 [현재 시각: 요일 + 오전/오후 시각] 정보가 제공됩니다. "
                 "이를 자연스럽게 인지하고 시간대에 맞는 행동을 하세요. "
-                "예) 점심 시간엔 식사를 제안하거나, 퇴근 시간이 다가오면 마무리 행동을 취하는 등."
+                "예) 점심 시간엔 식사를 제안하거나, 퇴근 시간이 다가오면 마무리 행동을 취하는 등.\n"
+                "요일도 함께 고려하세요. 평일(월~금)과 주말(토·일)의 일상은 다릅니다. "
+                "예) 평일 아침엔 출근·등교를 준비하고, 주말엔 늦잠을 자거나 여가·약속 위주로 움직이는 등. "
+                "자정을 넘기면 요일이 자동으로 다음 날로 바뀝니다."
             )
             for agent in self.agents.values():
                 agent.system_prompt += time_section
@@ -229,10 +242,17 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
                 json.dump(self.edges, f, ensure_ascii=False, indent=2)
 
     def _format_time_str(self, total_min: int) -> str:
-        """분 단위(0~1439 기준, 자동 wrap) 값을 '오전/오후 N시 M분' 문자열로 변환."""
-        total_min = total_min % (24 * 60)
-        hour, minute = divmod(total_min, 60)
+        """총 분(시작 시각 + 경과분) 값을 '요일 + 오전/오후 N시 M분' 문자열로 변환.
+
+        total_min을 1440(하루)으로 나눈 몫만큼 시작 요일에서 날짜가 넘어간 것으로 보고
+        자정 롤오버마다 요일을 순환시킨다. fixed 모드(sim_start_minutes + wave*time_per_wave)와
+        variable 모드(sim_start_minutes + elapsed_minutes) 모두 같은 '총 경과 분'을 넘기므로
+        이 계산 하나가 양쪽 모드를 모두 커버한다.
+        """
+        day_offset, minute_of_day = divmod(total_min, 24 * 60)
+        weekday = _WEEKDAY_LABELS[(self._sim_start_weekday_idx + day_offset) % 7]
+        hour, minute = divmod(minute_of_day, 60)
         if hour < 12:
-            return f"오전 {hour}시 {minute:02d}분"
+            return f"{weekday} 오전 {hour}시 {minute:02d}분"
         display_hour = hour if hour == 12 else hour - 12
-        return f"오후 {display_hour}시 {minute:02d}분"
+        return f"{weekday} 오후 {display_hour}시 {minute:02d}분"

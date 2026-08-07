@@ -93,6 +93,7 @@ class SimStartConfig(BaseModel):
     output_format_template: str              = ""
     summary_interval:       int              = 0   # 0 = 비활성, N = N웨이브마다 LLM 요약
     sim_start_time:         str              = "09:00"  # HH:MM, 시뮬레이션 내 시작 시각
+    sim_start_weekday:      Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"] = "mon"  # 시뮬레이션 내 시작 요일. 자정 롤오버마다 자동 증가
     time_per_wave:          int              = 30        # wave당 경과 시간(분). 0 = 시간 개념 비활성
     time_mode:              Literal["fixed", "variable"] = "fixed"  # "fixed" = time_per_wave 고정, "variable" = wave 내용을 LLM이 분류해 가변 경과
     time_categories:        list[TimeCategory] = [

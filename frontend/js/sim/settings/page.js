@@ -1,7 +1,7 @@
 // frontend/js/sim/settings/page.js
 // Top-level orchestration for the settings page (form ↔ sim state sync).
 
-import { sim, esc, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE } from '../state.js';
+import { sim, esc, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE, normalizeWeekday } from '../state.js';
 import { renderOutputFields } from './output-fields.js';
 import { renderAgentListInConfig, renderStartAgentSelect } from './agents.js';
 import { renderScenarioEvents } from './events.js';
@@ -17,6 +17,8 @@ export function renderSettingsPage() {
   document.getElementById('sim-summary-interval').value = sim.summary_interval ?? 0;
   const startTimeEl = document.getElementById('sim-start-time');
   if (startTimeEl) startTimeEl.value = sim.sim_start_time ?? '09:00';
+  const startWeekdayEl = document.getElementById('sim-start-weekday');
+  if (startWeekdayEl) startWeekdayEl.value = normalizeWeekday(sim.sim_start_weekday);
   const timePerWaveEl = document.getElementById('sim-time-per-wave');
   if (timePerWaveEl) timePerWaveEl.value = sim.time_per_wave ?? 30;
   const timeModeEl = document.getElementById('sim-time-mode');
@@ -62,6 +64,7 @@ export function readConfigFromUI() {
   sim.output_format_template = document.getElementById('sim-output-format').value;
   sim.summary_interval       = parseInt(document.getElementById('sim-summary-interval').value) || 0;
   sim.sim_start_time    = document.getElementById('sim-start-time')?.value || '09:00';
+  sim.sim_start_weekday = normalizeWeekday(document.getElementById('sim-start-weekday')?.value);
   sim.time_per_wave     = parseInt(document.getElementById('sim-time-per-wave')?.value)     || 0;
   sim.time_mode         = document.getElementById('sim-time-mode')?.value === 'variable' ? 'variable' : 'fixed';
   sim.time_categories   = _readTimeCategories();
