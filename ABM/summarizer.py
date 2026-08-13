@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 
-from .llm import chat_response
+from .llm import LLMCall
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +36,7 @@ def summarize_waves(
     background: str,
     wave_start: int,
     wave_end: int,
-    model: str,
-    base_url: str,
-    api_timeout: int,
+    llm: LLMCall,
     key_to_alias: dict[str, str] | None = None,
     llm_max_tokens: int = 16384,
 ) -> dict | None:
@@ -76,10 +74,7 @@ def summarize_waves(
     ]
 
     try:
-        content, _, _ = chat_response(
-            messages, model=model, base_url=base_url, timeout=api_timeout,
-            max_tokens=llm_max_tokens,
-        )
+        content, _, _ = llm(messages, max_tokens=llm_max_tokens)
         raw = content.strip()
         # Strip markdown code fence if present
         if raw.startswith("```"):

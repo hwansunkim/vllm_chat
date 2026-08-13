@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 
-from .llm import chat_response
+from .llm import LLMCall
 
 logger = logging.getLogger(__name__)
 
@@ -33,9 +33,7 @@ _USER_TEMPLATE = """\
 def classify_wave_time(
     entries: list[dict],
     categories: list[dict],
-    model: str,
-    base_url: str,
-    api_timeout: int,
+    llm: LLMCall,
     key_to_alias: dict[str, str] | None = None,
     llm_max_tokens: int = 256,
 ) -> str | None:
@@ -72,10 +70,7 @@ def classify_wave_time(
     valid_ids = {c["id"] for c in categories}
 
     try:
-        content, _, _ = chat_response(
-            messages, model=model, base_url=base_url, timeout=api_timeout,
-            max_tokens=llm_max_tokens,
-        )
+        content, _, _ = llm(messages, max_tokens=llm_max_tokens)
         raw = content.strip()
         # Strip markdown code fence if present
         if raw.startswith("```"):

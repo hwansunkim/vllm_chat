@@ -12,7 +12,7 @@ import json
 import logging
 
 from .db import SimDB
-from .llm import chat_response
+from .llm import LLMCall
 
 logger = logging.getLogger(__name__)
 
@@ -154,9 +154,7 @@ def compress(
     messages: list[dict],
     wave: int,
     db: SimDB,
-    model: str,
-    base_url: str,
-    api_timeout: int,
+    llm: LLMCall,
     key_to_alias: dict | None = None,
     llm_max_tokens: int = 16384,
 ) -> str | None:
@@ -184,12 +182,11 @@ def compress(
     )
 
     try:
-        raw, _, _ = chat_response(
+        raw, _, _ = llm(
             [
                 {"role": "system", "content": _COMPRESSION_SYSTEM},
                 {"role": "user",   "content": prompt},
             ],
-            model, base_url, api_timeout,
             max_tokens=llm_max_tokens,
         )
         data = _parse_compression_result(raw)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -22,9 +23,13 @@ async def lifespan(app: FastAPI):
     conn.close()
 
     state.max_model_len = await llm_client.async_get_model_context_limit()
+    # provider 의 httpx.AsyncClient 는 이 루프에 바인딩된다. 워커 스레드가
+    # backend.llm.bridge 를 통해 코루틴을 되돌려 실행할 수 있도록 참조를 공유한다.
+    state.event_loop = asyncio.get_running_loop()
 
     yield
 
+    state.event_loop = None
     await llm_client.teardown()
 
 

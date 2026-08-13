@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 
-from .llm import chat_response
+from .llm import LLMCall
 
 logger = logging.getLogger(__name__)
 
@@ -77,9 +77,7 @@ def run_system_agent(
     director_note: str,
     director_memo: str,
     key_to_alias: dict[str, str] | None,
-    model: str,
-    base_url: str,
-    api_timeout: int,
+    llm: LLMCall,
     llm_max_tokens: int = 16384,
 ) -> dict | None:
     """Run the system agent LLM call.
@@ -144,10 +142,7 @@ def run_system_agent(
     ]
 
     try:
-        content, _, _ = chat_response(
-            messages, model=model, base_url=base_url, timeout=api_timeout,
-            max_tokens=llm_max_tokens,
-        )
+        content, _, _ = llm(messages, max_tokens=llm_max_tokens)
         raw = content.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()

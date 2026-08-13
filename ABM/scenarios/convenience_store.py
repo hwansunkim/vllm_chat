@@ -1,9 +1,56 @@
+"""편의점 시나리오 — 로컬 스모크테스트용 standalone 스크립트.
+
+이 파일은 백엔드 DB/registry 없이 ABM.config 환경변수만으로 vLLM 에 직접 붙는다.
+Simulation 은 llm 콜러블을 주입받으므로, 여기서는 이 스크립트 전용의 최소
+동기 HTTP 콜러블(_direct_chat)을 만들어 넘긴다. 서버 등록/프로바이더 선택이
+필요한 실사용 경로는 backend/llm/bridge.py 의 make_sync_chat() 을 쓴다.
+"""
+import logging
+
+import requests
+
 from ..agent import Agent
+from ..config import LOG_DIR, MODEL, BASE_URL, API_KEY, API_TIMEOUT
+from ..llm import LLMCall
 from ..simulation import Simulation
-from ..config import LOG_DIR, MODEL, BASE_URL, API_TIMEOUT
+
+logger = logging.getLogger(__name__)
 
 
-def run():
+def _direct_chat(messages: list, *, max_tokens: int = 16384) -> tuple[str, str, dict]:
+    """ABM.config 환경변수로 vLLM 에 직접 요청하는 최소 LLMCall 구현.
+
+    로컬 스모크테스트 전용이라 재시도는 두지 않는다.
+    """
+    payload = {
+        "model":       MODEL,
+        "messages":    messages,
+        "max_tokens":  max_tokens,
+        "temperature": 0.7,
+        "stream":      False,
+    }
+    headers = {"Content-Type": "application/json"}
+    if API_KEY:
+        headers["Authorization"] = f"Bearer {API_KEY}"
+    r = requests.post(
+        f"{BASE_URL}/v1/chat/completions",
+        headers=headers,
+        json=payload,
+        timeout=API_TIMEOUT,
+    )
+    r.raise_for_status()
+    data = r.json()
+    if "choices" not in data or not data["choices"]:
+        logger.error(f"응답 구조 오류: {data}")
+        raise ValueError("Invalid response structure")
+    message_obj = data["choices"][0].get("message", {})
+    content   = message_obj.get("content", "")
+    reasoning = message_obj.get("reasoning", "") or message_obj.get("reasoning_content", "")
+    usage     = data.get("usage", {})
+    return content, reasoning, usage
+
+
+def run(llm: LLMCall | None = None):
     agents = {
         "boss": Agent(
             "boss",
@@ -38,5 +85,5 @@ def run():
     ]
 
     print("🏪 편의점 시뮬레이션 시작\n" + "=" * 50)
-    sim = Simulation(agents, background_log, LOG_DIR, MODEL, BASE_URL, API_TIMEOUT)
+    sim = Simulation(agents, background_log, LOG_DIR, llm=llm or _direct_chat)
     sim.run(start_agent="boss", max_waves=8)

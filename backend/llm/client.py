@@ -37,6 +37,22 @@ async def async_stream_chat(
         yield event
 
 
+async def async_chat(
+    messages: list,
+    *,
+    temperature: float = 0.7,
+    max_tokens: int = config.MAX_COMPLETION_TOKENS,
+    timeout: float | None = None,
+    model: str | None = None,
+    server_id: str | None = None,
+) -> tuple[str, dict]:
+    """비스트리밍 멀티턴 호출. 반환 usage 에는 "thinking" 키가 포함된다."""
+    provider = get_registry().select(model=model, server_id=server_id)
+    return await provider.chat(
+        messages, temperature=temperature, max_tokens=max_tokens, timeout=timeout
+    )
+
+
 async def async_get_model_context_limit() -> int:
     provider = get_registry().get_default()
     if provider is None:

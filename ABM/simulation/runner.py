@@ -277,8 +277,7 @@ class _RunnerMixin:
                 if result.get("success")
             ]
             category_id = classify_wave_time(
-                entries, self._time_categories,
-                self.model, self.base_url, self.api_timeout,
+                entries, self._time_categories, self._llm,
                 key_to_alias=self._key_to_alias,
                 llm_max_tokens=min(self.llm_max_tokens, 256),
             )
@@ -311,9 +310,7 @@ class _RunnerMixin:
             background     = bg_text,
             wave_start     = wave_start,
             wave_end       = wave_end,
-            model          = self.model,
-            base_url       = self.base_url,
-            api_timeout    = self.api_timeout,
+            llm            = self._llm,
             key_to_alias   = self._key_to_alias,
             llm_max_tokens = self.llm_max_tokens,
         )

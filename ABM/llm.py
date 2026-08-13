@@ -1,51 +1,13 @@
-import requests
-import json
-import logging
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from .config import BASE_URL, MODEL, API_KEY, API_TIMEOUT
+"""ABM 이 사용하는 LLM 호출 계약.
 
-logger = logging.getLogger(__name__)
+ABM 은 LLM 전송 방식을 직접 알지 않는다. Simulation 생성자에 아래 형태의
+콜러블을 주입받고 그것만 호출한다. 실제 구현은 backend/llm/bridge.py 의
+make_sync_chat() 이 만들며, backend/llm/providers/* 계층으로 위임한다.
+"""
+from __future__ import annotations
 
+from collections.abc import Callable
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_exception_type((requests.exceptions.RequestException, json.JSONDecodeError, ValueError)),
-)
-def chat_response(
-    messages: list,
-    model: str = MODEL,
-    base_url: str = BASE_URL,
-    timeout: int = API_TIMEOUT,
-    max_tokens: int = 16384,
-) -> tuple[str, str, dict]:
-    """Returns (content, reasoning, usage).
-
-    usage keys: prompt_tokens, completion_tokens, total_tokens.
-    """
-    payload = {
-        "model":       model,
-        "messages":    messages,
-        "max_tokens":  max_tokens,
-        "temperature": 0.7,
-        "stream":      False,
-    }
-    headers = {"Content-Type": "application/json"}
-    if API_KEY:
-        headers["Authorization"] = f"Bearer {API_KEY}"
-    r = requests.post(
-        f"{base_url}/v1/chat/completions",
-        headers=headers,
-        json=payload,
-        timeout=timeout,
-    )
-    r.raise_for_status()
-    data = r.json()
-    if "choices" not in data or not data["choices"]:
-        logger.error(f"응답 구조 오류: {data}")
-        raise ValueError("Invalid response structure")
-    message_obj = data["choices"][0].get("message", {})
-    content   = message_obj.get("content", "")
-    reasoning = message_obj.get("reasoning", "") or message_obj.get("reasoning_content", "")
-    usage     = data.get("usage", {})
-    return content, reasoning, usage
+# (messages, *, max_tokens) -> (content, reasoning, usage)
+# usage 키: prompt_tokens / completion_tokens / total_tokens
+LLMCall = Callable[..., tuple[str, str, dict]]

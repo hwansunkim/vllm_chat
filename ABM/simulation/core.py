@@ -5,7 +5,8 @@ import threading
 import logging
 
 from ..agent import Agent
-from ..config import LOG_DIR, MODEL, BASE_URL, API_TIMEOUT
+from ..config import LOG_DIR
+from ..llm import LLMCall
 from .location import _LocationMixin
 from .targets import _TargetsMixin
 from .events import _EventsMixin
@@ -43,9 +44,8 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
         agents:           dict[str, Agent],
         background_log:   list,
         log_dir:          str                    = LOG_DIR,
-        model:            str                    = MODEL,
-        base_url:         str                    = BASE_URL,
-        api_timeout:      int                    = API_TIMEOUT,
+        *,
+        llm:              LLMCall | None         = None,
         event_queue:      queue.Queue | None     = None,
         stop_event:       threading.Event | None = None,
         initial_agents:   list[str] | None       = None,
@@ -72,9 +72,7 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
         self.agents         = agents
         self.background_log = background_log
         self.log_dir        = log_dir
-        self.model          = model
-        self.base_url       = base_url
-        self.api_timeout    = api_timeout
+        self._llm           = llm
         self.llm_max_tokens = llm_max_tokens
         self.shared_log: list = list(background_log)
         self.edges:      list = []

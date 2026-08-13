@@ -7,6 +7,20 @@ from typing import Literal, Protocol, runtime_checkable
 HealthStatus = Literal["ok", "model_missing", "unreachable"]
 
 
+class LLMHTTPError(RuntimeError):
+    """LLM 서버가 비-2xx 를 반환했을 때 상태코드를 보존하는 예외.
+
+    `RuntimeError` 서브클래스이므로 기존 `except RuntimeError` 경로
+    (conversations.py 등)는 그대로 동작한다. 상태코드를 보존하는 이유는
+    호출자(특히 bridge 의 재시도 predicate)가 408/429/5xx 같은 일시적
+    실패와 400(파라미터 거부 등 영구 실패)을 구분하기 위해서다.
+    """
+
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 @dataclass
 class HealthReport:
     """서버 연결 확인 결과.
@@ -57,6 +71,7 @@ class LLMProvider(Protocol):
         *,
         temperature: float,
         max_tokens: int,
+        timeout: float | None = None,
     ) -> tuple[str, dict]: ...
 
     async def llm(
@@ -79,6 +94,8 @@ class LLMProvider(Protocol):
     async def health_check(self) -> bool: ...
 
     async def health_status(self) -> HealthReport: ...
+
+    async def list_models(self) -> list[dict] | None: ...
 
     async def fetch_model_len(self) -> int: ...
 

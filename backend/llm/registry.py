@@ -1,10 +1,39 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sqlite3
 
+from .providers.anthropic import AnthropicProvider
 from .providers.base import LLMProvider
+from .providers.openai import OpenAIProvider
 from .providers.vllm import VLLMProvider
+
+logger = logging.getLogger(__name__)
+
+_PROVIDER_CLASSES: dict[str, type] = {
+    "vllm":      VLLMProvider,
+    "openai":    OpenAIProvider,
+    "anthropic": AnthropicProvider,
+}
+DEFAULT_PROVIDER_TYPE = "vllm"
+
+
+class NoProviderError(RuntimeError):
+    """사용 가능한 서버가 하나도 없을 때. 재시도해도 소용없는 영구 실패.
+
+    `RuntimeError` 서브클래스이므로 기존 `except RuntimeError`(conversations.py)는
+    그대로 동작한다. bridge 의 재시도 predicate 가 이 예외만 즉시 포기한다.
+    """
+
+
+def get_provider_class(provider_type: str) -> type | None:
+    """provider_type 문자열 → 프로바이더 클래스. 알 수 없으면 None.
+
+    registry 에 등록하지 않고 임시 인스턴스를 만들려는 호출자(예: 저장 전
+    모델 목록 조회)를 위한 공개 조회 함수.
+    """
+    return _PROVIDER_CLASSES.get((provider_type or "").strip().lower())
 
 
 class ServerRegistry:
@@ -29,8 +58,18 @@ class ServerRegistry:
         for row in rows:
             await self._create_provider(dict(row))
 
-    async def _create_provider(self, row: dict) -> VLLMProvider:
-        p = VLLMProvider(
+    async def _create_provider(self, row: dict) -> LLMProvider:
+        ptype = (row.get("provider_type") or DEFAULT_PROVIDER_TYPE).strip().lower()
+        cls = _PROVIDER_CLASSES.get(ptype)
+        if cls is None:
+            # 알 수 없는 타입(구버전 DB/오타)은 서버 기동을 막지 않고 vllm 으로 폴백
+            logger.warning(
+                "[%s] 알 수 없는 provider_type=%r → '%s' 로 폴백합니다.",
+                row.get("name"), ptype, DEFAULT_PROVIDER_TYPE,
+            )
+            cls = _PROVIDER_CLASSES[DEFAULT_PROVIDER_TYPE]
+
+        p = cls(
             server_id=row["id"],
             name=row["name"],
             base_url=row["base_url"],
@@ -49,7 +88,7 @@ class ServerRegistry:
             await p.close()
         self._providers.clear()
 
-    async def register(self, row: dict) -> VLLMProvider:
+    async def register(self, row: dict) -> LLMProvider | None:
         async with self._lock:
             existing = self._providers.pop(row["id"], None)
             if existing:
@@ -67,7 +106,7 @@ class ServerRegistry:
             if p:
                 await p.close()
 
-    def get_provider(self, server_id: str) -> VLLMProvider | None:
+    def get_provider(self, server_id: str) -> LLMProvider | None:
         return self._providers.get(server_id)
 
     def list_providers(self) -> list[LLMProvider]:
@@ -102,7 +141,7 @@ class ServerRegistry:
         if default:
             return default
 
-        raise RuntimeError("사용 가능한 LLM 서버가 없습니다.")
+        raise NoProviderError("사용 가능한 LLM 서버가 없습니다.")
 
     def _round_robin(self, key: str, candidates: list[LLMProvider]) -> LLMProvider:
         idx = self._rr_counters.get(key, 0) % len(candidates)

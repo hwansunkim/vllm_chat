@@ -35,9 +35,7 @@ class _SystemMixin:
             director_note     = self._director_note,
             director_memo     = self._director_memo,
             key_to_alias      = self._key_to_alias,
-            model             = self.model,
-            base_url          = self.base_url,
-            api_timeout       = self.api_timeout,
+            llm               = self._llm,
             llm_max_tokens    = self.llm_max_tokens,
         )
         if not result:

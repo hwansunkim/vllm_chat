@@ -18,32 +18,17 @@ from .state import _sim, _sim_lock, get_sim_db
 router = APIRouter()
 
 
-def _resolve_server(server_id: str | None) -> tuple[str, str, int]:
-    """서버 ID로 (base_url, model, api_timeout) 반환.
+def _make_llm(server_id: str | None):
+    """server_id로 provider를 고정한 동기 LLM 콜러블을 만든다.
 
-    우선순위:
-      1. server_id가 있으면 해당 서버
-      2. server_id가 None이면 is_default=1 서버
-      3. DB에 서버가 없으면 ABM/config.py 환경변수 폴백
+    server_id가 None이면 registry의 기본 서버가 선택된다. DB에 사용 가능한
+    서버가 없으면 select()가 즉시 RuntimeError를 던지며, 이는 이 함수 호출
+    시점이 아니라 반환된 콜러블을 실제로 호출하는 첫 LLM 요청 시점에 발생해
+    기존처럼 _run()의 except 절 → finalize_run(error=)로 UI에 표시된다.
     """
-    from ABM.config import BASE_URL, MODEL, API_TIMEOUT
-    try:
-        conn = get_db()
-        if server_id:
-            row = conn.execute(
-                "SELECT base_url, model FROM servers WHERE id=? AND enabled=1",
-                (server_id,),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT base_url, model FROM servers WHERE is_default=1 AND enabled=1 LIMIT 1",
-            ).fetchone()
-        conn.close()
-        if row:
-            return row["base_url"], row["model"], API_TIMEOUT
-    except Exception:
-        pass
-    return BASE_URL, MODEL, API_TIMEOUT
+    from ABM.config import API_TIMEOUT
+    from ...llm.bridge import make_sync_chat
+    return make_sync_chat(server_id=server_id, timeout=API_TIMEOUT)
 
 
 
@@ -77,7 +62,7 @@ def start_simulation(cfg: SimStartConfig):
             from ABM.db import SimDB
             from ABM.config import LOG_DIR
 
-            base_url, model, api_timeout = _resolve_server(cfg.server_id)
+            llm = _make_llm(cfg.server_id)
 
             run_sim_id    = str(uuid.uuid4())
             db            = SimDB(os.path.join(LOG_DIR, "simulation.db"))
@@ -118,7 +103,7 @@ def start_simulation(cfg: SimStartConfig):
 
             sim = Simulation(
                 agents, background_log, LOG_DIR,
-                model, base_url, api_timeout,
+                llm=llm,
                 event_queue=eq,
                 stop_event=stop_ev,
                 initial_agents=init_param,
@@ -277,7 +262,7 @@ def load_simulation(run_id: str):
         from ABM.config import LOG_DIR
         from ABM.memory_compressor import build_memory_block
 
-        base_url, model, api_timeout = _resolve_server(cfg.server_id)
+        llm = _make_llm(cfg.server_id)
         alias_map    = {a.display_name: a.name for a in cfg.agents if a.display_name.strip()}
         key_to_alias = {v: k for k, v in alias_map.items()}
 
@@ -304,7 +289,7 @@ def load_simulation(run_id: str):
 
         sim_obj = Simulation(
             agents, background_log, LOG_DIR,
-            model, base_url, api_timeout,
+            llm=llm,
             initial_agents=init_agents,
             name_aliases=alias_map,
             db=SimDB(os.path.join(LOG_DIR, "simulation.db")),
@@ -414,7 +399,7 @@ def resume_simulation(run_id: str):
             from ABM.config import LOG_DIR
             from ABM.memory_compressor import build_memory_block
 
-            base_url, model, api_timeout = _resolve_server(cfg.server_id)
+            llm = _make_llm(cfg.server_id)
             run_sim_id    = str(uuid.uuid4())
             new_db        = SimDB(os.path.join(LOG_DIR, "simulation.db"))
             scenario_name = run.get("scenario_name")
@@ -447,7 +432,7 @@ def resume_simulation(run_id: str):
 
             sim = Simulation(
                 agents, background_log, LOG_DIR,
-                model, base_url, api_timeout,
+                llm=llm,
                 event_queue=eq, stop_event=stop_ev,
                 initial_agents=init_agents,
                 name_aliases=alias_map,

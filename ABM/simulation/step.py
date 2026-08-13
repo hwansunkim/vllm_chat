@@ -1,7 +1,6 @@
 import logging
 
 from ..agent import Agent
-from ..llm import chat_response
 from ..parser import parse_json_extras
 from ._constants import _COMPRESSION_THRESHOLD, _COMPRESSION_MIN_MSGS, _has_foreign_chars
 
@@ -22,9 +21,7 @@ class _StepMixin:
             messages       = list(agent.memory),
             wave           = wave,
             db             = self._db,
-            model          = self.model,
-            base_url       = self.base_url,
-            api_timeout    = self.api_timeout,
+            llm            = self._llm,
             key_to_alias   = self._key_to_alias,
             llm_max_tokens = self.llm_max_tokens,
         )
@@ -100,9 +97,8 @@ class _StepMixin:
     ) -> tuple[str | None, str, dict, str | None]:
         """Invoke the LLM with pre-built messages. Returns (content, reasoning, usage, error)."""
         try:
-            content, reasoning, usage = chat_response(
-                call_messages, self.model, self.base_url, self.api_timeout,
-                max_tokens=self.llm_max_tokens,
+            content, reasoning, usage = self._llm(
+                call_messages, max_tokens=self.llm_max_tokens,
             )
         except Exception as e:
             logger.error(f"응답 생성 실패 ({agent.name}): {e}")
@@ -143,9 +139,8 @@ class _StepMixin:
             fix_msgs.append({"role": "assistant", "content": current_bad})
             fix_msgs.append({"role": "user",      "content": CORRECTION_MSG})
             try:
-                content, reasoning, usage = chat_response(
-                    fix_msgs, self.model, self.base_url, self.api_timeout,
-                    max_tokens=self.llm_max_tokens,
+                content, reasoning, usage = self._llm(
+                    fix_msgs, max_tokens=self.llm_max_tokens,
                 )
             except Exception as e:
                 logger.error(f"언어 교잡 재시도 실패 ({agent.name}) attempt={attempt}: {e}")
