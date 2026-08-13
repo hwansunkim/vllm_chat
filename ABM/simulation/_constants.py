@@ -1,8 +1,12 @@
 import re
 from difflib import SequenceMatcher
 
-# CJK Unified / Extension-A / Compatibility Ideographs
-_CJK_RE = re.compile(r'[一-鿿㐀-䶿豈-﫿]')
+# CJK Unified (U+4E00-U+9FFF) / Extension-A (U+3400-U+4DBF) / Compatibility Ideographs (U+F900-U+FAFF).
+# 코드포인트 이스케이프로 명시: 리터럴 한자를 쓰면 육안으로 구별 안 되는 호환 문자(예:
+# U+F900 대 정준 형태 U+8C48)가 복붙 과정에서 섞여 들어가 범위가 어긋나기 쉽다 —
+# 예전에 U+8C48이 섞여 들어가 U+8C48-U+FAFF로 범위가 벌어지면서 한글 음절
+# (U+AC00-U+D7A3)까지 통째로 포함돼 정상 한국어가 외국어로 오탐된 적이 있다.
+_CJK_RE = re.compile(r'[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]')
 
 
 def _has_foreign_chars(text: str) -> bool:
