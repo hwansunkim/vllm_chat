@@ -310,12 +310,22 @@
   font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 20px;
   background: #fef3c7; color: #d97706; letter-spacing: 0.3px;
 }
+/* provider_type 구분용 뱃지 — 여러 프로바이더가 섞여 있을 때 한눈에 구분 */
+.server-provider-badge {
+  font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 20px;
+  background: #f1f5f9; color: #475569; letter-spacing: 0.3px;
+}
+.server-provider-badge.vllm      { background: #e0e7ff; color: #4f46e5; }
+.server-provider-badge.openai    { background: #ccfbf1; color: #0f766e; }
+.server-provider-badge.anthropic { background: #ffedd5; color: #c2410c; }
 .server-status {
   font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 20px; letter-spacing: 0.3px;
 }
 .server-status.enabled { background: #e0f2fe; color: #0284c7; }
 .server-status.disabled { background: #f1f5f9; color: #94a3b8; }
 .server-card-url { font-size: 12px; color: #64748b; font-family: monospace; }
+/* base_url 을 비워 프로바이더 기본 주소를 쓰는 경우 */
+.server-card-url.implicit { color: #94a3b8; font-style: italic; }
 .server-card-model { font-size: 12px; color: #94a3b8; }
 .server-card-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
 .server-health-btn {
@@ -339,16 +349,41 @@
 .server-form-group { display: flex; flex-direction: column; gap: 5px; }
 .server-form-group label { font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }
 .server-form-group input[type="text"],
-.server-form-group input[type="number"] {
+.server-form-group input[type="number"],
+.server-form-group select {
   width: 100%; padding: 8px 12px;
   border: 1.5px solid #e2e8f0; border-radius: 8px;
   font-size: 14px; outline: none; font-family: inherit; color: #1e293b;
+  background: white;
 }
-.server-form-group input:focus { border-color: #0284c7; }
+.server-form-group select { cursor: pointer; }
+.server-form-group input:focus,
+.server-form-group select:focus { border-color: #0284c7; }
+.server-form-hint { font-size: 12px; color: #94a3b8; line-height: 1.5; }
+/* 모델 입력 + "모델 불러오기" 버튼 한 줄 */
+.server-model-row { display: flex; gap: 8px; align-items: center; }
+.server-model-row input[type="text"] { flex: 1; min-width: 0; }
+.btn-probe-models {
+  flex: 0 0 auto; padding: 8px 14px;
+  border: 1.5px solid #bae6fd; border-radius: 8px;
+  background: #f0f9ff; color: #0369a1;
+  font-size: 13px; font-weight: 600; font-family: inherit;
+  cursor: pointer; white-space: nowrap;
+}
+.btn-probe-models:hover:not(:disabled) { background: #e0f2fe; border-color: #7dd3fc; }
+.btn-probe-models:disabled { opacity: 0.6; cursor: progress; }
+.btn-probe-models.hidden { display: none; }
+/* 조회 결과/오류 안내 — 폼 힌트와 같은 톤, 오류일 때만 색으로 구분 */
+.sv-probe-status { font-size: 12px; color: #64748b; line-height: 1.5; }
+.sv-probe-status.error { color: #dc2626; }
+.sv-probe-status.hidden { display: none; }
 .server-form-row { display: flex; gap: 12px; }
 .server-form-check { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
 .server-form-check input[type="checkbox"] { accent-color: #0284c7; width: 15px; height: 15px; cursor: pointer; }
 .server-form-check label { font-size: 13px; color: #475569; cursor: pointer; }
+/* provider 가 지원하지 않는 옵션 — 사라지지 않고 흐리게 남아 "왜 못 켜는지"를 보여준다 */
+.server-form-check.unsupported label { color: #cbd5e1; cursor: not-allowed; }
+.server-form-check input[type="checkbox"]:disabled { opacity: 0.45; cursor: not-allowed; }
 .server-form-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; border-top: 1px solid #f1f5f9; }
 .btn-server-primary {
   padding: 9px 22px; background: #0284c7;

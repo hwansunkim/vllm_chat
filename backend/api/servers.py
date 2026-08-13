@@ -5,11 +5,32 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException
 
-from .schemas import ServerCreate, ServerHealth, ServerUpdate
+from .schemas import (
+    ModelProbeRequest,
+    ModelProbeResponse,
+    ProbedModel,
+    ServerCreate,
+    ServerHealth,
+    ServerUpdate,
+)
 from ..db.database import get_db
-from ..llm.registry import get_registry
+from ..llm.registry import get_provider_class, get_registry
 
 router = APIRouter(prefix="/api/servers")
+
+
+def _mask_api_key(key: str | None) -> str:
+    """응답 직렬화용 마스킹. DB 에는 항상 평문이 저장된다.
+
+    - 빈 값        → "" (프론트에서 '키 없음' 으로 표시)
+    - 8자 미만     → "***"
+    - 8자 이상     → 앞 4자 + "..." + 뒤 4자   (예: sk-a...b3f2)
+    """
+    if not key:
+        return ""
+    if len(key) < 8:
+        return "***"
+    return f"{key[:4]}...{key[-4:]}"
 
 
 def _row_to_dict(row) -> dict:
@@ -18,6 +39,8 @@ def _row_to_dict(row) -> dict:
     d["is_default"] = bool(d["is_default"])
     d["thinking"] = bool(d.get("thinking", False))
     d["max_model_len"] = d.get("max_model_len", 0)
+    d["provider_type"] = d.get("provider_type") or "vllm"
+    d["api_key"] = _mask_api_key(d.get("api_key"))
     provider = get_registry().get_provider(d["id"])
     d["model_len"] = provider.model_len if provider else d["max_model_len"]
     return d
@@ -43,9 +66,9 @@ async def create_server(body: ServerCreate):
         conn.execute("UPDATE servers SET is_default=0")
 
     conn.execute(
-        """INSERT INTO servers (id, name, base_url, model, api_key, weight, enabled, is_default, thinking, max_model_len, created_at)
-           VALUES (?,?,?,?,?,?,1,?,?,?,?)""",
-        (sid, body.name, body.base_url.rstrip("/"), body.model, body.api_key,
+        """INSERT INTO servers (id, name, base_url, model, provider_type, api_key, weight, enabled, is_default, thinking, max_model_len, created_at)
+           VALUES (?,?,?,?,?,?,?,1,?,?,?,?)""",
+        (sid, body.name, body.base_url.rstrip("/"), body.model, body.provider_type, body.api_key,
          body.weight, int(body.is_default), int(body.thinking), body.max_model_len, now),
     )
     conn.commit()
@@ -56,6 +79,67 @@ async def create_server(body: ServerCreate):
     if provider:
         await provider.fetch_model_len()
     return _row_to_dict(row)
+
+
+@router.post("/probe-models", response_model=ModelProbeResponse)
+async def probe_models(body: ModelProbeRequest):
+    """저장 전 서버 설정으로 사용 가능한 모델 목록을 조회한다 (DB 미변경).
+
+    provider 를 임시 인스턴스화해서 목록만 읽고 즉시 닫는다. registry 에는
+    등록하지 않으므로 이 호출은 실행 중인 서버 풀에 아무 영향을 주지 않는다.
+    반환 목록은 필터링·정렬 없이 API 원본 순서 그대로다(선별은 프론트 몫).
+    """
+    cls = get_provider_class(body.provider_type)
+    if cls is None:
+        raise HTTPException(400, detail=f"알 수 없는 provider_type: {body.provider_type!r}")
+
+    api_key = body.api_key.strip()
+    if not api_key and body.server_id:
+        conn = get_db()
+        existing = conn.execute(
+            "SELECT api_key FROM servers WHERE id=?", (body.server_id,)
+        ).fetchone()
+        conn.close()
+        if existing and existing["api_key"]:
+            api_key = existing["api_key"]
+
+    provider = cls(
+        server_id="__probe__",
+        name=f"probe:{body.provider_type}",
+        base_url=body.base_url.strip().rstrip("/"),
+        model="",
+        api_key=api_key,
+        enabled=False,
+        is_default=False,
+        thinking=False,
+        configured_max_len=0,
+    )
+    try:
+        # vLLM 은 기본 주소가 없다. 빈 주소로 조회하면 상대 URL 이 되어
+        # 일반적인 "조회 실패" 로 뭉개지므로 원인을 분명히 알려준다.
+        effective_base_url = provider.base_url
+        if not effective_base_url:
+            raise HTTPException(400, detail="서버 주소(base_url)를 입력하세요.")
+        entries = await provider.list_models()
+    finally:
+        await provider.close()
+
+    if entries is None:
+        raise HTTPException(
+            400,
+            detail="모델 목록을 가져오지 못했습니다. API 키와 주소를 확인하세요.",
+        )
+
+    models = [
+        ProbedModel(id=e["id"], context_length=e.get("max_model_len") or None)
+        for e in entries
+        if isinstance(e.get("id"), str) and e["id"]
+    ]
+    return ModelProbeResponse(
+        provider_type=body.provider_type,
+        base_url=effective_base_url,
+        models=models,
+    )
 
 
 @router.get("/{server_id}")
@@ -77,6 +161,15 @@ async def update_server(server_id: str, body: ServerUpdate):
         raise HTTPException(404)
 
     fields = body.model_dump(exclude_unset=True)
+
+    # api_key 는 GET 응답에서 마스킹되므로, 프론트가 되돌려 보낸 값을 그대로 저장하면 안 된다.
+    # 계약: 빈 문자열 = "변경 안 함"(기존 키 유지). 실제 새 키를 넣었을 때만 갱신된다.
+    # 방어적으로, 기존 키의 마스킹 결과와 똑같은 값이 들어와도 "변경 안 함"으로 본다.
+    if "api_key" in fields:
+        submitted = fields["api_key"]
+        if not submitted or submitted == _mask_api_key(existing["api_key"] if "api_key" in existing.keys() else ""):
+            fields.pop("api_key")
+
     if not fields:
         conn.close()
         return _row_to_dict(existing)

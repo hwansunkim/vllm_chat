@@ -49,6 +49,7 @@ class ServerCreate(BaseModel):
     name: str
     base_url: str
     model: str
+    provider_type: Literal["vllm", "openai", "anthropic"] = "vllm"
     api_key: str = ""
     weight: int = 1
     is_default: bool = False
@@ -80,10 +81,39 @@ class ServerHealth(BaseModel):
     available_models: list[str] = []
 
 
+class ModelProbeRequest(BaseModel):
+    """아직 저장되지 않은 서버 설정으로 사용 가능한 모델 목록을 조회하는 요청.
+
+    DB 를 전혀 건드리지 않는 순수 조회용이므로 model 필드가 없다(그걸 알아내는 게 목적).
+    base_url 이 비어있으면 provider 의 기본 주소를 사용한다.
+    """
+
+    provider_type: Literal["vllm", "openai", "anthropic"] = "vllm"
+    base_url: str = ""
+    api_key: str = ""
+    # 편집 모드에서 API Key 입력란은 항상 비어서 시작한다(마스킹 값 prefill 금지).
+    # api_key 가 비어있고 이 값이 있으면, DB 에 저장된 해당 서버의 평문 키로 대신 조회한다.
+    server_id: str | None = None
+
+
+class ProbedModel(BaseModel):
+    """조회된 모델 하나. context_length 는 API 가 알려주지 않으면 None."""
+
+    id: str
+    context_length: int | None = None
+
+
+class ModelProbeResponse(BaseModel):
+    provider_type: Literal["vllm", "openai", "anthropic"]
+    base_url: str                # 실제로 조회에 사용된 주소(기본값 적용 후)
+    models: list[ProbedModel] = []
+
+
 class ServerUpdate(BaseModel):
     name: str | None = None
     base_url: str | None = None
     model: str | None = None
+    provider_type: Literal["vllm", "openai", "anthropic"] | None = None
     api_key: str | None = None
     weight: int | None = None
     enabled: bool | None = None

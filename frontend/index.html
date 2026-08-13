@@ -542,21 +542,37 @@
       </div>
       <div class="server-form-body">
         <div class="server-form-group">
+          <label for="sv-provider">Provider *</label>
+          <select id="sv-provider">
+            <option value="vllm">vLLM (로컬/자체 호스팅)</option>
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic (Claude)</option>
+          </select>
+          <div class="server-form-hint" id="sv-provider-hint"></div>
+        </div>
+        <div class="server-form-group">
           <label>서버 이름 *</label>
           <input id="sv-name" type="text" placeholder="예: Primary GPU Server">
         </div>
         <div class="server-form-group">
-          <label>Base URL *</label>
+          <label id="sv-url-label" for="sv-url">Base URL *</label>
           <input id="sv-url" type="text" placeholder="예: http://172.17.3.135:8000">
         </div>
         <div class="server-form-group">
-          <label>모델 이름 *</label>
-          <input id="sv-model" type="text" placeholder="예: google/gemma-4-31B-it">
+          <label for="sv-model">모델 이름 *</label>
+          <div class="server-model-row">
+            <!-- datalist 는 비어 있으면 그냥 자유 텍스트 입력으로 동작한다 -->
+            <input id="sv-model" type="text" list="sv-model-options" autocomplete="off"
+                   placeholder="예: google/gemma-4-31B-it">
+            <datalist id="sv-model-options"></datalist>
+            <button type="button" class="btn-probe-models hidden" id="sv-probe-btn">모델 불러오기</button>
+          </div>
+          <div class="sv-probe-status hidden" id="sv-probe-status" aria-live="polite"></div>
         </div>
         <div class="server-form-row">
           <div class="server-form-group" style="flex:1">
-            <label>API Key (없으면 빈칸)</label>
-            <input id="sv-api-key" type="text" placeholder="예: local">
+            <label id="sv-api-key-label" for="sv-api-key">API Key (없으면 빈칸)</label>
+            <input id="sv-api-key" type="password" autocomplete="new-password" placeholder="예: local">
           </div>
         </div>
         <div class="server-form-row">
@@ -581,9 +597,9 @@
                 <input type="checkbox" id="sv-enabled" checked>
                 <label for="sv-enabled">활성화</label>
               </div>
-              <div class="server-form-check">
+              <div class="server-form-check" id="sv-thinking-row">
                 <input type="checkbox" id="sv-thinking">
-                <label for="sv-thinking">Thinking 모드</label>
+                <label for="sv-thinking" id="sv-thinking-label">Thinking 모드</label>
               </div>
             </div>
           </div>
