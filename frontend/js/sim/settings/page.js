@@ -5,8 +5,13 @@ import { sim, esc, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE, norma
 import { renderOutputFields } from './output-fields.js';
 import { renderAgentListInConfig, renderStartAgentSelect } from './agents.js';
 import { renderScenarioEvents } from './events.js';
+import { getServerList, invalidateServerList } from './server-list.js';
 
 export function renderSettingsPage() {
+  // 설정 패널을 열 때마다 서버 목록을 새로 읽는다 — 그 사이 서버 모달에서
+  // 추가/삭제된 서버가 드롭다운에 반영되어야 하므로. 아래 시뮬레이션 레벨
+  // 드롭다운과 에이전트별 드롭다운들이 이 한 번의 fetch를 공유한다.
+  invalidateServerList();
   document.getElementById('sim-scenario-name').value  = sim.currentScenarioName;
   document.getElementById('sim-background').value     = sim.background;
   document.getElementById('sim-max-waves').value      = sim.max_waves;
@@ -198,11 +203,7 @@ async function renderServerSelect() {
   const hint = document.getElementById('sim-server-hint');
   if (!sel) return;
 
-  let servers = [];
-  try {
-    const res = await fetch('/api/servers');
-    if (res.ok) servers = await res.json();
-  } catch (_) {}
+  const servers = await getServerList();
 
   sel.innerHTML = `<option value="">기본 서버</option>` +
     servers.map(s =>

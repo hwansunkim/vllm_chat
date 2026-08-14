@@ -16,6 +16,7 @@ class AgentConfig(BaseModel):
     groups:             list[str] = []   # 소속 그룹 ID 목록. 빈 배열 = 전체 에이전트 노출 (하위 호환)
     location:           str       = ""  # 초기 위치 (빈값이면 위치 미설정 = 전체 노출)
     visual_description: str       = ""  # 모르는 사람에게 보이는 외모 묘사
+    server_id:          str | None = None  # 이 에이전트만 사용할 LLM 서버. None/빈값 = 시뮬레이션 기본 서버(SimStartConfig.server_id)
 
 
 class ScenarioEvent(BaseModel):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import threading
@@ -11,10 +12,11 @@ from fastapi import APIRouter, HTTPException
 
 from ...db.database import get_db
 from .runner import finalize_run, swap_event_queue
-from .schemas import SimContinueConfig, SimStartConfig
+from .schemas import AgentConfig, SimContinueConfig, SimStartConfig
 from .state import _sim, _sim_lock, get_sim_db
 
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -30,6 +32,35 @@ def _make_llm(server_id: str | None):
     from ...llm.bridge import make_sync_chat
     return make_sync_chat(server_id=server_id, timeout=API_TIMEOUT)
 
+
+def _make_agent_llm_map(agents: list[AgentConfig]) -> dict:
+    """server_id가 설정된 에이전트만 골라 이름→콜러블 매핑을 만든다.
+
+    server_id가 None이거나 빈 문자열인 에이전트는 매핑에서 빠지고, 시뮬레이션
+    기본 콜러블(_make_llm(cfg.server_id))을 그대로 쓴다. 구버전 시나리오처럼
+    server_id 필드 자체가 없는 경우 Pydantic 기본값 None이 적용돼 동일하게 제외된다.
+
+    존재하지 않거나 비활성화된 server_id도 매핑에서 제외한다 — registry.select()가
+    그런 id를 조용히 "registry 전역 기본 서버"로 폴백시키는데, 이는 시뮬레이션이
+    설정한 기본 서버(cfg.server_id)와 다를 수 있다(예: 로컬 vLLM 시나리오인데
+    삭제된 서버를 가리키던 에이전트가 유료 OpenAI로 새는 경우). 제외하면
+    _make_llm(cfg.server_id)를 그대로 물려받아 안전하게 폴백한다.
+    """
+    from ...llm.registry import get_registry
+    registry = get_registry()
+    result = {}
+    for a in agents:
+        if not a.server_id:
+            continue
+        if registry.get_provider(a.server_id) is None:
+            logger.warning(
+                "[%s] server_id=%r 를 찾을 수 없습니다(삭제/비활성) — "
+                "시뮬레이션 기본 서버로 대신 동작합니다.",
+                a.name, a.server_id,
+            )
+            continue
+        result[a.name] = _make_llm(a.server_id)
+    return result
 
 
 # ── /start ────────────────────────────────────────────────────────────────────
@@ -62,7 +93,8 @@ def start_simulation(cfg: SimStartConfig):
             from ABM.db import SimDB
             from ABM.config import LOG_DIR
 
-            llm = _make_llm(cfg.server_id)
+            llm       = _make_llm(cfg.server_id)
+            agent_llm = _make_agent_llm_map(cfg.agents)
 
             run_sim_id    = str(uuid.uuid4())
             db            = SimDB(os.path.join(LOG_DIR, "simulation.db"))
@@ -115,6 +147,7 @@ def start_simulation(cfg: SimStartConfig):
                 system_agent=cfg.system_agent.model_dump(),
                 agent_locations=agent_locations,
                 agent_visuals=agent_visuals,
+                agent_llm=agent_llm,
                 location_graph=[{"name": n.name, "connects_to": n.connects_to, "is_exterior": n.is_exterior} for n in cfg.location_graph],
                 lang_fix_enabled=cfg.lang_fix_enabled,
                 lang_fix_retries=cfg.lang_fix_retries,
@@ -262,7 +295,8 @@ def load_simulation(run_id: str):
         from ABM.config import LOG_DIR
         from ABM.memory_compressor import build_memory_block
 
-        llm = _make_llm(cfg.server_id)
+        llm       = _make_llm(cfg.server_id)
+        agent_llm = _make_agent_llm_map(cfg.agents)
         alias_map    = {a.display_name: a.name for a in cfg.agents if a.display_name.strip()}
         key_to_alias = {v: k for k, v in alias_map.items()}
 
@@ -298,6 +332,7 @@ def load_simulation(run_id: str):
             system_agent=cfg.system_agent.model_dump(),
             agent_locations=agent_locations,
             agent_visuals=agent_visuals,
+            agent_llm=agent_llm,
             location_graph=[{"name": n.name, "connects_to": n.connects_to, "is_exterior": n.is_exterior} for n in cfg.location_graph],
             lang_fix_enabled=cfg.lang_fix_enabled,
             lang_fix_retries=cfg.lang_fix_retries,
@@ -399,7 +434,8 @@ def resume_simulation(run_id: str):
             from ABM.config import LOG_DIR
             from ABM.memory_compressor import build_memory_block
 
-            llm = _make_llm(cfg.server_id)
+            llm       = _make_llm(cfg.server_id)
+            agent_llm = _make_agent_llm_map(cfg.agents)
             run_sim_id    = str(uuid.uuid4())
             new_db        = SimDB(os.path.join(LOG_DIR, "simulation.db"))
             scenario_name = run.get("scenario_name")
@@ -442,6 +478,7 @@ def resume_simulation(run_id: str):
                 system_agent=cfg.system_agent.model_dump(),
                 agent_locations=agent_locations,
                 agent_visuals=agent_visuals,
+                agent_llm=agent_llm,
                 location_graph=[{"name": n.name, "connects_to": n.connects_to, "is_exterior": n.is_exterior} for n in cfg.location_graph],
                 lang_fix_enabled=cfg.lang_fix_enabled,
                 lang_fix_retries=cfg.lang_fix_retries,

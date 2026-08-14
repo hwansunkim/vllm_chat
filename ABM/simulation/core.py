@@ -57,6 +57,7 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
         system_agent:     dict | None                 = None,
         agent_locations:  dict[str, str] | None       = None,
         agent_visuals:    dict[str, str] | None       = None,
+        agent_llm:        dict[str, LLMCall] | None   = None,
         location_graph:   list[dict] | None           = None,
         lang_fix_enabled: bool                        = True,
         lang_fix_retries: int                         = 2,
@@ -73,6 +74,7 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
         self.background_log = background_log
         self.log_dir        = log_dir
         self._llm           = llm
+        self._agent_llm: dict[str, LLMCall] = agent_llm or {}
         self.llm_max_tokens = llm_max_tokens
         self.shared_log: list = list(background_log)
         self.edges:      list = []
@@ -217,6 +219,18 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
 
         os.makedirs(log_dir, exist_ok=True)
         self._save_shared_log()
+
+    # ── LLM ──────────────────────────────────────────────────────────────────
+
+    def _llm_for(self, agent_key: str) -> LLMCall:
+        """에이전트 턴용 LLM 콜러블.
+
+        해당 에이전트에 서버 오버라이드가 설정돼 있으면 그것을, 없으면 시뮬레이션
+        기본 콜러블(self._llm)을 반환한다. 시뮬레이션 레벨 호출(시간 분류, 웨이브
+        요약, system agent)은 특정 에이전트의 턴이 아니므로 이 헬퍼를 쓰지 않고
+        항상 self._llm 을 직접 사용한다.
+        """
+        return self._agent_llm.get(agent_key) or self._llm
 
     # ── I/O ──────────────────────────────────────────────────────────────────
 

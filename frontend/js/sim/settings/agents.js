@@ -3,6 +3,7 @@
 
 import { sim, esc, _expandedAgents, getAllGroups, detectGender, getAgentIcon } from '../state.js';
 import { renderScenarioEvents } from './events.js';
+import { getServerList, peekServerList } from './server-list.js';
 
 export function renderStartAgentSelect() {
   const sel  = document.getElementById('sim-start-agent');
@@ -104,6 +105,13 @@ export function renderAgentListInConfig() {
           <input class="sim-acrd-input" data-idx="${idx}" data-field="location"
                  value="${esc(agent.location || '')}" placeholder="위치 (예: 화산파)"/>
         </div>
+        <div class="sim-acrd-field">
+          <label>LLM 서버</label>
+          <select class="sim-acrd-server-select" data-idx="${idx}" data-field="server_id"
+                  title="이 에이전트의 턴/언어교정/메모리압축에만 적용됩니다">
+            <option value="">기본 서버 사용</option>
+          </select>
+        </div>
       </div>
       <div class="sim-acrd-prompt-row">
         <label>외모 묘사 <span style="font-weight:400;color:#94a3b8">(모르는 사람에게 보이는 외모)</span></label>
@@ -183,11 +191,15 @@ export function renderAgentListInConfig() {
     });
 
     // Body field inputs — live-update sim state and header display
+    // <select>는 'input'도 발화하지만 의미가 분명한 'change'로 듣는다.
     body.querySelectorAll('[data-field]').forEach(el => {
-      el.addEventListener('input', () => {
+      const evtName = el.tagName === 'SELECT' ? 'change' : 'input';
+      el.addEventListener(evtName, () => {
         const i = +el.dataset.idx;
         const oldName = sim.agents[i].name;
-        sim.agents[i][el.dataset.field] = el.value;
+        // server_id는 "" (= 기본 서버 사용) 을 null로 정규화해서 저장한다.
+        sim.agents[i][el.dataset.field] =
+          el.dataset.field === 'server_id' ? (el.value || null) : el.value;
 
         if (el.dataset.field === 'name') {
           if (_expandedAgents.has(oldName)) {
@@ -223,6 +235,57 @@ export function renderAgentListInConfig() {
         }
       });
     });
+  });
+
+  // 에이전트별 LLM 서버 드롭다운 채우기.
+  // 캐시가 이미 있으면 동기적으로 채워 재렌더링 시 깜빡임을 막고,
+  // 없을 때만 fetch를 기다린다 (요청은 카드 수와 무관하게 1회).
+  const cached = peekServerList();
+  if (cached) _fillAgentServerSelects(cached);
+  else getServerList().then(_fillAgentServerSelects);
+}
+
+// 현재 DOM에 있는 모든 에이전트 서버 드롭다운에 같은 서버 목록을 채운다.
+function _fillAgentServerSelects(servers) {
+  const list = document.getElementById('sim-agent-list');
+  if (!list) return;
+
+  list.querySelectorAll('select[data-field="server_id"]').forEach(sel => {
+    const idx   = +sel.dataset.idx;
+    const agent = sim.agents[idx];
+    // fetch 도중 에이전트가 삭제됐을 수 있다.
+    if (!agent) return;
+
+    const current = agent.server_id ?? '';
+    // 비활성 서버는 선택지에서 뺀다 — 골라도 registry가 그 provider를 안 들고
+    // 있어서 결국 조용히 다른(전역 기본) 서버로 새기 때문에, 애초에 고를 수
+    // 없게 막는 편이 안전하다.
+    const selectable = servers.filter(s => s.enabled !== false);
+
+    sel.innerHTML = '';
+    const defOpt = document.createElement('option');
+    defOpt.value = '';
+    defOpt.textContent = '기본 서버 사용';
+    sel.appendChild(defOpt);
+
+    selectable.forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s.id;
+      opt.textContent = s.name;
+      sel.appendChild(opt);
+    });
+
+    // 저장된 server_id가 목록에 없는 경우(서버 삭제/비활성 등): 값을 조용히 버리지
+    // 않고 경고 옵션으로 남겨 사용자가 알아채도록 한다. 백엔드는 이런 id를 만나면
+    // 에러 없이 기본 서버로 폴백한다.
+    if (current && !selectable.some(s => s.id === current)) {
+      const opt = document.createElement('option');
+      opt.value = current;
+      opt.textContent = `⚠ 알 수 없는 서버 (${current.slice(0, 8)}…)`;
+      sel.appendChild(opt);
+    }
+
+    sel.value = current;
   });
 }
 

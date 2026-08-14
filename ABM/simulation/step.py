@@ -21,7 +21,7 @@ class _StepMixin:
             messages       = list(agent.memory),
             wave           = wave,
             db             = self._db,
-            llm            = self._llm,
+            llm            = self._llm_for(agent_key),
             key_to_alias   = self._key_to_alias,
             llm_max_tokens = self.llm_max_tokens,
         )
@@ -97,7 +97,7 @@ class _StepMixin:
     ) -> tuple[str | None, str, dict, str | None]:
         """Invoke the LLM with pre-built messages. Returns (content, reasoning, usage, error)."""
         try:
-            content, reasoning, usage = self._llm(
+            content, reasoning, usage = self._llm_for(agent_key)(
                 call_messages, max_tokens=self.llm_max_tokens,
             )
         except Exception as e:
@@ -139,7 +139,7 @@ class _StepMixin:
             fix_msgs.append({"role": "assistant", "content": current_bad})
             fix_msgs.append({"role": "user",      "content": CORRECTION_MSG})
             try:
-                content, reasoning, usage = self._llm(
+                content, reasoning, usage = self._llm_for(agent_key)(
                     fix_msgs, max_tokens=self.llm_max_tokens,
                 )
             except Exception as e:

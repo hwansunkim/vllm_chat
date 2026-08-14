@@ -1,6 +1,7 @@
 import { state } from './state.js';
 import { api, probeModels } from './api.js';
 import { esc } from './utils.js';
+import { invalidateServerList } from './sim/settings/server-list.js';
 
 let _statusServers = [];
 
@@ -367,6 +368,9 @@ function closeServerModal() {
 }
 
 async function loadServers() {
+  // 모달 오픈 + 추가/수정/삭제 직후 모두 이 함수를 거친다 —
+  // 시뮬레이션 설정의 서버 드롭다운 캐시를 여기서 함께 무효화한다.
+  invalidateServerList();
   try {
     _serverList = await api('GET', '/servers');
     renderServers();

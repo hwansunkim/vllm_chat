@@ -169,6 +169,8 @@ export function applyScenario(s) {
     groups:             a.groups             || [],
     location:           a.location           ?? '',
     visual_description: a.visual_description ?? '',
+    // 구버전 시나리오에는 필드 자체가 없다 — null(= 시뮬레이션 기본 서버)로 채운다.
+    server_id:          a.server_id          ?? null,
   }));
   sim.background   = cfg.background   || '';
   sim.start_agent  = cfg.start_agent  || (cfg.agents?.[0]?.name ?? '');
