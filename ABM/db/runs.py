@@ -217,5 +217,9 @@ class RunsMixin:
         conn.execute("DELETE FROM simulation_log    WHERE run_id=?", (run_id,))
         conn.execute("DELETE FROM agent_snapshots   WHERE run_id=?", (run_id,))
         conn.execute("DELETE FROM sim_events        WHERE run_id=?", (run_id,))
+        # interview_log has an ON DELETE CASCADE FK to simulation_runs, but the
+        # explicit delete keeps this working on connections where
+        # `PRAGMA foreign_keys` is off and must run *before* simulation_runs.
+        conn.execute("DELETE FROM interview_log     WHERE run_id=?", (run_id,))
         conn.execute("DELETE FROM simulation_runs   WHERE run_id=?", (run_id,))
         conn.commit()

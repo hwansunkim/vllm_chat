@@ -1273,3 +1273,117 @@
   margin: 0;
   line-height: 1.5;
 }
+
+/* ── 사후 인터뷰 패널 (post-simulation interview) ──────────────────────────────
+   리플레이 모달 위에 겹쳐 뜬다. 인터뷰 기록은 simulation_log 와 분리된 별도
+   기록이므로 피드(.sim-feed-*)와 확실히 다른 색조(앰버)를 쓴다. */
+.sim-itv-overlay { z-index: 1100; }
+.sim-itv-box { height: min(84vh, 760px); }
+
+.sim-itv-open-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.sim-itv-title-badge {
+  background: #b45309; color: #fff; font-size: 11px; font-weight: 700;
+  padding: 2px 8px; border-radius: 10px;
+}
+
+/* 컨트롤 바 — 대상 에이전트 + 컨텍스트 모드 토글 */
+.sim-itv-controls {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 18px 0; flex-shrink: 0;
+}
+.sim-itv-ctrl-label { font-size: 12px; color: #64748b; font-weight: 600; }
+.sim-itv-agent-select {
+  font-size: 13px; padding: 5px 8px; min-width: 150px;
+  border: 1px solid #e2e8f0; border-radius: 6px; outline: none;
+  background: #fff; color: #334155; cursor: pointer;
+}
+.sim-itv-agent-select:focus { border-color: #f59e0b; }
+.sim-itv-agent-select:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.sim-itv-modes {
+  display: inline-flex; margin-left: auto;
+  background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 8px; padding: 2px;
+}
+.sim-itv-mode-btn {
+  border: none; background: transparent; cursor: pointer;
+  font-size: 12px; font-weight: 500; color: #64748b;
+  padding: 5px 12px; border-radius: 6px; white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+.sim-itv-mode-btn:hover:not(:disabled):not(.active) { color: #334155; }
+.sim-itv-mode-btn.active { background: #fff; color: #b45309; font-weight: 700; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+.sim-itv-mode-btn:disabled { cursor: not-allowed; opacity: 0.6; }
+
+.sim-itv-mode-hint {
+  padding: 6px 18px 10px; font-size: 11px; color: #94a3b8; line-height: 1.5;
+  border-bottom: 1px solid #f1f5f9; flex-shrink: 0;
+}
+
+/* 스레드 */
+.sim-itv-thread {
+  flex: 1; overflow-y: auto; padding: 14px 18px;
+  display: flex; flex-direction: column; gap: 16px;
+  background: #fffdf7;   /* 리플레이 피드(흰 배경)와 구분되는 따뜻한 톤 */
+}
+.sim-itv-turn { display: flex; flex-direction: column; gap: 8px; }
+.sim-itv-q { display: flex; flex-direction: column; align-items: flex-end; }
+.sim-itv-a { display: flex; flex-direction: column; align-items: flex-start; }
+.sim-itv-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.sim-itv-role { font-size: 11px; font-weight: 600; color: #475569; }
+.sim-itv-time { font-size: 10px; color: #cbd5e1; }
+.sim-itv-mode-badge {
+  font-size: 10px; padding: 1px 7px; border-radius: 8px; font-weight: 600;
+}
+.sim-itv-mode-badge.memory { background: #fef3c7; color: #b45309; }
+.sim-itv-mode-badge.full   { background: #e0e7ff; color: #4338ca; }
+
+.sim-itv-bubble {
+  max-width: 82%; padding: 9px 13px; border-radius: 12px;
+  font-size: 13px; line-height: 1.6; color: #1e293b;
+  word-break: break-word; white-space: pre-wrap;
+}
+.sim-itv-bubble-q { background: #fef3c7; border: 1px solid #fde68a; border-bottom-right-radius: 4px; }
+.sim-itv-bubble-a { background: #fff; border: 1px solid #e2e8f0; border-bottom-left-radius: 4px; }
+
+/* 로딩 (동기 LLM 호출 — 수 초 걸릴 수 있음) */
+.sim-itv-loading { display: flex; align-items: center; gap: 8px; color: #94a3b8; }
+.sim-itv-loading-text { font-size: 12px; }
+.sim-itv-dots { display: inline-flex; gap: 3px; }
+.sim-itv-dots i {
+  width: 5px; height: 5px; border-radius: 50%; background: #f59e0b;
+  animation: sim-itv-blink 1.2s infinite ease-in-out;
+}
+.sim-itv-dots i:nth-child(2) { animation-delay: 0.2s; }
+.sim-itv-dots i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes sim-itv-blink {
+  0%, 80%, 100% { opacity: 0.25; }
+  40%           { opacity: 1; }
+}
+
+/* 오류 */
+.sim-itv-error {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: #fef2f2; border-color: #fecaca; color: #b91c1c;
+}
+.sim-itv-error-text { font-size: 12px; line-height: 1.5; }
+.sim-itv-retry-btn {
+  border: 1px solid #fca5a5; background: #fff; color: #b91c1c;
+  border-radius: 5px; padding: 3px 10px; font-size: 11px; font-weight: 600; cursor: pointer;
+}
+.sim-itv-retry-btn:hover { background: #fee2e2; }
+
+/* 입력 */
+.sim-itv-composer {
+  display: flex; align-items: flex-end; gap: 8px;
+  padding: 12px 18px; border-top: 1px solid #e2e8f0; background: #f8fafc; flex-shrink: 0;
+}
+.sim-itv-question {
+  flex: 1; resize: none; font-family: inherit; font-size: 13px; line-height: 1.5;
+  padding: 8px 10px; border: 1px solid #e2e8f0; border-radius: 8px;
+  outline: none; color: #1e293b; background: #fff; min-height: 44px; max-height: 140px;
+}
+.sim-itv-question:focus { border-color: #f59e0b; }
+.sim-itv-question:disabled { background: #f1f5f9; color: #94a3b8; }
+.sim-itv-send-btn { flex-shrink: 0; height: 38px; }
+.sim-itv-send-btn:disabled { opacity: 0.6; cursor: not-allowed; }

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class AgentConfig(BaseModel):
@@ -135,3 +135,34 @@ class SimContinueConfig(BaseModel):
     max_waves:   int              = 10
     step_delay:  float            = 1.0
     events:      list[ScenarioEvent] = []
+
+
+# ── 사후 인터뷰 ────────────────────────────────────────────────────────────────
+
+InterviewMode = Literal["memory_only", "full_log"]
+
+
+class InterviewRequest(BaseModel):
+    question: str
+    mode:     InterviewMode = "memory_only"
+    # 답변 길이 상한. None이면 실행 설정(config_json)의 llm_max_tokens를 따른다.
+    max_tokens: int | None = Field(default=None, gt=0)
+
+    @field_validator("question")
+    @classmethod
+    def _non_empty_question(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("question must not be empty")
+        return v
+
+
+class InterviewRecord(BaseModel):
+    id:         int
+    run_id:     str
+    agent_key:  str
+    mode:       str
+    question:   str
+    answer:     str
+    created_at: float
+    meta:       dict = {}

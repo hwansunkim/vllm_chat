@@ -18,6 +18,7 @@ from .relationship import RelationshipMixin
 from .self_state   import SelfStateMixin
 from .compression  import CompressionMixin
 from .runs         import RunsMixin
+from .interview    import InterviewMixin
 from .schema       import SCHEMA, migrate
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ class SimDB(
     SelfStateMixin,
     CompressionMixin,
     RunsMixin,
+    InterviewMixin,
 ):
     """Thread-safe SQLite wrapper for simulation memory storage (WAL mode)."""
 

@@ -11,10 +11,13 @@ import { initD3Graph } from '../graph/d3.js';
 import { updateScenarioLabel } from '../views.js';
 import { connectSSE } from '../run/sse.js';
 import { exportRunMarkdown } from '../export/markdown.js';
+import { openInterviewPanel, isInterviewable, closeInterviewPanel } from './interview.js';
 
 export async function openRunReplay(runId, runNum) {
-  // 기존 모달 제거
+  // 기존 모달 제거 — 인터뷰 패널도 함께 닫는다.
+  // (남겨 두면 이전 run_id 를 가리키는 패널이 새 리플레이 위에 떠 있게 된다.)
   document.getElementById('sim-replay-modal')?.remove();
+  closeInterviewPanel();
 
   const [runRes, logRes] = await Promise.all([
     fetch(`/api/simulation/runs/${encodeURIComponent(runId)}`),
@@ -32,6 +35,14 @@ export async function openRunReplay(runId, runNum) {
     if (c.agents && c.agents.length) parsedConfig = c;
   } catch (_) {}
 
+  // 인터뷰 진입점 — config 스냅샷이 있고(없으면 API가 400) 종료된 실행일 때만(아니면 409).
+  // 진행 중인 실행에서는 버튼을 비활성 상태로 남겨 왜 못 하는지 알 수 있게 한다.
+  const canInterview   = !!parsedConfig && isInterviewable(run);
+  const showInterview  = !!parsedConfig;
+  const interviewTitle = canInterview
+    ? '이 실행의 에이전트에게 사후 질문하기'
+    : '시뮬레이션이 진행 중입니다. 종료된 뒤에 인터뷰할 수 있습니다.';
+
   const modal = document.createElement('div');
   modal.id = 'sim-replay-modal';
   modal.className = 'sim-replay-modal-overlay';
@@ -45,6 +56,7 @@ export async function openRunReplay(runId, runNum) {
           <span class="sim-replay-meta">${fmtTime(run.started_at, { includeYear: true })} · ${run.total_waves}wave · ${run.total_turns}turn</span>
         </div>
         <div class="sim-replay-actions">
+          ${showInterview ? `<button id="sim-replay-interview-btn" class="sim-ctrl-btn settings sim-itv-open-btn" style="font-size:12px;padding:4px 10px" title="${esc(interviewTitle)}" ${canInterview ? '' : 'disabled'}>🎤 인터뷰</button>` : ''}
           ${parsedConfig ? `<button id="sim-replay-resume-btn" class="sim-ctrl-btn continue" style="font-size:12px;padding:4px 10px">↩ 이어서</button>` : ''}
           ${parsedConfig ? `<button id="sim-replay-restart-btn" class="sim-ctrl-btn settings" style="font-size:12px;padding:4px 10px">이력 불러오기</button>` : ''}
           ${log.length   ? `<button id="sim-replay-md-btn" class="sim-ctrl-btn settings" style="font-size:12px;padding:4px 10px">📥 MD</button>` : ''}
@@ -108,9 +120,17 @@ export async function openRunReplay(runId, runNum) {
     }
   });
 
-  // 닫기
-  document.getElementById('sim-replay-close-btn').addEventListener('click', () => modal.remove());
-  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+  // 인터뷰 — 리플레이 모달 위에 겹쳐 연다 (리플레이는 그대로 유지)
+  if (canInterview) {
+    document.getElementById('sim-replay-interview-btn')?.addEventListener('click', () => {
+      openInterviewPanel(runId, runNum, run, parsedConfig.agents);
+    });
+  }
+
+  // 닫기 — 위에 겹쳐 뜬 인터뷰 패널도 함께 정리한다.
+  const closeReplay = () => { closeInterviewPanel(); modal.remove(); };
+  document.getElementById('sim-replay-close-btn').addEventListener('click', closeReplay);
+  modal.addEventListener('click', e => { if (e.target === modal) closeReplay(); });
 
   // 이어서 실행 — 에이전트 메모리 복원 후 이어서
   const resumeBtn = document.getElementById('sim-replay-resume-btn');
@@ -129,7 +149,7 @@ export async function openRunReplay(runId, runNum) {
       // 설정 반영 (에이전트 카드 등 UI 동기화)
       applyScenario({ id: run.scenario_id, name: run.scenario_name || '', config: parsedConfig });
       renderAgentCards();
-      modal.remove();
+      closeReplay();
       setStatus('running');
       connectSSE();
     });

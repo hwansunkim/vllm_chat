@@ -130,6 +130,23 @@ CREATE TABLE IF NOT EXISTS sim_events (
     timestamp   REAL    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_simevents_run ON sim_events(run_id, id);
+
+-- 시뮬레이션 종료 후 사후 인터뷰 기록.
+-- simulation_log 와 완전히 분리된 테이블이다. 리플레이/피드 조회
+-- (get_run_log)는 절대 이 테이블을 읽어서는 안 된다 — 인터뷰 발화가
+-- 시뮬레이션 타임라인에 섞이면 재개/재생 결과가 오염된다.
+CREATE TABLE IF NOT EXISTS interview_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id     TEXT    NOT NULL REFERENCES simulation_runs(run_id) ON DELETE CASCADE,
+    agent_key  TEXT    NOT NULL,
+    mode       TEXT    NOT NULL,
+    question   TEXT    NOT NULL,
+    answer     TEXT    NOT NULL,
+    meta_json  TEXT    NOT NULL DEFAULT '{}',
+    created_at REAL    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_interview_run   ON interview_log(run_id, id);
+CREATE INDEX IF NOT EXISTS idx_interview_agent ON interview_log(run_id, agent_key, id);
 """
 
 
@@ -162,6 +179,23 @@ def migrate(conn: sqlite3.Connection) -> None:
                 timestamp   REAL    NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_simevents_run ON sim_events(run_id, id);
+        """)
+
+    # interview_log 테이블이 없는 기존 DB를 위한 마이그레이션
+    if "interview_log" not in tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS interview_log (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id     TEXT    NOT NULL REFERENCES simulation_runs(run_id) ON DELETE CASCADE,
+                agent_key  TEXT    NOT NULL,
+                mode       TEXT    NOT NULL,
+                question   TEXT    NOT NULL,
+                answer     TEXT    NOT NULL,
+                meta_json  TEXT    NOT NULL DEFAULT '{}',
+                created_at REAL    NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_interview_run   ON interview_log(run_id, id);
+            CREATE INDEX IF NOT EXISTS idx_interview_agent ON interview_log(run_id, agent_key, id);
         """)
 
     conn.commit()
