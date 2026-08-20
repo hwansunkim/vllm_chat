@@ -295,6 +295,7 @@ def load_simulation(run_id: str):
         raise HTTPException(400, "이 실행은 설정 스냅샷이 없어 불러올 수 없습니다")
 
     snapshots     = db.get_agent_snapshots(run_id)
+    saved_states  = db.get_agent_states(run_id)
     active_json   = run.get("active_agents_json")
     pending_json  = run.get("pending_wave_json")
     saved_active  = set(json.loads(active_json)) if active_json  else None
@@ -358,6 +359,9 @@ def load_simulation(run_id: str):
             idle_minutes_schedule=cfg.idle_minutes_schedule,
             elapsed_minutes_init=run.get("elapsed_minutes") or 0,
         )
+        # 저장된 런타임 상태(이동한 위치, 바뀐 외모, 인지관계)를 시나리오 초기값 위에 덮어씀.
+        # 저장된 상태가 없는 구버전 실행은 위 초기값을 그대로 유지한다.
+        sim_obj.restore_agent_state(saved_states)
         if saved_pending:
             sim_obj._pending_wave = saved_pending
 
@@ -426,6 +430,7 @@ def resume_simulation(run_id: str):
         raise HTTPException(400, "이 실행은 설정 스냅샷이 없어 재개할 수 없습니다")
 
     snapshots        = db.get_agent_snapshots(run_id)
+    saved_states     = db.get_agent_states(run_id)
     active_json      = run.get("active_agents_json")
     pending_json     = run.get("pending_wave_json")
     saved_active     = set(json.loads(active_json))  if active_json  else None
@@ -504,6 +509,9 @@ def resume_simulation(run_id: str):
                 idle_minutes_schedule=cfg.idle_minutes_schedule,
                 elapsed_minutes_init=run.get("elapsed_minutes") or 0,
             )
+            # 저장된 런타임 상태(이동한 위치, 바뀐 외모, 인지관계)를 시나리오 초기값 위에 덮어씀.
+            # 저장된 상태가 없는 구버전 실행은 위 초기값을 그대로 유지한다.
+            sim.restore_agent_state(saved_states)
             _sim["agents"]         = sim.agents
             _sim["background_log"] = sim.background_log
             _sim["sim_obj"]        = sim

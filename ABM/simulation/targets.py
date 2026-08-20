@@ -1,3 +1,8 @@
+import logging
+
+logger = logging.getLogger(__name__)
+
+
 class _TargetsMixin:
     """에이전트 target 해석 및 가시성 관련 메서드."""
 
@@ -82,7 +87,15 @@ class _TargetsMixin:
             other_loc = self._agent_location.get(key, "")
             if not other_loc:
                 return True
-            return speaker_loc == other_loc
+            if speaker_loc == other_loc:
+                return True
+            # 위치 불일치로 타깃이 폐기되는 경로. 무성 폐기(silent drop)는 웨이브가
+            # 통째로 비는 원인이 되므로 추적 가능하도록 남긴다.
+            logger.debug(
+                "target drop (location mismatch): speaker=%s@%s target=%s@%s",
+                speaker_key, speaker_loc, key, other_loc,
+            )
+            return False
 
         for t in targets:
             t_s = t.strip()

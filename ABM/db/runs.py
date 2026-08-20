@@ -145,13 +145,39 @@ class RunsMixin:
     # Agent snapshots (working memory persisted for resume)
     # ------------------------------------------------------------------
 
-    def save_agent_snapshots(self, run_id: str, snapshots: dict[str, list]):
-        """Persist each agent's working memory list for potential resume."""
+    def save_agent_snapshots(
+        self,
+        run_id: str,
+        snapshots: dict[str, list],
+        states: dict[str, dict] | None = None,
+    ):
+        """Persist each agent's working memory (and runtime state) for resume.
+
+        `states` carries the per-agent runtime state that is *not* reconstructible
+        from the scenario config — current location, appearance, and who each agent
+        knows / has seen as a stranger. Without it, load/resume would silently reset
+        every agent to its scenario-initial position and appearance.
+        """
+        states = states or {}
         conn = self._conn()
+        # state_json 은 COALESCE 로 조건부 갱신한다 — states 에 없는 키(또는
+        # states 자체가 비어 전달된 메모리 전용 저장 호출)가 기존에 저장된
+        # 위치/외모 상태를 NULL 로 덮어쓰지 않도록 하기 위함. INSERT OR REPLACE
+        # 였다면 memory_json 만 저장하는 호출 한 번으로 state_json 이 소멸한다.
         conn.executemany(
-            "INSERT OR REPLACE INTO agent_snapshots (run_id, agent_key, memory_json) "
-            "VALUES (?,?,?)",
-            [(run_id, key, json.dumps(mem, ensure_ascii=False)) for key, mem in snapshots.items()],
+            "INSERT INTO agent_snapshots (run_id, agent_key, memory_json, state_json) "
+            "VALUES (?,?,?,?) "
+            "ON CONFLICT(run_id, agent_key) DO UPDATE SET "
+            "  memory_json = excluded.memory_json, "
+            "  state_json  = COALESCE(excluded.state_json, agent_snapshots.state_json)",
+            [
+                (
+                    run_id, key,
+                    json.dumps(mem, ensure_ascii=False),
+                    json.dumps(states[key], ensure_ascii=False) if states.get(key) is not None else None,
+                )
+                for key, mem in snapshots.items()
+            ],
         )
         conn.commit()
 
@@ -160,6 +186,29 @@ class RunsMixin:
             "SELECT agent_key, memory_json FROM agent_snapshots WHERE run_id=?", (run_id,)
         ).fetchall()
         return {r["agent_key"]: json.loads(r["memory_json"]) for r in rows}
+
+    def get_agent_states(self, run_id: str) -> dict[str, dict]:
+        """Per-agent runtime state saved alongside the memory snapshot.
+
+        Agents whose row predates the `state_json` column (or that were saved
+        without state) are simply absent from the result, so callers fall back to
+        the scenario-initial values.
+        """
+        rows = self._conn().execute(
+            "SELECT agent_key, state_json FROM agent_snapshots WHERE run_id=?", (run_id,)
+        ).fetchall()
+        result: dict[str, dict] = {}
+        for r in rows:
+            raw = r["state_json"]
+            if not raw:
+                continue
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(parsed, dict):
+                result[r["agent_key"]] = parsed
+        return result
 
     # ------------------------------------------------------------------
     # Simulation events (SSE 이벤트 영속화)

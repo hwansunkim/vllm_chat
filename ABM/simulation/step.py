@@ -196,6 +196,15 @@ class _StepMixin:
         visible_agents = known + [sid for sid, _, _ in strangers]
 
         my_loc = self._agent_location.get(agent_key, "")
+        # 화자 자신의 위치가 설정돼 있는지로만 판정한다(그래프 존재 여부는 보지 않음).
+        # _resolve_targets._same_loc()도 `if not speaker_loc: return True`로 화자
+        # 위치가 비면 항상 매치시키므로, 프롬프트 쪽도 같은 기준(bool(my_loc))이어야
+        # <TARGETS>와 실제 라우팅이 어긋나지 않는다. 활성 상태(my_loc 있음)라면
+        # 동석자가 없을 때(= 혼자 있을 때) 전역 폴백으로 빠지면 안 된다 — 전역 폴백은
+        # 다른 위치의 에이전트까지 <TARGETS>에 노출시키는데, 실제 발화 라우팅은 위치가
+        # 다른 타깃을 조용히 폐기하므로 아무도 응답하지 않는 웨이브가 되어 시뮬레이션이
+        # 그대로 멈춘다.
+        location_mode = bool(my_loc)
         target_sections: list[tuple[str, list[str]]] | None = None
         if known or strangers:
             sections: list[tuple[str, list[str]]] = []
@@ -204,13 +213,19 @@ class _StepMixin:
             if strangers:
                 sections.append(("처음 보는 사람", [sid for sid, _, _ in strangers]))
             target_sections = sections if sections else None
+        elif location_mode:
+            # 위치 기반 시나리오에서 이 자리에 아무도 없음 → <TARGETS>는 "(없음)".
+            # 상황 컨텍스트가 "이 자리에는 아무도 없다"고 이미 안내하므로 일관된다.
+            visible_agents  = []
+            target_sections = None
         else:
+            # 위치 미사용(레거시) 시나리오 전용 전역 폴백 — 하위 호환 유지.
             other_agents   = [k for k in self.active_agents if k != agent_key]
             visible_agents = [k for k in self._visible_targets.get(agent_key, other_agents)
                               if k in self.active_agents]
             target_sections = self._get_visible_sections(agent_key, visible_agents)
 
-        # 동석자가 있을 때만 상황 컨텍스트로 target 제공 — 혼자면 기존 <TARGETS> 블록 유지
+        # 동석자가 있을 때만 상황 컨텍스트로 target 제공 — 혼자면 <TARGETS>가 "(없음)"이 된다.
         sit_targets = bool(my_loc and (known or strangers))
 
         self._maybe_compress(

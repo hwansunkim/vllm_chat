@@ -232,6 +232,54 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
         """
         return self._agent_llm.get(agent_key) or self._llm
 
+    # ── 런타임 상태 스냅샷 (재개용) ────────────────────────────────────────────
+
+    def export_agent_state(self) -> dict[str, dict]:
+        """재개 시 복원해야 하는 에이전트별 런타임 상태를 직렬화 가능한 형태로 반환.
+
+        시나리오 config로부터 재구성할 수 없는 값들만 담는다 — 이동으로 바뀐 위치,
+        update_appearance로 바뀐 외모, 그리고 누가 누구를 아는지(인지관계)와
+        낯선 이 ID 할당. _stranger_rmap은 _stranger_map의 역함수라 저장하지 않고
+        복원 시 재생성한다.
+        """
+        state: dict[str, dict] = {}
+        for key in self.agents:
+            state[key] = {
+                "location":     self._agent_location.get(key, ""),
+                "visual":       self._agent_visual.get(key, ""),
+                "knowledge":    sorted(self._agent_knowledge.get(key, set())),
+                "stranger_map": dict(self._stranger_map.get(key, {})),
+                "path":         list(self._agent_path.get(key, [])),
+            }
+        return state
+
+    def restore_agent_state(self, states: dict[str, dict] | None) -> None:
+        """export_agent_state()가 만든 상태를 복원. 없는 키/에이전트는 초기값 유지."""
+        if not states:
+            return
+        for key, st in states.items():
+            if key not in self.agents or not isinstance(st, dict):
+                continue
+            if st.get("location") is not None:
+                self._agent_location[key] = st["location"] or ""
+            if st.get("visual") is not None:
+                self._agent_visual[key] = st["visual"] or ""
+            knowledge = st.get("knowledge")
+            if knowledge is not None:
+                self._agent_knowledge[key] = {k for k in knowledge if k in self.agents}
+            stranger_map = st.get("stranger_map")
+            if stranger_map is not None:
+                valid = {
+                    sid: real_key
+                    for sid, real_key in stranger_map.items()
+                    if real_key in self.agents
+                }
+                self._stranger_map[key]  = valid
+                self._stranger_rmap[key] = {rk: sid for sid, rk in valid.items()}
+            path = st.get("path")
+            if path is not None:
+                self._agent_path[key] = list(path)
+
     # ── I/O ──────────────────────────────────────────────────────────────────
 
     def _emit(self, event_type: str, data: dict):

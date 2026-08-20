@@ -41,7 +41,10 @@ class _LocationMixin:
         self._stranger_rmap.setdefault(observer_key, {})
         if target_key in self._stranger_rmap[observer_key]:
             return self._stranger_rmap[observer_key][target_key]
+        # 복원된 map에 번호 공백이 있어도 기존 ID를 덮어쓰지 않도록 빈 번호를 찾는다.
         n = len(self._stranger_map[observer_key]) + 1
+        while f"stranger_{n}" in self._stranger_map[observer_key]:
+            n += 1
         sid = f"stranger_{n}"
         self._stranger_map[observer_key][sid] = target_key
         self._stranger_rmap[observer_key][target_key] = sid

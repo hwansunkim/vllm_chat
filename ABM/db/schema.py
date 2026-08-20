@@ -113,10 +113,13 @@ CREATE TABLE IF NOT EXISTS simulation_log (
 );
 CREATE INDEX IF NOT EXISTS idx_simlog_run ON simulation_log(run_id, id);
 
+-- state_json: 위치/외모/인지관계 등 재개 시 복원해야 하는 에이전트 런타임 상태.
+-- 없으면(구버전 행) 시나리오 초기값으로 폴백한다.
 CREATE TABLE IF NOT EXISTS agent_snapshots (
     run_id      TEXT NOT NULL,
     agent_key   TEXT NOT NULL,
     memory_json TEXT NOT NULL,
+    state_json  TEXT,
     PRIMARY KEY (run_id, agent_key)
 );
 CREATE INDEX IF NOT EXISTS idx_snapshots_run ON agent_snapshots(run_id);
@@ -165,6 +168,12 @@ def migrate(conn: sqlite3.Connection) -> None:
     simlog_cols = {r[1] for r in conn.execute("PRAGMA table_info(simulation_log)").fetchall()}
     if "time_str" not in simlog_cols:
         conn.execute("ALTER TABLE simulation_log ADD COLUMN time_str TEXT")
+
+    # agent_snapshots 테이블의 state_json 컬럼이 없는 기존 DB를 위한 마이그레이션.
+    # 기존 행은 state_json=NULL 로 남고, 복원 시 시나리오 초기값으로 폴백된다.
+    snap_cols = {r[1] for r in conn.execute("PRAGMA table_info(agent_snapshots)").fetchall()}
+    if "state_json" not in snap_cols:
+        conn.execute("ALTER TABLE agent_snapshots ADD COLUMN state_json TEXT")
 
     # sim_events 테이블이 없는 기존 DB를 위한 마이그레이션
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}

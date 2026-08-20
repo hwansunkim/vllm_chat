@@ -67,7 +67,13 @@ def finalize_run(db, run_sim_id: str | None, stop_event: threading.Event,
                         key: agent.memory
                         for key, agent in sim_obj.agents.items()
                     }
-                    db.save_agent_snapshots(run_sim_id, snapshots)
+                    # 위치/외모/인지관계도 함께 저장 — 없으면 load/resume이
+                    # 모든 에이전트를 시나리오 초기값으로 되돌린다.
+                    try:
+                        states = sim_obj.export_agent_state()
+                    except Exception:
+                        states = None
+                    db.save_agent_snapshots(run_sim_id, snapshots, states)
                 except Exception:
                     pass
         elif error is not None:
