@@ -1,7 +1,8 @@
 // frontend/js/sim/settings/agents.js
 // Accordion editor for the agents list (settings view).
 
-import { sim, esc, _expandedAgents, getAllGroups, detectGender, getAgentIcon } from '../state.js';
+import { sim, esc, _expandedAgents, getAllGroups, detectGender, getAgentIcon,
+         normalizeTemperature, normalizeAgentTemperature } from '../state.js';
 import { renderScenarioEvents } from './events.js';
 import { getServerList, peekServerList } from './server-list.js';
 
@@ -112,6 +113,14 @@ export function renderAgentListInConfig() {
             <option value="">기본 서버 사용</option>
           </select>
         </div>
+        <div class="sim-acrd-field">
+          <label>온도</label>
+          <input type="number" class="sim-acrd-input-temp" data-idx="${idx}" data-field="temperature"
+                 min="0" max="2" step="0.1"
+                 value="${normalizeAgentTemperature(agent.temperature) ?? ''}"
+                 placeholder="${_tempPlaceholder()}"
+                 title="비워두면 시뮬레이션 기본 temperature를 사용합니다"/>
+        </div>
       </div>
       <div class="sim-acrd-prompt-row">
         <label>외모 묘사 <span style="font-weight:400;color:#94a3b8">(모르는 사람에게 보이는 외모)</span></label>
@@ -197,9 +206,15 @@ export function renderAgentListInConfig() {
       el.addEventListener(evtName, () => {
         const i = +el.dataset.idx;
         const oldName = sim.agents[i].name;
-        // server_id는 "" (= 기본 서버 사용) 을 null로 정규화해서 저장한다.
-        sim.agents[i][el.dataset.field] =
-          el.dataset.field === 'server_id' ? (el.value || null) : el.value;
+        const field   = el.dataset.field;
+        // server_id / temperature 는 "" (= 시뮬레이션 기본값 사용) 을 null로 정규화해서 저장한다.
+        if (field === 'server_id') {
+          sim.agents[i][field] = el.value || null;
+        } else if (field === 'temperature') {
+          sim.agents[i][field] = normalizeAgentTemperature(el.value);
+        } else {
+          sim.agents[i][field] = el.value;
+        }
 
         if (el.dataset.field === 'name') {
           if (_expandedAgents.has(oldName)) {
@@ -235,6 +250,16 @@ export function renderAgentListInConfig() {
         }
       });
     });
+
+    // 온도 입력 확정(blur/Enter) 시 정규화된 값을 입력란에 되써서, 화면에 남은 범위 밖
+    // 값(예: 3)과 상태에 저장된 클램프 값(2)이 어긋나 보이지 않게 한다.
+    body.querySelector('.sim-acrd-input-temp')?.addEventListener('change', e => {
+      const i = +e.target.dataset.idx;
+      if (!sim.agents[i]) return;
+      const norm = normalizeAgentTemperature(e.target.value);
+      sim.agents[i].temperature = norm;
+      e.target.value = norm ?? '';
+    });
   });
 
   // 에이전트별 LLM 서버 드롭다운 채우기.
@@ -243,6 +268,22 @@ export function renderAgentListInConfig() {
   const cached = peekServerList();
   if (cached) _fillAgentServerSelects(cached);
   else getServerList().then(_fillAgentServerSelects);
+}
+
+// 에이전트 온도 입력이 비었을 때 보여줄 안내문 — 상속하는 시뮬레이션 기본값을 노출한다.
+function _tempPlaceholder() {
+  return `기본 ${normalizeTemperature(sim.temperature).toFixed(1)}`;
+}
+
+/**
+ * 시뮬레이션 기본 temperature가 바뀌었을 때, 카드들의 온도 placeholder만 갱신한다.
+ * 전체 재렌더링은 펼침/포커스 상태를 잃게 하므로 슬라이더 드래그 중에는 쓰지 않는다.
+ */
+export function refreshAgentTempPlaceholders() {
+  const ph = _tempPlaceholder();
+  document.getElementById('sim-agent-list')
+    ?.querySelectorAll('.sim-acrd-input-temp')
+    .forEach(el => { el.placeholder = ph; });
 }
 
 // 현재 DOM에 있는 모든 에이전트 서버 드롭다운에 같은 서버 목록을 채운다.

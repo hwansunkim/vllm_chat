@@ -1,7 +1,8 @@
 // frontend/js/sim/run/control.js
 // Start / stop / continue / status-badge logic for simulation runs.
 
-import { sim, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE, normalizeWeekday } from '../state.js';
+import { sim, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE, normalizeWeekday,
+         normalizeTemperature } from '../state.js';
 import { readConfigFromUI } from '../settings/page.js';
 import { renderAgentCards } from './cards.js';
 import { removeTypingIndicator } from './feed.js';
@@ -63,6 +64,7 @@ export async function startSimulation() {
       max_silence_waves:      sim.max_silence_waves  ?? 3,
       early_stop_enabled:     sim.early_stop_enabled ?? true,
       server_id:              sim.server_id || null,
+      temperature:            normalizeTemperature(sim.temperature),
       system_agent:           sim.system_agent,
       lang_fix_enabled:       sim.lang_fix_enabled ?? true,
       lang_fix_retries:       sim.lang_fix_retries ?? 2,

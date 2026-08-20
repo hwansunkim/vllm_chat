@@ -17,6 +17,8 @@ class AgentConfig(BaseModel):
     location:           str       = ""  # 초기 위치 (빈값이면 위치 미설정 = 전체 노출)
     visual_description: str       = ""  # 모르는 사람에게 보이는 외모 묘사
     server_id:          str | None = None  # 이 에이전트만 사용할 LLM 서버. None/빈값 = 시뮬레이션 기본 서버(SimStartConfig.server_id)
+    # 이 에이전트만 사용할 샘플링 온도. None = 시뮬레이션 기본값(SimStartConfig.temperature)
+    temperature:        float | None = Field(default=None, ge=0.0, le=2.0)
 
 
 class ScenarioEvent(BaseModel):
@@ -107,6 +109,8 @@ class SimStartConfig(BaseModel):
     max_silence_waves:      int              = 3         # 연속 침묵 허용 wave 수 (early_stop_enabled + time_per_wave > 0일 때 활성)
     early_stop_enabled:     bool             = True      # False = 조기 종료 비활성 (max_waves까지 항상 실행)
     server_id:              str | None       = None  # None = DB default 서버, 미설정 시 env 폴백
+    # 시뮬레이션 전체 기본 샘플링 온도. AgentConfig.temperature 로 에이전트별 오버라이드 가능.
+    temperature:            float            = Field(default=0.7, ge=0.0, le=2.0)
     system_agent:           SystemAgentConfig = SystemAgentConfig()
 
     @field_validator("time_categories")

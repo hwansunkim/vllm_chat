@@ -12,8 +12,11 @@ from backend import config, state
 from backend.api import conversations
 from backend.api.schemas import ChatMessage
 from backend.db.database import get_db, init_tables, migrate_db
+from backend.api.simulation import runtime as sim_runtime
+from backend.api.simulation.schemas import AgentConfig, SimStartConfig
 from backend.llm import bridge
 from backend.llm import client as llm_client
+from backend.llm import registry as llm_registry
 from backend.llm.providers.base import LLMHTTPError
 from backend.llm.providers.openai import OpenAIProvider
 from backend.llm.providers.vllm import VLLMProvider, _extract_reply
@@ -99,10 +102,12 @@ class FakeChatProvider:
         self.error = error
         self.calls = 0
         self.seen_timeouts = []
+        self.seen_temperatures = []
 
     async def chat(self, messages, *, temperature=0.7, max_tokens=4096, timeout=None):
         self.calls += 1
         self.seen_timeouts.append(timeout)
+        self.seen_temperatures.append(temperature)
         await asyncio.sleep(0.01)  # 실제 IO 처럼 루프에 양보 → 스레드 동시성 노출
         if self.error is not None:
             raise self.error
@@ -253,6 +258,15 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         # per-request timeout 이 provider 까지 전달되는지
         self.assertEqual(self.provider.seen_timeouts, [5])
 
+    async def test_zero_temperature_is_not_replaced_with_default(self):
+        # temperature=0.0 은 falsy 라서 `value or default` 류 패턴이면 조용히
+        # 기본값(0.7)으로 되돌아간다. 0.0 이 provider 까지 그대로 전달되는지 고정.
+        chat = bridge.make_sync_chat(timeout=5, temperature=0.0)
+
+        await asyncio.to_thread(chat, [{"role": "user", "content": "hi"}])
+
+        self.assertEqual(self.provider.seen_temperatures, [0.0])
+
     async def test_many_worker_threads_share_the_main_loop(self):
         # "attached to a different loop" 회귀 가드.
         chat = bridge.make_sync_chat(timeout=5)
@@ -309,6 +323,69 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("사용 가능한 LLM 서버가 없습니다", str(ctx.exception))
         self.assertEqual(self.registry.selects, 1)
+
+
+class _AllowAllRegistry:
+    """_make_agent_llm_map 테스트용 — 모든 server_id를 등록된 것으로 취급."""
+
+    def get_provider(self, server_id):
+        return object()
+
+
+def _agent(name, *, server_id=None, temperature=None):
+    return AgentConfig(name=name, system_prompt="", server_id=server_id, temperature=temperature)
+
+
+def _cfg(agents, *, server_id=None, temperature=0.7):
+    return SimStartConfig(
+        agents=agents, background="", start_agent=agents[0].name,
+        server_id=server_id, temperature=temperature,
+    )
+
+
+class AgentLlmMapTests(unittest.TestCase):
+    """_make_agent_llm_map 의 server_id/temperature 두 축 판정 (backend/api/simulation/runtime.py)."""
+
+    def setUp(self):
+        self.old_get_registry = llm_registry.get_registry
+        llm_registry.get_registry = lambda: _AllowAllRegistry()
+
+    def tearDown(self):
+        llm_registry.get_registry = self.old_get_registry
+
+    def test_zero_override_differs_from_nonzero_default(self):
+        # temperature=0.0 은 falsy 라서 `agent.temperature or cfg.temperature` 류
+        # 판정이면 "값 없음"과 구별이 안 돼 조용히 매핑에서 빠진다. `is None` 비교로
+        # 0.0 오버라이드가 실제로 매핑에 포함되는지 고정.
+        cfg = _cfg([_agent("alice", temperature=0.0), _agent("bob")], temperature=0.7)
+
+        result = sim_runtime._make_agent_llm_map(cfg)
+
+        self.assertIn("alice", result)
+        self.assertNotIn("bob", result)
+
+    def test_zero_default_and_zero_override_match_and_are_excluded(self):
+        cfg = _cfg([_agent("alice", temperature=0.0)], temperature=0.0)
+
+        result = sim_runtime._make_agent_llm_map(cfg)
+
+        self.assertNotIn("alice", result)
+
+    def test_server_only_and_temperature_only_overrides_both_map(self):
+        cfg = _cfg(
+            [
+                _agent("server_only", server_id="srv-2"),
+                _agent("temp_only", temperature=1.5),
+                _agent("neither"),
+            ],
+            server_id="srv-1", temperature=0.7,
+        )
+
+        result = sim_runtime._make_agent_llm_map(cfg)
+
+        self.assertIn("server_only", result)
+        self.assertIn("temp_only", result)
+        self.assertNotIn("neither", result)
 
 
 class ConversationTests(unittest.IsolatedAsyncioTestCase):

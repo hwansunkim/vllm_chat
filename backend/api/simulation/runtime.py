@@ -17,10 +17,10 @@ from .interview import (
     effective_token_limit,
     extract_answer,
     resolve_server_id,
+    resolve_temperature,
 )
 from .runner import finalize_run, swap_event_queue
 from .schemas import (
-    AgentConfig,
     InterviewRecord,
     InterviewRequest,
     SimContinueConfig,
@@ -33,46 +33,62 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _make_llm(server_id: str | None):
-    """server_id로 provider를 고정한 동기 LLM 콜러블을 만든다.
+def _make_llm(server_id: str | None, temperature: float = 0.7):
+    """server_id/temperature를 고정한 동기 LLM 콜러블을 만든다.
 
     server_id가 None이면 registry의 기본 서버가 선택된다. DB에 사용 가능한
     서버가 없으면 select()가 즉시 RuntimeError를 던지며, 이는 이 함수 호출
     시점이 아니라 반환된 콜러블을 실제로 호출하는 첫 LLM 요청 시점에 발생해
     기존처럼 _run()의 except 절 → finalize_run(error=)로 UI에 표시된다.
+
+    temperature 기본값 0.7은 이 옵션이 생기기 전 bridge에 하드코딩돼 있던 값이다.
     """
     from ABM.config import API_TIMEOUT
     from ...llm.bridge import make_sync_chat
-    return make_sync_chat(server_id=server_id, timeout=API_TIMEOUT)
+    return make_sync_chat(server_id=server_id, timeout=API_TIMEOUT, temperature=temperature)
 
 
-def _make_agent_llm_map(agents: list[AgentConfig]) -> dict:
-    """server_id가 설정된 에이전트만 골라 이름→콜러블 매핑을 만든다.
+def _make_agent_llm_map(cfg: SimStartConfig) -> dict:
+    """시뮬레이션 기본값과 다른 LLM 설정을 가진 에이전트만 이름→콜러블로 매핑한다.
 
-    server_id가 None이거나 빈 문자열인 에이전트는 매핑에서 빠지고, 시뮬레이션
-    기본 콜러블(_make_llm(cfg.server_id))을 그대로 쓴다. 구버전 시나리오처럼
-    server_id 필드 자체가 없는 경우 Pydantic 기본값 None이 적용돼 동일하게 제외된다.
+    기준이 되는 축은 두 개다.
+      - server_id:  에이전트 값이 없으면(None/빈 문자열) 시뮬레이션 기본값
+                    (cfg.server_id)을 쓴다.
+      - temperature: 에이전트 값이 None이면 시뮬레이션 기본값(cfg.temperature)을 쓴다.
 
-    존재하지 않거나 비활성화된 server_id도 매핑에서 제외한다 — registry.select()가
-    그런 id를 조용히 "registry 전역 기본 서버"로 폴백시키는데, 이는 시뮬레이션이
-    설정한 기본 서버(cfg.server_id)와 다를 수 있다(예: 로컬 vLLM 시나리오인데
-    삭제된 서버를 가리키던 에이전트가 유료 OpenAI로 새는 경우). 제외하면
-    _make_llm(cfg.server_id)를 그대로 물려받아 안전하게 폴백한다.
+    두 축을 합친 유효 설정이 시뮬레이션 기본값 `(cfg.server_id, cfg.temperature)`와
+    같으면 매핑에서 빠지고, 기본 콜러블 `_make_llm(cfg.server_id, cfg.temperature)`을
+    그대로 쓴다(ABM 쪽 `self._agent_llm.get(k) or self._llm`). 한 축만 달라도
+    매핑에 포함되므로 "서버만 다름"/"온도만 다름"/"둘 다 다름"이 모두 잡힌다.
+    구버전 시나리오처럼 필드 자체가 없으면 Pydantic 기본값(None)이 적용돼 제외된다.
+
+    존재하지 않거나 비활성화된 server_id는 시뮬레이션 기본 서버로 되돌린다 —
+    registry.select()가 그런 id를 조용히 "registry 전역 기본 서버"로 폴백시키는데,
+    이는 시뮬레이션이 설정한 기본 서버(cfg.server_id)와 다를 수 있다(예: 로컬 vLLM
+    시나리오인데 삭제된 서버를 가리키던 에이전트가 유료 OpenAI로 새는 경우).
+    이때 temperature 오버라이드는 그대로 살아남는다(서버만 기본값으로 되돌림).
     """
     from ...llm.registry import get_registry
     registry = get_registry()
+    cache: dict[tuple[str | None, float], object] = {}
     result = {}
-    for a in agents:
-        if not a.server_id:
-            continue
-        if registry.get_provider(a.server_id) is None:
+    for a in cfg.agents:
+        server_id = a.server_id or cfg.server_id
+        if a.server_id and registry.get_provider(a.server_id) is None:
             logger.warning(
                 "[%s] server_id=%r 를 찾을 수 없습니다(삭제/비활성) — "
                 "시뮬레이션 기본 서버로 대신 동작합니다.",
                 a.name, a.server_id,
             )
-            continue
-        result[a.name] = _make_llm(a.server_id)
+            server_id = cfg.server_id
+        temperature = cfg.temperature if a.temperature is None else a.temperature
+
+        if server_id == cfg.server_id and temperature == cfg.temperature:
+            continue  # 기본 콜러블과 동일 — 매핑에 넣을 필요 없음
+        key = (server_id, temperature)
+        if key not in cache:
+            cache[key] = _make_llm(server_id, temperature)
+        result[a.name] = cache[key]
     return result
 
 
@@ -106,8 +122,8 @@ def start_simulation(cfg: SimStartConfig):
             from ABM.db import SimDB
             from ABM.config import LOG_DIR
 
-            llm       = _make_llm(cfg.server_id)
-            agent_llm = _make_agent_llm_map(cfg.agents)
+            llm       = _make_llm(cfg.server_id, cfg.temperature)
+            agent_llm = _make_agent_llm_map(cfg)
 
             run_sim_id    = str(uuid.uuid4())
             db            = SimDB(os.path.join(LOG_DIR, "simulation.db"))
@@ -309,8 +325,8 @@ def load_simulation(run_id: str):
         from ABM.config import LOG_DIR
         from ABM.memory_compressor import build_memory_block
 
-        llm       = _make_llm(cfg.server_id)
-        agent_llm = _make_agent_llm_map(cfg.agents)
+        llm       = _make_llm(cfg.server_id, cfg.temperature)
+        agent_llm = _make_agent_llm_map(cfg)
         alias_map    = {a.display_name: a.name for a in cfg.agents if a.display_name.strip()}
         key_to_alias = {v: k for k, v in alias_map.items()}
 
@@ -452,8 +468,8 @@ def resume_simulation(run_id: str):
             from ABM.config import LOG_DIR
             from ABM.memory_compressor import build_memory_block
 
-            llm       = _make_llm(cfg.server_id)
-            agent_llm = _make_agent_llm_map(cfg.agents)
+            llm       = _make_llm(cfg.server_id, cfg.temperature)
+            agent_llm = _make_agent_llm_map(cfg)
             run_sim_id    = str(uuid.uuid4())
             new_db        = SimDB(os.path.join(LOG_DIR, "simulation.db"))
             scenario_name = run.get("scenario_name")
@@ -637,7 +653,9 @@ def create_agent_interview(run_id: str, name: str, body: InterviewRequest):
 
     # 프롬프트 상한은 run 설정 token_limit, 단 모델 컨텍스트를 아는 경우 답변
     # max_tokens 만큼 더 조인다. 컨텍스트 초과 400 → 502 → 무의미한 재시도 방지.
-    server_id  = resolve_server_id(cfg, name)
+    server_id   = resolve_server_id(cfg, name)
+    # 인터뷰는 자체 온도를 갖지 않고 실행 당시 설정(에이전트 → 실행 기본값)을 그대로 쓴다.
+    temperature = resolve_temperature(cfg, name)
     max_tokens = body.max_tokens or cfg.llm_max_tokens
     token_limit = effective_token_limit(cfg, server_id, max_tokens)
 
@@ -666,7 +684,7 @@ def create_agent_interview(run_id: str, name: str, body: InterviewRequest):
             "에이전트 설정의 페르소나/배경이 너무 길어 재시도해도 결과가 같습니다.",
         )
 
-    llm = _make_llm(server_id)
+    llm = _make_llm(server_id, temperature)
     try:
         content, _reasoning, usage = llm(messages, max_tokens=max_tokens)
     except Exception as e:
@@ -685,6 +703,7 @@ def create_agent_interview(run_id: str, name: str, body: InterviewRequest):
                 "token_limit":       token_limit,
                 "context_messages":  len(messages),
                 "server_id":         server_id,
+                "temperature":       temperature,
                 "usage":             usage or {},
             },
         )

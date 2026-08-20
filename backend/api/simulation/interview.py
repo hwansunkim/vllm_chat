@@ -269,6 +269,19 @@ def resolve_server_id(cfg: SimStartConfig, agent_name: str) -> str | None:
     return agent_sid
 
 
+def resolve_temperature(cfg: SimStartConfig, agent_name: str) -> float:
+    """에이전트별 temperature → 실행 기본 temperature 순으로 해석.
+
+    인터뷰는 자체 온도를 갖지 않는다 — 실행 때 그 인물을 연기하던 설정을 그대로
+    쓰는 편이 말투가 일관된다. `runtime._make_agent_llm_map()`과 같은 규칙:
+    에이전트 값이 None이면 실행 기본값(cfg.temperature)을 쓴다.
+    """
+    agent_cfg = next((a for a in cfg.agents if a.name == agent_name), None)
+    if agent_cfg is None or agent_cfg.temperature is None:
+        return cfg.temperature
+    return agent_cfg.temperature
+
+
 def effective_token_limit(
     cfg: SimStartConfig, server_id: str | None, max_tokens: int
 ) -> int:

@@ -251,6 +251,24 @@
   padding: 0 16px 8px; line-height: 1.4;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+
+/* ── 샘플링 온도 ────────────────────────────────────────────────────────────── */
+/* 시뮬레이션 레벨: 슬라이더 + 현재 값 표시 */
+.sim-temp-row input[type=range] {
+  width: 150px; padding: 4px 0; accent-color: #4f46e5; cursor: pointer;
+}
+#sim-temperature-val {
+  color: #4f46e5; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+
+/* 에이전트 레벨: 빈 값 = 시뮬레이션 기본값 사용 (server_id 드롭다운의 "기본 서버 사용"과 같은 규칙) */
+.sim-acrd-input-temp {
+  width: 88px; font-size: 12px; padding: 5px 7px;
+  border: 1px solid #e2e8f0; border-radius: 5px;
+  background: white; text-align: right; outline: none;
+}
+.sim-acrd-input-temp:focus { border-color: #6366f1; }
+.sim-acrd-input-temp::placeholder { color: #cbd5e1; font-style: italic; }
 .sim-lang-fix-row {
   display: flex; align-items: center; gap: 6px;
 }

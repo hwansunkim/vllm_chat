@@ -1,7 +1,8 @@
 // frontend/js/sim/scenarios.js
 // Scenario list CRUD + current-scenario selection.
 
-import { sim, _expandedAgents, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE, DEFAULT_START_WEEKDAY, normalizeWeekday } from './state.js';
+import { sim, _expandedAgents, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE, DEFAULT_START_WEEKDAY, normalizeWeekday,
+         DEFAULT_TEMPERATURE, normalizeTemperature, normalizeAgentTemperature } from './state.js';
 import { renderSettingsPage, readConfigFromUI } from './settings/page.js';
 import { refreshRunHistory } from './runs/history.js';
 import { downloadFile, safeFilename, nowTag } from './utils/download.js';
@@ -59,6 +60,7 @@ export function buildScenarioConfig() {
     max_silence_waves:      sim.max_silence_waves  ?? 3,
     early_stop_enabled:     sim.early_stop_enabled ?? true,
     server_id:              sim.server_id         ?? null,
+    temperature:            normalizeTemperature(sim.temperature),
     system_agent:           sim.system_agent,
   };
 }
@@ -148,6 +150,7 @@ export function newScenario() {
   sim.max_silence_waves      = 3;
   sim.early_stop_enabled     = true;
   sim.server_id              = null;
+  sim.temperature            = DEFAULT_TEMPERATURE;
   sim.system_agent           = { enabled: false, icon: '🎬', display_name: '내레이터', system_prompt: '', intervention_interval: 1, silence_threshold: 3, director_note: '' };
   _expandedAgents.clear();
   document.getElementById('sim-scenario-name').value = '';
@@ -171,6 +174,8 @@ export function applyScenario(s) {
     visual_description: a.visual_description ?? '',
     // 구버전 시나리오에는 필드 자체가 없다 — null(= 시뮬레이션 기본 서버)로 채운다.
     server_id:          a.server_id          ?? null,
+    // 마찬가지로 없으면 null(= 시뮬레이션 기본 temperature 사용).
+    temperature:        normalizeAgentTemperature(a.temperature),
   }));
   sim.background   = cfg.background   || '';
   sim.start_agent  = cfg.start_agent  || (cfg.agents?.[0]?.name ?? '');
@@ -205,6 +210,8 @@ export function applyScenario(s) {
   sim.max_silence_waves      = cfg.max_silence_waves      ?? 3;
   sim.early_stop_enabled     = cfg.early_stop_enabled     ?? true;
   sim.server_id              = cfg.server_id              ?? null;
+  // 구버전 시나리오에는 필드가 없다 — normalizeTemperature()가 0.7로 폴백한다.
+  sim.temperature            = normalizeTemperature(cfg.temperature);
   const sa = cfg.system_agent ?? {};
   sim.system_agent = {
     enabled:               sa.enabled               ?? false,

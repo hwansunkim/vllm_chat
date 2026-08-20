@@ -233,6 +233,11 @@
           <select id="sim-server-select"><option value="">기본 서버</option></select>
         </div>
         <div class="sim-server-hint" id="sim-server-hint"></div>
+        <div class="sim-option-row sim-temp-row">
+          <label>temperature <span id="sim-temperature-val">0.7</span></label>
+          <input type="range" id="sim-temperature" min="0" max="2" step="0.1" value="0.7"
+                 title="시뮬레이션 전체 기본 샘플링 온도. 에이전트 카드에서 개별 오버라이드할 수 있습니다"/>
+        </div>
       </div>
       <div class="sim-settings-section">
         <div class="sim-settings-section-title"><span>⚙ 옵션</span></div>

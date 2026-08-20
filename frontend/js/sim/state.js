@@ -25,6 +25,31 @@ export function normalizeWeekday(v) {
   return WEEKDAY_KEYS.includes(k) ? k : DEFAULT_START_WEEKDAY;
 }
 
+// ── 샘플링 온도 (백엔드 SimStartConfig.temperature / AgentConfig.temperature와 동일) ──
+// 범위를 벗어난 값을 보내면 API가 422를 반환하므로, UI에서 상태로 읽어들이는 모든 경로가
+// 아래 정규화 함수를 통과하도록 한다.
+export const DEFAULT_TEMPERATURE = 0.7;
+export const TEMPERATURE_MIN = 0.0;
+export const TEMPERATURE_MAX = 2.0;
+
+/** 시뮬레이션 레벨 온도로 정규화. 비숫자는 기본값(0.7), 범위 밖은 [0,2]로 클램프. */
+export function normalizeTemperature(v) {
+  const n = typeof v === 'number' ? v : parseFloat(v);
+  if (!Number.isFinite(n)) return DEFAULT_TEMPERATURE;
+  return Math.min(TEMPERATURE_MAX, Math.max(TEMPERATURE_MIN, n));
+}
+
+/**
+ * 에이전트별 온도 오버라이드로 정규화.
+ * 빈 값/비숫자 = null(= 시뮬레이션 기본값 사용) — server_id의 "" → null 규칙과 같은 의미.
+ */
+export function normalizeAgentTemperature(v) {
+  if (v === null || v === undefined || String(v).trim() === '') return null;
+  const n = typeof v === 'number' ? v : parseFloat(v);
+  if (!Number.isFinite(n)) return null;
+  return Math.min(TEMPERATURE_MAX, Math.max(TEMPERATURE_MIN, n));
+}
+
 export const sim = {
   status:              'idle',
   selectedAgent:       null,
@@ -57,6 +82,7 @@ export const sim = {
   max_silence_waves:  3,        // 연속 침묵 허용 wave 수 (early_stop_enabled + time_per_wave > 0일 때 활성)
   early_stop_enabled: true,    // false = 조기 종료 비활성 (max_waves까지 항상 실행)
   server_id:        null,   // null = 기본 서버, string = 특정 서버 ID
+  temperature:      0.7,    // 시뮬레이션 전체 기본 샘플링 온도 (0.0~2.0). 에이전트별로 오버라이드 가능
   system_agent: {
     enabled:               false,
     icon:                  '🎬',

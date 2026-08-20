@@ -58,12 +58,22 @@ def _is_retryable(e: BaseException) -> bool:
     return isinstance(e, RuntimeError)
 
 
-def make_sync_chat(*, server_id: str | None = None, timeout: int = 120):
+def make_sync_chat(
+    *,
+    server_id: str | None = None,
+    timeout: int = 120,
+    temperature: float = 0.7,
+):
     """(messages, *, max_tokens) -> (content, reasoning, usage) 동기 콜러블을 만든다.
 
     ABM 처럼 이벤트 루프가 없는 스레드에서 provider 계층을 쓰기 위한 어댑터.
     provider 는 호출 시점마다 registry 에서 lazy select 되므로, 실행 중
     서버 설정이 바뀌어도 닫힌 클라이언트를 붙들지 않는다.
+
+    `temperature` 는 이 콜러블이 내는 모든 요청에 고정으로 붙는다(기본 0.7 =
+    기존 하드코딩 값). 샘플링 온도를 다르게 쓰려면 서로 다른 콜러블을 만든다.
+    reasoning 계열 모델처럼 temperature 를 받지 않는 provider 는 각자
+    `_temperature_body()` 에서 이 값을 무시한다.
     """
     # provider.chat() 은 finish_reason=="length" 일 때 최대 MAX_CONTINUATION_ROUNDS 회
     # 연속 생성하므로, 스레드 쪽 가드는 per-request 타임아웃의 그 배수보다 커야 한다.
@@ -79,7 +89,7 @@ def make_sync_chat(*, server_id: str | None = None, timeout: int = 120):
         content, usage = run_sync(
             client.async_chat(
                 messages,
-                temperature=0.7,
+                temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,
                 server_id=server_id,

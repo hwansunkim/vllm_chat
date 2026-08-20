@@ -1,9 +1,10 @@
 // frontend/js/sim/settings/page.js
 // Top-level orchestration for the settings page (form ↔ sim state sync).
 
-import { sim, esc, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE, normalizeWeekday } from '../state.js';
+import { sim, esc, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE, normalizeWeekday,
+         normalizeTemperature } from '../state.js';
 import { renderOutputFields } from './output-fields.js';
-import { renderAgentListInConfig, renderStartAgentSelect } from './agents.js';
+import { renderAgentListInConfig, renderStartAgentSelect, refreshAgentTempPlaceholders } from './agents.js';
 import { renderScenarioEvents } from './events.js';
 import { getServerList, invalidateServerList } from './server-list.js';
 
@@ -50,6 +51,7 @@ export function renderSettingsPage() {
   if (langRetEl) langRetEl.value = sim.lang_fix_retries ?? 2;
   const delBtn = document.getElementById('sim-delete-scenario-btn');
   if (delBtn) delBtn.disabled = !sim.currentScenarioId;
+  renderTemperatureSlider();
   renderOutputFields();
   renderAgentListInConfig();
   renderStartAgentSelect();
@@ -78,6 +80,10 @@ export function readConfigFromUI() {
   sim.early_stop_enabled = document.getElementById('sim-early-stop-enabled')?.checked ?? true;
   const sel = document.getElementById('sim-server-select');
   sim.server_id              = sel?.value || null;
+  // 슬라이더가 DOM에 있으면 그 값이 항상 우선이고(정규화는 범위 밖 대비),
+  // 패널이 렌더되지 않은 상태로 호출되는 경로를 대비해 없을 때만 기존 상태로 폴백한다.
+  const tempEl = document.getElementById('sim-temperature');
+  sim.temperature = normalizeTemperature(tempEl ? tempEl.value : sim.temperature);
   sim.location_graph   = _readLocationGraph();
   sim.lang_fix_enabled = document.getElementById('sim-lang-fix-enabled')?.checked ?? true;
   sim.lang_fix_retries = parseInt(document.getElementById('sim-lang-fix-retries')?.value) || 2;
@@ -193,6 +199,29 @@ function renderSystemAgentConfig() {
   chk.onchange = () => {
     sim.system_agent.enabled = chk.checked;
     cfg.classList.toggle('sim-hidden', !chk.checked);
+  };
+}
+
+// ── 샘플링 온도 슬라이더 ───────────────────────────────────────────────────────
+
+// 시뮬레이션 전체 기본 temperature. 에이전트 카드의 온도 입력은 이 값을 상속하므로,
+// 슬라이더를 움직이면 카드들의 placeholder("기본값 0.7")도 같이 갱신한다.
+function renderTemperatureSlider() {
+  const slider = document.getElementById('sim-temperature');
+  const valEl  = document.getElementById('sim-temperature-val');
+  if (!slider) return;
+
+  const temp = normalizeTemperature(sim.temperature);
+  sim.temperature = temp;              // 구버전 시나리오의 범위 밖 값을 상태에서도 바로잡는다
+  slider.value = String(temp);
+  if (valEl) valEl.textContent = temp.toFixed(1);
+
+  // renderSettingsPage()는 여러 번 호출되므로 addEventListener 대신 oninput으로
+  // 덮어써서 리스너가 중복 등록되지 않게 한다 (renderServerSelect의 onchange와 동일한 규칙).
+  slider.oninput = () => {
+    sim.temperature = normalizeTemperature(slider.value);
+    if (valEl) valEl.textContent = sim.temperature.toFixed(1);
+    refreshAgentTempPlaceholders();
   };
 }
 
