@@ -728,9 +728,14 @@
   display: flex; align-items: stretch; flex-shrink: 0;
   padding-right: 8px; gap: 4px;
 }
-.sim-tabs { display: flex; align-items: stretch; flex: 1; }
+/* 탭이 3개라 좁은 패널에서는 가로 스크롤로 흘린다(잘려서 사라지지 않도록). */
+.sim-tabs {
+  display: flex; align-items: stretch; flex: 1;
+  min-width: 0; overflow-x: auto; scrollbar-width: none;
+}
+.sim-tabs::-webkit-scrollbar { display: none; }
 .sim-tab {
-  padding: 0 12px; background: none; border: none;
+  padding: 0 8px; background: none; border: none;
   border-bottom: 2px solid transparent;
   font-size: 11px; font-weight: 600; color: #94a3b8;
   cursor: pointer; letter-spacing: 0.3px; white-space: nowrap;
@@ -738,6 +743,8 @@
 }
 .sim-tab.active { color: #6366f1; border-bottom-color: #6366f1; }
 .sim-tab:hover:not(.active) { color: #475569; }
+/* 내용이 없는 탭(예: 위치 그래프 미설정) — 클릭은 되지만 흐리게 표시 */
+.sim-tab.sim-tab-dim:not(.active) { color: #cbd5e1; }
 
 .sim-export-btn {
   padding: 4px 10px; font-size: 11px; align-self: center;
@@ -896,6 +903,59 @@
    attribute를 덮어쓴다) 여기서 fill/stroke-width를 지정하면 안 된다. */
 .g-link        { stroke: none; opacity: 0.8; }
 .g-link-label  { font-size: 9px; fill: #64748b; pointer-events: none; }
+
+/* ── 위치 지도 (장소=박스, connects_to=복도, 에이전트=원형 아바타) ───────────── */
+#sim-tab-map   { position: relative; }
+#sim-map-svg   { flex: 1; width: 100%; min-height: 0; }
+
+/* 복도 — 벽(외곽선) 위에 바닥(안쪽선)을 겹쳐 그려 "길"처럼 보이게 한다.
+   양방향 연결이므로 화살표/테이퍼 없이 단순한 선이다. */
+.lm-corridor    { fill: none; stroke: #cbd5e1; stroke-width: 10; stroke-linecap: round; }
+.lm-corridor-in { fill: none; stroke: #f8fafc; stroke-width: 6;  stroke-linecap: round; }
+
+/* 장소 박스 */
+.lm-box       { cursor: grab; }
+.lm-box:active { cursor: grabbing; }
+.lm-box-rect  { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.5; }
+.lm-box:hover .lm-box-rect { stroke: #6366f1; }
+/* 외부 공간 — 점선 테두리 + 녹색 계열로 내부 공간과 구분 (설정 편집기의 🌐 표기와 일관) */
+.lm-box-rect.lm-exterior {
+  fill: #f0fdf4; stroke: #86efac; stroke-dasharray: 5 3;
+}
+.lm-box:hover .lm-box-rect.lm-exterior { stroke: #22c55e; }
+.lm-box-title { font-weight: 700; fill: #475569; pointer-events: none; }
+.lm-box-title.lm-exterior-title { fill: #15803d; }
+.lm-box-count { font-size: 8.5px; fill: #94a3b8; pointer-events: none; }
+
+/* 에이전트 아바타 — 관계 그래프 노드(원 + 이모지 + 이름)와 같은 시각 언어 */
+/* 원만 포인터를 받는다 — 텍스트가 막지 않아야 <title> 툴팁이 안정적으로 뜬다. */
+.lm-agent-dot  { fill: #eef2ff; stroke: #c7d2fe; stroke-width: 1.5; }
+.lm-agent-icon { pointer-events: none; }
+.lm-agent-name { fill: #475569; pointer-events: none; }
+/* 이동 직후 강조 */
+.lm-agent-moved .lm-agent-dot { animation: lm-agent-pulse 1.3s ease-out; }
+@keyframes lm-agent-pulse {
+  0%   { stroke: #6366f1; stroke-width: 4; }
+  100% { stroke: #c7d2fe; stroke-width: 1.5; }
+}
+
+/* 위치 그래프 미설정 안내 */
+.sim-map-empty {
+  flex: 1; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 6px;
+  padding: 20px 16px; text-align: center;
+}
+.sim-map-empty-icon  { font-size: 26px; opacity: 0.55; }
+.sim-map-empty-title { font-size: 12px; font-weight: 600; color: #64748b; }
+.sim-map-empty-sub   { font-size: 11px; color: #94a3b8; line-height: 1.5; }
+
+/* 지도에 올릴 수 없는 에이전트 안내(초기 location 미지정/그래프에 없는 장소) */
+.sim-map-hint {
+  flex-shrink: 0; padding: 5px 10px;
+  border-top: 1px solid #f1f5f9; background: #f8fafc;
+  font-size: 10px; color: #94a3b8;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 
 /* ── Run Replay Modal ─────────────────────────────────────────────────── */
 .sim-replay-modal-overlay {

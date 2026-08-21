@@ -10,6 +10,7 @@ import {
 } from './feed.js';
 import { updateAgentCard, updateAgentLocation, getCardEl } from './cards.js';
 import { addD3Edge } from '../graph/d3.js';
+import { moveAgentOnMap } from '../map/d3.js';
 import { setStatus } from './control.js';
 import { fetchAgentContext } from '../context.js';
 
@@ -91,6 +92,7 @@ export function connectSSE() {
     const d = JSON.parse(e.data);
     addMovementCard(d);
     updateAgentLocation(d.agent, d.to);
+    moveAgentOnMap(d.agent, d.to);
   });
 
   es.addEventListener('appearance_update', e => {

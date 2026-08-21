@@ -4,15 +4,32 @@
 import { sim, esc, emotionClass, agentLabel } from './state.js';
 import { stripCodeFence } from './utils/json.js';
 import { exportAgentContextMarkdown } from './export/markdown.js';
+import { ensureLocationMap } from './map/d3.js';
+
+// 탭 이름 → pane 요소 id. 탭을 추가할 때 여기만 늘리면 된다.
+const TAB_PANES = {
+  graph:   'sim-tab-graph',
+  map:     'sim-tab-map',
+  context: 'sim-tab-context',
+};
+// SVG를 그리는 탭 — 헤더의 "⬇ SVG" 버튼을 노출한다.
+const SVG_TABS = ['graph', 'map'];
 
 export function switchTab(tabName) {
+  const name = TAB_PANES[tabName] ? tabName : 'graph';
+
   document.querySelectorAll('.sim-tab').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.tab === tabName);
+    btn.classList.toggle('active', btn.dataset.tab === name);
   });
-  document.getElementById('sim-tab-graph').classList.toggle('sim-hidden', tabName !== 'graph');
-  document.getElementById('sim-tab-context').classList.toggle('sim-hidden', tabName !== 'context');
-  document.getElementById('sim-export-graph-btn').classList.toggle('sim-hidden', tabName !== 'graph');
-  if (tabName === 'context' && sim.selectedAgent && sim.status !== 'idle') {
+  Object.entries(TAB_PANES).forEach(([key, id]) => {
+    document.getElementById(id)?.classList.toggle('sim-hidden', key !== name);
+  });
+  document.getElementById('sim-export-graph-btn').classList.toggle('sim-hidden', !SVG_TABS.includes(name));
+
+  // 지도는 pane이 숨겨진 동안 크기를 잴 수 없다 — 보이는 시점에 실측 크기로 재조정한다.
+  if (name === 'map') ensureLocationMap();
+
+  if (name === 'context' && sim.selectedAgent && sim.status !== 'idle') {
     fetchAgentContext(sim.selectedAgent);
   }
 }

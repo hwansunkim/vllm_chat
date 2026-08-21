@@ -7,6 +7,7 @@ import { readConfigFromUI } from '../settings/page.js';
 import { renderAgentCards } from './cards.js';
 import { removeTypingIndicator } from './feed.js';
 import { initD3Graph } from '../graph/d3.js';
+import { initLocationMap } from '../map/d3.js';
 import { connectSSE, disconnectSSE } from './sse.js';
 
 export function setStatus(status) {
@@ -38,6 +39,7 @@ export async function startSimulation() {
   document.getElementById('sim-progress-fill').style.width = '0%';
   renderAgentCards();
   initD3Graph();
+  initLocationMap();
 
   const res = await fetch('/api/simulation/start', {
     method: 'POST',

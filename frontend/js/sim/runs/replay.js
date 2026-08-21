@@ -8,6 +8,7 @@ import { setStatus } from '../run/control.js';
 import { renderAgentCards } from '../run/cards.js';
 import { renderHistoricalFeed } from '../run/feed.js';
 import { initD3Graph } from '../graph/d3.js';
+import { initLocationMap } from '../map/d3.js';
 import { updateScenarioLabel } from '../views.js';
 import { connectSSE } from '../run/sse.js';
 import { exportRunMarkdown } from '../export/markdown.js';
@@ -149,6 +150,9 @@ export async function openRunReplay(runId, runNum) {
       // 설정 반영 (에이전트 카드 등 UI 동기화)
       applyScenario({ id: run.scenario_id, name: run.scenario_name || '', config: parsedConfig });
       renderAgentCards();
+      // 재개 시나리오의 location_graph로 지도를 다시 세운다 (아바타는 설정상의 초기 위치에서
+      // 시작하고, 이후 agent_move 이벤트로 실제 위치를 따라간다 — 에이전트 카드와 동일한 기준).
+      initLocationMap();
       closeReplay();
       setStatus('running');
       connectSSE();
@@ -175,9 +179,10 @@ export async function openRunReplay(runId, runNum) {
       // 시나리오 설정 반영 (sim.* 상태 업데이트)
       applyScenario({ id: run.scenario_id, name: run.scenario_name || '', config: parsedConfig });
 
-      // 에이전트 카드 · 그래프 초기화
+      // 에이전트 카드 · 그래프 · 위치 지도 초기화
       renderAgentCards();
       initD3Graph();
+      initLocationMap();
 
       // 과거 대화 피드 복원
       renderHistoricalFeed(data.log);

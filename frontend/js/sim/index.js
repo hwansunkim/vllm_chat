@@ -23,6 +23,7 @@ import {
 import { addLocationNode, initEarlyStopToggle, initTimeModeToggle } from './settings/page.js';
 import { toggleRunHistory, openAllRunsModal } from './runs/history.js';
 import { exportGraph } from './graph/d3.js';
+import { exportLocationMap } from './map/d3.js';
 import { switchTab, fetchAgentContext } from './context.js';
 import { openExportModal, initExportModal } from './export/markdown.js';
 import { initResizeHandles } from './resize.js';
@@ -60,7 +61,12 @@ export function initSimulationEvents() {
   });
   document.getElementById('sim-history-btn')?.addEventListener('click', toggleRunHistory);
   document.getElementById('sim-all-runs-btn').addEventListener('click', openAllRunsModal);
-  document.getElementById('sim-export-graph-btn').addEventListener('click', exportGraph);
+  // "⬇ SVG"는 그래프/지도 탭에서 공용 — 현재 보이는 pane 기준으로 내보낸다.
+  document.getElementById('sim-export-graph-btn').addEventListener('click', () => {
+    const mapPane = document.getElementById('sim-tab-map');
+    if (mapPane && !mapPane.classList.contains('sim-hidden')) exportLocationMap();
+    else exportGraph();
+  });
   document.getElementById('sim-export-md-btn').addEventListener('click', openExportModal);
   initExportModal();
   initEarlyStopToggle();

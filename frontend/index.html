@@ -125,6 +125,7 @@
       <div class="sim-graph-header">
         <div class="sim-tabs">
           <button class="sim-tab active" data-tab="graph">🕸 그래프</button>
+          <button class="sim-tab" data-tab="map" id="sim-map-tab-btn">🗺 위치 지도</button>
           <button class="sim-tab" data-tab="context" id="sim-context-tab-btn">👤 컨텍스트</button>
         </div>
         <button class="sim-export-btn" id="sim-export-graph-btn">⬇ SVG</button>
@@ -132,6 +133,16 @@
       <!-- Graph pane -->
       <div id="sim-tab-graph" class="sim-tab-pane">
         <svg id="sim-graph-svg"></svg>
+      </div>
+      <!-- Location map pane -->
+      <div id="sim-tab-map" class="sim-tab-pane sim-hidden">
+        <svg id="sim-map-svg"></svg>
+        <div id="sim-map-empty" class="sim-map-empty sim-hidden">
+          <div class="sim-map-empty-icon">🗺</div>
+          <div class="sim-map-empty-title">위치 그래프가 설정되지 않았습니다</div>
+          <div class="sim-map-empty-sub">설정 → 위치 그래프에서 장소를 추가하면 지도가 표시됩니다.</div>
+        </div>
+        <div id="sim-map-hint" class="sim-map-hint sim-hidden"></div>
       </div>
       <!-- Context pane -->
       <div id="sim-tab-context" class="sim-tab-pane sim-hidden">
