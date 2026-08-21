@@ -891,7 +891,10 @@
 /* D3 graph */
 .g-node circle { stroke: #e2e8f0; stroke-width: 2; }
 .g-node text   { pointer-events: none; }
-.g-link        { fill: none; stroke-width: 1.8; opacity: 0.75; }
+/* 엣지는 stroke가 아니라 채워진 테이퍼 폴리곤(source에서 두껍고 target에서 뾰족)이다.
+   fill 색과 폭은 d3.js가 발화 빈도 정규화 결과로 넣으므로(CSS 선언이 presentation
+   attribute를 덮어쓴다) 여기서 fill/stroke-width를 지정하면 안 된다. */
+.g-link        { stroke: none; opacity: 0.8; }
 .g-link-label  { font-size: 9px; fill: #64748b; pointer-events: none; }
 
 /* ── Run Replay Modal ─────────────────────────────────────────────────── */
