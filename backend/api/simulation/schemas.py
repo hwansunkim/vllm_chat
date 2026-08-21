@@ -108,6 +108,11 @@ class SimStartConfig(BaseModel):
     idle_minutes_schedule:  list[int]        = [60, 120, 180]  # 강제 침묵 재투입 시 경과 시간(분) 스케줄 — 침묵 회차가 늘수록 다음 값 사용, 끝에서 캡
     max_silence_waves:      int              = 3         # 연속 침묵 허용 wave 수 (early_stop_enabled + time_per_wave > 0일 때 활성)
     early_stop_enabled:     bool             = True      # False = 조기 종료 비활성 (max_waves까지 항상 실행)
+    # 목표 기간(분). None = 미사용(기존 동작: max_waves + 침묵 조기종료만).
+    # 설정 시 "시뮬레이션 내 경과 시간이 이 값에 도달"이 주 종료 신호가 되고,
+    # max_waves는 상한 안전장치로 남는다 — 둘 중 먼저 도달하는 쪽에서 정상 종료.
+    # 시간 개념이 비활성(time_mode="fixed" AND time_per_wave=0)이면 이 값은 조용히 무시된다.
+    target_duration_minutes: int | None      = Field(default=None, ge=1)
     server_id:              str | None       = None  # None = DB default 서버, 미설정 시 env 폴백
     # 시뮬레이션 전체 기본 샘플링 온도. AgentConfig.temperature 로 에이전트별 오버라이드 가능.
     temperature:            float            = Field(default=0.7, ge=0.0, le=2.0)
@@ -139,6 +144,8 @@ class SimContinueConfig(BaseModel):
     max_waves:   int              = 10
     step_delay:  float            = 1.0
     events:      list[ScenarioEvent] = []
+    # max_waves와 같은 성격의 "이번 이어서 실행" 예산. None = 목표 기간 미사용.
+    target_duration_minutes: int | None = Field(default=None, ge=1)
 
 
 # ── 사후 인터뷰 ────────────────────────────────────────────────────────────────

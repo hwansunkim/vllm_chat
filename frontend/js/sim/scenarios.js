@@ -2,7 +2,8 @@
 // Scenario list CRUD + current-scenario selection.
 
 import { sim, _expandedAgents, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE, DEFAULT_START_WEEKDAY, normalizeWeekday,
-         DEFAULT_TEMPERATURE, normalizeTemperature, normalizeAgentTemperature } from './state.js';
+         DEFAULT_TEMPERATURE, normalizeTemperature, normalizeAgentTemperature,
+         normalizeTargetDuration } from './state.js';
 import { renderSettingsPage, readConfigFromUI } from './settings/page.js';
 import { refreshRunHistory } from './runs/history.js';
 import { downloadFile, safeFilename, nowTag } from './utils/download.js';
@@ -41,6 +42,8 @@ export function buildScenarioConfig() {
     background:             sim.background,
     start_agent:            sim.start_agent,
     max_waves:              sim.max_waves,
+    // 목표 기간(분). null = 미사용 — 백엔드가 0/음수를 422로 거부하므로 정규화해서 저장한다.
+    target_duration_minutes: normalizeTargetDuration(sim.target_duration_minutes),
     step_delay:             sim.step_delay,
     token_limit:            sim.token_limit,
     llm_max_tokens:         sim.llm_max_tokens,
@@ -127,6 +130,7 @@ export function newScenario() {
   sim.background          = '';
   sim.start_agent         = '';
   sim.max_waves           = 10;
+  sim.target_duration_minutes = null;
   sim.step_delay          = 1.0;
   sim.token_limit         = 8192;
   sim.llm_max_tokens      = 16384;
@@ -180,6 +184,8 @@ export function applyScenario(s) {
   sim.background   = cfg.background   || '';
   sim.start_agent  = cfg.start_agent  || (cfg.agents?.[0]?.name ?? '');
   sim.max_waves    = cfg.max_waves    || 10;
+  // 구버전 시나리오에는 필드가 없다 — normalizeTargetDuration()이 null(= 미사용)로 폴백한다.
+  sim.target_duration_minutes = normalizeTargetDuration(cfg.target_duration_minutes);
   sim.step_delay   = cfg.step_delay   || 1.0;
   // Migrate legacy memory_limit (message count) to token_limit.
   // Old default was 20 messages; ~400 tokens/message is a reasonable estimate.

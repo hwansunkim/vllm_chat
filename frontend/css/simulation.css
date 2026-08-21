@@ -252,6 +252,24 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
+/* ── 목표 기간 (숫자 + 단위 → target_duration_minutes) ────────────────────────── */
+.sim-duration-row { display: flex; align-items: center; gap: 6px; }
+.sim-option-row input[type=number].sim-duration-value { width: 64px; }
+.sim-duration-value::placeholder { color: #cbd5e1; font-style: italic; }
+.sim-duration-unit {
+  font-size: 12px; padding: 5px 7px;
+  border: 1px solid #e2e8f0; border-radius: 5px; background: white; outline: none;
+}
+.sim-duration-unit:focus { border-color: #6366f1; }
+.sim-duration-row input:disabled, .sim-duration-row select:disabled {
+  background: #f1f5f9; color: #cbd5e1; cursor: not-allowed;
+}
+/* 목표 기간 힌트는 서버 힌트와 달리 여러 줄로 늘어날 수 있다 (예상 wave 수 경고 포함) */
+#sim-target-duration-hint { white-space: normal; }
+#sim-target-duration-hint.sim-hint-warn { color: #b45309; }
+#sim-target-duration-hint.sim-hint-off  { color: #94a3b8; font-style: italic; }
+.sim-opt-note { color: #cbd5e1; font-size: 11px; }
+
 /* ── 샘플링 온도 ────────────────────────────────────────────────────────────── */
 /* 시뮬레이션 레벨: 슬라이더 + 현재 값 표시 */
 .sim-temp-row input[type=range] {

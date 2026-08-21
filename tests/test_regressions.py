@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 import httpx
+from pydantic import ValidationError
 from tenacity import wait_none
 
 from backend import config, state
@@ -13,7 +14,7 @@ from backend.api import conversations
 from backend.api.schemas import ChatMessage
 from backend.db.database import get_db, init_tables, migrate_db
 from backend.api.simulation import runtime as sim_runtime
-from backend.api.simulation.schemas import AgentConfig, SimStartConfig
+from backend.api.simulation.schemas import AgentConfig, SimContinueConfig, SimStartConfig
 from backend.llm import bridge
 from backend.llm import client as llm_client
 from backend.llm import registry as llm_registry
@@ -386,6 +387,109 @@ class AgentLlmMapTests(unittest.TestCase):
         self.assertIn("server_only", result)
         self.assertIn("temp_only", result)
         self.assertNotIn("neither", result)
+
+
+class TargetDurationTests(unittest.TestCase):
+    """목표 기간(target_duration_minutes) 종료 조건 (ABM/simulation/runner.py)."""
+
+    def _llm(self, category="normal_scene"):
+        def llm(messages, max_tokens=None, **kw):
+            sys_text = messages[0].get("content", "") if messages else ""
+            if "시간 관찰자" in sys_text:  # time_classifier 호출
+                return json.dumps({"category": category, "reason": "t"}), "", {}
+            return json.dumps({
+                "content": "안녕하세요.", "action_note": "", "target": "all",
+                "move_to": None, "update_appearance": None,
+            }), "", {}
+        return llm
+
+    def _run(self, *, time_mode="fixed", time_per_wave=30, target=None,
+             max_waves=20, elapsed_init=0, category="normal_scene"):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {
+                key: Agent(key, f"너는 {key}다.", tmp, token_limit=4096)
+                for key in ("a", "b")
+            }
+            sim = Simulation(
+                agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+                llm=self._llm(category),
+                time_per_wave=time_per_wave, time_mode=time_mode,
+                elapsed_minutes_init=elapsed_init,
+            )
+            emitted = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            sim.run("a", max_waves=max_waves, step_delay=0.0,
+                    target_duration_minutes=target)
+            end = [d for t, d in emitted if t == "simulation_end"][-1]
+            return sim, end
+
+    def test_fixed_mode_stops_when_target_reached(self):
+        # tpw=30, target=60 → wave 0,1 실행 후 (1+1)*30 = 60 도달
+        sim, end = self._run(time_per_wave=30, target=60, max_waves=20)
+
+        self.assertEqual(sim.completed_waves, 2)
+        self.assertEqual(end["end_reason"], "target_duration")
+
+    def test_max_waves_still_caps_when_target_is_far(self):
+        sim, end = self._run(time_per_wave=30, target=600, max_waves=3)
+
+        self.assertEqual(sim.completed_waves, 3)
+        self.assertEqual(end["end_reason"], "max_waves")
+
+    def test_variable_mode_stops_on_accumulated_minutes(self):
+        sim, end = self._run(time_mode="variable", target=20, max_waves=20,
+                             category="meal_or_brief")  # wave당 5~10분
+
+        self.assertEqual(end["end_reason"], "target_duration")
+        self.assertGreaterEqual(sim._elapsed_minutes, 20)
+        self.assertLessEqual(sim.completed_waves, 4)
+
+    def test_resume_gets_a_fresh_duration_budget(self):
+        # 복원된 누적 경과(elapsed_minutes_init)가 이미 목표를 넘었어도 즉시 멈추지
+        # 않고, 이번 실행에서 목표 기간만큼 더 진행한다 (max_waves와 같은 성격).
+        sim, end = self._run(time_mode="variable", target=20, max_waves=20,
+                             category="meal_or_brief", elapsed_init=500)
+
+        self.assertEqual(end["end_reason"], "target_duration")
+        self.assertGreaterEqual(sim._elapsed_minutes - 500, 20)
+        self.assertGreaterEqual(sim.completed_waves, 2)
+
+    def test_target_ignored_when_time_concept_disabled(self):
+        # fixed + time_per_wave=0 = 시간 개념 비활성 → 목표 기간은 무시(에러 아님)
+        sim, end = self._run(time_per_wave=0, target=10, max_waves=3)
+
+        self.assertEqual(sim.completed_waves, 3)
+        self.assertEqual(end["end_reason"], "max_waves")
+
+    def test_none_target_keeps_legacy_behavior(self):
+        sim, end = self._run(target=None, max_waves=4)
+
+        self.assertEqual(sim.completed_waves, 4)
+        self.assertEqual(end["end_reason"], "max_waves")
+
+    def test_schema_defaults_and_validation(self):
+        cfg = SimStartConfig(agents=[_agent("a")], background="", start_agent="a")
+        self.assertIsNone(cfg.target_duration_minutes)  # 구버전 설정 = 미사용
+
+        cfg = SimStartConfig(agents=[_agent("a")], background="", start_agent="a",
+                             target_duration_minutes=480)
+        self.assertEqual(cfg.target_duration_minutes, 480)
+
+        for bad in (0, -30):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValidationError):
+                    SimStartConfig(agents=[_agent("a")], background="",
+                                   start_agent="a", target_duration_minutes=bad)
+
+        self.assertIsNone(SimContinueConfig(start_agent="a").target_duration_minutes)
+        self.assertEqual(
+            SimContinueConfig(start_agent="a", target_duration_minutes=60)
+            .target_duration_minutes,
+            60,
+        )
 
 
 class ConversationTests(unittest.IsolatedAsyncioTestCase):

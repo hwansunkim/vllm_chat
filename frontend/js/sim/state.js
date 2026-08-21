@@ -50,6 +50,80 @@ export function normalizeAgentTemperature(v) {
   return Math.min(TEMPERATURE_MAX, Math.max(TEMPERATURE_MIN, n));
 }
 
+// ── 목표 기간 (백엔드 SimStartConfig / SimContinueConfig의 target_duration_minutes) ──
+// 백엔드는 "분 단위 정수(ge=1)" 또는 null만 받는다. 0/음수는 422이므로 "사용 안 함"은
+// 반드시 null로 보내야 한다 — server_id의 ""→null, 에이전트 temperature의 빈 값→null과 같은 규칙.
+// UI는 사람이 쓰기 편한 (숫자 + 단위)로 입력받고 여기서 분으로 환산한다.
+export const DURATION_UNITS = [
+  { id: 'day',   label: '일',   minutes: 1440   },
+  { id: 'week',  label: '주',   minutes: 10080  },  // 7일
+  { id: 'month', label: '개월', minutes: 43200  },  // 30일
+  { id: 'year',  label: '년',   minutes: 525600 },  // 365일
+];
+export const DEFAULT_DURATION_UNIT = 'day';
+// 100년 — 이보다 큰 값은 사실상 입력 실수다. 상한이 없으면 큰 숫자가 JSON
+// 직렬화 시 지수 표기(예: 5.256e+26)로 바뀌어 백엔드에서 422가 난다.
+export const MAX_TARGET_DURATION_MINUTES = 52560000;
+
+export function durationUnitMinutes(unitId) {
+  const u = DURATION_UNITS.find(x => x.id === unitId);
+  return u ? u.minutes : 1440;
+}
+
+/**
+ * 임의의 입력을 target_duration_minutes로 정규화.
+ * 빈 값/비숫자/0 이하 = null(= 목표 기간 미사용). 그 외에는 1 이상의 정수(분).
+ */
+export function normalizeTargetDuration(v) {
+  if (v === null || v === undefined || String(v).trim() === '') return null;
+  const n = typeof v === 'number' ? v : parseFloat(v);
+  if (!Number.isFinite(n)) return null;
+  const i = Math.round(n);
+  if (i < 1) return null;
+  return Math.min(i, MAX_TARGET_DURATION_MINUTES);
+}
+
+/**
+ * 분 → { value, unit, exact } 역산 (시나리오를 불러올 때 입력 폼을 복원하는 용도).
+ * 큰 단위부터 검사해 "딱 떨어지는" 가장 큰 단위를 고른다(20160분 → 2주, 43200분 → 1개월).
+ * 어떤 단위로도 나누어떨어지지 않으면 일 단위 근사치를 돌려주고 exact=false로 표시한다 —
+ * 호출부는 이때 사용자가 입력을 건드리지 않는 한 원본 분 값을 그대로 다시 저장해야 한다
+ * (근사치로 덮어쓰면 저장할 때마다 값이 조금씩 달라진다).
+ */
+export function minutesToDurationParts(minutes) {
+  const m = normalizeTargetDuration(minutes);
+  if (m === null) return { value: '', unit: DEFAULT_DURATION_UNIT, exact: true };
+  for (let i = DURATION_UNITS.length - 1; i >= 0; i--) {
+    const u = DURATION_UNITS[i];
+    if (m % u.minutes === 0) return { value: m / u.minutes, unit: u.id, exact: true };
+  }
+  const approxDays = Math.max(0.01, Math.round((m / 1440) * 100) / 100);
+  return { value: approxDays, unit: 'day', exact: false };
+}
+
+/** (숫자, 단위) → 분. 빈 값/0 이하는 null(= 미사용). */
+export function durationPartsToMinutes(value, unitId) {
+  const raw = typeof value === 'number' ? value : String(value ?? '').trim();
+  if (raw === '') return null;
+  const n = typeof raw === 'number' ? raw : parseFloat(raw);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return normalizeTargetDuration(n * durationUnitMinutes(unitId));
+}
+
+/**
+ * 시간 개념 자체가 꺼져 있는지 판정 — 이때만 백엔드가 목표 기간을 무시한다.
+ * 주의: time_mode='variable'이면 wave당 시간이 0이어도 LLM 분류로 시간이 흐르므로 활성이다.
+ * (time_per_wave === 0 하나만 보고 판단하면 안 된다.)
+ */
+export function isTimeConceptDisabled(timeMode, timePerWave) {
+  const raw = typeof timePerWave === 'number' ? timePerWave : parseInt(timePerWave);
+  // 백엔드(ABM/simulation/core.py)는 `max(0, int(time_per_wave))`로 음수를 0으로
+  // 클램프한 뒤 활성 여부를 판단한다. 여기서 음수를 그대로 두면 `!(-5)`가 false라
+  // "활성"으로 오판정돼(백엔드는 무시하는데 프론트는 목표 기간이 동작한다고 안내).
+  const tpw = Math.max(0, Number.isFinite(raw) ? raw : 0);
+  return timeMode !== 'variable' && !tpw;
+}
+
 export const sim = {
   status:              'idle',
   selectedAgent:       null,
@@ -58,7 +132,8 @@ export const sim = {
   agents:       [],
   background:   '',
   start_agent:  '',
-  max_waves:    10,
+  max_waves:    10,            // 이번 실행의 wave 상한 (안전장치). 목표 기간과 함께 쓰면 먼저 도달하는 쪽에서 종료
+  target_duration_minutes: null, // 목표 기간(분). null = 미사용. 이번 실행 기준 예산(max_waves와 동일한 성격)
   step_delay:   1.0,
   token_limit:    8192,
   llm_max_tokens: 16384,

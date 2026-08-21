@@ -201,6 +201,7 @@ def start_simulation(cfg: SimStartConfig):
                 events=[e.model_dump() for e in cfg.events],
                 max_silence_waves=cfg.max_silence_waves,
                 early_stop_enabled=cfg.early_stop_enabled,
+                target_duration_minutes=cfg.target_duration_minutes,
             )
             finalize_run(db, run_sim_id, stop_ev, sim, eq)
         except Exception as e:
@@ -266,6 +267,7 @@ def continue_simulation(cfg: SimContinueConfig):
                 step_delay=cfg.step_delay,
                 events=[e.model_dump() for e in cfg.events],
                 resume_wave=pending,
+                target_duration_minutes=cfg.target_duration_minutes,
             )
             finalize_run(db, run_sim_id, stop_ev, sim_obj, eq)
         except Exception as e:
@@ -546,6 +548,7 @@ def resume_simulation(run_id: str):
                 step_delay=cfg.step_delay,
                 events=[],
                 resume_wave=saved_pending,
+                target_duration_minutes=cfg.target_duration_minutes,
             )
             finalize_run(new_db, run_sim_id, stop_ev, sim, eq)
         except Exception as e:

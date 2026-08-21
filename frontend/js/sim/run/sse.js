@@ -14,6 +14,16 @@ import { moveAgentOnMap } from '../map/d3.js';
 import { setStatus } from './control.js';
 import { fetchAgentContext } from '../context.js';
 
+// simulation_end 이벤트의 end_reason → 화면 문구. 구버전 백엔드는 이 필드를 보내지 않으므로
+// 값이 없거나 모르는 값이면 종료 사유 없이 기존 문구만 표시한다.
+const END_REASON_LABELS = {
+  max_waves:       '최대 wave 수 도달로 종료',
+  target_duration: '목표 기간 도달로 종료',
+  silence:         '대화가 끊겨 조기 종료',
+  no_agents:       '활성 에이전트가 없어 종료',
+  stopped:         '사용자 중지로 종료',
+};
+
 export function connectSSE() {
   disconnectSSE();
 
@@ -105,8 +115,9 @@ export function connectSSE() {
     setStatus('done');
     removeTypingIndicator();
     document.querySelectorAll('.sim-agent-card').forEach(c => c.classList.remove('speaking'));
+    const reason = END_REASON_LABELS[d.end_reason];
     document.getElementById('sim-turn-text').textContent =
-      `완료  |  총 ${d.total_turns}턴`;
+      `완료  |  총 ${d.total_turns}턴${reason ? `  |  ${reason}` : ''}`;
     document.getElementById('sim-progress-fill').style.width = '100%';
     es.close();
     sim.eventSource = null;

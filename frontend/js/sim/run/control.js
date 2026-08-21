@@ -2,7 +2,7 @@
 // Start / stop / continue / status-badge logic for simulation runs.
 
 import { sim, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE, normalizeWeekday,
-         normalizeTemperature } from '../state.js';
+         normalizeTemperature, normalizeTargetDuration } from '../state.js';
 import { readConfigFromUI } from '../settings/page.js';
 import { renderAgentCards } from './cards.js';
 import { removeTypingIndicator } from './feed.js';
@@ -50,6 +50,8 @@ export async function startSimulation() {
       background:             sim.background,
       start_agent:            sim.start_agent,
       max_waves:              sim.max_waves,
+      // 목표 기간(분). "사용 안 함"은 반드시 null — 0/음수는 백엔드가 422로 거부한다.
+      target_duration_minutes: normalizeTargetDuration(sim.target_duration_minutes),
       step_delay:             sim.step_delay,
       token_limit:            sim.token_limit,
       llm_max_tokens:         sim.llm_max_tokens,
@@ -104,6 +106,8 @@ export async function continueSimulation() {
     body: JSON.stringify({
       start_agent: sim.start_agent,
       max_waves:   sim.max_waves,
+      // max_waves와 같은 "이번 이어서 실행" 예산 — 복원된 누적 경과와 무관하게 이만큼 더 진행한다.
+      target_duration_minutes: normalizeTargetDuration(sim.target_duration_minutes),
       step_delay:  sim.step_delay,
       events:      sim.events,
     }),

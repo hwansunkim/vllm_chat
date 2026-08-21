@@ -236,9 +236,26 @@
           <select id="sim-start-agent"></select>
         </div>
         <div class="sim-option-row">
-          <label>최대 wave 수</label>
-          <input type="number" id="sim-max-waves" value="10" min="1" max="50"/>
+          <label>최대 wave 수 <span class="sim-opt-note">(안전장치)</span></label>
+          <input type="number" id="sim-max-waves" value="10" min="1" max="5000"
+                 title="이번 실행에서 진행할 wave 수 상한. 목표 기간과 함께 쓰면 둘 중 먼저 도달하는 조건에서 종료됩니다."/>
         </div>
+        <div class="sim-option-row">
+          <label>목표 기간 <span class="sim-opt-note">(이번 실행 기준)</span></label>
+          <div class="sim-duration-row">
+            <input type="number" id="sim-target-duration-value" class="sim-duration-value"
+                   min="0" step="any" placeholder="미사용"
+                   title="시뮬레이션 내 경과 시간이 이 기간에 도달하면 정상 종료됩니다. 비워두면 사용하지 않습니다."/>
+            <select id="sim-target-duration-unit" class="sim-duration-unit"
+                    title="입력한 숫자의 단위. 내부적으로는 분으로 환산해 저장/전송합니다.">
+              <option value="day">일</option>
+              <option value="week">주</option>
+              <option value="month">개월</option>
+              <option value="year">년</option>
+            </select>
+          </div>
+        </div>
+        <div class="sim-server-hint" id="sim-target-duration-hint"></div>
         <div class="sim-option-row">
           <label>LLM 서버</label>
           <select id="sim-server-select"><option value="">기본 서버</option></select>

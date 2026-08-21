@@ -18,8 +18,14 @@ class _RunnerMixin:
         resume_wave:       dict | None = None,
         max_silence_waves: int         = 3,
         early_stop_enabled: bool       = True,
+        target_duration_minutes: int | None = None,
     ):
-        """Wave-based BFS + 시나리오 이벤트 실행."""
+        """Wave-based BFS + 시나리오 이벤트 실행.
+
+        ``target_duration_minutes``가 주어지면 시뮬레이션 내 경과 시간이 그 값에
+        도달하는 시점에서도 정상 종료한다. ``max_waves``는 그대로 상한(안전장치)으로
+        남으며, 둘 중 먼저 도달하는 조건에서 멈춘다.
+        """
         events_by_wave: dict[int, list] = {}
         for e in (events or []):
             w = e.get("wave", 0) if isinstance(e, dict) else 0
@@ -30,8 +36,27 @@ class _RunnerMixin:
         total_turns   = 0
         silence_count = 0
 
+        # ── 목표 기간(선택) ──────────────────────────────────────────────────
+        # 시간 개념이 꺼져 있으면(fixed 모드 + time_per_wave=0) 목표 기간은 계산할
+        # 기준 자체가 없으므로 조용히 무시한다 — 에러가 아니라 "사용 안 함".
+        # variable 모드는 time_per_wave와 무관하게 경과 시간을 누적하므로 항상 유효.
+        time_enabled   = self._time_mode == "variable" or self._time_per_wave > 0
+        target_minutes = int(target_duration_minutes or 0)
+        if target_minutes > 0 and not time_enabled:
+            logger.info(
+                f"목표 기간({target_minutes}분)이 설정됐으나 시간 개념이 비활성"
+                f"(time_mode=fixed, time_per_wave=0)이라 무시합니다."
+            )
+            target_minutes = 0
+        # 목표 기간은 '이번 run() 호출 이후' 경과분 기준이다. max_waves가 실행마다
+        # 새로 주어지는 예산인 것과 동일한 성격 — resume/continue도 목표 기간만큼
+        # 더 진행한다(누적 경과가 이미 목표를 넘었다고 즉시 멈추지 않는다).
+        elapsed_baseline = self._elapsed_minutes
+        end_reason = "max_waves"
+
         for wave_num in range(max_waves):
             if self._stop_event.is_set():
+                end_reason = "stopped"
                 break
 
             for event in events_by_wave.get(wave_num, []):
@@ -41,6 +66,10 @@ class _RunnerMixin:
                     current_wave[entrant] = []
 
             if not current_wave:
+                # "silence"는 직전 루프에서 이미 원인을 표시해뒀다(침묵 조기종료).
+                # 그 외(예: 초기 시나리오에 에이전트가 아예 없는 경우)에만 no_agents.
+                if end_reason != "silence":
+                    end_reason = "no_agents"
                 break
 
             self._emit("wave_start", {
@@ -67,6 +96,7 @@ class _RunnerMixin:
                         break
 
             if self._stop_event.is_set():
+                end_reason = "stopped"
                 break
 
             turn_counter += len(current_wave)
@@ -195,7 +225,14 @@ class _RunnerMixin:
                     logger.info(f"[W{wave_num}] 침묵 #{silence_count}/{max_silence_waves}")
                     if silence_count < max_silence_waves:
                         next_wave = {key: [] for key in self.active_agents}
-                # else: time_per_wave=0, early_stop=ON → 즉시 종료 (원래 동작)
+                    else:
+                        # next_wave가 빈 채로 남아 다음 루프 선두의 `if not current_wave:`
+                        # 가드에 걸리는데, 그 가드는 무조건 "no_agents"를 붙인다. 침묵으로
+                        # 멈춘 것을 여기서 먼저 표시해 그 덮어쓰기를 막는다.
+                        end_reason = "silence"
+                else:
+                    # time_per_wave=0, early_stop=ON → 즉시 종료 (원래 동작)
+                    end_reason = "silence"
             elif next_wave:
                 silence_count = 0
 
@@ -243,6 +280,25 @@ class _RunnerMixin:
                     except Exception as e:
                         logger.error(f"[W{wave_num}] system 에이전트 예외: {e}", exc_info=True)
 
+            # ── 목표 기간 도달 체크 ───────────────────────────────────────────
+            # 침묵 조기종료(early_stop_enabled/max_silence_waves)와 독립적으로,
+            # 이번 wave까지의 경과 시간이 목표에 도달하면 정상 종료한다.
+            # 경과 시간 기준은 에이전트에게 보여지는 시각 계산(step.py)과 동일하게 둔다:
+            #   - variable: 누적된 self._elapsed_minutes
+            #   - fixed:    (wave_num + 1) * time_per_wave  (결정론적)
+            if target_minutes > 0:
+                if self._time_mode == "variable":
+                    elapsed_since_start = self._elapsed_minutes - elapsed_baseline
+                else:
+                    elapsed_since_start = (wave_num + 1) * self._time_per_wave
+                if elapsed_since_start >= target_minutes:
+                    logger.info(
+                        f"[W{wave_num}] 목표 기간 도달 — 경과 {elapsed_since_start}분 "
+                        f">= 목표 {target_minutes}분, 정상 종료"
+                    )
+                    end_reason = "target_duration"
+                    break
+
             if current_wave and not self._stop_event.is_set():
                 elapsed  = 0.0
                 interval = 0.1
@@ -257,6 +313,9 @@ class _RunnerMixin:
             "total_turns": total_turns,
             "edges_count": len(self.edges),
             "log_count":   len(self.shared_log),
+            # 종료 사유 (추가 필드 — 모르는 소비자는 무시해도 기존과 동일하게 동작):
+            # "max_waves" | "target_duration" | "silence" | "no_agents" | "stopped"
+            "end_reason":  end_reason,
         })
 
     def _classify_wave_time(self, wave_num: int, results: dict) -> str:
