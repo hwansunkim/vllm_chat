@@ -348,37 +348,11 @@
     <div class="sim-settings-section sim-hidden" id="sim-variable-time-section">
       <div class="sim-settings-section-title">
         <span>⏱ 가변 시간 설정<span class="sim-help" aria-hidden="true" data-tooltip="시간 모드가 '가변'일 때만 사용합니다. wave가 끝날 때마다 LLM이 그 wave를 아래 카테고리 중 하나로 분류하고, 지정한 최소~최대 범위(분) 안에서 무작위로 시간을 경과시킵니다.">?</span></span>
+        <button id="sim-add-timecat-btn" class="sim-settings-add-btn">+ 카테고리 추가</button>
       </div>
       <div class="sim-settings-section-body">
         <div class="sim-fields-hint">wave가 끝날 때마다 그 wave의 대화 내용을 LLM이 아래 카테고리 중 하나로 분류하고, 그 범위(분) 내에서 무작위로 시간을 경과시킵니다.</div>
-        <div class="sim-time-cat-row" data-cat-id="meal_or_brief">
-          <input type="text" class="sim-time-cat-label" value="식사·짧은 용무"/>
-          <input type="number" class="sim-time-cat-min" value="5" min="1" max="1440"/>
-          <span class="sim-time-cat-sep">~</span>
-          <input type="number" class="sim-time-cat-max" value="10" min="1" max="1440"/>
-          <span class="sim-time-cat-unit">분</span>
-        </div>
-        <div class="sim-time-cat-row" data-cat-id="normal_scene">
-          <input type="text" class="sim-time-cat-label" value="일반적인 대화/활동"/>
-          <input type="number" class="sim-time-cat-min" value="15" min="1" max="1440"/>
-          <span class="sim-time-cat-sep">~</span>
-          <input type="number" class="sim-time-cat-max" value="30" min="1" max="1440"/>
-          <span class="sim-time-cat-unit">분</span>
-        </div>
-        <div class="sim-time-cat-row" data-cat-id="alone_or_offscreen">
-          <input type="text" class="sim-time-cat-label" value="혼자 있음/외출"/>
-          <input type="number" class="sim-time-cat-min" value="60" min="1" max="1440"/>
-          <span class="sim-time-cat-sep">~</span>
-          <input type="number" class="sim-time-cat-max" value="120" min="1" max="1440"/>
-          <span class="sim-time-cat-unit">분</span>
-        </div>
-        <div class="sim-time-cat-row" data-cat-id="night_sleep">
-          <input type="text" class="sim-time-cat-label" value="취침/장시간 경과"/>
-          <input type="number" class="sim-time-cat-min" value="240" min="1" max="1440"/>
-          <span class="sim-time-cat-sep">~</span>
-          <input type="number" class="sim-time-cat-max" value="420" min="1" max="1440"/>
-          <span class="sim-time-cat-unit">분</span>
-        </div>
+        <div id="sim-time-cat-list"></div>
         <div class="sim-option-row" style="margin-top:8px">
           <label>강제 재투입 시간(분)<span class="sim-help" aria-hidden="true" data-tooltip="연속 침묵으로 강제 재투입될 때 경과시킬 시간(분), 쉼표로 구분. 침묵 회차가 늘수록 다음 값을 사용하고 끝에서 고정됩니다.">?</span></label>
           <input type="text" id="sim-idle-schedule" value="60,120,180" placeholder="예: 60,120,180"/>

@@ -439,6 +439,15 @@
 }
 .sim-time-cat-min:focus, .sim-time-cat-max:focus { border-color: #6366f1; }
 .sim-time-cat-sep, .sim-time-cat-unit { font-size: 11px; color: #94a3b8; flex-shrink: 0; }
+/* 위치 그래프의 .sim-loc-node-del과 동일한 삭제 버튼 스타일.
+   카테고리가 1개만 남으면 disabled 상태로 흐려져 0개가 되는 것을 막는다(백엔드 422 방지). */
+.sim-time-cat-del {
+  background: none; border: none; color: var(--text-muted, #94a3b8);
+  cursor: pointer; font-size: 16px; padding: 2px 6px;
+  border-radius: 4px; line-height: 1; flex-shrink: 0;
+}
+.sim-time-cat-del:hover:not(:disabled) { color: #ef4444; background: rgba(239,68,68,0.1); }
+.sim-time-cat-del:disabled { opacity: 0.3; cursor: default; }
 #sim-idle-schedule {
   flex: 1; max-width: 220px; font-size: 12px; padding: 5px 8px;
   border: 1px solid #e2e8f0; border-radius: 5px; outline: none; text-align: right;
