@@ -492,6 +492,152 @@ class TargetDurationTests(unittest.TestCase):
         )
 
 
+class _ScriptedLLM:
+    """에이전트별·호출순서별 응답을 미리 정해두는 스텁 LLM.
+
+    script = {"a": [{"content":..., "target":..., "move_to":...}, ...], ...}
+    시스템 프롬프트의 "너는 {key}다." 로 화자를 식별한다. 스크립트가 소진되면
+    마지막 항목을 반복한다.
+    """
+
+    def __init__(self, script: dict):
+        self.script = script
+        self.calls: dict[str, int] = {}
+
+    def __call__(self, messages, max_tokens=None, **kw):
+        sys_text = messages[0].get("content", "") if messages else ""
+        if "시간 관찰자" in sys_text:  # time_classifier 호출
+            return json.dumps({"category": "normal_scene", "reason": "t"}), "", {}
+        key = next(k for k in self.script if f"너는 {k}다." in sys_text)
+        idx = self.calls.get(key, 0)
+        self.calls[key] = idx + 1
+        turns = self.script[key]
+        turn  = turns[idx] if idx < len(turns) else turns[-1]
+        return json.dumps({
+            "content":           turn.get("content", "..."),
+            "action_note":       "",
+            "target":            turn.get("target", "self"),
+            "move_to":           turn.get("move_to"),
+            "update_appearance": None,
+        }), "", {}
+
+
+class MoveRoutingTests(unittest.TestCase):
+    """move_to(이동)와 발화 라우팅/씬 통보의 순서 회귀 (ABM/simulation/runner.py).
+
+    핵심 불변식: 발화 라우팅은 turn.py의 엣지 기록과 **같은 이동 전 스냅샷**으로
+    판정돼야 한다. 이동 후 스냅샷으로 재해석하면 같은 턴에 발화하며 떠난
+    에이전트의 말이 그래프엔 남고 수신자에겐 안 가는 "유령 발화"가 된다.
+    """
+
+    LOCATION_GRAPH = [
+        {"name": "입구", "connects_to": ["매장"]},
+        {"name": "매장", "connects_to": ["입구", "창고"]},
+        {"name": "창고", "connects_to": ["매장"]},
+    ]
+
+    def _run(self, script, *, max_waves=1, early_stop_enabled=True, locations=None,
+             resume_wave=None):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {
+                key: Agent(key, f"너는 {key}다.", tmp, token_limit=4096)
+                for key in ("a", "b")
+            }
+            sim = Simulation(
+                agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+                llm=_ScriptedLLM(script),
+                agent_locations=locations or {"a": "매장", "b": "매장"},
+                location_graph=self.LOCATION_GRAPH,
+            )
+            emitted = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            sim.run("a", max_waves=max_waves, step_delay=0.0,
+                    early_stop_enabled=early_stop_enabled, resume_wave=resume_wave)
+            return sim, emitted
+
+    @staticmethod
+    def _spoken(msgs):
+        """씬 메시지를 제외한 실제 발화만."""
+        return [m for m in msgs if m["speaker"] != "씬"]
+
+    def test_farewell_reaches_origin_room(self):
+        # a가 같은 턴에 b에게 말하면서 창고로 떠난다. 이동 후 위치로 라우팅하면
+        # (a@창고 vs b@매장) 이 작별 인사가 통째로 폐기된다.
+        sim, _ = self._run({
+            "a": [{"content": "먼저 갈게.", "target": ["b"], "move_to": "창고"}],
+            "b": [{"content": "응.",       "target": "self"}],
+        })
+
+        self.assertIn("b", sim._pending_wave)
+        self.assertEqual(
+            [m["content"] for m in self._spoken(sim._pending_wave["b"])],
+            ["먼저 갈게."],
+        )
+        self.assertEqual(sim._agent_location["a"], "창고")
+
+    def test_edge_and_routing_agree(self):
+        # turn_complete.new_edges(그래프·피드·DB)와 실제 next_wave 수신자가
+        # 같은 진실 원천을 봐야 한다. 서로를 타겟하도록 wave 0에 둘 다 투입.
+        sim, emitted = self._run(
+            {
+                "a": [{"content": "먼저 갈게.",  "target": ["b"], "move_to": "창고"}],
+                "b": [{"content": "어, 조심해.", "target": ["a"]}],
+            },
+            resume_wave={"a": [], "b": []},
+        )
+
+        edge_targets = {
+            e["target"]
+            for t, d in emitted if t == "turn_complete"
+            for e in d["new_edges"]
+        }
+        routed_recipients = {
+            key for key, msgs in sim._pending_wave.items()
+            if self._spoken(msgs)
+        }
+
+        self.assertEqual(edge_targets, {"a", "b"})
+        self.assertEqual(edge_targets, routed_recipients)
+
+    def test_departure_scene_injected_at_origin(self):
+        # 내부 → 내부 이동. 도착지 알림만 있고 출발지 알림이 없으면 남은 쪽은
+        # 상대가 떠난 걸 모른 채 계속 말을 건다.
+        sim, _ = self._run({
+            "a": [{"content": "창고 좀 볼게.", "target": "self", "move_to": "창고"}],
+            "b": [{"content": "음.",          "target": "self"}],
+        })
+
+        scene = [m["content"] for m in sim._pending_wave.get("b", [])
+                 if m["speaker"] == "씬"]
+        self.assertEqual(scene, ["[씬] a이(가) 자리를 떠났다."])
+
+    def test_situation_context_reflects_new_location(self):
+        # 이미 정상 동작하는 경로의 회귀 가드 — 라우팅 순서를 바꿔도 다음 wave의
+        # [현재 상황] 블록은 이동 후 위치를 반영해야 한다.
+        # b를 입구에 두어 wave 0의 next_wave가 비게 하고(씬 주입 대상 없음),
+        # early_stop_enabled=False로 전원 재투입시켜 a가 wave 1에도 돌게 한다.
+        sim, emitted = self._run(
+            {
+                "a": [{"content": "창고 좀 볼게.", "target": "self", "move_to": "창고"},
+                      {"content": "여긴 창고군.", "target": "self"}],
+                "b": [{"content": "음.", "target": "self"}],
+            },
+            max_waves=2, early_stop_enabled=False,
+            locations={"a": "매장", "b": "입구"},
+        )
+
+        situations = {
+            (d["agent"], d["wave"]): d["text"]
+            for t, d in emitted if t == "turn_situation"
+        }
+        self.assertIn("현재 위치: 매장", situations[("a", 0)])
+        self.assertIn("현재 위치: 창고", situations[("a", 1)])
+        self.assertIn("현재 위치: 입구", situations[("b", 1)])
+
+
 class ConversationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()

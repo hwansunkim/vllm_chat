@@ -186,6 +186,10 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
         self._agent_knowledge: dict[str, set]  = {}
         self._stranger_map:    dict[str, dict] = {}
         self._stranger_rmap:   dict[str, dict] = {}
+        # stranger_N 할당은 워커 스레드(_step_agent)에서 read-modify-write 되므로
+        # 직렬화한다. 락 없이 두면 같은 wave에 두 관찰자가 서로를 처음 볼 때
+        # 번호가 중복되거나 건너뛸 수 있다.
+        self._stranger_lock = threading.Lock()
 
         _groups = self._agent_groups
         for key in self.agents:

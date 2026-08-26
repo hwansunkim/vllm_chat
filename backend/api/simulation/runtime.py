@@ -579,18 +579,33 @@ def get_agent_context(name: str):
         raise HTTPException(404, f"Agent '{name}' not found")
     agent = agents[name]
     sim_obj = _sim.get("sim_obj")
-    if sim_obj is not None:
-        all_others      = [k for k in sim_obj.active_agents if k != name]
-        visible_names   = [k for k in sim_obj._visible_targets.get(name, all_others)
-                           if k in sim_obj.active_agents]
-        key_to_alias    = sim_obj._key_to_alias
-        target_sections = sim_obj._get_visible_sections(name, visible_names)
+    if sim_obj is not None and name in sim_obj.agents:
+        # 프롬프트 조립 규칙은 실행 경로(ABM/simulation/step.py::_step_agent)와
+        # 반드시 같아야 한다 — 예전엔 여기서 규칙을 따로 복제해 [현재 상황]/[현재 시각]
+        # 블록이 빠지고 <TARGETS>에 다른 위치의 에이전트까지 노출됐다.
+        # _assemble_agent_prompt()가 그 단일 진실 원천이며 부작용(이벤트 emit)이 없다.
+        ctx               = sim_obj._assemble_agent_prompt(name)
+        visible_names     = ctx["visible_agents"]
+        key_to_alias      = ctx["key_to_alias"]
+        target_sections   = ctx["target_sections"]
+        location_name     = ctx["location_name"]
+        situation_targets = ctx["situation_targets"]
+        ephemeral_msgs    = ctx["ephemeral_msgs"]
     else:
-        visible_names   = [k for k in agents if k != name]
-        key_to_alias    = {}
-        target_sections = None
-    messages      = agent.build_messages(bg_log, visible_names, key_to_alias, target_sections)
-    est_tokens    = agent.estimate_context_tokens(bg_log, visible_names, key_to_alias, target_sections)
+        visible_names     = [k for k in agents if k != name]
+        key_to_alias      = {}
+        target_sections   = None
+        location_name     = ""
+        situation_targets = False
+        ephemeral_msgs    = None
+    messages   = agent.build_messages(
+        bg_log, visible_names, key_to_alias, target_sections,
+        location_name, situation_targets, ephemeral_msgs,
+    )
+    est_tokens = agent.estimate_context_tokens(
+        bg_log, visible_names, key_to_alias, target_sections,
+        location_name, situation_targets, ephemeral_msgs,
+    )
     prompt_tokens = agent._last_prompt_tokens if agent._last_prompt_tokens is not None else est_tokens
     return {
         "name":           name,

@@ -76,19 +76,6 @@ class _StepMixin:
         if est / agent._token_limit >= _COMPRESSION_THRESHOLD:
             self._compress_agent(agent, agent_key, wave)
 
-    def _call_llm_for_agent(
-        self,
-        agent:           Agent,
-        agent_key:       str,
-        visible_agents:  list[str],
-        target_sections: list[tuple[str, list[str]]] | None = None,
-    ) -> tuple[str | None, str, dict, str | None]:
-        """Invoke the LLM for an agent. Returns (content, reasoning, usage, error)."""
-        call_messages = agent.build_messages(
-            self.background_log, visible_agents, self._key_to_alias, target_sections
-        )
-        return self._call_llm_for_agent_msgs(agent, agent_key, call_messages)
-
     def _call_llm_for_agent_msgs(
         self,
         agent:         Agent,
@@ -152,20 +139,20 @@ class _StepMixin:
         logger.warning(f"언어 교잡 수정 미완 ({agent.name}): {max_retries}회 재시도 후 외국어 잔존")
         return current_bad, reasoning, usage, None
 
-    def _step_agent(
-        self,
-        agent_key: str,
-        wave:      int,
-        turn:      int,
-        incoming:  list[dict],
-    ) -> dict:
-        """단일 에이전트 한 스텝. 결과 dict 반환."""
-        if self._stop_event.is_set():
-            return {"success": False, "agent_key": agent_key}
+    def _assemble_agent_prompt(self, agent_key: str, wave: int | None = None) -> dict:
+        """에이전트 프롬프트 조립 규칙의 **단일 진실 원천**.
 
-        active_agent  = self.agents[agent_key]
-        incoming_msgs = self._inject_incoming(active_agent, incoming)
+        실행 경로(`_step_agent`)와 읽기 전용 조회
+        (`GET /api/simulation/agents/{name}/context`)가 반드시 같은 규칙을 쓰도록
+        위치 기반 타깃 계산 · 상황 컨텍스트 · ephemeral 메시지 구성을 한곳에 모은다.
+        예전엔 이 규칙이 두 곳에 서로 다르게 복제돼 있어 컨텍스트 탭에는
+        `[현재 상황]` 블록이 없고 다른 위치의 에이전트가 `<TARGETS>`에 노출됐다.
 
+        부작용 없음(이벤트 emit 안 함) — `turn_situation` emit은 호출부 책임이다.
+        `wave`를 생략하면 fixed 시간 모드의 시각 계산에 `completed_waves`를 쓴다.
+
+        Returns: build_messages()/estimate_context_tokens()에 그대로 넘길 수 있는 dict.
+        """
         known, strangers = self._compute_wave_targets(agent_key)
 
         # 시각 정보 ephemeral 주입
@@ -174,7 +161,8 @@ class _StepMixin:
         if self._time_mode == "variable":
             time_str = self._format_time_str(self._sim_start_minutes + self._elapsed_minutes)
         elif self._time_per_wave > 0:
-            time_str = self._format_time_str(self._sim_start_minutes + wave * self._time_per_wave)
+            wave_idx = self.completed_waves if wave is None else wave
+            time_str = self._format_time_str(self._sim_start_minutes + wave_idx * self._time_per_wave)
         if time_str is not None:
             ephemeral_msgs.append({"role": "user", "content": f"[현재 시각: {time_str}]"})
 
@@ -182,12 +170,6 @@ class _StepMixin:
         situation_text = self._build_situation_context(agent_key, known, strangers)
         if situation_text:
             ephemeral_msgs.append({"role": "user", "content": situation_text})
-        if situation_text:
-            self._emit("turn_situation", {
-                "wave":  wave,
-                "agent": agent_key,
-                "text":  situation_text,
-            })
 
         extended_alias = dict(self._key_to_alias)
         for sid, _, visual in strangers:
@@ -228,18 +210,62 @@ class _StepMixin:
         # 동석자가 있을 때만 상황 컨텍스트로 target 제공 — 혼자면 <TARGETS>가 "(없음)"이 된다.
         sit_targets = bool(my_loc and (known or strangers))
 
+        return {
+            "known":             known,
+            "strangers":         strangers,
+            "visible_agents":    visible_agents,
+            "key_to_alias":      extended_alias,
+            "target_sections":   target_sections,
+            "location_name":     my_loc,
+            "situation_targets": sit_targets,
+            "ephemeral_msgs":    ephemeral_msgs or None,
+            "situation_text":    situation_text,
+            "time_str":          time_str,
+        }
+
+    def _step_agent(
+        self,
+        agent_key: str,
+        wave:      int,
+        turn:      int,
+        incoming:  list[dict],
+    ) -> dict:
+        """단일 에이전트 한 스텝. 결과 dict 반환."""
+        if self._stop_event.is_set():
+            return {"success": False, "agent_key": agent_key}
+
+        active_agent  = self.agents[agent_key]
+        incoming_msgs = self._inject_incoming(active_agent, incoming)
+
+        ctx             = self._assemble_agent_prompt(agent_key, wave)
+        visible_agents  = ctx["visible_agents"]
+        extended_alias  = ctx["key_to_alias"]
+        target_sections = ctx["target_sections"]
+        my_loc          = ctx["location_name"]
+        sit_targets     = ctx["situation_targets"]
+        ephemeral_msgs  = ctx["ephemeral_msgs"]
+        situation_text  = ctx["situation_text"]
+        time_str        = ctx["time_str"]
+
+        if situation_text:
+            self._emit("turn_situation", {
+                "wave":  wave,
+                "agent": agent_key,
+                "text":  situation_text,
+            })
+
         self._maybe_compress(
             active_agent, agent_key, wave, visible_agents, target_sections,
-            sit_targets, ephemeral_msgs or None,
+            sit_targets, ephemeral_msgs,
         )
 
         active_agent.trim_to_token_limit(
             self.background_log, visible_agents, extended_alias, target_sections,
-            my_loc, sit_targets, ephemeral_msgs or None,
+            my_loc, sit_targets, ephemeral_msgs,
         )
         est_tokens = active_agent.estimate_context_tokens(
             self.background_log, visible_agents, extended_alias, target_sections,
-            my_loc, sit_targets, ephemeral_msgs or None,
+            my_loc, sit_targets, ephemeral_msgs,
         )
 
         self._emit("turn_start", {
@@ -253,7 +279,7 @@ class _StepMixin:
 
         call_messages = active_agent.build_messages(
             self.background_log, visible_agents, extended_alias, target_sections,
-            my_loc, sit_targets, ephemeral_msgs or None,
+            my_loc, sit_targets, ephemeral_msgs,
         )
 
         content, reasoning, usage, error = self._call_llm_for_agent_msgs(
@@ -275,7 +301,7 @@ class _StepMixin:
                 active_agent, agent_key, visible_agents, target_sections, content,
                 max_retries=self._lang_fix_retries,
                 key_to_alias=extended_alias, location_name=my_loc,
-                situation_targets=sit_targets, ephemeral_msgs=ephemeral_msgs or None,
+                situation_targets=sit_targets, ephemeral_msgs=ephemeral_msgs,
             )
             if error is not None:
                 self._emit("turn_error", {

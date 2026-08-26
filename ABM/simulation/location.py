@@ -36,19 +36,24 @@ class _LocationMixin:
         return list(self._location_graph.get(location, []))
 
     def _get_or_assign_stranger_id(self, observer_key: str, target_key: str) -> str:
-        """observer가 target을 처음 보는 경우 stranger_N ID를 할당, 이미 있으면 기존 ID 반환."""
-        self._stranger_map.setdefault(observer_key, {})
-        self._stranger_rmap.setdefault(observer_key, {})
-        if target_key in self._stranger_rmap[observer_key]:
-            return self._stranger_rmap[observer_key][target_key]
-        # 복원된 map에 번호 공백이 있어도 기존 ID를 덮어쓰지 않도록 빈 번호를 찾는다.
-        n = len(self._stranger_map[observer_key]) + 1
-        while f"stranger_{n}" in self._stranger_map[observer_key]:
-            n += 1
-        sid = f"stranger_{n}"
-        self._stranger_map[observer_key][sid] = target_key
-        self._stranger_rmap[observer_key][target_key] = sid
-        return sid
+        """observer가 target을 처음 보는 경우 stranger_N ID를 할당, 이미 있으면 기존 ID 반환.
+
+        ThreadPoolExecutor 워커에서 동시에 불리므로 전체 read-modify-write를 락으로
+        직렬화한다 (번호 중복/누락 방지).
+        """
+        with self._stranger_lock:
+            self._stranger_map.setdefault(observer_key, {})
+            self._stranger_rmap.setdefault(observer_key, {})
+            if target_key in self._stranger_rmap[observer_key]:
+                return self._stranger_rmap[observer_key][target_key]
+            # 복원된 map에 번호 공백이 있어도 기존 ID를 덮어쓰지 않도록 빈 번호를 찾는다.
+            n = len(self._stranger_map[observer_key]) + 1
+            while f"stranger_{n}" in self._stranger_map[observer_key]:
+                n += 1
+            sid = f"stranger_{n}"
+            self._stranger_map[observer_key][sid] = target_key
+            self._stranger_rmap[observer_key][target_key] = sid
+            return sid
 
     def _compute_wave_targets(self, agent_key: str):
         """현재 위치 기준 대화 가능 에이전트 계산.

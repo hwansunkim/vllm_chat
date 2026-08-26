@@ -103,6 +103,24 @@ class _RunnerMixin:
             total_turns  += len(current_wave)
             self.completed_waves = wave_num + 1
 
+            # ── 발화 라우팅 (이동 적용 *전* 위치 스냅샷 기준) ──────────────────
+            # turn.py의 1차 _resolve_targets() 해석(엣지/피드/DB 기록)과 반드시 같은
+            # 스냅샷을 써야 한다. 예전엔 이 블록이 이동 처리 뒤에 있어서, 같은 턴에
+            # 발화하면서 move_to로 떠난 에이전트의 말이 "그래프엔 있는데 상대는 못 받는"
+            # 유령 발화가 됐고, 그 타깃이 유일했다면 next_wave가 통째로 비어 시뮬레이션이
+            # 즉시 침묵 종료됐다. 의미론: "말은 떠나기 전에 했으므로 그 자리에 있던
+            # 사람은 듣는다."
+            routed: dict[str, list] = {}
+            for speaker_key, result in results.items():
+                if not result.get("success"):
+                    continue
+                for target_key in self._resolve_targets(result["targets"], speaker_key):
+                    routed.setdefault(target_key, []).append({
+                        "speaker":     speaker_key,
+                        "content":     result["clean_content"],
+                        "action_note": result.get("action_note", ""),
+                    })
+
             # ── 이동·외모 처리 ────────────────────────────────────────────────
             scene_injections: dict[str, list] = {}
 
@@ -167,6 +185,17 @@ class _RunnerMixin:
                             scene_injections.setdefault(other_key, []).append({
                                 "speaker": "씬", "content": scene_msg, "action_note": ""
                             })
+                        elif other_loc == old_loc and old_loc:
+                            # 출발지에 남은 사람들에게도 이탈을 알린다. 이게 없으면
+                            # 남은 쪽 memory의 마지막 대화가 여전히 "진행 중"이라
+                            # 떠난 상대에게 계속 말을 거는 무성 발화가 반복된다.
+                            if agent_key in self._agent_knowledge.get(other_key, set()):
+                                scene_msg = f"[씬] {display}이(가) 자리를 떠났다."
+                            else:
+                                scene_msg = "[씬] 낯선 이가 자리를 떠났다."
+                            scene_injections.setdefault(other_key, []).append({
+                                "speaker": "씬", "content": scene_msg, "action_note": ""
+                            })
 
             for speaker_key, result in results.items():
                 if not result.get("success"):
@@ -193,22 +222,16 @@ class _RunnerMixin:
                         })
 
             # ── next_wave 구성 ────────────────────────────────────────────────
+            # 조립 자체는 이동이 끝난 뒤에 한다(도착/이탈 씬 메시지가 필요하므로).
+            # "누가 무엇을 듣는지" 판정만 위에서 이동 전 스냅샷으로 이미 끝났다.
             next_wave: dict[str, list] = {}
             for agent_key, msgs in scene_injections.items():
                 if agent_key in self.active_agents:
                     next_wave.setdefault(agent_key, []).extend(msgs)
 
-            for speaker_key, result in results.items():
-                if not result.get("success"):
-                    continue
-                for target_key in self._resolve_targets(result["targets"], speaker_key):
-                    if target_key not in next_wave:
-                        next_wave[target_key] = []
-                    next_wave[target_key].append({
-                        "speaker":     speaker_key,
-                        "content":     result["clean_content"],
-                        "action_note": result.get("action_note", ""),
-                    })
+            for agent_key, msgs in routed.items():
+                if agent_key in self.active_agents:
+                    next_wave.setdefault(agent_key, []).extend(msgs)
 
             # ── 조기 종료 / 시간 주도형 루프 ─────────────────────────────────────
             organically_filled = bool(next_wave)
