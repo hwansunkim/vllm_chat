@@ -34,6 +34,67 @@
 .sim-status-badge.stopped { background: #fef3c7; color: #92400e; }
 .sim-status-badge.error   { background: #fee2e2; color: #b91c1c; }
 
+/* ── 실행 오류 배지 + 클릭 토글 팝업 ────────────────────────────────────────── */
+/* .sim-help(hover 툴팁)와 같은 다크 카드 톤이지만 동작은 클릭 토글이다 —
+   에러 메시지는 길고 여러 건이 누적되며 사용자가 읽고 복사할 시간이 필요하다.
+   내용은 js/sim/run/errors.js가 렌더하고, 로그가 비면 배지에 .sim-hidden이 붙는다. */
+.sim-error-wrap { position: relative; display: inline-flex; align-items: center; flex-shrink: 0; }
+
+.sim-error-badge {
+  font-size: 11px; font-weight: 600; line-height: 1.5;
+  padding: 3px 9px; border-radius: 20px;
+  border: 1px solid #fca5a5; background: #fee2e2; color: #b91c1c;
+  cursor: pointer; white-space: nowrap;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+.sim-error-badge:hover { background: #fecaca; border-color: #f87171; }
+.sim-error-badge.open  { background: #b91c1c; border-color: #b91c1c; color: white; }
+
+.sim-error-popup {
+  position: absolute; top: calc(100% + 8px); left: 0;
+  z-index: 200;
+  width: min(430px, calc(100vw - 48px));
+  max-height: 340px; overflow-y: auto;
+  background: #1e293b; color: #e2e8f0;
+  border-radius: 8px; box-shadow: 0 8px 28px rgba(15, 23, 42, 0.32);
+  font-size: 11px; line-height: 1.55; text-align: left;
+}
+
+.sim-error-popup-head {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 10px; background: #0f172a; color: #fecaca;
+  border-radius: 8px 8px 0 0; font-weight: 600;
+}
+.sim-error-popup-close {
+  background: none; border: none; color: #94a3b8;
+  cursor: pointer; font-size: 12px; line-height: 1; padding: 2px 4px;
+}
+.sim-error-popup-close:hover { color: #e2e8f0; }
+
+.sim-error-list {
+  list-style: none; margin: 0; padding: 6px;
+  display: flex; flex-direction: column; gap: 5px;
+}
+.sim-error-item { background: #273449; border-radius: 6px; padding: 7px 9px; }
+.sim-error-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 4px; }
+.sim-error-where {
+  background: #475569; color: #e2e8f0; border-radius: 4px;
+  padding: 1px 6px; font-size: 10px; font-weight: 600; white-space: nowrap;
+}
+.sim-error-where.conn { background: #7f1d1d; color: #fecaca; }
+.sim-error-speaker { color: #cbd5e1; font-weight: 600; }
+.sim-error-time { margin-left: auto; color: #94a3b8; font-size: 10px; }
+.sim-error-msg {
+  color: #fca5a5; font-size: 10.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap; word-break: break-word; user-select: text;
+}
+.sim-error-popup-foot {
+  padding: 6px 10px 8px; border-top: 1px solid #334155;
+  color: #94a3b8; font-size: 10px;
+}
+
 .sim-header-controls { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; }
 
 .sim-ctrl-btn {
@@ -269,6 +330,64 @@
 #sim-target-duration-hint.sim-hint-warn { color: #b45309; }
 #sim-target-duration-hint.sim-hint-off  { color: #94a3b8; font-style: italic; }
 .sim-opt-note { color: #cbd5e1; font-size: 11px; }
+
+/* ── 옵션 도움말 툴팁 ───────────────────────────────────────────────────────── */
+/* 사용법: <span class="sim-help" aria-hidden="true" data-tooltip="설명">?</span>
+   라벨/섹션 제목 안에 넣으면 hover 시 CSS만으로 말풍선이 뜬다 (JS 불필요).
+   본문은 ::after(말풍선) + ::before(꼬리)로 그리며 data-tooltip 값을 그대로 읽는다.
+   기본은 아이콘 기준 오른쪽 아래로 펼쳐진다 — 라벨은 항상 컬럼 왼쪽에 있으므로
+   900px 폭의 #sim-settings-body 안에서 가로로 잘리지 않는다. */
+.sim-help {
+  display: inline-flex; align-items: center; justify-content: center;
+  position: relative; flex-shrink: 0;
+  width: 14px; height: 14px; margin-left: 5px;
+  border: 1px solid #cbd5e1; border-radius: 50%;
+  background: #f8fafc; color: #94a3b8;
+  font-size: 9px; font-weight: 700; line-height: 1;
+  vertical-align: middle; cursor: help; user-select: none;
+  transition: background .12s ease, color .12s ease, border-color .12s ease;
+}
+.sim-help:hover {
+  background: #6366f1; border-color: #6366f1; color: white;
+}
+
+/* 말풍선 */
+.sim-help::after {
+  content: attr(data-tooltip);
+  position: absolute; top: calc(100% + 7px); left: -6px;
+  z-index: 60;
+  width: max-content; max-width: min(260px, calc(100vw - 60px));
+  padding: 7px 10px;
+  background: #1e293b; color: #e2e8f0;
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.25);
+  /* 섹션 제목의 uppercase/자간/굵기를 물려받지 않도록 초기화 */
+  font-size: 11px; font-weight: 400; line-height: 1.55;
+  letter-spacing: 0; text-transform: none; text-align: left;
+  white-space: normal; word-break: keep-all;
+  opacity: 0; visibility: hidden;
+  transform: translateY(-3px);
+  transition: opacity .13s ease, transform .13s ease, visibility .13s;
+  pointer-events: none;
+}
+/* 꼬리 (위를 향하는 삼각형, 말풍선 윗변에 맞닿는다) */
+.sim-help::before {
+  content: '';
+  position: absolute; top: calc(100% - 3px); left: 2px;
+  z-index: 61;
+  border: 5px solid transparent; border-bottom-color: #1e293b;
+  opacity: 0; visibility: hidden;
+  transition: opacity .13s ease, visibility .13s;
+  pointer-events: none;
+}
+.sim-help:hover::after,
+.sim-help:hover::before {
+  opacity: 1; visibility: visible; transform: translateY(0);
+}
+
+/* 섹션은 카드 모서리를 다듬으려고 overflow:hidden 이라 툴팁이 잘린다.
+   도움말에 hover 중일 때만 잘라내기를 풀어 준다. */
+.sim-settings-section:has(.sim-help:hover) { overflow: visible; }
 
 /* ── 샘플링 온도 ────────────────────────────────────────────────────────────── */
 /* 시뮬레이션 레벨: 슬라이더 + 현재 값 표시 */

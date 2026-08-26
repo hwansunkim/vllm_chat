@@ -170,7 +170,15 @@ export const sim = {
   eventSource:    null,
   scenarios:      [],
   agentEmotions:  {},   // { agent_name: latest_emotion } — updated per turn_complete
+  // 이번 실행에서 발생한 오류 누적 로그 (오래된 것 → 최신 순).
+  // { kind: 'turn'|'connection', turn, speaker, error, timestamp } — 상한 MAX_ERROR_LOG.
+  // 시뮬레이션을 새로 시작할 때 clearErrorLog()로 초기화된다 (run/errors.js).
+  errorLog:       [],
 };
+
+// 오류 로그 보관 상한. 시나리오가 막힐 때는 같은 오류가 매 턴 반복되므로
+// 무한히 쌓지 않고 최신 N건만 남긴다.
+export const MAX_ERROR_LOG = 50;
 
 // Accordion expand state (keyed by agent.name)
 export const _expandedAgents = new Set();

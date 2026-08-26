@@ -9,6 +9,7 @@ import { removeTypingIndicator } from './feed.js';
 import { initD3Graph } from '../graph/d3.js';
 import { initLocationMap } from '../map/d3.js';
 import { connectSSE, disconnectSSE } from './sse.js';
+import { clearErrorLog, renderErrorIndicator } from './errors.js';
 
 export function setStatus(status) {
   sim.status = status;
@@ -22,6 +23,9 @@ export function setStatus(status) {
   // MD 내보내기 버튼: 대화 기록이 있을 때(done/stopped/running) 표시
   const mdBtn = document.getElementById('sim-export-md-btn');
   if (mdBtn) mdBtn.classList.toggle('sim-hidden', status === 'idle');
+  // 오류 배지는 로그가 비어있지 않으면 어떤 상태에서든 보인다 —
+  // 'error'로 끝나지 않고 완주해도 중간에 실패한 턴은 확인할 수 있어야 한다.
+  renderErrorIndicator();
 }
 
 export async function startSimulation() {
@@ -32,6 +36,10 @@ export async function startSimulation() {
   if (!sim.agents.find(a => a.name === sim.start_agent)) {
     alert(`시작 에이전트 '${sim.start_agent}'가 에이전트 목록에 없습니다.`); return;
   }
+
+  // 새 실행이므로 이전 실행의 오류 로그는 버린다.
+  // (이어서 실행은 같은 실행의 연장이라 유지한다 — continueSimulation은 비우지 않는다)
+  clearErrorLog();
 
   document.getElementById('sim-feed').innerHTML =
     '<div id="sim-feed-empty">시뮬레이션 시작 중...</div>';

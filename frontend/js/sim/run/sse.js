@@ -12,6 +12,7 @@ import { updateAgentCard, updateAgentLocation, getCardEl } from './cards.js';
 import { addD3Edge } from '../graph/d3.js';
 import { moveAgentOnMap } from '../map/d3.js';
 import { setStatus } from './control.js';
+import { recordTurnError, recordConnectionError } from './errors.js';
 import { fetchAgentContext } from '../context.js';
 
 // simulation_end 이벤트의 end_reason → 화면 문구. 구버전 백엔드는 이 필드를 보내지 않으므로
@@ -68,6 +69,9 @@ export function connectSSE() {
 
   es.addEventListener('turn_error', e => {
     const d = JSON.parse(e.data);
+    // payload의 turn/speaker/error를 그대로 누적한다 — 실행이 막힐 때 원인을 볼 수 있는
+    // 유일한 정보원이므로 버리지 않는다. (상태 배지 옆 "⚠ N건" 팝업에서 조회)
+    recordTurnError(d);
     removeTypingIndicator(d.speaker);
     getCardEl(d.speaker)?.classList.remove('speaking');
   });
@@ -124,6 +128,9 @@ export function connectSSE() {
   });
 
   es.addEventListener('error', () => {
+    // EventSource의 error 이벤트에는 브라우저 스펙상 메시지 데이터가 없다.
+    // 고정 문구만 같은 로그에 남겨 turn_error들과 시간순으로 함께 보이게 한다.
+    recordConnectionError();
     removeTypingIndicator();
     setStatus('error');
     es.close();

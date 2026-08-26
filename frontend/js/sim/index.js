@@ -15,6 +15,7 @@ import { renderScenarioEvents } from './settings/events.js';
 import {
   startSimulation, stopSimulation, continueSimulation,
 } from './run/control.js';
+import { initErrorPopupEvents } from './run/errors.js';
 import {
   saveScenario, deleteScenario,
   newScenario, applyScenario,
@@ -69,6 +70,7 @@ export function initSimulationEvents() {
   });
   document.getElementById('sim-export-md-btn').addEventListener('click', openExportModal);
   initExportModal();
+  initErrorPopupEvents();
   initEarlyStopToggle();
   initTimeModeToggle();
   initTargetDurationUI();
