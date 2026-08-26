@@ -117,8 +117,11 @@ class _TargetsMixin:
                     and _same_loc(k)
                 )
             elif t_s.startswith("stranger_"):
+                # stranger_N ID는 같은 장소에서뿐 아니라 같은 zone의 다른 장소를
+                # 인지할 때도 발급된다. 대화 가능 범위는 어디까지나 "같은 장소"이므로
+                # 여기서도 _same_loc()로 걸러야 zone 인지가 대화 채널로 새지 않는다.
                 real_key = self._stranger_map.get(speaker_key, {}).get(t_s)
-                if real_key and real_key in self.active_agents:
+                if real_key and real_key in self.active_agents and _same_loc(real_key):
                     self._agent_knowledge.setdefault(speaker_key, set()).add(real_key)
                     self._agent_knowledge.setdefault(real_key, set()).add(speaker_key)
                     resolved.append(real_key)

@@ -86,11 +86,52 @@ class _LocationMixin:
                 strangers.append((sid, other_key, visual))
         return known, strangers
 
+    def _compute_zone_awareness(self, agent_key: str):
+        """같은 구역(zone)의 **다른 장소**에 있는 에이전트 인지 계산.
+
+        대화 범위(_compute_wave_targets)와는 별개다 — 여기 잡히는 사람들은
+        "저기 있구나"라고 알 뿐, 말을 걸려면 move_to로 그 장소까지 가야 한다.
+        (LocationNode.zone은 위치 개념이며 _agent_groups(캐릭터 관계 그룹)와 무관.)
+
+        Returns (known_elsewhere: list[tuple[key, location]],
+                 strangers_elsewhere: list[tuple[stranger_id, real_key, visual, location]])
+        현재 위치에 zone이 없거나 외부 공간이면 빈 목록.
+        같은 장소에 있는 사람(= 이미 known/strangers에 포함)은 제외한다.
+        """
+        my_loc = self._agent_location.get(agent_key, "")
+        if not my_loc or my_loc in self._exterior_locations:
+            return [], []
+        my_zone = self._location_zone.get(my_loc, "")
+        if not my_zone:
+            return [], []
+
+        knowledge = self._agent_knowledge.get(agent_key, set())
+        known_elsewhere:     list[tuple[str, str]]           = []
+        strangers_elsewhere: list[tuple[str, str, str, str]] = []
+        for other_key in self.active_agents:
+            if other_key == agent_key:
+                continue
+            other_loc = self._agent_location.get(other_key, "")
+            if not other_loc or other_loc == my_loc:
+                continue  # 같은 장소 → 이미 대화 스코프에서 노출됨
+            if other_loc in self._exterior_locations:
+                continue  # 외부 공간은 zone과 무관하게 완전 격리
+            if self._location_zone.get(other_loc, "") != my_zone:
+                continue
+            if other_key in knowledge:
+                known_elsewhere.append((other_key, other_loc))
+            else:
+                sid    = self._get_or_assign_stranger_id(agent_key, other_key)
+                visual = self._agent_visual.get(other_key, "") or self._key_to_alias.get(other_key, other_key)
+                strangers_elsewhere.append((sid, other_key, visual, other_loc))
+        return known_elsewhere, strangers_elsewhere
+
     def _build_situation_context(
         self,
         agent_key: str,
         known:     list[str],
         strangers: list[tuple],
+        zone_awareness: tuple | None = None,
     ) -> str | None:
         """현재 위치·이동 가능 장소·동석자 정보를 내러티브 user 메시지로 구성."""
         my_loc = self._agent_location.get(agent_key, "")
@@ -137,5 +178,26 @@ class _LocationMixin:
             if adjacent:
                 alone_msg += f" move_to로 인접 장소({', '.join(adjacent)})로 이동할 수 있다."
             lines.append(alone_msg)
+
+        # 같은 구역의 다른 장소 — 인지만 되고 대화는 불가 (말을 걸려면 이동해야 함)
+        my_zone = self._location_zone.get(my_loc, "")
+        known_elsewhere, strangers_elsewhere = zone_awareness or ([], [])
+        if my_zone and (known_elsewhere or strangers_elsewhere):
+            lines.append("")
+            lines.append(f"[같은 구역({my_zone})의 다른 곳]")
+            if known_elsewhere:
+                labels = [
+                    f'{self._key_to_alias.get(k, k)} (ID: "{k}") — {loc}'
+                    for k, loc in known_elsewhere
+                ]
+                lines.append(f"아는 사람: {', '.join(labels)}")
+            if strangers_elsewhere:
+                lines.append("처음 보는 사람:")
+                for sid, _, visual, loc in strangers_elsewhere:
+                    desc = f'  - ID: "{sid}"'
+                    if visual:
+                        desc += f"  {visual}"
+                    lines.append(f"{desc} — {loc}")
+            lines.append("※ 이들은 지금 다른 장소에 있어 말을 걸 수 없습니다. 대화하려면 move_to로 그 장소까지 이동하세요.")
 
         return "\n".join(lines)

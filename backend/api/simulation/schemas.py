@@ -33,6 +33,9 @@ class LocationNode(BaseModel):
     name:        str
     connects_to: list[str] = []
     is_exterior: bool      = False
+    # 인지 구역. 같은 zone의 다른 장소에 있는 사람은 서로 존재를 인지하지만 대화는 불가.
+    # 빈 문자열 = zone 없음(독립 노드). 위치 개념이며 AgentConfig.groups(캐릭터 관계 그룹)와 무관.
+    zone:        str       = ""
 
 
 class ExtraField(BaseModel):

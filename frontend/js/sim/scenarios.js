@@ -201,7 +201,8 @@ export function applyScenario(s) {
     sim.extra_fields.push({ name: 'action_note', default: '' });
   }
   sim.events                 = cfg.events                 || [];
-  sim.location_graph = (cfg.location_graph || []).map(n => ({ ...n, connects_to: [...(n.connects_to || [])], is_exterior: !!n.is_exterior }));
+  // zone은 구버전 시나리오에 없다 — undefined가 남지 않도록 ''로 정규화한다.
+  sim.location_graph = (cfg.location_graph || []).map(n => ({ ...n, connects_to: [...(n.connects_to || [])], is_exterior: !!n.is_exterior, zone: (n.zone || '').trim() }));
   sim.lang_fix_enabled       = cfg.lang_fix_enabled       ?? true;
   sim.lang_fix_retries       = cfg.lang_fix_retries       ?? 2;
   sim.output_format_template = cfg.output_format_template || '';

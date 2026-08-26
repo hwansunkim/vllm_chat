@@ -1365,18 +1365,42 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 .sim-loc-node-icon {
   font-size: 14px;
 }
 .sim-loc-node-name {
-  flex: 1;
+  flex: 1 1 120px;
+  min-width: 100px;
   background: var(--surface-1, #0f172a);
   border: 1px solid var(--border, #334155);
   border-radius: 6px;
   padding: 4px 8px;
   color: var(--text-primary, #f1f5f9);
   font-size: 13px;
+}
+/* 구역 태그 — 같은 zone이면 서로의 존재를 인지한다. 짧은 값이라 좁게 잡는다. */
+.sim-loc-node-zone {
+  flex: 0 1 96px;
+  min-width: 72px;
+  background: var(--surface-1, #0f172a);
+  border: 1px dashed var(--border, #334155);
+  border-radius: 6px;
+  padding: 4px 8px;
+  color: var(--text-primary, #f1f5f9);
+  font-size: 12px;
+}
+.sim-loc-node-zone::placeholder {
+  color: var(--text-muted, #94a3b8);
+  opacity: 0.75;
+}
+/* zone이 지정된 노드는 실선 + 강조색으로 한눈에 구분 */
+.sim-loc-node-zone:not(:placeholder-shown) {
+  border-style: solid;
+  border-color: rgba(16,185,129,0.45);
+  background: rgba(16,185,129,0.10);
+  color: #6ee7b7;
 }
 .sim-loc-node-del {
   background: none;

@@ -154,6 +154,9 @@ class _StepMixin:
         Returns: build_messages()/estimate_context_tokens()에 그대로 넘길 수 있는 dict.
         """
         known, strangers = self._compute_wave_targets(agent_key)
+        # 대화 스코프(같은 장소)와 별개로, 같은 zone의 다른 장소에 있는 사람은
+        # 인지만 시킨다 — <TARGETS>/visible_agents에는 절대 넣지 않는다.
+        zone_awareness = self._compute_zone_awareness(agent_key)
 
         # 시각 정보 ephemeral 주입
         ephemeral_msgs: list[dict] = []
@@ -167,7 +170,7 @@ class _StepMixin:
             ephemeral_msgs.append({"role": "user", "content": f"[현재 시각: {time_str}]"})
 
         # 상황 컨텍스트는 메모리에 저장하지 않고 매 호출 시 ephemeral로 주입 (중복 누적 방지)
-        situation_text = self._build_situation_context(agent_key, known, strangers)
+        situation_text = self._build_situation_context(agent_key, known, strangers, zone_awareness)
         if situation_text:
             ephemeral_msgs.append({"role": "user", "content": situation_text})
 

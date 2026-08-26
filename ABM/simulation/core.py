@@ -139,9 +139,13 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
         self._idle_minutes_schedule: list[int] = idle_minutes_schedule if idle_minutes_schedule is not None else [60, 120, 180]
         self._elapsed_minutes: int = elapsed_minutes_init
 
-        # 위치 그래프 (인접 리스트) + 외부 공간 집합
+        # 위치 그래프 (인접 리스트) + 외부 공간 집합 + 인지 구역(zone) 맵
+        # 주의: 여기서의 zone은 **위치 기반 인지 범위**이며, _agent_groups(캐릭터 관계
+        # 그룹)와는 완전히 별개의 개념이다. 같은 zone의 다른 장소에 있는 사람은 서로
+        # 존재를 인지하지만, 대화는 여전히 같은 장소(노드)에 있어야만 가능하다.
         self._location_graph:    dict[str, list[str]] = {}
         self._exterior_locations: set[str]            = set()
+        self._location_zone:     dict[str, str]       = {}
         if location_graph:
             for node in location_graph:
                 name     = node.get("name", "")
@@ -150,6 +154,9 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
                     self._location_graph[name] = list(connects)
                     if node.get("is_exterior", False):
                         self._exterior_locations.add(name)
+                    zone = (node.get("zone") or "").strip()
+                    if zone:
+                        self._location_zone[name] = zone
 
         # 지도를 각 에이전트 시스템 프롬프트에 정적으로 주입 (에이전트가 처음부터 지도 인식)
         if self._location_graph:
@@ -157,10 +164,14 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
             for loc, conns in self._location_graph.items():
                 conn_str = ", ".join(conns) if conns else "(연결 없음)"
                 exterior_mark = " [외부 공간]" if loc in self._exterior_locations else ""
-                map_lines.append(f"  {loc}{exterior_mark}: {conn_str}")
+                zone_name  = self._location_zone.get(loc, "")
+                zone_mark  = f" [구역: {zone_name}]" if zone_name else ""
+                map_lines.append(f"  {loc}{exterior_mark}{zone_mark}: {conn_str}")
             map_lines.append("※ move_to 필드에는 반드시 위 그래프에 있는 장소명만 사용할 것. 그 외 장소로의 이동은 무시됩니다.")
             if self._exterior_locations:
                 map_lines.append("※ [외부 공간]으로 표시된 장소는 시뮬레이션 경계 밖입니다. 그곳에서는 다른 누구도 볼 수 없고, 누구도 당신을 볼 수 없습니다.")
+            if self._location_zone:
+                map_lines.append("※ [구역: ...]은 같은 생활권을 뜻합니다. 같은 구역 안의 다른 장소에 있는 사람은 서로 존재를 인지하지만, 대화는 같은 장소에 있어야만 할 수 있습니다. 말을 걸고 싶다면 move_to로 그 장소까지 이동하세요.")
             map_section = "\n".join(map_lines)
             for agent in self.agents.values():
                 agent.system_prompt += map_section

@@ -638,6 +638,132 @@ class MoveRoutingTests(unittest.TestCase):
         self.assertIn("현재 위치: 입구", situations[("b", 1)])
 
 
+class ZoneAwarenessTests(unittest.TestCase):
+    """LocationNode.zone — 인지 범위(같은 zone)와 대화 범위(같은 노드)의 분리.
+
+    핵심 불변식: zone은 "저기 누가 있다"는 인지 정보만 넓힌다. 같은 zone이어도
+    노드가 다르면 _resolve_targets()는 여전히 타깃을 폐기해야 한다. 이게 깨지면
+    zone이 사실상 방 벽을 없애버려 위치 시스템 자체가 무의미해진다.
+
+    주의: 여기서의 zone은 위치 개념이며, agent_groups(캐릭터 관계 그룹)와는 별개다.
+    """
+
+    LOCATION_GRAPH = [
+        {"name": "안방",   "connects_to": ["거실"],                 "zone": "우리집"},
+        {"name": "거실",   "connects_to": ["안방", "부엌", "마당"], "zone": "우리집"},
+        {"name": "부엌",   "connects_to": ["거실"],                 "zone": "우리집"},
+        {"name": "마당",   "connects_to": ["거실"]},  # zone 미설정
+        {"name": "교실",   "connects_to": ["운동장"],               "zone": "학교"},
+        {"name": "운동장", "connects_to": ["교실"],                 "zone": "학교"},
+        {"name": "현관밖", "connects_to": ["마당"], "zone": "우리집", "is_exterior": True},
+    ]
+
+    # a=안방, b=거실(같은 zone/다른 노드), c=교실(다른 zone), d=마당(zone 없음),
+    # e=현관밖(zone은 우리집이지만 외부 공간), f=안방(a와 같은 노드)
+    LOCATIONS = {"a": "안방", "b": "거실", "c": "교실", "d": "마당", "e": "현관밖", "f": "안방"}
+
+    def _make_sim(self, tmp, script=None, **kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        agents = {
+            key: Agent(key, f"너는 {key}다.", tmp, token_limit=4096)
+            for key in self.LOCATIONS
+        }
+        return Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=_ScriptedLLM(script or {}),
+            agent_locations=dict(self.LOCATIONS),
+            location_graph=self.LOCATION_GRAPH,
+            **kw,
+        )
+
+    def _situation(self, sim, agent_key):
+        known, strangers = sim._compute_wave_targets(agent_key)
+        zone_awareness   = sim._compute_zone_awareness(agent_key)
+        return sim._build_situation_context(agent_key, known, strangers, zone_awareness)
+
+    def test_same_zone_other_room_is_perceived_but_not_addressable(self):
+        # a(안방)는 같은 "우리집" zone의 거실에 있는 b를 인지해야 한다 — 그래야
+        # move_to로 찾아갈 동기가 생긴다. 하지만 말을 걸 수는 없어야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(tmp)
+            text = self._situation(sim, "a")
+
+            self.assertIn("[같은 구역(우리집)의 다른 곳]", text)
+            self.assertIn("거실", text.split("[같은 구역(우리집)의 다른 곳]")[1])
+            self.assertIn('(ID: "b")', text)
+
+            # 인지는 되지만 대화 스코프는 여전히 같은 노드 기준.
+            known, strangers = sim._compute_wave_targets("a")
+            self.assertEqual(known, ["f"])          # 같은 안방의 f만 대화 가능
+            self.assertEqual(strangers, [])
+            self.assertEqual(sim._resolve_targets(["b"], "a"), [])
+            self.assertEqual(sim._resolve_targets(["all"], "a"), ["f"])
+
+            # 같은 노드(f)는 [이 자리의 사람들]에만, zone 섹션엔 중복 노출 금지.
+            zone_section = text.split("[같은 구역(우리집)의 다른 곳]")[1]
+            self.assertNotIn('"f"', zone_section)
+
+    def test_other_zone_and_zoneless_and_exterior_are_not_perceived(self):
+        # c=학교 zone, d=zone 미설정, e=외부 공간(zone이 우리집이어도 격리).
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(tmp)
+            zone_section = self._situation(sim, "a").split("[같은 구역(우리집)의 다른 곳]")[1]
+
+            for key, loc in (("c", "교실"), ("d", "마당"), ("e", "현관밖")):
+                self.assertNotIn(f'"{key}"', zone_section)
+                self.assertNotIn(loc, zone_section)
+
+            known_elsewhere, strangers_elsewhere = sim._compute_zone_awareness("a")
+            self.assertEqual(known_elsewhere, [("b", "거실")])
+            self.assertEqual(strangers_elsewhere, [])
+
+            # zone 미설정 노드(마당)에 있는 d에겐 zone 섹션 자체가 없어야 한다.
+            self.assertEqual(sim._compute_zone_awareness("d"), ([], []))
+            self.assertNotIn("[같은 구역", self._situation(sim, "d"))
+            # 외부 공간(e)은 기존대로 완전 격리.
+            self.assertEqual(sim._compute_zone_awareness("e"), ([], []))
+            self.assertNotIn("[같은 구역", self._situation(sim, "e"))
+
+    def test_zone_stranger_gets_stable_id_and_stays_unaddressable(self):
+        # 낯선 사람을 zone 너머로 인지할 때도 stranger_N 체계를 공유해야, 나중에
+        # 실제로 만났을 때 ID가 흔들리지 않는다. 그 ID로 말을 걸 순 없어야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(tmp, agent_groups={"a": ["가족"], "f": ["가족"]})
+            _, strangers_elsewhere = sim._compute_zone_awareness("a")
+            self.assertEqual([(sid, key) for sid, key, _, _ in strangers_elsewhere],
+                             [("stranger_1", "b")])
+
+            self.assertEqual(sim._resolve_targets(["stranger_1"], "a"), [])
+
+            # 같은 방으로 옮겨오면 같은 ID가 유지되고 그제서야 대화 가능.
+            sim._agent_location["b"] = "안방"
+            self.assertEqual(sim._compute_zone_awareness("a"), ([], []))
+            _, strangers = sim._compute_wave_targets("a")
+            self.assertEqual([(sid, key) for sid, key, _ in strangers], [("stranger_1", "b")])
+            self.assertEqual(sim._resolve_targets(["stranger_1"], "a"), ["b"])
+
+    def test_zone_section_appears_in_running_simulation_prompt(self):
+        # _assemble_agent_prompt 경유 end-to-end: turn_situation에 zone 섹션이 실리고,
+        # zone 인지 대상이 <TARGETS>(visible_agents)로는 새지 않아야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(tmp, script={
+                k: [{"content": "...", "target": "self"}] for k in self.LOCATIONS
+            })
+            emitted = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            sim.run("a", max_waves=1, step_delay=0.0)
+
+            texts = [d["text"] for t, d in emitted
+                     if t == "turn_situation" and d["agent"] == "a"]
+            self.assertTrue(texts)
+            self.assertIn("[같은 구역(우리집)의 다른 곳]", texts[0])
+
+            ctx = sim._assemble_agent_prompt("a")
+            self.assertNotIn("b", ctx["visible_agents"])
+
+
 class ConversationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()

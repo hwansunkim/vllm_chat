@@ -456,6 +456,12 @@ function renderLocationGraph() {
   const nodeNames = graph.map(n => n.name);
   container.innerHTML = '';
 
+  // zone 자유 텍스트의 오타로 "우리집"/"우리 집"이 서로 다른 zone으로 갈라지면 인지 기능이
+  // 조용히 깨진다. 이미 쓰인 zone을 datalist로 제안해 표기를 통일시킨다.
+  const zoneList = document.createElement('datalist');
+  zoneList.id = 'sim-loc-zone-list';
+  container.appendChild(zoneList);
+
   graph.forEach((node, idx) => {
     const row = document.createElement('div');
     const isExt = !!node.is_exterior;
@@ -475,6 +481,9 @@ function renderLocationGraph() {
           <input type="checkbox" class="sim-loc-exterior-chk" data-idx="${idx}" ${isExt ? 'checked' : ''}>
           <span>외부</span>
         </label>
+        <input class="sim-loc-node-zone" data-idx="${idx}" list="sim-loc-zone-list"
+               value="${esc(node.zone || '')}" placeholder="zone(선택)"
+               title="구역 — 같은 zone의 장소에 있는 에이전트끼리는 서로의 존재를 인지합니다(대화는 같은 장소에서만 가능). 비워두면 zone 없음." />
         <button class="sim-loc-node-del" data-idx="${idx}" title="장소 삭제">×</button>
       </div>
       <div class="sim-loc-conns">
@@ -487,6 +496,8 @@ function renderLocationGraph() {
       </div>`;
     container.appendChild(row);
   });
+
+  syncZoneDatalist();
 
   // 이벤트 위임
   container.onclick = e => {
@@ -535,6 +546,17 @@ function renderLocationGraph() {
       }
       return;
     }
+    const zoneInput = e.target.closest('.sim-loc-node-zone');
+    if (zoneInput) {
+      const i = parseInt(zoneInput.dataset.idx);
+      const zone = zoneInput.value.trim();
+      zoneInput.value = zone;
+      sim.location_graph[i].zone = zone;
+      // 재렌더 없이 datalist만 갱신한다 — change는 blur 시점에 발생하므로 여기서
+      // renderLocationGraph()를 부르면 다음 요소로 넘어가던 탭 포커스가 사라진다.
+      syncZoneDatalist();
+      return;
+    }
     const addConn = e.target.closest('.sim-loc-add-conn');
     if (addConn) {
       const ni = parseInt(addConn.dataset.node);
@@ -554,17 +576,39 @@ function renderLocationGraph() {
   };
 }
 
+// 현재 그래프에 쓰인 zone 값들을 zone 입력의 자동완성 목록으로 채운다.
+function syncZoneDatalist() {
+  const dl = document.getElementById('sim-loc-zone-list');
+  if (!dl) return;
+  const zones = [...new Set(
+    (sim.location_graph || []).map(n => (n.zone || '').trim()).filter(Boolean)
+  )].sort();
+  dl.innerHTML = '';
+  zones.forEach(z => {
+    const opt = document.createElement('option');
+    opt.value = z;   // 속성 대입이라 이스케이프 불필요
+    dl.appendChild(opt);
+  });
+}
+
 function _readLocationGraph() {
-  return (sim.location_graph || []).map(n => ({
-    name:        n.name,
-    connects_to: [...(n.connects_to || [])],
-    is_exterior: !!n.is_exterior,
-  }));
+  return (sim.location_graph || []).map((n, idx) => {
+    // zone 입력은 change(=blur) 시점에 모델로 반영된다. 포커스가 남아 있는 채로
+    // 설정을 떠나는 경로를 대비해 DOM 값이 있으면 그쪽을 우선한다. 패널이 렌더되지
+    // 않은 상태로 불릴 수도 있으므로 없을 때만 기존 상태로 폴백한다.
+    const zoneEl = document.querySelector(`#sim-location-graph .sim-loc-node-zone[data-idx="${idx}"]`);
+    return {
+      name:        n.name,
+      connects_to: [...(n.connects_to || [])],
+      is_exterior: !!n.is_exterior,
+      zone:        (zoneEl ? zoneEl.value : (n.zone || '')).trim(),
+    };
+  });
 }
 
 // 위치 그래프 "+ 장소 추가" 버튼
 export function addLocationNode() {
   if (!sim.location_graph) sim.location_graph = [];
-  sim.location_graph.push({ name: `장소${sim.location_graph.length + 1}`, connects_to: [] });
+  sim.location_graph.push({ name: `장소${sim.location_graph.length + 1}`, connects_to: [], zone: '' });
   renderLocationGraph();
 }
