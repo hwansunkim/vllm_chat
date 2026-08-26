@@ -55,6 +55,26 @@ class _LocationMixin:
             self._stranger_rmap[observer_key][target_key] = sid
             return sid
 
+    def _appearance_scene_msg(
+        self, subject_key: str, observer_key: str, display: str, description: str
+    ) -> str:
+        """외모 변경 씬 메시지를 관찰자의 인지 상태에 맞춰 구성.
+
+        아는 사이면 실명, 모르는 사이면 stranger_N ID로 익명화한다. 이동 씬 메시지
+        (runner.py의 도착/이탈)가 쓰는 knowledge 분기와 같은 규칙이다. 예전엔 외모
+        변경만 이 분기가 없어, 처음 보는 사이인데도 실명이 그대로 노출됐다.
+
+        이동 알림과 달리 stranger_N ID를 함께 싣는 이유: 외모 변경은 본질적으로
+        "같은 사람인데 모습이 바뀌었다"는 **동일인 연속성** 통보다. 낯선 이가 여럿인
+        자리에서 ID가 없으면 관찰자는 누가 변했는지 특정할 수 없고, 새 사람이
+        나타났다고 오인한다. `[현재 상황]` 블록(_build_situation_context)도 같은 ID로
+        낯선 이를 나열하므로 두 정보가 서로 맞물린다.
+        """
+        if subject_key in self._agent_knowledge.get(observer_key, set()):
+            return f"[씬] {display}의 외모가 변했다: {description}"
+        sid = self._get_or_assign_stranger_id(observer_key, subject_key)
+        return f'[씬] 낯선 이(ID: "{sid}")의 외모가 변했다: {description}'
+
     def _compute_wave_targets(self, agent_key: str):
         """현재 위치 기준 대화 가능 에이전트 계산.
 

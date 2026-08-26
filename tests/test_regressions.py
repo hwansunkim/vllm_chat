@@ -495,9 +495,10 @@ class TargetDurationTests(unittest.TestCase):
 class _ScriptedLLM:
     """에이전트별·호출순서별 응답을 미리 정해두는 스텁 LLM.
 
-    script = {"a": [{"content":..., "target":..., "move_to":...}, ...], ...}
+    script = {"a": [{"content":..., "target":..., "move_to":...,
+                     "update_appearance":...}, ...], ...}
     시스템 프롬프트의 "너는 {key}다." 로 화자를 식별한다. 스크립트가 소진되면
-    마지막 항목을 반복한다.
+    마지막 항목을 반복한다. 생략된 필드는 None(=미사용).
     """
 
     def __init__(self, script: dict):
@@ -518,7 +519,7 @@ class _ScriptedLLM:
             "action_note":       "",
             "target":            turn.get("target", "self"),
             "move_to":           turn.get("move_to"),
-            "update_appearance": None,
+            "update_appearance": turn.get("update_appearance"),
         }), "", {}
 
 
@@ -762,6 +763,311 @@ class ZoneAwarenessTests(unittest.TestCase):
 
             ctx = sim._assemble_agent_prompt("a")
             self.assertNotIn("b", ctx["visible_agents"])
+
+
+class AppearanceUpdateTests(unittest.TestCase):
+    """update_appearance(외모 변경) 처리의 순서·익명화·격리 회귀.
+
+    핵심 불변식 3가지:
+      1. 순서 — 외모 변경은 이동 **적용 전** 위치 스냅샷으로 판정된다. MoveRoutingTests가
+         발화 라우팅에 대해 지키는 것과 같은 불변식이다. 깨지면 실제 목격자(출발지
+         동석자)가 알림을 놓치고, 도착 알림이 갱신 전 옛 외모를 실어 뒤따르는 외모
+         알림과 모순되는 두 줄이 도착지에 꽂힌다.
+      2. 익명화 — 모르는 사이에게는 실명 대신 stranger_N ID로 나간다. 도착/이탈 씬
+         메시지와 같은 knowledge 분기를 타야 한다. 새어나간 실명은 단순 노출로 끝나지
+         않고 stranger_N 핸드셰이크를 우회하는 유효 타깃이 된다.
+      3. 격리 — 외부 공간(is_exterior)에는 씬 메시지가 오가지 않는다.
+    """
+
+    LOCATION_GRAPH = [
+        {"name": "입구", "connects_to": ["매장"]},
+        {"name": "매장", "connects_to": ["입구", "창고"]},
+        {"name": "창고", "connects_to": ["매장", "옥상"]},
+        {"name": "옥상", "connects_to": ["창고"], "is_exterior": True},
+    ]
+
+    def _build(self, tmp, keys, script, locations, visuals, groups, **kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096) for k in keys}
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=_ScriptedLLM(script),
+            agent_locations=locations,
+            agent_visuals=visuals,
+            agent_groups=groups,
+            location_graph=self.LOCATION_GRAPH,
+            **kw,
+        )
+        sim._emit = lambda t, d: None
+        return sim
+
+    @staticmethod
+    def _scenes(msgs):
+        return [m["content"] for m in msgs if m["speaker"] == "씬"]
+
+    # ── A-1 / A-2: 이동 순서 ─────────────────────────────────────────────────
+
+    def test_appearance_change_reaches_origin_room_when_speaker_also_moves(self):
+        # a가 같은 턴에 옷을 갈아입고 매장 → 창고로 떠난다. 눈앞에서 그걸 본 건
+        # 출발지(매장)의 b다. 외모 처리가 이동 뒤에 있으면 my_loc이 창고가 되어
+        # b는 알림을 못 받고, 그 자리에 없던 c가 대신 받는다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(
+                tmp, ("a", "b", "c"),
+                script={
+                    "a": [{"content": "간다.", "target": "self", "move_to": "창고",
+                           "update_appearance": "빨간 코트를 걸친 사람"}],
+                    "b": [{"content": "음.", "target": "self"}],
+                    "c": [{"content": "흠.", "target": "self"}],
+                },
+                locations={"a": "매장", "b": "매장", "c": "창고"},
+                visuals={"a": "검은 코트를 걸친 사람", "b": "", "c": ""},
+                groups={"a": ["g1"], "b": ["g2"], "c": ["g3"]},
+            )
+            sim.run("a", max_waves=1, step_delay=0.0,
+                    resume_wave={"a": [], "b": [], "c": []})
+
+            self.assertEqual(sim._agent_location["a"], "창고")
+            self.assertEqual(sim._agent_visual["a"], "빨간 코트를 걸친 사람")
+
+            b_scenes = self._scenes(sim._pending_wave.get("b", []))
+            # 목격자 b는 외모 변화 + 이탈을 둘 다, 그 순서대로 받는다.
+            self.assertEqual(len(b_scenes), 2)
+            self.assertIn("외모가 변했다", b_scenes[0])
+            self.assertIn("빨간 코트를 걸친 사람", b_scenes[0])
+            self.assertIn("자리를 떠났다", b_scenes[1])
+
+    def test_arrival_notice_carries_new_appearance_without_duplicate(self):
+        # 도착지 c는 갱신된 새 외모가 실린 도착 알림 **한 줄만** 받아야 한다.
+        # 예전엔 옛 외모("검은 코트")로 도착 알림이 나간 뒤 새 외모 알림이 또 와서,
+        # c에게는 두 사람이 들어온 것처럼 읽히는 모순된 두 줄이 됐다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(
+                tmp, ("a", "b", "c"),
+                script={
+                    "a": [{"content": "간다.", "target": "self", "move_to": "창고",
+                           "update_appearance": "빨간 코트를 걸친 사람"}],
+                    "b": [{"content": "음.", "target": "self"}],
+                    "c": [{"content": "흠.", "target": "self"}],
+                },
+                locations={"a": "매장", "b": "매장", "c": "창고"},
+                visuals={"a": "검은 코트를 걸친 사람", "b": "", "c": ""},
+                groups={"a": ["g1"], "b": ["g2"], "c": ["g3"]},
+            )
+            sim.run("a", max_waves=1, step_delay=0.0,
+                    resume_wave={"a": [], "b": [], "c": []})
+
+            c_scenes = self._scenes(sim._pending_wave.get("c", []))
+            self.assertEqual(c_scenes, ["[씬] 낯선 이가 나타났다: 빨간 코트를 걸친 사람"])
+            # 무효한 옛 외모가 남아있으면 안 된다.
+            self.assertNotIn("검은 코트", " ".join(c_scenes))
+
+    # ── B-1 / B-2: 실명 노출 ─────────────────────────────────────────────────
+
+    def test_runtime_appearance_change_is_anonymized_for_strangers(self):
+        # b에게 a는 확실히 '낯선 이'다(그룹 분리). 실명 'a'가 새면 안 되고,
+        # [현재 상황] 블록과 같은 stranger_N ID로 특정 가능해야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(
+                tmp, ("a", "b"),
+                script={
+                    "a": [{"content": "옷을 갈아입는다.", "target": "self",
+                           "update_appearance": "빨간 코트를 걸친 사람"}],
+                    "b": [{"content": "음.", "target": "self"}],
+                },
+                locations={"a": "매장", "b": "매장"},
+                visuals={"a": "검은 코트를 걸친 사람", "b": ""},
+                groups={"a": ["g1"], "b": ["g2"]},
+                name_aliases={"민준": "a", "서연": "b"},
+            )
+            known, strangers = sim._compute_wave_targets("b")
+            self.assertEqual(known, [])
+            self.assertEqual([(s[0], s[1]) for s in strangers], [("stranger_1", "a")])
+
+            sim.run("a", max_waves=1, step_delay=0.0, resume_wave={"a": [], "b": []})
+
+            b_scenes = self._scenes(sim._pending_wave.get("b", []))
+            self.assertEqual(
+                b_scenes,
+                ['[씬] 낯선 이(ID: "stranger_1")의 외모가 변했다: 빨간 코트를 걸친 사람'],
+            )
+            self.assertNotIn("민준", " ".join(b_scenes))  # 별칭도 새면 안 됨
+
+    def test_known_agents_still_see_real_name(self):
+        # 익명화가 과하게 걸려 아는 사이끼리도 실명을 잃으면 안 된다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(
+                tmp, ("a", "b"),
+                script={
+                    "a": [{"content": "옷을 갈아입는다.", "target": "self",
+                           "update_appearance": "빨간 코트"}],
+                    "b": [{"content": "음.", "target": "self"}],
+                },
+                locations={"a": "매장", "b": "매장"},
+                visuals={"a": "검은 코트", "b": ""},
+                groups={"a": ["가족"], "b": ["가족"]},   # 서로 아는 사이
+                name_aliases={"민준": "a"},
+            )
+            sim.run("a", max_waves=1, step_delay=0.0, resume_wave={"a": [], "b": []})
+
+            self.assertEqual(
+                self._scenes(sim._pending_wave.get("b", [])),
+                ["[씬] 민준의 외모가 변했다: 빨간 코트"],
+            )
+
+    def test_scripted_event_appearance_change_is_anonymized(self):
+        # events.py 경로(시나리오 스크립트 이벤트)도 런타임과 같은 규칙을 써야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(
+                tmp, ("a", "b"), script={},
+                locations={"a": "매장", "b": "매장"},
+                visuals={"a": "검은 코트를 걸친 사람", "b": ""},
+                groups={"a": ["g1"], "b": ["g2"]},
+            )
+            sim._execute_event({
+                "type": "update_appearance", "agent": "a",
+                "message": "빨간 코트를 걸친 사람", "targets": ["all"], "wave": 0,
+            })
+
+            injected = [m["content"] for m in sim.agents["b"].memory
+                        if "[씬]" in str(m.get("content", ""))]
+            self.assertEqual(
+                injected,
+                ['[씬] 낯선 이(ID: "stranger_1")의 외모가 변했다: 빨간 코트를 걸친 사람'],
+            )
+            self.assertEqual(sim._agent_visual["a"], "빨간 코트를 걸친 사람")
+
+    def test_leaked_name_cannot_bypass_stranger_handshake(self):
+        # C-2: 어떤 경로로든 이름을 알게 돼도, 낯선 이 상태에서는 실명/key로 말을
+        # 걸 수 없어야 한다. 정상 경로(stranger_N)는 그대로 동작해야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(
+                tmp, ("a", "b"),
+                script={
+                    "a": [{"content": "옷 갈아입음", "target": "self",
+                           "update_appearance": "빨간 코트"}],
+                    "b": [{"content": "...", "target": "self"}],
+                },
+                locations={"a": "매장", "b": "매장"},
+                visuals={"a": "검은 코트", "b": ""},
+                groups={"a": ["g1"], "b": ["g2"]},
+                name_aliases={"민준": "a", "서연": "b"},
+            )
+            sim.run("a", max_waves=1, step_delay=0.0, resume_wave={"a": [], "b": []})
+
+            self.assertEqual(sim._resolve_targets(["민준"], "b"), [])  # 별칭
+            self.assertEqual(sim._resolve_targets(["a"], "b"), [])     # 원본 key
+            # 정상 핸드셰이크는 통하고, 그 후에는 실명 타깃도 열린다.
+            self.assertEqual(sim._resolve_targets(["stranger_1"], "b"), ["a"])
+            self.assertEqual(sim._resolve_targets(["민준"], "b"), ["a"])
+
+    def test_legacy_scenario_without_groups_or_locations_still_routes(self):
+        # C-2 회귀 방지(가장 중요) — 위치·그룹을 아예 쓰지 않는 레거시 시나리오는
+        # knowledge 검사 때문에 대화가 막히면 안 된다. core.py가 그룹 미설정
+        # 에이전트의 knowledge에 전원을 넣으므로 낯선 이 자체가 존재하지 않는다.
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096)
+                      for k in ("a", "b")}
+            sim = Simulation(
+                agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+                llm=_ScriptedLLM({
+                    "a": [{"content": "안녕.", "target": ["b"]}],
+                    "b": [{"content": "응.",   "target": ["a"]}],
+                }),
+                name_aliases={"민준": "a", "서연": "b"},
+            )   # agent_locations / agent_groups / location_graph 전부 미설정
+            sim._emit = lambda t, d: None
+
+            self.assertEqual(sim._resolve_targets(["b"], "a"), ["b"])
+            self.assertEqual(sim._resolve_targets(["서연"], "a"), ["b"])
+            self.assertEqual(sim._resolve_targets(["all"], "a"), ["b"])
+
+            sim.run("a", max_waves=1, step_delay=0.0, resume_wave={"a": [], "b": []})
+            self.assertEqual(
+                [m["content"] for m in sim._pending_wave.get("b", [])], ["안녕."]
+            )
+
+    def test_location_only_scenario_without_groups_still_routes(self):
+        # 같은 회귀 방지 — 위치는 쓰되 그룹은 안 쓰는 시나리오(전원 아는 사이).
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(
+                tmp, ("a", "b"),
+                script={"a": [{"content": "안녕.", "target": ["b"]}],
+                        "b": [{"content": "응.",   "target": ["a"]}]},
+                locations={"a": "매장", "b": "매장"},
+                visuals={"a": "", "b": ""},
+                groups=None,
+            )
+            self.assertEqual(sim._resolve_targets(["b"], "a"), ["b"])
+            sim.run("a", max_waves=1, step_delay=0.0, resume_wave={"a": [], "b": []})
+            self.assertEqual(
+                [m["content"] for m in sim._pending_wave.get("b", [])], ["안녕."]
+            )
+
+    # ── C-1: 외부 공간 격리 ──────────────────────────────────────────────────
+
+    def test_exterior_space_isolation_is_preserved(self):
+        # 같은 옥상(is_exterior)에 있어도 서로 볼 수 없다 — _compute_wave_targets가
+        # 빈 스코프를 주는 것과 대칭으로, 외모 알림도 오가면 안 된다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(
+                tmp, ("a", "b"),
+                script={
+                    "a": [{"content": "...", "target": "self",
+                           "update_appearance": "빨간 코트"}],
+                    "b": [{"content": "...", "target": "self"}],
+                },
+                locations={"a": "옥상", "b": "옥상"},
+                visuals={"a": "검은 코트", "b": ""},
+                groups={"a": ["g1"], "b": ["g2"]},
+            )
+            self.assertEqual(sim._compute_wave_targets("b"), ([], []))
+            sim.run("a", max_waves=1, step_delay=0.0, resume_wave={"a": [], "b": []})
+
+            self.assertEqual(self._scenes(sim._pending_wave.get("b", [])), [])
+            # 격리돼도 외모 자체는 갱신된다 — 내부로 돌아오면 새 외모가 보여야 한다.
+            self.assertEqual(sim._agent_visual["a"], "빨간 코트")
+
+    def test_agent_in_exterior_does_not_receive_appearance_notice(self):
+        # 내부에 있는 a의 외모 변화가 외부 공간(옥상)의 b에게 새면 안 된다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(
+                tmp, ("a", "b"),
+                script={
+                    "a": [{"content": "...", "target": "self",
+                           "update_appearance": "빨간 코트"}],
+                    "b": [{"content": "...", "target": "self"}],
+                },
+                locations={"a": "창고", "b": "옥상"},
+                visuals={"a": "검은 코트", "b": ""},
+                groups={"a": ["가족"], "b": ["가족"]},   # 아는 사이여도 격리 우선
+            )
+            sim.run("a", max_waves=1, step_delay=0.0, resume_wave={"a": [], "b": []})
+            self.assertEqual(self._scenes(sim._pending_wave.get("b", [])), [])
+
+    def test_scripted_event_respects_exterior_isolation(self):
+        # events.py 경로도 같은 격리 가드를 가져야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(
+                tmp, ("a", "b", "c"), script={},
+                locations={"a": "옥상", "b": "옥상", "c": "창고"},
+                visuals={"a": "검은 코트", "b": "", "c": ""},
+                groups={"a": ["가족"], "b": ["가족"], "c": ["가족"]},
+            )
+            sim._execute_event({
+                "type": "update_appearance", "agent": "a",
+                "message": "빨간 코트", "targets": ["all"], "wave": 0,
+            })
+            for key in ("b", "c"):
+                injected = [m["content"] for m in sim.agents[key].memory
+                            if "[씬]" in str(m.get("content", ""))]
+                self.assertEqual(injected, [], f"{key}에게 누출됨")
+            self.assertEqual(sim._agent_visual["a"], "빨간 코트")
 
 
 class ConversationTests(unittest.IsolatedAsyncioTestCase):

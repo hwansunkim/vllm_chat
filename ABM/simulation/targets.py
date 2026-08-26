@@ -128,8 +128,46 @@ class _TargetsMixin:
             else:
                 key = self._normalize_target(t_s)
                 if key in self.active_agents and key != speaker_key and _same_loc(key):
+                    if self._is_anonymous_to(speaker_key, key):
+                        # 화자가 아직 '낯선 이'로만 인지하는 상대를 실명/key로 부른
+                        # 경우. stranger_N 핸드셰이크를 건너뛴 것이므로 폐기한다.
+                        logger.debug(
+                            "target drop (not acquainted): speaker=%s target=%s",
+                            speaker_key, key,
+                        )
+                        continue
                     resolved.append(key)
         return list(dict.fromkeys(resolved))
+
+    def _is_anonymous_to(self, observer_key: str, target_key: str) -> bool:
+        """observer가 target을 아직 '낯선 이'로만 인지 중인지.
+
+        `stranger_N` 분기(위)는 해석과 동시에 _agent_knowledge를 양방향으로 갱신해
+        "이름은 만나서 알아내는 것"이라는 전제를 지킨다. 반면 일반 key 분기는
+        knowledge를 전혀 보지 않아, 어떤 경로로든(과거의 외모변경 씬 메시지 누출,
+        시나리오 배경 텍스트 등) 이름을 알게 되면 핸드셰이크 없이 곧바로 말을 걸 수
+        있었다. 그러면 memory엔 실명이 있는데 `[현재 상황]` 블록은 계속 stranger_N을
+        보여주는 상태 불일치가 고착된다.
+
+        **하위 호환 설계 — 보수적 판정.** knowledge 검사를 무조건 걸면 위치/그룹
+        시스템을 쓰지 않는 레거시 시나리오를 깨뜨릴 위험이 있으므로, "stranger_N ID가
+        실제로 발급된 적 있는 상대"에게만 knowledge를 요구한다. ID는 관찰자가 그
+        사람을 익명으로 본 적이 있을 때만(_compute_wave_targets / _compute_zone_awareness)
+        발급되므로:
+
+          - 그룹 미설정 시나리오: core.py가 knowledge에 전원을 넣어두므로 애초에 낯선
+            이가 없고 ID도 발급되지 않는다 → 항상 False → 기존 동작 그대로.
+          - 위치 미설정 + 그룹 설정 시나리오: 위치가 비어도 _compute_wave_targets는
+            동작하므로 ID가 정상 발급된다 → 익명화가 그대로 적용된다.
+
+        _resolve_targets는 언제나 화자 자신의 턴 **직후**에 불리고, 그 턴의 프롬프트
+        조립(_assemble_agent_prompt → _compute_wave_targets)이 이미 동석한 모든 미지의
+        상대에게 ID를 발급해둔 뒤다. 따라서 실전 경로에서는 이 보수적 판정이 무조건적
+        knowledge 검사와 동일하게 동작하면서, 레거시 경로만 안전하게 비켜간다.
+        """
+        if target_key in self._agent_knowledge.get(observer_key, set()):
+            return False
+        return target_key in self._stranger_rmap.get(observer_key, {})
 
     def _resolve_event_targets(self, targets: list[str]) -> list[str]:
         """이벤트 알림 대상 해석 — active_agents 기준 (speaker 제한 없음).

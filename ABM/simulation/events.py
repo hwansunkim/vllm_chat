@@ -83,16 +83,24 @@ class _EventsMixin:
                 "description":  message,
             })
             my_loc = self._agent_location.get(agent_key, "")
-            for name in self._resolve_event_targets(targets):
-                if name == agent_key:
-                    continue
-                other_loc = self._agent_location.get(name, "")
-                if my_loc and other_loc and my_loc != other_loc:
-                    continue
-                self.agents[name].add_to_memory({
-                    "role":    "user",
-                    "content": f"[씬] {display}의 외모가 변했다: {message}",
-                })
+            # 외부 공간(is_exterior)은 완전 격리 — 외모는 갱신·emit 하되 씬 메시지는
+            # 브로드캐스트하지 않는다. 런타임 경로(runner.py)와 같은 규칙.
+            if my_loc not in self._exterior_locations:
+                for name in self._resolve_event_targets(targets):
+                    if name == agent_key:
+                        continue
+                    other_loc = self._agent_location.get(name, "")
+                    if other_loc in self._exterior_locations:
+                        continue  # 외부 공간의 에이전트에게는 씬 메시지 전달 안 함
+                    if my_loc and other_loc and my_loc != other_loc:
+                        continue
+                    self.agents[name].add_to_memory({
+                        "role":    "user",
+                        # 아는 사이가 아니면 실명 대신 stranger_N ID로 익명화한다.
+                        "content": self._appearance_scene_msg(
+                            agent_key, name, display, message
+                        ),
+                    })
             logger.info(f"[외모 변경] {agent_key}: {message}")
 
         return result

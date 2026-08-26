@@ -121,8 +121,57 @@ class _RunnerMixin:
                         "action_note": result.get("action_note", ""),
                     })
 
-            # ── 이동·외모 처리 ────────────────────────────────────────────────
+            # ── 외모·이동 처리 ────────────────────────────────────────────────
             scene_injections: dict[str, list] = {}
+
+            # ── 외모 변경 (이동 적용 *전* 위치 스냅샷 기준) ────────────────────
+            # 발화 라우팅과 같은 원칙이다: "옷은 떠나기 전에 갈아입었으므로 그 자리에
+            # 있던 사람이 본다." 이 블록이 예전처럼 이동 처리 **뒤에** 있으면 두 가지가
+            # 동시에 깨진다.
+            #   1) my_loc이 이동 *후* 위치가 되어, 실제 목격자(출발지 동석자)는 알림을
+            #      못 받고 그 자리에 없던 도착지 사람이 대신 받는다. 출발지 사람에겐
+            #      나중에 다시 만났을 때 아무 설명 없이 외모만 바뀌어 보인다.
+            #   2) 아래 이동 루프의 mover_visual이 아직 갱신되지 않은 **옛** 외모를 읽어
+            #      도착 알림("낯선 이가 나타났다: 검은 코트")과 뒤이은 외모 알림
+            #      ("...빨간 코트")이 서로 모순되는 두 줄로 도착지에 함께 꽂힌다.
+            # 따라서 _agent_visual 갱신 자체가 반드시 이동 루프보다 먼저 일어나야 한다.
+            # 순서를 옮기면 도착지 사람은 외모 알림을 받지 않는데, 이는 정상이다 —
+            # 그들은 도착 알림에서 이미 갱신된 새 외모를 본다.
+            for speaker_key, result in results.items():
+                if not result.get("success"):
+                    continue
+                update_appearance = result.get("update_appearance")
+                if not update_appearance:
+                    continue
+                self._agent_visual[speaker_key] = update_appearance
+                display = self._key_to_alias.get(speaker_key, speaker_key)
+                self._emit("appearance_update", {
+                    "wave": wave_num, "agent": speaker_key,
+                    "display_name": display,
+                    "description":  update_appearance,
+                })
+                my_loc = self._agent_location.get(speaker_key, "")
+                if my_loc in self._exterior_locations:
+                    # 외부 공간은 완전 격리 — 아무도 그를 볼 수 없으므로 씬 브로드캐스트
+                    # 자체를 하지 않는다 (_resolve_targets의 "외부 화자는 전달 불가"와
+                    # 대칭). _agent_visual 갱신과 emit은 그대로 두어, 내부로 돌아왔을 때
+                    # 새 외모가 보이도록 한다.
+                    continue
+                for other_key in self.active_agents:
+                    if other_key == speaker_key:
+                        continue
+                    other_loc = self._agent_location.get(other_key, "")
+                    if other_loc in self._exterior_locations:
+                        continue  # 외부 공간의 에이전트에게는 씬 메시지 전달 안 함
+                    if my_loc and other_loc and my_loc != other_loc:
+                        continue
+                    scene_injections.setdefault(other_key, []).append({
+                        "speaker": "씬",
+                        "content": self._appearance_scene_msg(
+                            speaker_key, other_key, display, update_appearance
+                        ),
+                        "action_note": "",
+                    })
 
             for speaker_key, result in results.items():
                 if not result.get("success"):
@@ -196,30 +245,6 @@ class _RunnerMixin:
                             scene_injections.setdefault(other_key, []).append({
                                 "speaker": "씬", "content": scene_msg, "action_note": ""
                             })
-
-            for speaker_key, result in results.items():
-                if not result.get("success"):
-                    continue
-                update_appearance = result.get("update_appearance")
-                if update_appearance:
-                    self._agent_visual[speaker_key] = update_appearance
-                    display = self._key_to_alias.get(speaker_key, speaker_key)
-                    self._emit("appearance_update", {
-                        "wave": wave_num, "agent": speaker_key,
-                        "display_name": display,
-                        "description":  update_appearance,
-                    })
-                    my_loc = self._agent_location.get(speaker_key, "")
-                    for other_key in self.active_agents:
-                        if other_key == speaker_key:
-                            continue
-                        other_loc = self._agent_location.get(other_key, "")
-                        if my_loc and other_loc and my_loc != other_loc:
-                            continue
-                        scene_msg = f"[씬] {display}의 외모가 변했다: {update_appearance}"
-                        scene_injections.setdefault(other_key, []).append({
-                            "speaker": "씬", "content": scene_msg, "action_note": ""
-                        })
 
             # ── next_wave 구성 ────────────────────────────────────────────────
             # 조립 자체는 이동이 끝난 뒤에 한다(도착/이탈 씬 메시지가 필요하므로).
