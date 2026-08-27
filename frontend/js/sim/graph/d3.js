@@ -2,7 +2,7 @@
 // D3 force-directed graph for the simulation right panel.
 // Module-private state — only the explicit exports cross the boundary.
 
-import { sim, emotionColor } from '../state.js';
+import { sim, emotionColor, infectionBadge } from '../state.js';
 
 let _d3Sim  = null;
 let _d3Data = { nodes: [], links: [], nodeMap: {}, linkMap: {}, maxCount: 0 };
@@ -310,7 +310,29 @@ export function addD3Edge(source, target, emotion) {
   nodeEnter.append('text').attr('text-anchor', 'middle').attr('y', 14)
     .attr('font-size', '10px').attr('fill', '#475569').text(d => d.id);
 
+  // 엣지가 생기며 노드가 나중에 추가될 수도 있으므로, 감염 상태는 매번 전량 재적용한다.
+  refreshInfectionStyles();
+
   _d3Sim.alpha(0.4).restart();
+}
+
+/**
+ * 감염 상태(sim.agentInfection)를 노드 테두리 색으로 반영한다.
+ * infection_update가 올 때와 노드가 새로 생길 때 양쪽에서 호출된다 —
+ * 상태는 전부 sim.agentInfection 한 곳에서 읽으므로 순서에 의존하지 않는다.
+ */
+export function refreshInfectionStyles() {
+  if (typeof d3 === 'undefined') return;
+  const svg = d3.select('#sim-graph-svg');
+  const layers = svg.datum()?.layers;
+  if (!layers) return;
+  layers.nodes.selectAll('.g-node').each(function (d) {
+    const rec   = sim.agentInfection?.[d.id];
+    const badge = rec ? infectionBadge(rec.status, rec.cause) : null;
+    const sel   = d3.select(this);
+    sel.classed('g-node-infected',  badge?.cls === 'infected');
+    sel.classed('g-node-recovered', badge?.cls === 'recovered');
+  });
 }
 
 export function exportGraph() {

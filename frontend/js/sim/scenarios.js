@@ -3,7 +3,7 @@
 
 import { sim, _expandedAgents, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE, DEFAULT_START_WEEKDAY, normalizeWeekday,
          DEFAULT_TEMPERATURE, normalizeTemperature, normalizeAgentTemperature,
-         normalizeTargetDuration } from './state.js';
+         normalizeTargetDuration, buildInfectionModel } from './state.js';
 import { renderSettingsPage, readConfigFromUI } from './settings/page.js';
 import { refreshRunHistory } from './runs/history.js';
 import { downloadFile, safeFilename, nowTag } from './utils/download.js';
@@ -65,6 +65,8 @@ export function buildScenarioConfig() {
     server_id:              sim.server_id         ?? null,
     temperature:            normalizeTemperature(sim.temperature),
     system_agent:           sim.system_agent,
+    // 확률 범위(0~1)와 max_waves >= min_waves를 서버가 422로 거부하므로 정규화해서 저장한다.
+    infection_model:        buildInfectionModel(sim.infection_model),
   };
 }
 
@@ -156,6 +158,8 @@ export function newScenario() {
   sim.server_id              = null;
   sim.temperature            = DEFAULT_TEMPERATURE;
   sim.system_agent           = { enabled: false, icon: '🎬', display_name: '내레이터', system_prompt: '', intervention_interval: 1, silence_threshold: 3, director_note: '' };
+  // 꺼진 상태 + 바로 쓸 수 있는 기본 증상 단계 (buildInfectionModel의 기본값).
+  sim.infection_model        = buildInfectionModel(null);
   _expandedAgents.clear();
   document.getElementById('sim-scenario-name').value = '';
   document.getElementById('sim-scenario-select').value = '';
@@ -229,6 +233,8 @@ export function applyScenario(s) {
     silence_threshold:     sa.silence_threshold     ?? 3,
     director_note:         sa.director_note         ?? '',
   };
+  // 구버전 시나리오에는 필드가 없다 — buildInfectionModel()이 "꺼진 모델 + 기본 증상 단계"로 폴백한다.
+  sim.infection_model        = buildInfectionModel(cfg.infection_model);
   _expandedAgents.clear();
   const histBtn = document.getElementById('sim-history-btn');
   if (histBtn) {

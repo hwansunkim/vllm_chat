@@ -21,7 +21,8 @@ import {
   newScenario, applyScenario,
   exportScenarioFile, importScenarioFile,
 } from './scenarios.js';
-import { addLocationNode, addTimeCategory, initEarlyStopToggle, initTimeModeToggle, initTargetDurationUI } from './settings/page.js';
+import { addLocationNode, addTimeCategory, initEarlyStopToggle, initTimeModeToggle, initTargetDurationUI,
+         addSymptomStage } from './settings/page.js';
 import { toggleRunHistory, openAllRunsModal } from './runs/history.js';
 import { exportGraph } from './graph/d3.js';
 import { exportLocationMap } from './map/d3.js';
@@ -94,6 +95,7 @@ export function initSimulationEvents() {
   });
 
   document.getElementById('sim-add-location-btn').addEventListener('click', addLocationNode);
+  document.getElementById('sim-inf-add-stage-btn')?.addEventListener('click', addSymptomStage);
 
   document.getElementById('sim-add-timecat-btn')?.addEventListener('click', addTimeCategory);
 

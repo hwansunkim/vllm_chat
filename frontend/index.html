@@ -400,6 +400,58 @@
       </div>
     </div>
 
+    <!-- 감염병 모델 -->
+    <div class="sim-settings-section" id="sim-infection-section">
+      <div class="sim-settings-section-title">
+        <span>🦠 감염병 모델</span>
+        <label class="sim-inf-toggle">
+          <input type="checkbox" id="sim-inf-enabled">
+          <span>활성화</span>
+        </label>
+      </div>
+      <div id="sim-inf-config" class="sim-hidden">
+        <div class="sim-fields-hint">
+          감염 판정은 전적으로 엔진이 합니다 — LLM은 상태·확률을 절대 보지 않고,
+          아래 <b>증상 서사</b> 텍스트만 매 턴 전달받습니다.
+          같은 wave에 같은 장소(외부 공간 제외)에 함께 있으면 접촉으로 봅니다.
+        </div>
+        <div class="sim-option-row">
+          <label>질병명</label>
+          <input type="text" id="sim-inf-disease-name" placeholder="예: 붉은열병"
+                 style="flex:1;max-width:200px"
+                 title="회복 안내 문구와 감염 상태 표시에 사용됩니다"/>
+        </div>
+        <div class="sim-option-row sim-temp-row">
+          <label>전염 확률 <span id="sim-inf-transmission-val">0.30</span></label>
+          <input type="range" id="sim-inf-transmission" min="0" max="1" step="0.05" value="0.3"
+                 title="같은 wave·같은 장소에 있는 감염자 1명당 전염될 확률"/>
+        </div>
+        <div class="sim-option-row sim-temp-row">
+          <label>회복 확률 <span id="sim-inf-recovery-val">0.10</span></label>
+          <input type="range" id="sim-inf-recovery" min="0" max="1" step="0.05" value="0.1"
+                 title="감염 상태인 에이전트가 이번 wave에 회복할 확률"/>
+        </div>
+        <div class="sim-option-row">
+          <label>회복 후</label>
+          <select id="sim-inf-immune" style="flex:1;max-width:220px"
+                  title="SIR = 회복하면 면역이 생겨 다시 걸리지 않음 / SIS = 회복해도 다시 걸릴 수 있음">
+            <option value="sir">면역 획득 (SIR)</option>
+            <option value="sis">재감염 가능 (SIS)</option>
+          </select>
+        </div>
+        <div class="sim-option-row sim-inf-stages-head">
+          <label style="font-weight:600">증상 단계</label>
+          <button id="sim-inf-add-stage-btn" class="sim-settings-add-btn">+ 단계 추가</button>
+        </div>
+        <div id="sim-inf-stages"></div>
+        <div class="sim-fields-hint">
+          감염된 뒤 <b>경과한 웨이브 수</b>가 범위에 들어가면 그 단계의 증상 서사가 주입됩니다
+          (분이 아니라 웨이브 단위 — 시간 개념이 꺼진 시나리오에서도 동작합니다).
+          마지막 단계를 넘기면 그 단계가 계속 유지됩니다.
+        </div>
+      </div>
+    </div>
+
     <!-- 위치 그래프 -->
     <div class="sim-settings-section" id="sim-location-section">
       <div class="sim-settings-section-title">
@@ -686,6 +738,11 @@
           <input type="checkbox" id="exp-chk-intervention" checked>
           <span class="sim-export-check-label">🎬 내레이터 개입</span>
           <span class="sim-export-check-desc">시스템 에이전트 개입 메시지</span>
+        </label>
+        <label class="sim-export-check-item">
+          <input type="checkbox" id="exp-chk-infection" checked>
+          <span class="sim-export-check-label">🦠 감염 상태 변화</span>
+          <span class="sim-export-check-desc">감염·전파·회복 기록</span>
         </label>
         <label class="sim-export-check-item">
           <input type="checkbox" id="exp-chk-summary">

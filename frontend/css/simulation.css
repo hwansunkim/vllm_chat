@@ -454,6 +454,54 @@
 }
 #sim-idle-schedule:focus { border-color: #6366f1; }
 
+/* ── 감염병 모델 설정 (infection_model) ───────────────────────────────────────── */
+/* system 에이전트 섹션과 같은 "제목줄 토글 + 접히는 본문" 구조. 색만 감염 계열(적색). */
+.sim-inf-toggle {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 12px; color: #be123c; cursor: pointer; user-select: none;
+}
+.sim-inf-toggle input[type=checkbox] { accent-color: #be123c; width: 14px; height: 14px; }
+
+.sim-inf-stages-head { margin-top: 10px; }
+#sim-inf-transmission, #sim-inf-recovery { accent-color: #e11d48; }
+#sim-inf-transmission-val, #sim-inf-recovery-val {
+  color: #e11d48; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+
+/* 증상 단계 — time_categories 행(라벨 + min~max)에 서사 textarea를 더한 형태 */
+.sim-inf-stage-row {
+  display: flex; flex-direction: column; gap: 5px;
+  margin: 6px 14px; padding: 8px 10px;
+  border: 1px solid #fecdd3; border-radius: 7px; background: #fff5f5;
+}
+.sim-inf-stage-top { display: flex; align-items: center; gap: 6px; }
+.sim-inf-stage-label {
+  flex: 1; min-width: 0; font-size: 12px; padding: 5px 8px; color: #334155;
+  border: 1px solid #e2e8f0; border-radius: 5px; outline: none; background: white;
+}
+.sim-inf-stage-min, .sim-inf-stage-max {
+  width: 52px; flex-shrink: 0; font-size: 12px; padding: 5px 6px; text-align: right;
+  border: 1px solid #e2e8f0; border-radius: 5px; outline: none; background: white;
+}
+.sim-inf-stage-label:focus, .sim-inf-stage-min:focus,
+.sim-inf-stage-max:focus, .sim-inf-stage-text:focus { border-color: #e11d48; }
+.sim-inf-stage-sep, .sim-inf-stage-unit { font-size: 11px; color: #94a3b8; flex-shrink: 0; }
+.sim-inf-stage-del {
+  background: none; border: none; color: #cbd5e1;
+  cursor: pointer; font-size: 14px; padding: 2px 6px; border-radius: 4px; flex-shrink: 0;
+}
+.sim-inf-stage-del:hover { color: #ef4444; background: #fee2e2; }
+.sim-inf-stage-text {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  font-family: inherit; font-size: 12px; line-height: 1.5; color: #334155;
+  padding: 6px 8px; border: 1px solid #e2e8f0; border-radius: 5px;
+  outline: none; background: white;
+}
+.sim-inf-stage-empty {
+  margin: 6px 14px; padding: 8px 10px; font-size: 11px; color: #94a3b8;
+  border: 1px dashed #e2e8f0; border-radius: 7px;
+}
+
 /* ── Accordion agent rows ─────────────────────────────────────────────────────── */
 .sim-acrd-row { border-bottom: 1px solid #f1f5f9; }
 .sim-acrd-row:last-child { border-bottom: none; }
@@ -610,6 +658,16 @@
 .sim-event-field input:focus,
 .sim-event-field select:focus { border-color: #6366f1; }
 
+/* 이벤트 행 안내/경고 (infect_agent 전용 문구, 비활성 경고) */
+.sim-event-hint {
+  font-size: 10px; color: #94a3b8; line-height: 1.45; padding-left: 44px;
+}
+.sim-event-warn {
+  font-size: 10.5px; line-height: 1.45; color: #b45309;
+  background: #fffbeb; border: 1px solid #fde68a;
+  border-radius: 5px; padding: 5px 8px;
+}
+
 /* ── Event target chip selector ──────────────────────────────────────────────── */
 .sim-event-targets-row {
   display: flex; align-items: flex-start; gap: 6px;
@@ -669,6 +727,16 @@
   background: rgba(99,102,241,0.08); border-radius: 4px;
   padding: 1px 5px; white-space: nowrap; flex-shrink: 0;
 }
+/* 감염 상태 뱃지 — 위치 뱃지(.sim-card-location)와 같은 자리·같은 크기 언어 */
+.sim-card-infection {
+  font-size: 10px; padding: 1px 5px; border-radius: 4px;
+  white-space: nowrap; flex-shrink: 0; font-weight: 600;
+}
+.sim-card-infection.inf-infected  { color: #be123c; background: rgba(225,29,72,0.10); }
+.sim-card-infection.inf-recovered { color: #15803d; background: rgba(34,197,94,0.12); }
+.sim-agent-card.infected { border-color: #fda4af; background: #fff5f5; }
+.sim-agent-card.infected.speaking { border-color: #e11d48; box-shadow: 0 0 0 2px #fecdd3; }
+
 .sim-card-meta    { display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 4px; }
 .emotion-angry   { background: #fee2e2; color: #b91c1c; }
 .emotion-happy   { background: #dcfce7; color: #15803d; }
@@ -790,6 +858,46 @@
   font-size: 9px; letter-spacing: 0.5px; color: #6366f1; margin-bottom: 2px;
 }
 .sim-scene-event-msg { line-height: 1.4; }
+/* observer_only — 어떤 에이전트 메모리에도 들어가지 않은 관전자 전용 메시지.
+   등장인물이 실제로 들은 말과 구분되도록 채도를 낮추고 이탤릭으로 표시한다. */
+.sim-scene-event-observer {
+  background: #f8fafc; border-left-color: #cbd5e1; color: #94a3b8;
+}
+.sim-scene-event-observer .sim-scene-event-type { color: #94a3b8; }
+.sim-scene-event-observer .sim-scene-event-msg  { font-style: italic; }
+.sim-observer-tag {
+  margin-left: 6px; padding: 0 5px; border-radius: 6px;
+  background: #f1f5f9; color: #94a3b8;
+  font-size: 8.5px; font-weight: 600; letter-spacing: 0; text-transform: none;
+}
+
+/* ── 감염 상태 변화 카드 (infection_update) ───────────────────────────────────── */
+.sim-infection-card {
+  margin: 8px 0; padding: 8px 14px;
+  border-radius: 10px; font-size: 12px;
+}
+.sim-infection-card.inf-infected {
+  background: linear-gradient(135deg, #fff1f2 0%, #ffe4e6 100%);
+  border: 1px solid #fda4af;
+}
+.sim-infection-card.inf-recovered {
+  background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+  border: 1px solid #86efac;
+}
+.sim-infection-header { display: flex; align-items: center; gap: 6px; }
+.sim-infection-icon   { font-size: 14px; }
+.sim-infection-name   { font-weight: 700; font-size: 12px; }
+.sim-infection-label  { font-size: 11px; font-weight: 600; }
+.sim-infection-cause  { font-size: 11px; flex: 1; }
+.sim-infection-wave   { font-size: 10px; font-weight: 600; }
+.inf-infected  .sim-infection-name  { color: #be123c; }
+.inf-infected  .sim-infection-label { color: #e11d48; }
+.inf-infected  .sim-infection-cause { color: #9f1239; }
+.inf-infected  .sim-infection-wave  { color: #fda4af; }
+.inf-recovered .sim-infection-name  { color: #15803d; }
+.inf-recovered .sim-infection-label { color: #16a34a; }
+.inf-recovered .sim-infection-cause { color: #166534; }
+.inf-recovered .sim-infection-wave  { color: #86efac; }
 
 /* ── System intervention card ────────────────────────────────────────────────── */
 .sim-intervention-card {
@@ -1044,6 +1152,9 @@
 /* D3 graph */
 .g-node circle { stroke: #e2e8f0; stroke-width: 2; }
 .g-node text   { pointer-events: none; }
+/* 감염 상태 — 노드 테두리 색으로만 표시한다(채움을 바꾸면 이모지 대비가 무너진다). */
+.g-node-infected  circle { stroke: #e11d48; stroke-width: 3; }
+.g-node-recovered circle { stroke: #22c55e; stroke-width: 3; }
 /* 엣지는 stroke가 아니라 채워진 테이퍼 폴리곤(source에서 두껍고 target에서 뾰족)이다.
    fill 색과 폭은 d3.js가 발화 빈도 정규화 결과로 넣으므로(CSS 선언이 presentation
    attribute를 덮어쓴다) 여기서 fill/stroke-width를 지정하면 안 된다. */
@@ -1078,6 +1189,9 @@
 .lm-agent-dot  { fill: #eef2ff; stroke: #c7d2fe; stroke-width: 1.5; }
 .lm-agent-icon { pointer-events: none; }
 .lm-agent-name { fill: #475569; pointer-events: none; }
+/* 감염 상태 — 관계 그래프 노드와 같은 색 규칙(테두리만 바꾼다) */
+.lm-agent-infected  .lm-agent-dot { fill: #fff1f2; stroke: #e11d48; stroke-width: 2.5; }
+.lm-agent-recovered .lm-agent-dot { fill: #f0fdf4; stroke: #22c55e; stroke-width: 2.5; }
 /* 이동 직후 강조 */
 .lm-agent-moved .lm-agent-dot { animation: lm-agent-pulse 1.3s ease-out; }
 @keyframes lm-agent-pulse {
@@ -1514,6 +1628,17 @@
 .sim-situation-label { color: #6366f1; font-size: 0.74rem; }
 .sim-situation-wave  { margin-left: auto; color: #444466; font-size: 0.72rem; }
 .sim-situation-toggle { color: #555577; font-size: 0.72rem; }
+/* 증상 서사 카드 — 감염 중인 에이전트는 한 턴에 위치 안내 카드와 증상 카드가 각각 온다.
+   같은 접이식 카드지만 색/아이콘을 달리해 한눈에 구분되게 한다. */
+.sim-situation-symptom {
+  border-left-color: #e11d48;
+  background: #2a1620;
+}
+.sim-situation-symptom .sim-situation-header:hover { background: #351b28; }
+.sim-situation-symptom .sim-situation-label { color: #fb7185; }
+.sim-situation-symptom .sim-situation-body {
+  color: #e7b7c2; border-top-color: #3d2029;
+}
 .sim-situation-body {
   padding: 6px 12px;
   color: #8888aa;

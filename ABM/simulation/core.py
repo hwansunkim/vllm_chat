@@ -8,6 +8,7 @@ from ..agent import Agent
 from ..config import LOG_DIR
 from ..llm import LLMCall
 from .location import _LocationMixin
+from .infection import _InfectionMixin
 from .targets import _TargetsMixin
 from .events import _EventsMixin
 from .turn import _TurnMixin
@@ -24,6 +25,7 @@ _PERSIST_EVENTS: frozenset[str] = frozenset({
     "world_event",
     "scene_event",
     "wave_summary",
+    "infection_update",
 })
 
 # 시작 요일 키(프론트/스키마와 동일) → 표시 라벨. 인덱스 = 월요일 기준 0~6.
@@ -38,7 +40,7 @@ _DEFAULT_TIME_CATEGORIES: list[dict] = [
 ]
 
 
-class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepMixin, _SystemMixin, _RunnerMixin):
+class Simulation(_LocationMixin, _InfectionMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepMixin, _SystemMixin, _RunnerMixin):
     def __init__(
         self,
         agents:           dict[str, Agent],
@@ -69,6 +71,7 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
         time_categories:  list[dict] | None            = None,
         idle_minutes_schedule: list[int] | None        = None,
         elapsed_minutes_init: int                      = 0,
+        infection_model:  dict | None                  = None,
     ):
         self.agents         = agents
         self.background_log = background_log
@@ -190,7 +193,30 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
             for agent in self.agents.values():
                 agent.system_prompt += time_section
 
+        # 감염병 모델 설정. enabled=False(기본)면 _agent_infection은 전원 "S"로
+        # 초기화만 되고 상태 전이도, 프롬프트 주입도 일어나지 않는다(완전한 하위 호환).
+        im = infection_model or {}
+        self._infection_enabled:      bool  = bool(im.get("enabled", False))
+        self._infection_disease_name: str   = im.get("disease_name", "") or ""
+        self._infection_transmission: float = float(im.get("transmission_probability", 0.3) or 0.0)
+        self._infection_recovery:     float = float(im.get("recovery_probability", 0.1) or 0.0)
+        self._infection_immune:       bool  = bool(im.get("immune_after_recovery", True))
+        self._infection_stages:       list[dict] = [
+            {
+                "id":           s.get("id", ""),
+                "label":        s.get("label", ""),
+                "min_waves":    int(s.get("min_waves", 0)),
+                "max_waves":    int(s.get("max_waves", 0)),
+                "symptom_text": s.get("symptom_text", ""),
+            }
+            for s in (im.get("symptom_stages") or [])
+        ]
+
         self._agent_path: dict[str, list[str]] = {}
+
+        # {agent_key: {"status": "S"|"I"|"R", "infected_since_wave": int|None,
+        #              "recovered_wave": int|None, "notify_recovery": bool}}
+        self._agent_infection: dict[str, dict] = {}
 
         self._agent_location:  dict[str, str]  = {}
         self._agent_visual:    dict[str, str]  = {}
@@ -212,6 +238,12 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
 
         for key in self.agents:
             self._agent_visual[key] = (agent_visuals or {}).get(key, "")
+            self._agent_infection[key] = {
+                "status":              "S",
+                "infected_since_wave": None,
+                "recovered_wave":      None,
+                "notify_recovery":     False,
+            }
 
         all_keys = list(self.agents.keys())
         for key in all_keys:
@@ -253,9 +285,9 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
         """재개 시 복원해야 하는 에이전트별 런타임 상태를 직렬화 가능한 형태로 반환.
 
         시나리오 config로부터 재구성할 수 없는 값들만 담는다 — 이동으로 바뀐 위치,
-        update_appearance로 바뀐 외모, 그리고 누가 누구를 아는지(인지관계)와
-        낯선 이 ID 할당. _stranger_rmap은 _stranger_map의 역함수라 저장하지 않고
-        복원 시 재생성한다.
+        update_appearance로 바뀐 외모, 누가 누구를 아는지(인지관계)와 낯선 이 ID 할당,
+        그리고 감염 모델이 계산해 온 SIR 상태. _stranger_rmap은 _stranger_map의
+        역함수라 저장하지 않고 복원 시 재생성한다.
         """
         state: dict[str, dict] = {}
         for key in self.agents:
@@ -265,8 +297,25 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
                 "knowledge":    sorted(self._agent_knowledge.get(key, set())),
                 "stranger_map": dict(self._stranger_map.get(key, {})),
                 "path":         list(self._agent_path.get(key, [])),
+                # 감염 상태를 빼먹으면 resume/load 때 전원이 "S"로 되돌아가 유행이
+                # 통째로 초기화된다 — 위치/외모와 정확히 같은 버그 클래스.
+                "infection":    self._export_infection(key),
             }
         return state
+
+    def _export_infection(self, key: str) -> dict:
+        """감염 상태 직렬화.
+
+        `infected_since_wave`는 **이번 run의 wave 번호**다(run()의 wave_num은 재개할
+        때마다 0부터 다시 센다). 그대로 저장하면 재개 후 `wave - infected_since_wave`가
+        음수가 되어 증상 진행이 1단계로 되감긴다. 그래서 저장 시점의 경과 wave 수를
+        `elapsed_waves`로 함께 남겨 복원 쪽에서 새 run의 wave 0 기준으로 재기준화한다.
+        """
+        entry = dict(self._agent_infection.get(key, {}))
+        since = entry.get("infected_since_wave")
+        if entry.get("status") == "I" and isinstance(since, int):
+            entry["elapsed_waves"] = max(0, self.completed_waves - since)
+        return entry
 
     def restore_agent_state(self, states: dict[str, dict] | None) -> None:
         """export_agent_state()가 만든 상태를 복원. 없는 키/에이전트는 초기값 유지."""
@@ -294,6 +343,27 @@ class Simulation(_LocationMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepM
             path = st.get("path")
             if path is not None:
                 self._agent_path[key] = list(path)
+            infection = st.get("infection")
+            if isinstance(infection, dict) and infection.get("status") in ("S", "I", "R"):
+                status = infection["status"]
+                since  = infection.get("infected_since_wave")
+                rec    = infection.get("recovered_wave")
+                if status == "I":
+                    # 새 run은 wave 0부터 다시 세므로, 저장된 경과 wave 수만큼 과거로
+                    # 앵커를 옮긴다 → 재개 첫 wave에서 elapsed가 저장 시점 값을 이어받는다.
+                    elapsed = infection.get("elapsed_waves")
+                    if isinstance(elapsed, int):
+                        since = -max(0, elapsed)
+                    elif not isinstance(since, int):
+                        since = 0
+                else:
+                    since = None
+                self._agent_infection[key] = {
+                    "status":              status,
+                    "infected_since_wave": since,
+                    "recovered_wave":      rec if isinstance(rec, int) else None,
+                    "notify_recovery":     bool(infection.get("notify_recovery", False)),
+                }
 
     # ── I/O ──────────────────────────────────────────────────────────────────
 

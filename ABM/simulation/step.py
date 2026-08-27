@@ -174,6 +174,17 @@ class _StepMixin:
         if situation_text:
             ephemeral_msgs.append({"role": "user", "content": situation_text})
 
+        # 감염 모델의 증상 서사도 같은 자리에 ephemeral로 주입 — 매 턴 재계산되며
+        # 메모리에는 남지 않는다. LLM은 status/확률 같은 raw 값을 절대 보지 않고
+        # 시나리오가 작성한 증상 텍스트만 본다.
+        # 이 함수는 부작용이 없어야 하므로(위 docstring), emit은 situation_text와
+        # 마찬가지로 호출부(_step_agent) 책임으로 미루고 여기서는 반환만 한다 —
+        # 안 그러면 읽기 전용 컨텍스트 조회(GET .../context)를 열 때마다 실제 턴이
+        # 없었는데도 turn_situation이 발생한다.
+        symptom_text = self._build_symptom_context(agent_key, wave)
+        if symptom_text:
+            ephemeral_msgs.append({"role": "user", "content": symptom_text})
+
         extended_alias = dict(self._key_to_alias)
         for sid, _, visual in strangers:
             extended_alias[sid] = visual
@@ -223,6 +234,7 @@ class _StepMixin:
             "situation_targets": sit_targets,
             "ephemeral_msgs":    ephemeral_msgs or None,
             "situation_text":    situation_text,
+            "symptom_text":      symptom_text,
             "time_str":          time_str,
         }
 
@@ -248,6 +260,7 @@ class _StepMixin:
         sit_targets     = ctx["situation_targets"]
         ephemeral_msgs  = ctx["ephemeral_msgs"]
         situation_text  = ctx["situation_text"]
+        symptom_text    = ctx["symptom_text"]
         time_str        = ctx["time_str"]
 
         if situation_text:
@@ -255,6 +268,15 @@ class _StepMixin:
                 "wave":  wave,
                 "agent": agent_key,
                 "text":  situation_text,
+            })
+        if symptom_text:
+            # 감염 중인 에이전트는 위치 안내와 별개로 증상 카드가 한 번 더 뜬다
+            # (프론트가 "[몸 상태]" 접두사로 구분) — 한 턴에 turn_situation이 두 번
+            # 발생할 수 있는 건 의도된 동작이다.
+            self._emit("turn_situation", {
+                "wave":  wave,
+                "agent": agent_key,
+                "text":  symptom_text,
             })
 
         self._maybe_compress(
@@ -323,4 +345,8 @@ class _StepMixin:
         result["move_to"]            = extras.get("move_to")
         result["update_appearance"]  = extras.get("update_appearance")
         result["time_str"]           = time_str
+        # 이 턴이 실제로 성공했을 때만 회복 안내 플래그를 내린다. LLM 실패로
+        # 위에서 롤백됐다면 이 줄에 도달하지 않으므로, 안내는 다음 성공한 턴에
+        # 그대로 다시 뜬다(유실되지 않음).
+        self._consume_recovery_notice(agent_key)
         return result

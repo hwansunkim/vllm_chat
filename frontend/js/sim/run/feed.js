@@ -1,7 +1,11 @@
 // frontend/js/sim/run/feed.js
 // Live feed: typing indicator, agent messages, scene events, wave indicator.
 
-import { sim, esc, emotionClass, agentLabel, getAgentIcon, simTimeLabel } from '../state.js';
+import { sim, esc, emotionClass, agentLabel, getAgentIcon, simTimeLabel, infectionBadge } from '../state.js';
+
+// 증상 서사 카드 접두사 — 서버(_build_symptom_context)가 항상 이 머리말로 시작한다.
+// 같은 턴에 위치 안내 카드와 증상 카드가 각각 올 수 있어 이걸로 구분해 다르게 꾸민다.
+const SYMPTOM_PREFIX = '[몸 상태]';
 
 export function renderHistoricalFeed(entries) {
   const feed = document.getElementById('sim-feed');
@@ -187,20 +191,48 @@ export function addWorldEventCard(d) {
 
 export function addSceneEventToFeed(d) {
   removeFeedEmpty();
-  const icons  = { system_message: '📢', agent_enter: '🎭', agent_exit: '🚪' };
-  const labels = { system_message: '시스템', agent_enter: '등장', agent_exit: '퇴장' };
+  const icons  = { system_message: '📢', agent_enter: '🎭', agent_exit: '🚪', infect_agent: '🦠' };
+  const labels = { system_message: '시스템', agent_enter: '등장', agent_exit: '퇴장', infect_agent: '감염 시드' };
   const icon  = icons[d.event_type]  || '📌';
   const label = labels[d.event_type] || d.event_type;
   const agentHint = d.agent ? ` (${agentLabel(d.agent)})` : '';
   const el = document.createElement('div');
-  el.className = 'sim-scene-event';
+  // observer_only = 어떤 에이전트 메모리에도 들어가지 않은 관전자 전용 메시지.
+  // 등장인물이 실제로 들은 말과 헷갈리지 않도록 회색 이탤릭으로 구분한다.
+  el.className = `sim-scene-event${d.observer_only ? ' sim-scene-event-observer' : ''}`;
   el.innerHTML = `
     <div class="sim-scene-event-icon">${icon}</div>
     <div class="sim-scene-event-body">
-      <div class="sim-scene-event-type">${label}${esc(agentHint)}</div>
+      <div class="sim-scene-event-type">${label}${esc(agentHint)}${
+        d.observer_only ? '<span class="sim-observer-tag">관전자 전용</span>' : ''}</div>
       <div class="sim-scene-event-msg">${esc(d.message || '')}</div>
     </div>
   `;
+  document.getElementById('sim-feed').appendChild(el);
+  el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
+/** infection_update SSE — 감염/전파/회복 한 줄. (엔진 판정 결과이며 LLM 발화가 아니다.) */
+export function addInfectionCard(d) {
+  removeFeedEmpty();
+  const badge = infectionBadge(d.status, d.cause);
+  if (!badge) return;                       // 표시할 상태 변화가 아님
+  const causeLabel = {
+    event:        '시드 (환자 0번)',
+    transmission: '접촉 전파',
+    recovery:     '회복',
+  }[d.cause] || d.cause || '';
+  const disease = d.disease_name ? `${d.disease_name} · ` : '';
+  const el = document.createElement('div');
+  el.className = `sim-infection-card inf-${badge.cls}`;
+  el.innerHTML = `
+    <div class="sim-infection-header">
+      <span class="sim-infection-icon">${badge.icon}</span>
+      <span class="sim-infection-name">${esc(d.display_name || agentLabel(d.agent))}</span>
+      <span class="sim-infection-label">${esc(badge.label)}</span>
+      <span class="sim-infection-cause">${esc(disease + causeLabel)}</span>
+      <span class="sim-infection-wave">W${d.wave}</span>
+    </div>`;
   document.getElementById('sim-feed').appendChild(el);
   el.scrollIntoView({ behavior: 'smooth', block: 'end' });
 }
@@ -242,13 +274,16 @@ export function addAppearanceCard(d) {
 export function addSituationCard(d) {
   removeFeedEmpty();
   const agent  = sim.agents.find(a => a.name === d.agent) || { icon: '📍', name: d.agent };
+  // 감염 중인 에이전트는 한 턴에 turn_situation이 2번 온다(위치 안내 + 증상 서사).
+  // 증상 카드는 텍스트가 '[몸 상태]'로 시작하므로 그걸로 구분해 다른 색/아이콘을 준다.
+  const isSymptom = String(d.text || '').startsWith(SYMPTOM_PREFIX);
   const el     = document.createElement('div');
-  el.className = 'sim-situation-card';
+  el.className = `sim-situation-card${isSymptom ? ' sim-situation-symptom' : ''}`;
   el.innerHTML = `
     <div class="sim-situation-header">
-      <span class="sim-situation-icon">📍</span>
+      <span class="sim-situation-icon">${isSymptom ? '🤒' : '📍'}</span>
       <span class="sim-situation-name">${esc(agent.display_name || agent.name)}</span>
-      <span class="sim-situation-label">상황 컨텍스트</span>
+      <span class="sim-situation-label">${isSymptom ? '몸 상태' : '상황 컨텍스트'}</span>
       <span class="sim-situation-wave">W${d.wave}</span>
       <span class="sim-situation-toggle">▶</span>
     </div>

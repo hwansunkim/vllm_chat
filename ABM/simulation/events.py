@@ -71,6 +71,27 @@ class _EventsMixin:
             })
             logger.info(f"[에이전트 퇴장] {agent_key}: {exit_msg}")
 
+        elif etype == "infect_agent":
+            # 환자 0번 시드. 감염 모델이 꺼져 있으면 조용히 무시한다(하위 호환).
+            if not self._infection_enabled:
+                logger.info(f"infect_agent 무시 — 감염 모델 비활성 ('{agent_key}')")
+                return result
+            if not agent_key or agent_key not in self.agents:
+                logger.warning(f"infect_agent: 알 수 없는 에이전트 '{agent_key}'")
+                return result
+            # 이벤트는 시작 시점에 실행되므로 "이번 wave에 감염됨"으로 기록한다.
+            # message는 관전용 이벤트 피드에만 쓰이고 에이전트 메모리에는 넣지 않는다 —
+            # LLM은 오직 증상 서사(_build_symptom_context)로만 자기 몸 상태를 인지한다.
+            wave = int(event.get("wave", 0) or 0)
+            if self._set_infected(agent_key, wave, "event"):
+                self._emit("scene_event", {
+                    "event_type": "infect_agent",
+                    "agent":      agent_key,
+                    "message":    message or f"{agent_key}이(가) 감염되었다.",
+                    "observer_only": True,
+                })
+            logger.info(f"[감염 시드] {agent_key} (wave {wave})")
+
         elif etype == "update_appearance":
             if not agent_key or agent_key not in self.agents:
                 logger.warning(f"update_appearance: 알 수 없는 에이전트 '{agent_key}'")
