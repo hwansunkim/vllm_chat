@@ -1165,6 +1165,18 @@
 #sim-tab-map   { position: relative; }
 #sim-map-svg   { flex: 1; width: 100%; min-height: 0; }
 
+/* zone(구역) 배경 — 같은 zone 장소 박스들을 감싸는 반투명 halo.
+   fill/stroke 색은 zone마다 달라 d3가 presentation attribute로 넣으므로
+   (CSS 선언이 attribute를 덮어쓴다) 여기서 fill/stroke를 지정하면 안 된다. */
+.lm-zone-area {
+  fill-opacity: 0.09; stroke-opacity: 0.42;
+  stroke-width: 1.5; stroke-dasharray: 7 5; stroke-linejoin: round;
+}
+.lm-zone-label {
+  font-weight: 700; letter-spacing: 0.2px;
+  fill-opacity: 0.75; pointer-events: none;
+}
+
 /* 복도 — 벽(외곽선) 위에 바닥(안쪽선)을 겹쳐 그려 "길"처럼 보이게 한다.
    양방향 연결이므로 화살표/테이퍼 없이 단순한 선이다. */
 .lm-corridor    { fill: none; stroke: #cbd5e1; stroke-width: 10; stroke-linecap: round; }
