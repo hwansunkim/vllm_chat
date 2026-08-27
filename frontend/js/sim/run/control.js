@@ -2,7 +2,7 @@
 // Start / stop / continue / status-badge logic for simulation runs.
 
 import { sim, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE, normalizeWeekday,
-         normalizeTemperature, normalizeTargetDuration } from '../state.js';
+         normalizeTemperature, normalizeTargetDuration, buildInfectionModel } from '../state.js';
 import { readConfigFromUI } from '../settings/page.js';
 import { renderAgentCards } from './cards.js';
 import { removeTypingIndicator } from './feed.js';
@@ -73,6 +73,8 @@ export async function startSimulation() {
       lang_fix_enabled:       sim.lang_fix_enabled ?? true,
       lang_fix_retries:       sim.lang_fix_retries ?? 2,
       location_graph:         sim.location_graph || [],
+      // 확률은 0~1, max_waves >= min_waves — 벗어나면 서버가 422로 거부한다.
+      infection_model:        buildInfectionModel(sim.infection_model),
     }),
   });
 
@@ -100,6 +102,11 @@ export async function continueSimulation() {
     alert(`시작 에이전트 '${sim.start_agent}'가 에이전트 목록에 없습니다.`); return;
   }
 
+  // 주의: 감염병 모델(infection_model)은 여기서 보내지 않는다 — SimContinueConfig에 그
+  // 필드가 없고(backend/api/simulation/schemas.py), /continue는 메모리에 살아 있는
+  // sim_obj를 그대로 이어 쓰기 때문이다. 즉 감염 설정은 /start 또는 /load 시점의
+  // config 스냅샷이 계속 유효하며, 설정 화면에서 바꾼 값은 다음 /start부터 적용된다.
+  // (여기에 실어 보내면 Pydantic이 조용히 무시해 "바꿨는데 안 먹는" 오해만 만든다.)
   const res = await fetch('/api/simulation/continue', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

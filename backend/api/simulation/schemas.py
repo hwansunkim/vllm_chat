@@ -23,10 +23,15 @@ class AgentConfig(BaseModel):
 
 class ScenarioEvent(BaseModel):
     wave:    int
-    type:    str             # "system_message" | "agent_enter" | "agent_exit" | "update_appearance"
+    # "system_message" | "agent_enter" | "agent_exit" | "update_appearance" | "infect_agent"
+    type:    str
     message: str       = ""
     targets: list[str] = ["all"]
-    agent:   str       = ""  # agent_enter / agent_exit / update_appearance 전용
+    # agent_enter / agent_exit / update_appearance / infect_agent 전용.
+    # infect_agent: 해당 에이전트를 이 wave에서 즉시 감염(I) 상태로 전이시키는 "환자 0번" 시드.
+    #               message는 관전용 이벤트 피드에만 쓰이고 에이전트 메모리에는 주입되지 않는다
+    #               (LLM은 증상 서사 텍스트로만 감염을 인지한다).
+    agent:   str       = ""
 
 
 class LocationNode(BaseModel):
@@ -53,6 +58,45 @@ class TimeCategory(BaseModel):
         if min_v is not None and v < min_v:
             raise ValueError("max_minutes must be >= min_minutes")
         return v
+
+
+class SymptomStage(BaseModel):
+    """감염 후 경과 wave 구간별 증상 서사.
+
+    ``min_waves <= (현재 wave - 감염된 wave) <= max_waves`` 인 구간의 ``symptom_text``가
+    해당 에이전트의 상황 컨텍스트에 매 턴 주입된다. 시간 개념(time_per_wave)이 꺼진
+    시나리오에서도 동작해야 하므로 분이 아니라 wave 단위로 정의한다.
+    """
+    id:           str
+    label:        str
+    min_waves:    int
+    max_waves:    int
+    symptom_text: str
+
+    @field_validator("max_waves")
+    @classmethod
+    def _max_not_below_min(cls, v: int, info) -> int:
+        min_v = info.data.get("min_waves")
+        if min_v is not None and v < min_v:
+            raise ValueError("max_waves must be >= min_waves")
+        return v
+
+
+class InfectionModelConfig(BaseModel):
+    """결정론적 감염병 모델(SIR/SIS) 설정.
+
+    감염 판정은 전적으로 엔진(순수 파이썬)이 수행한다. LLM은 status·확률 같은 raw 값을
+    절대 보지 않고, 오직 ``symptom_stages``의 서사 텍스트만 상황 컨텍스트로 받는다.
+    """
+    enabled:                  bool  = False
+    disease_name:             str   = ""
+    # 감염자와 같은 wave·같은 장소에 있는 비감염자 1명당 이번 wave에 전염될 확률
+    transmission_probability: float = Field(default=0.3, ge=0.0, le=1.0)
+    # 감염(I) 상태 에이전트가 이번 wave에 회복할 확률
+    recovery_probability:     float = Field(default=0.1, ge=0.0, le=1.0)
+    symptom_stages:           list[SymptomStage] = []
+    # True = SIR(회복 후 면역, 재감염 불가) / False = SIS(회복 후 S로 복귀, 재감염 가능)
+    immune_after_recovery:    bool  = True
 
 
 DEFAULT_SYSTEM_AGENT_PROMPT = (
@@ -117,6 +161,8 @@ class SimStartConfig(BaseModel):
     # 시뮬레이션 전체 기본 샘플링 온도. AgentConfig.temperature 로 에이전트별 오버라이드 가능.
     temperature:            float            = Field(default=0.7, ge=0.0, le=2.0)
     system_agent:           SystemAgentConfig = SystemAgentConfig()
+    # 결정론적 감염병 모델. enabled=False(기본)면 상태 갱신도 프롬프트 주입도 전혀 일어나지 않는다.
+    infection_model:        InfectionModelConfig = InfectionModelConfig()
 
     @field_validator("time_categories")
     @classmethod

@@ -124,6 +124,98 @@ export function isTimeConceptDisabled(timeMode, timePerWave) {
   return timeMode !== 'variable' && !tpw;
 }
 
+// ── 감염병 모델 (백엔드 InfectionModelConfig / SymptomStage와 1:1 대응) ────────
+// 확률 두 개는 서버가 `ge=0.0, le=1.0`으로 검증한다 — 범위 밖 값은 422이므로
+// 상태로 읽어들이는 모든 경로가 normalizeProbability()를 통과하도록 한다.
+export const DEFAULT_TRANSMISSION_PROBABILITY = 0.3;
+export const DEFAULT_RECOVERY_PROBABILITY     = 0.1;
+
+// 백엔드 기본값은 빈 배열이지만, 단계가 하나도 없는 채로 감염 모델을 켜면 주입할 서사가
+// 없어 에이전트가 자기 몸 상태를 영영 인지하지 못한다. 그래서 "감염 설정을 만든 적이 없는"
+// 시나리오에는 바로 쓸 수 있는 3단계를 채워준다(time_categories가 항상 4슬롯을 채워
+// 보내는 것과 같은 규칙). 사용자가 명시적으로 전부 지운 경우(빈 배열)는 그대로 존중한다.
+export const DEFAULT_SYMPTOM_STAGES = [
+  { id: 'incubation', label: '잠복기', min_waves: 0, max_waves: 2,
+    symptom_text: '목이 조금 칼칼하다. 피곤해서 그런 거겠지, 별일 아닐 것이다.' },
+  { id: 'onset',      label: '발현기', min_waves: 3, max_waves: 5,
+    symptom_text: '몸이 으슬으슬하고 기침이 멎지 않는다. 이마가 뜨겁다.' },
+  { id: 'acute',      label: '급성기', min_waves: 6, max_waves: 12,
+    symptom_text: '고열로 눈앞이 흐리다. 온몸이 쑤시고 서 있기조차 버겁다.' },
+];
+
+/** 임의의 입력을 [0,1] 확률로 정규화. 비숫자는 fallback, 범위 밖은 클램프. */
+export function normalizeProbability(v, fallback = 0) {
+  const n = typeof v === 'number' ? v : parseFloat(v);
+  if (!Number.isFinite(n)) return fallback;
+  // 슬라이더 값(문자열)이 0.30000000000000004 같은 부동소수 잡음으로 저장되지 않도록 반올림.
+  return Math.min(1, Math.max(0, Math.round(n * 100) / 100));
+}
+
+/**
+ * 증상 단계 목록 정규화.
+ * 백엔드는 max_waves < min_waves를 422로 거부하므로(TimeCategory와 같은 검증 패턴)
+ * 여기서 미리 바로잡는다. id는 엔진이 쓰지 않지만 편집 UI의 키라 비지 않고 유일해야 한다.
+ */
+export function normalizeSymptomStages(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out  = [];
+  list.forEach((raw, i) => {
+    if (!raw || typeof raw !== 'object') return;
+    let id = String(raw.id ?? '').trim() || `stage${i + 1}`;
+    if (seen.has(id)) id = `${id}_${i + 1}`;
+    seen.add(id);
+    let min = parseInt(raw.min_waves);
+    if (!Number.isFinite(min) || min < 0) min = 0;
+    let max = parseInt(raw.max_waves);
+    if (!Number.isFinite(max) || max < 0) max = min;
+    // min을 max에 맞춰 낮춘다(그 반대가 아니라) — 사용자가 방금 고친 쪽은 보통 max이고,
+    // max를 min까지 끌어올리면 화면에 남은 값과 실제 전송값이 어긋나며, 끌어올린 값이
+    // 다른 단계 구간과 겹치거나 그 사이에 공백을 만들 수 있다.
+    if (max < min) min = max;
+    out.push({
+      id,
+      label:        String(raw.label ?? '').trim() || id,
+      min_waves:    min,
+      max_waves:    max,
+      symptom_text: String(raw.symptom_text ?? ''),
+    });
+  });
+  return out;
+}
+
+/**
+ * 임의의 입력을 백엔드 InfectionModelConfig 모양으로 정규화.
+ * 저장/전송/불러오기의 모든 경로가 이 함수 하나를 통과한다 — 구버전 시나리오처럼
+ * 필드 자체가 없으면(raw == null) 기본값 전체를 채운 "꺼진 모델"을 돌려준다.
+ */
+export function buildInfectionModel(raw) {
+  const src = (raw && typeof raw === 'object') ? raw : null;
+  return {
+    enabled:                  !!src?.enabled,
+    disease_name:             String(src?.disease_name ?? '').trim(),
+    transmission_probability: normalizeProbability(src?.transmission_probability, DEFAULT_TRANSMISSION_PROBABILITY),
+    recovery_probability:     normalizeProbability(src?.recovery_probability,     DEFAULT_RECOVERY_PROBABILITY),
+    // 감염 설정 자체가 없던 시나리오만 기본 단계로 채운다(위 주석 참고).
+    symptom_stages:           src && Array.isArray(src.symptom_stages)
+                                ? normalizeSymptomStages(src.symptom_stages)
+                                : DEFAULT_SYMPTOM_STAGES.map(s => ({ ...s })),
+    immune_after_recovery:    src?.immune_after_recovery ?? true,
+  };
+}
+
+/**
+ * infection_update 이벤트 → 화면 뱃지. 표시할 게 없으면 null.
+ * status='S'는 "한 번도 안 걸림"과 "회복했지만 재감염 가능(SIS)" 두 가지 의미라
+ * cause로 구분한다 — 전자는 뱃지를 달지 않는다.
+ */
+export function infectionBadge(status, cause) {
+  if (status === 'I') return { icon: '🦠', label: '감염',        cls: 'infected'  };
+  if (status === 'R') return { icon: '💚', label: '회복·면역',    cls: 'recovered' };
+  if (status === 'S' && cause === 'recovery') return { icon: '💚', label: '회복', cls: 'recovered' };
+  return null;
+}
+
 export const sim = {
   status:              'idle',
   selectedAgent:       null,
@@ -167,9 +259,15 @@ export const sim = {
     silence_threshold:     3,
     director_note:         '',   // 시뮬레이션 서사 목표
   },
+  // 결정론적 감염병 모델(SIR/SIS). enabled=false면 서버에서 상태 갱신도 프롬프트 주입도
+  // 전혀 일어나지 않는다(infect_agent 이벤트도 조용히 무시된다).
+  infection_model: buildInfectionModel(null),
   eventSource:    null,
   scenarios:      [],
   agentEmotions:  {},   // { agent_name: latest_emotion } — updated per turn_complete
+  // { agent_name: { status, cause, wave, disease_name } } — infection_update SSE로 갱신.
+  // 감염 뱃지·그래프/지도 노드 강조가 모두 이 맵 하나를 본다.
+  agentInfection: {},
 };
 
 // Accordion expand state (keyed by agent.name)

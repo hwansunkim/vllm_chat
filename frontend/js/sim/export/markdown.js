@@ -2,7 +2,7 @@
 // Markdown export: screenplay-style with selectable event types.
 
 import { sim, agentLabel, getAgentIcon, simTimeLabel, normalizeWeekday,
-         normalizeTargetDuration } from '../state.js';
+         normalizeTargetDuration, buildInfectionModel, infectionBadge } from '../state.js';
 import { stripCodeFence } from '../utils/json.js';
 import { downloadFile, safeFilename, nowTag } from '../utils/download.js';
 
@@ -48,6 +48,7 @@ function readChecks() {
     appearance:   document.getElementById('exp-chk-appearance')?.checked   ?? true,
     world:        document.getElementById('exp-chk-world')?.checked        ?? true,
     intervention: document.getElementById('exp-chk-intervention')?.checked ?? true,
+    infection:    document.getElementById('exp-chk-infection')?.checked    ?? true,
     summary:      document.getElementById('exp-chk-summary')?.checked      ?? false,
   };
 }
@@ -93,6 +94,7 @@ function buildStream(log, events, checks) {
   if (checks.appearance)   wantTypes.add('appearance_update');
   if (checks.intervention) wantTypes.add('system_intervention');
   if (checks.world)        wantTypes.add('world_event');
+  if (checks.infection)    wantTypes.add('infection_update');
   if (checks.summary)      wantTypes.add('wave_summary');
 
   // Normalise events: { wave, sort_key, kind, payload }
@@ -153,6 +155,25 @@ function fmtWorldEvent(data) {
   return `\n> **[🌍 세계 사건]** *${data.content}*\n`;
 }
 
+/**
+ * 감염 상태 변화 한 줄. 엔진이 판정한 사실이지 등장인물이 아는 정보가 아니므로
+ * 다른 씬 이벤트와 같은 형식으로 관전자 시점 서술처럼 적는다.
+ */
+function fmtInfection(data) {
+  const badge = infectionBadge(data.status, data.cause);
+  if (!badge) return '';
+  const name    = data.display_name || agentLabel(data.agent);
+  // 이벤트 페이로드가 우선. 구버전/누락 시 실행 설정의 질병명으로 폴백한다.
+  const disease = data.disease_name || sim.infection_model?.disease_name || '';
+  const what    = disease ? `${disease}에` : '병에';
+  const text = data.cause === 'recovery'
+    ? `${name}이(가) ${disease ? `${disease}에서 ` : ''}회복했다.${data.status === 'R' ? ' (면역)' : ' (재감염 가능)'}`
+    : data.cause === 'event'
+      ? `${name}이(가) ${what} 감염됐다. (최초 감염자)`
+      : `${name}이(가) ${what} 감염됐다. (접촉 전파)`;
+  return `\n> **[${badge.icon} 감염]** *${text}*\n`;
+}
+
 function fmtSummary(data) {
   const range = data.wave_start === data.wave_end
     ? `Wave ${data.wave_start}`
@@ -202,6 +223,24 @@ function _buildMarkdown(log, events, statusStr, checks) {
     md += `## 배경\n\n${sim.background}\n\n---\n\n`;
   }
 
+  // 감염병 모델이 켜져 있을 때만 — 꺼진 실행에는 아무 영향이 없는 설정이라 노이즈다.
+  const infection = buildInfectionModel(sim.infection_model);
+  if (infection.enabled) {
+    md += `## 🦠 감염병 모델\n\n`;
+    md += `> **질병** ${infection.disease_name || '(이름 없음)'}\n`;
+    md += `> **전염 확률** ${infection.transmission_probability} · **회복 확률** ${infection.recovery_probability}\n`;
+    md += `> **회복 후** ${infection.immune_after_recovery ? '면역 획득 (SIR)' : '재감염 가능 (SIS)'}\n\n`;
+    if (infection.symptom_stages.length) {
+      md += `| 단계 | 경과 웨이브 | 증상 서사 |\n|------|------------|-----------|\n`;
+      for (const s of infection.symptom_stages) {
+        const text = (s.symptom_text || '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+        md += `| ${s.label} | ${s.min_waves}~${s.max_waves} | ${text} |\n`;
+      }
+      md += `\n`;
+    }
+    md += `---\n\n`;
+  }
+
   md += `## 대화 기록\n\n`;
   if (!log.length) {
     md += `*대화 기록이 없습니다.*\n\n`;
@@ -232,6 +271,7 @@ function _buildMarkdown(log, events, statusStr, checks) {
         case 'appearance_update':   md += fmtAppearance(item.payload); break;
         case 'system_intervention': md += fmtIntervention(item.payload); break;
         case 'world_event':         md += fmtWorldEvent(item.payload); break;
+        case 'infection_update':    md += fmtInfection(item.payload); break;
         case 'wave_summary':        md += fmtSummary(item.payload); break;
       }
     }
@@ -262,6 +302,7 @@ export async function exportRunMarkdown(runId, run, preloadedLog) {
     time_per_wave:       sim.time_per_wave,
     time_mode:           sim.time_mode,
     target_duration_minutes: sim.target_duration_minutes,
+    infection_model:     sim.infection_model,
   };
   sim.agents              = (parsedConfig.agents || []).map(a => ({
     icon: '🤖', groups: [], initial_active: true, ...a,
@@ -274,8 +315,10 @@ export async function exportRunMarkdown(runId, run, preloadedLog) {
   sim.time_mode           = parsedConfig.time_mode           || 'fixed';
   // 구버전 run 스냅샷에는 필드가 없다 — null(= 목표 기간 미사용)로 폴백.
   sim.target_duration_minutes = normalizeTargetDuration(parsedConfig.target_duration_minutes);
+  // 마찬가지로 없으면 "꺼진 모델"로 폴백 — 이 실행의 감염 설정을 문서 머리에 싣는다.
+  sim.infection_model         = buildInfectionModel(parsedConfig.infection_model);
 
-  const defaultChecks = { time: true, action: true, move: true, appearance: true, world: true, intervention: true, summary: false };
+  const defaultChecks = { time: true, action: true, move: true, appearance: true, world: true, intervention: true, infection: true, summary: false };
 
   try {
     const evtRes = await fetch(`/api/simulation/runs/${encodeURIComponent(runId)}/events`);

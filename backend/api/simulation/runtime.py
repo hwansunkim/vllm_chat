@@ -187,6 +187,7 @@ def start_simulation(cfg: SimStartConfig):
                 time_mode=cfg.time_mode,
                 time_categories=[c.model_dump() for c in cfg.time_categories],
                 idle_minutes_schedule=cfg.idle_minutes_schedule,
+                infection_model=cfg.infection_model.model_dump(),
             )
             _sim["agents"]         = sim.agents
             _sim["background_log"] = sim.background_log
@@ -252,6 +253,9 @@ def continue_simulation(cfg: SimContinueConfig):
             sim_obj._event_queue    = eq
             sim_obj._stop_event     = stop_ev
             sim_obj._sim_id         = run_sim_id
+            # completed_waves를 0으로 되돌리기 전에 감염 경과 앵커를 먼저 옮겨둔다 —
+            # 순서를 바꾸면 재기준화 계산(completed_waves 기준)이 이미 0을 보게 된다.
+            sim_obj.rebase_infection_anchors()
             sim_obj.completed_waves = 0
 
             if db is not None:
@@ -261,11 +265,16 @@ def continue_simulation(cfg: SimContinueConfig):
             # Use pending wave (agents targeted last but not yet responded) if available,
             # otherwise start fresh from cfg.start_agent.
             pending = getattr(sim_obj, "_pending_wave", None) or None
+            # B9와 동일한 이유로 이벤트를 재생하지 않는다: continue는 wave 0부터 다시
+            # 세므로, 원래 시나리오의 wave 3 이벤트(예: infect_agent 시드)가 이어서
+            # 실행할 때마다 다시 발동한다. SIR에서는 이미 감염/면역이라 무해하지만,
+            # SIS(재감염 가능) 모드에서는 회복해 S로 돌아간 환자 0번이 이어서 실행할
+            # 때마다 계속 재시드된다.
             sim_obj.run(
                 cfg.start_agent,
                 max_waves=cfg.max_waves,
                 step_delay=cfg.step_delay,
-                events=[e.model_dump() for e in cfg.events],
+                events=[],
                 resume_wave=pending,
                 target_duration_minutes=cfg.target_duration_minutes,
             )
@@ -375,6 +384,7 @@ def load_simulation(run_id: str):
             time_mode=cfg.time_mode,
             time_categories=[c.model_dump() for c in cfg.time_categories],
             idle_minutes_schedule=cfg.idle_minutes_schedule,
+            infection_model=cfg.infection_model.model_dump(),
             elapsed_minutes_init=run.get("elapsed_minutes") or 0,
         )
         # 저장된 런타임 상태(이동한 위치, 바뀐 외모, 인지관계)를 시나리오 초기값 위에 덮어씀.
@@ -410,7 +420,19 @@ def load_simulation(run_id: str):
             _sim["edges"]          = []
             _sim["status"]         = "done"
 
-        return {"status": "loaded", "log": log_entries}
+        # 감염 상태는 이벤트 재생만으로는 복원할 수 없다 — 이 run 안에서 한 번도
+        # 상태가 안 바뀐 에이전트는 infection_update 이벤트가 0건이라 프론트가 알
+        # 방법이 없다(특히 /continue로 만들어진 run은 새 run_id를 쓰므로 이전 run의
+        # 전이 이벤트를 안 물려받는다). 서버가 들고 있는 현재 상태를 그대로 실어준다.
+        infection_snapshot = {
+            key: {
+                "status": entry.get("status", "S"),
+                "cause":  "recovery" if entry.get("recovered_wave") is not None else "transmission",
+            }
+            for key, entry in sim_obj._agent_infection.items()
+        }
+
+        return {"status": "loaded", "log": log_entries, "infection": infection_snapshot}
 
     except Exception as e:
         with _sim_lock:
@@ -525,6 +547,7 @@ def resume_simulation(run_id: str):
                 time_mode=cfg.time_mode,
                 time_categories=[c.model_dump() for c in cfg.time_categories],
                 idle_minutes_schedule=cfg.idle_minutes_schedule,
+                infection_model=cfg.infection_model.model_dump(),
                 elapsed_minutes_init=run.get("elapsed_minutes") or 0,
             )
             # 저장된 런타임 상태(이동한 위치, 바뀐 외모, 인지관계)를 시나리오 초기값 위에 덮어씀.

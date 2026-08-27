@@ -168,6 +168,11 @@ class _RunnerMixin:
                                 "speaker": "씬", "content": scene_msg, "action_note": ""
                             })
 
+            # ── 감염 모델 ────────────────────────────────────────────────────
+            # 이동이 모두 반영된 뒤의 위치를 기준으로 접촉을 계산한다 — "이번 wave가
+            # 끝난 시점에 같은 장소에 함께 있었는가". 모델이 꺼져 있으면 즉시 반환한다.
+            self._apply_infection_wave(wave_num)
+
             for speaker_key, result in results.items():
                 if not result.get("success"):
                     continue

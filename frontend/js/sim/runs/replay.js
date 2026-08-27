@@ -5,14 +5,48 @@ import { sim, esc, emotionClass, agentLabel } from '../state.js';
 import { fmtTime, statusIcon } from '../utils/time.js';
 import { applyScenario } from '../scenarios.js';
 import { setStatus } from '../run/control.js';
-import { renderAgentCards } from '../run/cards.js';
+import { renderAgentCards, updateAgentInfection } from '../run/cards.js';
 import { renderHistoricalFeed } from '../run/feed.js';
-import { initD3Graph } from '../graph/d3.js';
-import { initLocationMap } from '../map/d3.js';
+import { initD3Graph, refreshInfectionStyles } from '../graph/d3.js';
+import { initLocationMap, updateAgentInfectionOnMap } from '../map/d3.js';
 import { updateScenarioLabel } from '../views.js';
 import { connectSSE } from '../run/sse.js';
 import { exportRunMarkdown } from '../export/markdown.js';
 import { openInterviewPanel, isInterviewable, closeInterviewPanel } from './interview.js';
+
+/**
+ * 감염 뱃지를 복원한다. `/load` 응답의 `infection` 스냅샷(서버가 들고 있는 현재
+ * `_agent_infection` 상태 그대로)을 우선 쓴다 — 이벤트 재생만으로는 이 run 안에서
+ * 한 번도 상태가 안 바뀐 에이전트(특히 /continue로 만들어진 run은 새 run_id를 쓰므로
+ * 이전 run의 전이 이벤트를 안 물려받는다)를 복원할 수 없다.
+ * `snapshot`이 없으면(구버전 서버) 저장된 `infection_update` 이벤트를 시간순으로
+ * 재적용하는 예전 방식으로 폴백한다 — 이 경우 위와 같은 사각지대가 남는다.
+ * 실패해도 불러오기 자체에는 영향을 주지 않는다(뱃지만 비어 있게 된다).
+ */
+async function restoreInfectionBadges(runId, snapshot) {
+  try {
+    if (snapshot && typeof snapshot === 'object') {
+      for (const [agent, entry] of Object.entries(snapshot)) {
+        updateAgentInfection({ agent, status: entry.status, cause: entry.cause });
+        updateAgentInfectionOnMap(agent);
+      }
+      refreshInfectionStyles();
+      return;
+    }
+    const res = await fetch(
+      `/api/simulation/runs/${encodeURIComponent(runId)}/events?types=infection_update`);
+    if (!res.ok) return;
+    const events = await res.json();
+    for (const evt of events) {
+      if (evt.event_type !== 'infection_update' || !evt.data) continue;
+      updateAgentInfection(evt.data);
+      updateAgentInfectionOnMap(evt.data.agent);
+    }
+    refreshInfectionStyles();
+  } catch (e) {
+    console.warn('[replay] 감염 상태 복원 실패:', e);
+  }
+}
 
 export async function openRunReplay(runId, runNum) {
   // 기존 모달 제거 — 인터뷰 패널도 함께 닫는다.
@@ -186,6 +220,10 @@ export async function openRunReplay(runId, runNum) {
 
       // 과거 대화 피드 복원
       renderHistoricalFeed(data.log);
+
+      // 감염 뱃지 복원 — /load 응답의 infection 스냅샷을 우선 쓰고, 구버전 서버라
+      // 그 필드가 없으면 저장된 infection_update 이벤트 재생으로 폴백한다.
+      await restoreInfectionBadges(runId, data.infection);
 
       // 시뮬레이션 뷰 표시 (설정창 닫기)
       document.getElementById('sim-settings-view').classList.add('sim-hidden');

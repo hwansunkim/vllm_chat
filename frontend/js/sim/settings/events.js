@@ -7,7 +7,11 @@ const EVENT_LABELS = {
   system_message: '📢 시스템 메시지',
   agent_enter:    '🎭 에이전트 등장',
   agent_exit:     '🚪 에이전트 퇴장',
+  infect_agent:   '🦠 감염 시드 / 환자 0번',
 };
+
+// 에이전트 선택 드롭다운이 필요한 타입 (agent 필드를 쓴다).
+const AGENT_EVENT_TYPES = ['agent_enter', 'agent_exit', 'infect_agent'];
 
 // Build the ordered list of selectable targets for system_message events.
 function _buildTargetOptions() {
@@ -43,12 +47,21 @@ export function renderScenarioEvents() {
     const row = document.createElement('div');
     row.className = 'sim-event-row';
 
+    // 드롭다운은 선택값이 없으면 첫 항목이 선택된 채로 그려진다. 상태가 빈 문자열(또는
+    // 삭제된 에이전트)이면 화면엔 이름이 보이는데 실제로는 agent=""가 전송돼 서버가
+    // 무시하므로, 그리기 전에 상태를 화면과 같은 값으로 맞춘다.
+    _syncAgentSelection(idx);
+
     const agentOptions = sim.agents
       .map(a => `<option value="${esc(a.name)}" ${a.name === ev.agent ? 'selected' : ''}>${esc(a.icon)} ${esc(a.display_name || a.name)}</option>`)
       .join('');
 
-    const isAgentEvent  = ev.type === 'agent_enter' || ev.type === 'agent_exit';
+    const isAgentEvent  = AGENT_EVENT_TYPES.includes(ev.type);
     const isSysMsgEvent = ev.type === 'system_message';
+    // 감염 시드는 targets를 쓰지 않고(위 조건에서 이미 숨겨진다), message도 관전용이다.
+    const isInfectEvent = ev.type === 'infect_agent';
+    // 모델이 꺼져 있으면 서버가 이 이벤트를 조용히 무시하므로 미리 알린다.
+    const infectionOff  = isInfectEvent && !sim.infection_model?.enabled;
 
     row.innerHTML = `
       <div class="sim-event-top">
@@ -62,6 +75,10 @@ export function renderScenarioEvents() {
         </select>
         <button class="sim-event-del" data-idx="${idx}">✕</button>
       </div>
+      ${infectionOff ? `
+      <div class="sim-event-warn">
+        ⚠ 감염병 모델이 꺼져 있어 이 이벤트는 실행되지 않습니다 — 위 “🦠 감염병 모델” 섹션에서 활성화하세요.
+      </div>` : ''}
       ${isAgentEvent ? `
       <div class="sim-event-field">
         <label>에이전트</label>
@@ -77,8 +94,13 @@ export function renderScenarioEvents() {
       <div class="sim-event-field">
         <label>메시지</label>
         <input type="text" data-idx="${idx}" data-field="message"
-               value="${esc(ev.message || '')}" placeholder="내레이터 메시지..."/>
+               value="${esc(ev.message || '')}"
+               placeholder="${isInfectEvent ? '관전용 메모 (선택)...' : '내레이터 메시지...'}"/>
       </div>
+      ${isInfectEvent ? `
+      <div class="sim-event-hint">
+        이 문구는 에이전트에게 전달되지 않습니다 (관전자 전용) — 감염 사실은 오직 증상 서사로만 인지합니다.
+      </div>` : ''}
     `;
     list.appendChild(row);
   });
@@ -120,6 +142,16 @@ export function renderScenarioEvents() {
   });
 }
 
+/**
+ * 에이전트 선택이 필요한 타입인데 상태의 agent가 비었거나 목록에 없으면 첫 에이전트로 맞춘다.
+ * (agent_enter/agent_exit는 서버가 경고만 남기지만, infect_agent는 agent가 필수다.)
+ */
+function _syncAgentSelection(idx) {
+  const ev = sim.events[idx];
+  if (!AGENT_EVENT_TYPES.includes(ev.type) || !sim.agents.length) return;
+  if (!sim.agents.some(a => a.name === ev.agent)) ev.agent = sim.agents[0].name;
+}
+
 function syncEventField(el) {
   const idx   = +el.dataset.idx;
   const field = el.dataset.field;
@@ -127,6 +159,7 @@ function syncEventField(el) {
     sim.events[idx].wave = parseInt(el.value) || 0;
   } else if (field === 'type') {
     sim.events[idx].type = el.value;
+    _syncAgentSelection(idx);
     renderScenarioEvents();
   } else {
     sim.events[idx][field] = el.value;

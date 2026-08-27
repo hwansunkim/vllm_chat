@@ -189,6 +189,18 @@ class _StepMixin:
                 "text":  situation_text,
             })
 
+        # 감염 모델의 증상 서사도 같은 자리에 ephemeral로 주입 — 매 턴 재계산되며
+        # 메모리에는 남지 않는다. LLM은 status/확률 같은 raw 값을 절대 보지 않고
+        # 시나리오가 작성한 증상 텍스트만 본다.
+        symptom_text = self._build_symptom_context(agent_key, wave)
+        if symptom_text:
+            ephemeral_msgs.append({"role": "user", "content": symptom_text})
+            self._emit("turn_situation", {
+                "wave":  wave,
+                "agent": agent_key,
+                "text":  symptom_text,
+            })
+
         extended_alias = dict(self._key_to_alias)
         for sid, _, visual in strangers:
             extended_alias[sid] = visual

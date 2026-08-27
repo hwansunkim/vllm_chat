@@ -7,10 +7,11 @@ import {
   addTypingIndicator, removeTypingIndicator,
   updateWaveIndicator, addSummaryCard, addInterventionCard, addWorldEventCard,
   addMovementCard, addAppearanceCard, addSituationCard, applyWaveTimeStr,
+  addInfectionCard,
 } from './feed.js';
-import { updateAgentCard, updateAgentLocation, getCardEl } from './cards.js';
-import { addD3Edge } from '../graph/d3.js';
-import { moveAgentOnMap } from '../map/d3.js';
+import { updateAgentCard, updateAgentLocation, updateAgentInfection, getCardEl } from './cards.js';
+import { addD3Edge, refreshInfectionStyles } from '../graph/d3.js';
+import { moveAgentOnMap, updateAgentInfectionOnMap } from '../map/d3.js';
 import { setStatus } from './control.js';
 import { fetchAgentContext } from '../context.js';
 
@@ -103,6 +104,15 @@ export function connectSSE() {
     addMovementCard(d);
     updateAgentLocation(d.agent, d.to);
     moveAgentOnMap(d.agent, d.to);
+  });
+
+  // 감염 모델의 상태 전이(시드/전파/회복). 엔진이 계산한 결과이며 LLM 판단이 아니다.
+  es.addEventListener('infection_update', e => {
+    const d = JSON.parse(e.data);
+    updateAgentInfection(d);          // 카드 뱃지 + sim.agentInfection 갱신
+    refreshInfectionStyles();         // 관계 그래프 노드
+    updateAgentInfectionOnMap(d.agent); // 위치 지도 아바타
+    addInfectionCard(d);              // 피드 한 줄
   });
 
   es.addEventListener('appearance_update', e => {

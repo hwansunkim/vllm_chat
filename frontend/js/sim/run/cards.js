@@ -1,11 +1,12 @@
 // frontend/js/sim/run/cards.js
 // Agent card rendering & live updates on the simulation run view.
 
-import { sim, esc, emotionClass, fmtK, getAgentIcon } from '../state.js';
+import { sim, esc, emotionClass, fmtK, getAgentIcon, infectionBadge } from '../state.js';
 import { openAgentContext } from '../context.js';
 
 export function renderAgentCards() {
-  sim.agentEmotions = {};
+  sim.agentEmotions  = {};
+  sim.agentInfection = {};
   const container = document.getElementById('sim-agent-cards');
   container.innerHTML = '';
   sim.agents.forEach(agent => {
@@ -33,6 +34,7 @@ export function renderAgentCards() {
       <div class="sim-card-header">
         <span class="sim-card-icon" id="simc-icon-${esc(agent.name)}">${esc(getAgentIcon(agent, 'neutral'))}</span>
         <span class="sim-card-name">${displayLabel}</span>
+        <span class="sim-card-infection sim-hidden" id="simc-inf-${esc(agent.name)}"></span>
         ${locHtml}
       </div>
       <div class="sim-card-meta">${metaHtml}</div>
@@ -87,6 +89,35 @@ export function updateAgentLocation(agentName, location) {
     el.textContent = `📍 ${location}`;
     el.classList.remove('sim-hidden');
   }
+}
+
+/**
+ * infection_update SSE 훅 — 카드에 감염 상태 뱃지를 붙이고 상태 맵을 갱신한다.
+ * 상태 맵(sim.agentInfection)은 관계 그래프·위치 지도의 노드 강조도 함께 참조한다.
+ */
+export function updateAgentInfection(d) {
+  if (!d || !d.agent) return;
+  sim.agentInfection[d.agent] = {
+    status:       d.status,
+    cause:        d.cause,
+    wave:         d.wave,
+    disease_name: d.disease_name || '',
+  };
+
+  // 카드 내부 요소의 id는 esc()(HTML 이스케이프)로 쓰였으므로 실제 DOM id는 원본 이름
+  // 그대로다 — getElementById에 CSS.escape를 끼우면 오히려 어긋난다(updateAgentCard와 동일).
+  const el = document.getElementById(`simc-inf-${d.agent}`);
+  if (!el) return;
+  const badge = infectionBadge(d.status, d.cause);
+  if (!badge) {                       // 한 번도 걸리지 않은 S — 표시할 것 없음
+    el.classList.add('sim-hidden');
+    el.textContent = '';
+    return;
+  }
+  el.textContent = `${badge.icon} ${badge.label}`;
+  el.className   = `sim-card-infection inf-${badge.cls}`;
+  el.title       = d.disease_name ? `${d.disease_name} · W${d.wave}` : `W${d.wave}`;
+  getCardEl(d.agent)?.classList.toggle('infected', badge.cls === 'infected');
 }
 
 /** Lookup the live card element by agent name, handling special characters. */
