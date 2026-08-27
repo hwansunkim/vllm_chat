@@ -5,9 +5,12 @@
 }
 .logo {
   color: #e2e8f0; font-size: 17px; font-weight: 700;
-  display: block; margin-bottom: 12px; letter-spacing: -0.3px;
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 12px; letter-spacing: -0.3px;
+  white-space: nowrap; overflow: hidden;
 }
-.logo span { color: #818cf8; }
+.logo .logo-accent { color: #818cf8; }
+.logo-mark { flex-shrink: 0; }
 
 #new-chat-btn {
   width: 100%; padding: 9px 12px;
@@ -15,11 +18,17 @@
   border: none; border-radius: 8px;
   cursor: pointer; font-size: 13px; font-weight: 500;
   transition: background 0.2s;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  white-space: nowrap; overflow: hidden;
 }
 #new-chat-btn:hover { background: #4338ca; }
 
+.btn-icon { flex-shrink: 0; line-height: 1; }
+.btn-label { white-space: nowrap; }
+
 #conversation-list {
   flex: 1; overflow-y: auto; padding: 8px 6px;
+  transition: opacity 0.15s ease;
 }
 .conv-item {
   padding: 9px 10px; border-radius: 8px;

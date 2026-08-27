@@ -4,8 +4,44 @@
   background: #1e293b;
   display: flex; flex-direction: column;
   border-right: 1px solid #0f172a;
+  position: relative;
 }
 #main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+/* ── Sidebar collapse ────────────────────────────────────────────────────────── */
+/* Transitions are gated on .sidebar-ready so the persisted state paints
+   instantly on load instead of animating in from the default width. */
+body.sidebar-ready #sidebar { transition: width 0.25s ease, min-width 0.25s ease; }
+body.sidebar-ready .sidebar-header,
+body.sidebar-ready .sidebar-footer { transition: padding 0.25s ease; }
+
+#sidebar-toggle {
+  position: absolute; top: 50%; right: -11px; z-index: 20;
+  transform: translateY(-50%);
+  width: 22px; height: 22px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: #0f172a; color: #94a3b8;
+  border: 1px solid #334155; border-radius: 50%;
+  cursor: pointer; font-size: 14px; line-height: 1;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+#sidebar-toggle:hover { background: #1e293b; color: #e2e8f0; border-color: #475569; }
+.sidebar-toggle-icon { display: block; transition: transform 0.25s ease; }
+body.sidebar-collapsed .sidebar-toggle-icon { transform: rotate(180deg); }
+
+body.sidebar-collapsed #sidebar { width: 60px; min-width: 60px; }
+body.sidebar-collapsed .sidebar-header { padding: 18px 8px 14px; }
+body.sidebar-collapsed .sidebar-footer { padding: 12px 8px; }
+body.sidebar-collapsed .btn-label { display: none; }
+body.sidebar-collapsed .logo { justify-content: center; margin-bottom: 12px; }
+body.sidebar-collapsed #new-chat-btn,
+body.sidebar-collapsed .sidebar-footer-btn {
+  padding-left: 0; padding-right: 0; justify-content: center;
+}
+/* Keep the list in the flow so the footer stays pinned; just fade it out. */
+body.sidebar-collapsed #conversation-list {
+  opacity: 0; overflow: hidden; pointer-events: none;
+}
 
 /* ── Chat header ────────────────────────────────────────────────────────────── */
 #chat-header {

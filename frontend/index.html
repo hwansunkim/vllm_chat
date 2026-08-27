@@ -25,16 +25,17 @@
 
 <!-- Sidebar -->
 <div id="sidebar">
+  <button id="sidebar-toggle" type="button" title="사이드바 접기" aria-label="사이드바 접기" aria-expanded="true" aria-controls="sidebar"><span class="sidebar-toggle-icon">‹</span></button>
   <div class="sidebar-header">
-    <span class="logo">✦ <span>vLLM</span> Chat</span>
-    <button id="new-chat-btn">+ 새 대화</button>
+    <span class="logo"><span class="logo-mark">✦</span><span class="btn-label"><span class="logo-accent">vLLM</span> Chat</span></span>
+    <button id="new-chat-btn" title="새 대화"><span class="btn-icon">+</span><span class="btn-label">새 대화</span></button>
   </div>
   <div id="conversation-list"></div>
   <div class="sidebar-footer">
-    <button class="sidebar-footer-btn" id="agent-btn">🤖 에이전트 관리</button>
-    <button class="sidebar-footer-btn" id="mem-btn">🗂 메모리 저장소</button>
-    <button class="sidebar-footer-btn" id="server-btn">🖥 서버 설정</button>
-    <button class="sidebar-footer-btn" id="sim-btn">🎭 시뮬레이션</button>
+    <button class="sidebar-footer-btn" id="agent-btn" title="에이전트 관리"><span class="btn-icon">🤖</span><span class="btn-label">에이전트 관리</span></button>
+    <button class="sidebar-footer-btn" id="mem-btn" title="메모리 저장소"><span class="btn-icon">🗂</span><span class="btn-label">메모리 저장소</span></button>
+    <button class="sidebar-footer-btn" id="server-btn" title="서버 설정"><span class="btn-icon">🖥</span><span class="btn-label">서버 설정</span></button>
+    <button class="sidebar-footer-btn" id="sim-btn" title="시뮬레이션"><span class="btn-icon">🎭</span><span class="btn-label">시뮬레이션</span></button>
   </div>
 </div>
 
