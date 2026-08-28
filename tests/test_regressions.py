@@ -11,6 +11,7 @@ from tenacity import wait_none
 
 from backend import config, state
 from backend.api import conversations
+from backend.api import _conv_helpers
 from backend.api.schemas import ChatMessage
 from backend.db.database import get_db, init_tables, migrate_db
 from backend.api.simulation import runtime as sim_runtime
@@ -1090,15 +1091,15 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
 
         self.old_registry = conversations.get_registry
         self.old_stream_chat = conversations.async_stream_chat
-        self.old_extract_keywords = conversations.async_extract_keywords
+        self.old_extract_keywords = _conv_helpers.async_extract_keywords
         conversations.get_registry = lambda: FakeRegistry()
-        conversations.async_extract_keywords = self._empty_keywords
+        _conv_helpers.async_extract_keywords = self._empty_keywords
         conversations.async_stream_chat = self._failing_stream
 
     async def asyncTearDown(self):
         conversations.get_registry = self.old_registry
         conversations.async_stream_chat = self.old_stream_chat
-        conversations.async_extract_keywords = self.old_extract_keywords
+        _conv_helpers.async_extract_keywords = self.old_extract_keywords
         config.DB_PATH = self.old_db_path
         self.tmpdir.cleanup()
 
