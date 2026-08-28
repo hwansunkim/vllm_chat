@@ -29,6 +29,7 @@ import { exportLocationMap } from './map/d3.js';
 import { switchTab, fetchAgentContext } from './context.js';
 import { openExportModal, initExportModal } from './export/markdown.js';
 import { initResizeHandles } from './resize.js';
+import { initImportChatAgentEvents } from './settings/import-chat-agent.js';
 
 export function initSimulationEvents() {
   document.getElementById('sim-btn').addEventListener('click', showSimView);
@@ -75,6 +76,9 @@ export function initSimulationEvents() {
   initEarlyStopToggle();
   initTimeModeToggle();
   initTargetDurationUI();
+
+  // "💬 채팅에서 가져오기" — 에이전트 카드 편집기 섹션 헤더의 진입점.
+  initImportChatAgentEvents();
 
   document.getElementById('sim-add-agent-btn').addEventListener('click', () => {
     const newName = `agent${sim.agents.length + 1}`;

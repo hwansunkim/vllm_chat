@@ -1,6 +1,7 @@
 import { state } from './state.js';
 import { api } from './api.js';
 import { esc } from './utils.js';
+import { initAgentImportEvents } from './agent-import-modal.js';
 
 let _editAgentId = null;
 
@@ -55,13 +56,6 @@ function renderAgents() {
         <div class="agent-card-meta">온도 ${a.temperature} · 최대 ${Number(a.max_tokens).toLocaleString()}토큰${esc(modelInfo)}</div>
       </div>`;
   }).join('');
-
-  listEl.addEventListener('click', async e => {
-    const editBtn = e.target.closest('[data-edit]');
-    const delBtn  = e.target.closest('[data-del]');
-    if (editBtn) showAgentForm(editBtn.dataset.edit);
-    if (delBtn)  await deleteAgent(delBtn.dataset.del);
-  });
 }
 
 function showAgentForm(agentId = null) {
@@ -137,6 +131,20 @@ export function initAgentEvents() {
   document.getElementById('agent-form-close').onclick  = hideAgentForm;
   document.getElementById('agent-form-cancel').onclick = hideAgentForm;
   document.getElementById('agent-form-save').onclick   = saveAgent;
+
+  // "🎬 시뮬레이션에서 가져오기" — 성공하면 목록을 다시 읽어 새 카드가 바로 보이게 한다.
+  initAgentImportEvents(loadAgents);
+
+  // 편집/삭제 위임 클릭 리스너 — #agent-list 자체는 renderAgents()가 innerHTML만
+  // 갈아끼우고 엘리먼트를 교체하지 않으므로, 여기 initAgentEvents()(앱 초기화 시 1회
+  // 실행)에서 한 번만 붙인다. 예전엔 renderAgents() 안에 있어서 loadAgents()를 부를
+  // 때마다(가져오기 성공마다도 포함) 리스너가 계속 쌓였다.
+  document.getElementById('agent-list').addEventListener('click', async e => {
+    const editBtn = e.target.closest('[data-edit]');
+    const delBtn  = e.target.closest('[data-del]');
+    if (editBtn) showAgentForm(editBtn.dataset.edit);
+    if (delBtn)  await deleteAgent(delBtn.dataset.del);
+  });
 
   document.getElementById('agent-modal').addEventListener('click', e => {
     if (e.target === document.getElementById('agent-modal')) closeAgentModal();

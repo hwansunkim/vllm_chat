@@ -90,6 +90,14 @@ def init_tables(conn: sqlite3.Connection) -> None:
             role          TEXT NOT NULL DEFAULT '',
             goal          TEXT NOT NULL DEFAULT '',
             backstory     TEXT NOT NULL DEFAULT '',
+            -- 시뮬레이션(ABM) 에이전트와 공유되는 필드. 채팅 로직에서는 사용되지 않고
+            -- 채팅 <-> 시뮬레이션 왕복 시 값이 유실되지 않도록 보존만 한다.
+            gender             TEXT,
+            "groups"           TEXT,     -- JSON 배열 문자열 (예: '["가족"]')
+            location           TEXT,
+            visual_description TEXT,
+            display_name       TEXT,
+            initial_active     BOOLEAN DEFAULT 1,
             created_at    TEXT NOT NULL,
             updated_at    TEXT NOT NULL
         );
@@ -133,6 +141,17 @@ def migrate_db(conn: sqlite3.Connection) -> None:
     for col in ("role", "goal", "backstory"):
         if col not in agent_cols:
             conn.execute(f"ALTER TABLE agents ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+    # 시뮬레이션 에이전트와의 스키마 합집합. 전부 nullable/기본값이라 기존 row 는 영향 없음.
+    for col, ddl in [
+        ("gender",             'ALTER TABLE agents ADD COLUMN gender TEXT'),
+        ("groups",             'ALTER TABLE agents ADD COLUMN "groups" TEXT'),
+        ("location",           'ALTER TABLE agents ADD COLUMN location TEXT'),
+        ("visual_description", 'ALTER TABLE agents ADD COLUMN visual_description TEXT'),
+        ("display_name",       'ALTER TABLE agents ADD COLUMN display_name TEXT'),
+        ("initial_active",     'ALTER TABLE agents ADD COLUMN initial_active BOOLEAN DEFAULT 1'),
+    ]:
+        if col not in agent_cols:
+            conn.execute(ddl)
 
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     if "servers" not in tables:

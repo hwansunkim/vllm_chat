@@ -30,6 +30,15 @@ class AgentCreate(BaseModel):
     role: str = ""
     goal: str = ""
     backstory: str = ""
+    # ── 시뮬레이션(ABM) 에이전트와 공유되는 필드 ──────────────────────────────
+    # 채팅 파이프라인은 이 값들을 해석하지 않는다. 시뮬레이션 -> 채팅 가져오기 시
+    # 데이터가 유실되지 않도록 보존만 하며, 다시 시뮬레이션으로 내보낼 때 사용된다.
+    gender: str = "auto"
+    groups: list[str] = []
+    location: str = ""
+    visual_description: str = ""
+    display_name: str = ""
+    initial_active: bool = True
 
 
 class AgentUpdate(BaseModel):
@@ -43,6 +52,13 @@ class AgentUpdate(BaseModel):
     role: str | None = None
     goal: str | None = None
     backstory: str | None = None
+    # 시뮬레이션 공유 필드. exclude_unset 기반 부분 업데이트이므로 요청에 없으면 보존된다.
+    gender: str | None = None
+    groups: list[str] | None = None
+    location: str | None = None
+    visual_description: str | None = None
+    display_name: str | None = None
+    initial_active: bool | None = None
 
 
 class ServerCreate(BaseModel):

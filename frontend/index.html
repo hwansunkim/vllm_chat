@@ -207,6 +207,7 @@
     <div class="sim-settings-section">
       <div class="sim-settings-section-title">
         <span>👤 에이전트<span class="sim-help" aria-hidden="true" data-tooltip="시뮬레이션에 참여할 등장인물. 각 카드에서 페르소나·그룹·시작 위치·개별 temperature를 설정하고, 처음부터 등장할지 여부를 토글합니다.">?</span></span>
+        <button id="sim-import-chat-btn" class="sim-settings-add-btn" title="등록된 채팅 에이전트를 시뮬레이션 에이전트로 복사합니다">💬 채팅에서 가져오기</button>
         <button id="sim-add-agent-btn" class="sim-settings-add-btn">+ 추가</button>
       </div>
       <div id="sim-agent-list"></div>
@@ -483,6 +484,7 @@
       <div class="agent-modal-header">
         <h3>에이전트 관리</h3>
         <span class="agent-count-badge" id="agent-count-badge">0개</span>
+        <button class="agent-import-btn" id="agent-import-open-btn" title="저장된 시뮬레이션 시나리오의 에이전트를 채팅 에이전트로 복사합니다">🎬 시뮬레이션에서 가져오기</button>
         <button class="agent-new-btn" id="agent-new-btn">+ 새 에이전트</button>
         <button class="agent-modal-close" id="agent-close">✕</button>
       </div>
@@ -553,6 +555,66 @@
           <button class="btn-primary" id="agent-form-save">저장</button>
         </div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- 시뮬레이션 에이전트 → 채팅 에이전트 가져오기 -->
+<div id="agent-import-modal" class="xfer-modal hidden">
+  <div class="xfer-box">
+    <div class="xfer-header">
+      <h3>시뮬레이션에서 가져오기</h3>
+      <button class="xfer-close" id="agent-import-close">✕</button>
+    </div>
+    <div class="xfer-body">
+      <div class="xfer-lead">저장된 시뮬레이션 시나리오의 에이전트를 채팅 에이전트로 복사합니다. 가져온 시점의 값만 복사되며 이후 서로 동기화되지 않습니다.</div>
+      <div class="xfer-field">
+        <label for="agent-import-scenario">시나리오</label>
+        <select id="agent-import-scenario"></select>
+      </div>
+      <div class="xfer-cols">
+        <div class="xfer-col">
+          <div class="xfer-col-title">시뮬레이션 에이전트</div>
+          <div class="xfer-list" id="agent-import-agent-list"></div>
+        </div>
+        <div class="xfer-col">
+          <div class="xfer-col-title">채팅 에이전트로 미리보기</div>
+          <div class="xfer-preview" id="agent-import-preview"></div>
+        </div>
+      </div>
+    </div>
+    <div class="xfer-actions">
+      <span class="xfer-status" id="agent-import-status"></span>
+      <button class="btn-cancel" id="agent-import-cancel">취소</button>
+      <button class="btn-primary" id="agent-import-confirm" disabled>가져오기</button>
+    </div>
+  </div>
+</div>
+
+<!-- 채팅 에이전트 → 시뮬레이션 에이전트 가져오기 -->
+<div id="sim-import-chat-modal" class="xfer-modal hidden">
+  <div class="xfer-box">
+    <div class="xfer-header">
+      <h3>채팅 에이전트에서 가져오기</h3>
+      <button class="xfer-close" id="sim-import-chat-close">✕</button>
+    </div>
+    <div class="xfer-body">
+      <div class="xfer-lead">등록된 채팅 에이전트를 시뮬레이션 에이전트로 복사합니다. 가져온 시점의 값만 복사되며 이후 서로 동기화되지 않습니다.</div>
+      <div class="xfer-cols">
+        <div class="xfer-col">
+          <div class="xfer-col-title">채팅 에이전트</div>
+          <div class="xfer-list" id="sim-import-chat-list"></div>
+        </div>
+        <div class="xfer-col">
+          <div class="xfer-col-title">시뮬레이션 에이전트로 미리보기</div>
+          <div class="xfer-preview" id="sim-import-chat-preview"></div>
+        </div>
+      </div>
+    </div>
+    <div class="xfer-actions">
+      <span class="xfer-status" id="sim-import-chat-status"></span>
+      <button class="btn-cancel" id="sim-import-chat-cancel">취소</button>
+      <button class="btn-primary" id="sim-import-chat-confirm" disabled>가져오기</button>
     </div>
   </div>
 </div>

@@ -220,6 +220,9 @@
   text-transform: uppercase; letter-spacing: 0.5px;
 }
 .sim-settings-section-body { padding: 14px 16px; }
+/* 에이전트 섹션 헤더에는 버튼이 둘(채팅에서 가져오기 + 추가)이라 space-between 이
+   가운데로 벌린다. 가져오기 버튼을 오른쪽 버튼 그룹에 끌어붙인다. */
+#sim-import-chat-btn { margin-left: auto; margin-right: 6px; }
 
 /* Output fields */
 .sim-field-row {

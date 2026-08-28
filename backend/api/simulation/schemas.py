@@ -19,6 +19,17 @@ class AgentConfig(BaseModel):
     server_id:          str | None = None  # 이 에이전트만 사용할 LLM 서버. None/빈값 = 시뮬레이션 기본 서버(SimStartConfig.server_id)
     # 이 에이전트만 사용할 샘플링 온도. None = 시뮬레이션 기본값(SimStartConfig.temperature)
     temperature:        float | None = Field(default=None, ge=0.0, le=2.0)
+    # ── 채팅 에이전트(backend/db agents 테이블)와 공유되는 필드 ────────────────
+    # ABM 엔진과 프롬프트 조립은 이 값들을 전혀 해석하지 않는다. 채팅 -> 시뮬레이션
+    # 가져오기 시 값이 유실되지 않도록 시나리오 JSON에 보존만 하며, 다시 채팅으로
+    # 내보낼 때 사용된다. model 은 채팅의 모델명 문자열로, 시뮬레이션의 server_id
+    # (서버 인스턴스 지정)와 개념이 달라 자동 변환하지 않고 원본 그대로 왕복시킨다.
+    role:               str | None = None
+    goal:               str | None = None
+    backstory:          str | None = None
+    description:        str | None = None
+    model:              str | None = None
+    max_tokens:         int | None = None
 
 
 class ScenarioEvent(BaseModel):

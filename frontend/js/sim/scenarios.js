@@ -20,9 +20,20 @@ const MIGRATIONS = {};
 
 const APP_ID = 'vllm-chat-sim-scenario';
 
-export async function loadScenarios() {
+/**
+ * 저장된 시나리오 목록을 그대로 가져온다 (각 항목에 전체 `config` 포함).
+ * DOM 도, sim 상태도 건드리지 않으므로 시뮬레이션 화면 밖(예: 채팅 에이전트 관리의
+ * "시뮬레이션에서 가져오기")에서도 안전하게 재사용할 수 있다.
+ */
+export async function fetchScenarioList() {
   const res = await fetch('/api/simulation/scenarios');
-  sim.scenarios = await res.json();
+  if (!res.ok) throw new Error(`시나리오 목록을 불러오지 못했습니다. (HTTP ${res.status})`);
+  const list = await res.json();
+  return Array.isArray(list) ? list : [];
+}
+
+export async function loadScenarios() {
+  sim.scenarios = await fetchScenarioList();
   const sel = document.getElementById('sim-scenario-select');
   sel.innerHTML = '<option value="">-- 불러오기 --</option>';
   sim.scenarios.forEach(s => {
