@@ -613,6 +613,21 @@
   background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px;
 }
 
+/* 환자 0번 피커 — 이벤트 편집기의 대상 칩(.evt-target-chip)을 그대로 쓰되
+   선택 색만 감염 계열(적색)로 바꾼다. 체크 상태는 칩 앞의 ☑/☐ 글리프로도 드러낸다. */
+.sim-inf-pz-row { align-items: flex-start; }
+.sim-inf-pz-row > label { padding-top: 3px; }
+.sim-inf-pz-chips { max-width: 100%; }
+.sim-inf-pz-chip.selected {
+  background: #ffe4e6; color: #9f1239; border-color: transparent; font-weight: 500;
+}
+.sim-inf-pz-empty { font-size: 11px; color: #94a3b8; }
+
+.sim-inf-onset-row { align-items: center; }
+.sim-inf-onset-inputs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex: 1; }
+#sim-inf-onset-wave { width: 64px; }
+.sim-inf-onset-hint { font-size: 10.5px; color: #94a3b8; }
+
 /* 회복 시간 — (최소 N일 M시간) ~ (최대 N일 M시간). 증상 단계 행과 같은 입력 부품을 쓴다 */
 .sim-inf-recovery-row { align-items: center; }
 .sim-inf-recovery-inputs {

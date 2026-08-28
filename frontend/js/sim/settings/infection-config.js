@@ -9,7 +9,7 @@
 
 import { sim, esc, buildInfectionModel, normalizeProbability,
          normalizeSymptomStages, dayHourToMinutes, minutesToDayHour,
-         formatDayHour, isTimeConceptDisabled } from '../state.js';
+         formatDayHour, isTimeConceptDisabled, getAgentIcon } from '../state.js';
 import { renderScenarioEvents } from './events.js';
 
 export function renderInfectionConfig() {
@@ -27,6 +27,7 @@ export function renderInfectionConfig() {
   if (immuneEl) immuneEl.value = model.immune_after_recovery ? 'sir' : 'sis';
 
   _bindProbabilitySlider('sim-inf-transmission', 'transmission_probability');
+  renderPatientZeroPicker();
   _renderRecoveryWindow();
   _renderSymptomStages();
   updateInfectionTimeWarning();
@@ -37,6 +38,8 @@ export function renderInfectionConfig() {
   chk.onchange = () => {
     sim.infection_model.enabled = chk.checked;
     cfg.classList.toggle('sim-hidden', !chk.checked);
+    // 켜는 순간 환자 0번이 하나도 없으면 아무 일도 일어나지 않는다 — 지금 알린다.
+    updatePatientZeroWarning();
     // infect_agent 이벤트는 모델이 꺼져 있으면 서버에서 무시된다 —
     // 이벤트 에디터의 경고 배지를 지금 상태에 맞춰 다시 그린다.
     renderScenarioEvents();
@@ -57,6 +60,166 @@ function _bindProbabilitySlider(id, field) {
     sim.infection_model[field] = normalizeProbability(slider.value, sim.infection_model[field]);
     paint();
   };
+}
+
+// ── 환자 0번 피커 ─────────────────────────────────────────────────────────────
+// 별도 상태를 두지 않는다. 이 피커는 sim.events의 infect_agent 이벤트를 그대로 보여주고
+// 고칠 뿐이라, 아래쪽 "시나리오 이벤트" 편집기와 언제나 같은 데이터를 본다.
+//   체크됨  = 그 에이전트를 가리키는 infect_agent 이벤트가 하나 이상 있음
+//   체크    = { type:'infect_agent', agent, wave:<발병 시점>, message:'' } 추가
+//   체크 해제 = 그 에이전트의 infect_agent 이벤트 전부 제거
+// 피커가 이벤트를 건드리면 renderScenarioEvents()로 편집기를 다시 그려 둘을 맞춘다.
+const INFECT_EVENT = 'infect_agent';
+
+function _infectEvents() {
+  return (sim.events || []).filter(e => e && e.type === INFECT_EVENT);
+}
+
+/**
+ * 이미 삭제된 에이전트를 가리키는 infect_agent 이벤트를 조용히 제거한다.
+ * events.js의 _syncAgentSelection()은 stale ref를 sim.agents[0]으로 몰래 재지정하는데,
+ * 감염 시드에서 그러면 사용자가 고른 적 없는 사람이 환자 0번이 된다.
+ * 단 에이전트 목록이 아직 비어 있는 순간(시나리오 로드 중 등)에는 아무것도 지우지 않는다 —
+ * 그 판단으로는 "삭제됨"과 "아직 안 채워짐"을 구분할 수 없기 때문.
+ */
+function _pruneStaleInfectEvents() {
+  if (!sim.agents.length || !Array.isArray(sim.events)) return false;
+  const known = new Set(sim.agents.map(a => a.name));
+  let removed = false;
+  for (let i = sim.events.length - 1; i >= 0; i--) {
+    const ev = sim.events[i];
+    if (ev?.type === INFECT_EVENT && !known.has(ev.agent)) {
+      sim.events.splice(i, 1);
+      removed = true;
+    }
+  }
+  return removed;
+}
+
+/** "발병 시점" 입력의 현재 값(0~99). 비어 있거나("혼합") 잘못된 값이면 0. */
+function _readOnsetWave() {
+  const el = document.getElementById('sim-inf-onset-wave');
+  const n  = parseInt(el?.value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(99, n));
+}
+
+/** infect_agent 이벤트들의 wave를 입력란에 반영. 값이 섞여 있으면 빈 칸 + "혼합". */
+function _paintOnsetWave() {
+  const el = document.getElementById('sim-inf-onset-wave');
+  if (!el) return;
+  const waves = [...new Set(_infectEvents().map(e => parseInt(e.wave) || 0))];
+  if (waves.length === 1) {
+    el.value = String(waves[0]);
+    el.placeholder = '';
+  } else if (waves.length > 1) {
+    // 이벤트 편집기에서 개별 조정한 경우 — 사용자가 이 칸을 실제로 고치기 전에는
+    // 마음대로 통일하지 않는다.
+    el.value = '';
+    el.placeholder = '혼합';
+  } else {
+    // 아직 환자 0번이 없다 — 사용자가 미리 적어둔 값을 그대로 둔다(다음 체크에 쓰인다).
+    el.placeholder = '0';
+  }
+}
+
+/** 환자 0번 칩 목록 + 발병 시점 입력을 sim.events 기준으로 다시 그린다. */
+export function renderPatientZeroPicker() {
+  const chipsEl = document.getElementById('sim-inf-patient-zero');
+  if (!chipsEl) return;
+  _pruneStaleInfectEvents();
+
+  const seeded = new Set(_infectEvents().map(e => e.agent));
+  chipsEl.innerHTML = '';
+
+  if (!sim.agents.length) {
+    const empty = document.createElement('span');
+    empty.className = 'sim-inf-pz-empty';
+    empty.textContent = '에이전트가 없습니다 — 먼저 “에이전트” 섹션에서 추가하세요.';
+    chipsEl.appendChild(empty);
+  }
+
+  sim.agents.forEach(agent => {
+    const on   = seeded.has(agent.name);
+    const chip = document.createElement('span');
+    chip.className = `evt-target-chip sim-inf-pz-chip${on ? ' selected' : ''}`;
+    chip.dataset.agent = agent.name;
+    chip.setAttribute('role', 'checkbox');
+    chip.setAttribute('aria-checked', on ? 'true' : 'false');
+    // 사용자 입력(이름/아이콘)이 그대로 들어오므로 textContent로만 넣는다.
+    chip.textContent = `${on ? '☑' : '☐'} ${getAgentIcon(agent, 'neutral')} ${agent.display_name || agent.name}`;
+    chip.onclick = () => _togglePatientZero(agent.name);
+    chipsEl.appendChild(chip);
+  });
+
+  _paintOnsetWave();
+  _bindOnsetWave();
+  updatePatientZeroWarning();
+}
+
+/** 칩 클릭 — 그 에이전트의 infect_agent 이벤트를 만들거나 전부 지운다. */
+function _togglePatientZero(name) {
+  if (!Array.isArray(sim.events)) sim.events = [];
+  const has = sim.events.some(e => e?.type === INFECT_EVENT && e.agent === name);
+  if (has) {
+    for (let i = sim.events.length - 1; i >= 0; i--) {
+      const ev = sim.events[i];
+      if (ev?.type === INFECT_EVENT && ev.agent === name) sim.events.splice(i, 1);
+    }
+  } else {
+    // 중복 방지는 위 has 검사가 담당한다(이미 있으면 추가하지 않고 해제로 간다).
+    // targets는 감염 시드에서 쓰이지 않아 서버 기본값(["all"])에 맡긴다.
+    sim.events.push({ type: INFECT_EVENT, agent: name, wave: _readOnsetWave(), message: '' });
+  }
+  renderPatientZeroPicker();
+  _syncEventsEditor();
+}
+
+// 발병 시점 입력은 renderPatientZeroPicker()가 여러 번 불려도 리스너가 쌓이지 않도록
+// addEventListener 대신 .oninput/.onchange 프로퍼티로 덮어쓴다(이 파일의 다른 입력과 같은 규칙).
+function _bindOnsetWave() {
+  const el = document.getElementById('sim-inf-onset-wave');
+  if (!el) return;
+  el.oninput = () => {
+    // 지우는 도중(빈 칸)에는 아무것도 하지 않는다 — 타이핑 중에 모든 wave가 0으로
+    // 몰리는 일을 막는다. 확정(change)에서 정리한다.
+    if (el.value.trim() === '') return;
+    _applyOnsetWave(_readOnsetWave());
+  };
+  el.onchange = () => {
+    if (el.value.trim() === '') { _paintOnsetWave(); return; }   // 편집 취소로 본다
+    const w = _readOnsetWave();
+    el.value = String(w);        // 범위 밖 입력(예: 200)을 클램프 결과로 되쓴다
+    _applyOnsetWave(w);
+  };
+}
+
+/** 모든 infect_agent 이벤트의 wave를 하나로 통일. 사용자가 입력을 실제로 고쳤을 때만 호출된다. */
+function _applyOnsetWave(wave) {
+  const evs = _infectEvents();
+  if (!evs.length) return;
+  let changed = false;
+  evs.forEach(e => { if (e.wave !== wave) { e.wave = wave; changed = true; } });
+  if (changed) _syncEventsEditor();
+}
+
+/** 이벤트 편집기 재렌더 — 그쪽 DOM이 없는 경로(설정 패널 미렌더)에서는 건너뛴다. */
+function _syncEventsEditor() {
+  if (document.getElementById('sim-events-list')) renderScenarioEvents();
+}
+
+/**
+ * 모델을 켜 놓고 환자 0번을 아무도 지정하지 않으면 감염이 영원히 시작되지 않는다
+ * (엔진은 감염자 0명에서 아무 전염도 굴리지 않는다). 시간 경고와 별개 요소라 동시에 뜰 수 있다.
+ */
+export function updatePatientZeroWarning() {
+  const warnEl = document.getElementById('sim-inf-pz-warn');
+  if (!warnEl) return;
+  // 체크박스가 상태보다 앞선 순간(사용자가 방금 켠 직후)이 있으므로 폼을 먼저 본다 —
+  // updateInfectionTimeWarning()이 시간 입력을 폼에서 읽는 것과 같은 규칙.
+  const chk     = document.getElementById('sim-inf-enabled');
+  const enabled = chk ? chk.checked : !!sim.infection_model?.enabled;
+  warnEl.classList.toggle('sim-hidden', !(enabled && _infectEvents().length === 0));
 }
 
 // ── 시간 개념 경고 ────────────────────────────────────────────────────────────

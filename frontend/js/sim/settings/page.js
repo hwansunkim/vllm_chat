@@ -74,11 +74,14 @@ export function renderSettingsPage() {
   renderOutputFields();
   renderAgentListInConfig();
   renderStartAgentSelect();
+  // 감염 설정을 이벤트 편집기보다 먼저 그린다 — 환자 0번 피커가 삭제된 에이전트를
+  // 가리키는 infect_agent 이벤트를 prune 하는데, 순서가 반대면 renderScenarioEvents()의
+  // _syncAgentSelection()이 그 stale ref를 먼저 sim.agents[0]으로 옮겨버린다.
+  renderInfectionConfig();     // 감염병 모델 설정 (+ 환자 0번 피커)
   renderScenarioEvents();
   renderLocationGraph();
   renderServerSelect();        // 비동기 — 드롭다운 별도 렌더링
   renderSystemAgentConfig();   // system 에이전트 설정 동기 렌더링
-  renderInfectionConfig();     // 감염병 모델 설정
 
   // 레이아웃 마무리 — 내용이 모두 채워진 뒤여야 뱃지/높이가 맞는다.
   // (섹션이 접혀 있어도 readConfigFromUI()가 읽는 input/textarea는 DOM에 그대로 있다.

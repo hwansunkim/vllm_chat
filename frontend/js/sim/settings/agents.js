@@ -4,6 +4,7 @@
 import { sim, esc, _expandedAgents, getAllGroups, detectGender, getAgentIcon,
          normalizeTemperature, normalizeAgentTemperature } from '../state.js';
 import { renderScenarioEvents } from './events.js';
+import { renderPatientZeroPicker } from './infection-config.js';
 import { getServerList, peekServerList } from './server-list.js';
 import { updateSectionBadges } from './sections.js';
 import { autoGrowAll } from './textareas.js';
@@ -173,6 +174,8 @@ export function renderAgentListInConfig() {
       sim.agents.splice(idx, 1);
       renderAgentListInConfig();
       renderStartAgentSelect();
+      // 삭제된 사람을 가리키던 감염 시드를 여기서 정리한다(피커가 prune한다).
+      renderPatientZeroPicker();
     });
 
     // Group chip — Enter or comma adds a group
@@ -233,8 +236,15 @@ export function renderAgentListInConfig() {
             _expandedAgents.add(el.value);
           }
           header.querySelector('.sim-acrd-id').textContent = el.value;
+          // 감염 시드는 이름으로 에이전트를 가리키므로 rename을 따라가야 한다.
+          // 먼저 고치지 않으면 renderScenarioEvents()의 _syncAgentSelection()이
+          // "없는 에이전트"로 보고 첫 에이전트에게 조용히 환자 0번을 옮겨 붙인다.
+          sim.events?.forEach(ev => {
+            if (ev?.type === 'infect_agent' && ev.agent === oldName) ev.agent = el.value;
+          });
           renderStartAgentSelect();
           renderScenarioEvents();
+          renderPatientZeroPicker();
 
         } else if (el.dataset.field === 'icon') {
           // icon override: if empty, revert to '🤖' (triggers auto)
