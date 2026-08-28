@@ -159,13 +159,14 @@ class _StepMixin:
         zone_awareness = self._compute_zone_awareness(agent_key)
 
         # 시각 정보 ephemeral 주입
+        # 시각 계산은 `_current_elapsed_minutes`(core.py)에 단일화돼 있다 — 감염 진행
+        # 판정도 같은 헬퍼를 쓰므로 프롬프트 속 시계와 병의 진행이 항상 일치한다.
         ephemeral_msgs: list[dict] = []
         time_str: str | None = None
-        if self._time_mode == "variable":
-            time_str = self._format_time_str(self._sim_start_minutes + self._elapsed_minutes)
-        elif self._time_per_wave > 0:
-            wave_idx = self.completed_waves if wave is None else wave
-            time_str = self._format_time_str(self._sim_start_minutes + wave_idx * self._time_per_wave)
+        if self._time_mode == "variable" or self._time_per_wave > 0:
+            time_str = self._format_time_str(
+                self._sim_start_minutes + self._current_elapsed_minutes(wave)
+            )
         if time_str is not None:
             ephemeral_msgs.append({"role": "user", "content": f"[현재 시각: {time_str}]"})
 

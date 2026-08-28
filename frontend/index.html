@@ -507,6 +507,11 @@
       <div class="sim-sec-wrap">
         <div class="sim-sec-inner">
           <div id="sim-inf-config" class="sim-hidden">
+            <div id="sim-inf-time-warn" class="sim-inf-warn sim-hidden">
+              ⚠ 감염 증상 진행과 회복에는 시간 개념이 필요합니다 (전염은 정상 동작) —
+              위 “세계 설정”에서 시간 모드를 “가변”으로 바꾸거나 wave당 시간을 1분 이상으로 설정하세요.
+              지금 상태에서는 경과 시간이 늘 0분이라 모든 감염자가 첫 단계에 머물고 자연 회복도 일어나지 않습니다.
+            </div>
             <div class="sim-fields-hint">
               감염 판정은 전적으로 엔진이 합니다 — LLM은 상태·확률을 절대 보지 않고,
               아래 <b>증상 서사</b> 텍스트만 매 턴 전달받습니다.
@@ -523,11 +528,29 @@
               <input type="range" id="sim-inf-transmission" min="0" max="1" step="0.05" value="0.3"
                      title="같은 wave·같은 장소에 있는 감염자 1명당 전염될 확률"/>
             </div>
-            <div class="sim-option-row sim-temp-row">
-              <label>회복 확률 <span id="sim-inf-recovery-val">0.10</span></label>
-              <input type="range" id="sim-inf-recovery" min="0" max="1" step="0.05" value="0.1"
-                     title="감염 상태인 에이전트가 이번 wave에 회복할 확률"/>
+            <div class="sim-option-row sim-inf-recovery-row">
+              <label>회복까지</label>
+              <div class="sim-inf-recovery-inputs">
+                <span class="sim-inf-stage-tag">최소</span>
+                <input type="number" id="sim-inf-recovery-min-d" class="sim-inf-stage-num"
+                       min="0" max="36500" step="1" value="5"
+                       title="감염 후 이 시간이 지나기 전에는 회복하지 않습니다"/>
+                <span class="sim-inf-stage-unit">일</span>
+                <input type="number" id="sim-inf-recovery-min-h" class="sim-inf-stage-num"
+                       min="0" step="1" value="0"/>
+                <span class="sim-inf-stage-unit">시간</span>
+                <span class="sim-inf-stage-sep">~</span>
+                <span class="sim-inf-stage-tag">최대</span>
+                <input type="number" id="sim-inf-recovery-max-d" class="sim-inf-stage-num"
+                       min="0" max="36500" step="1" value="10"
+                       title="0일 0시간으로 두면 자연 회복이 없는 만성 질환이 됩니다"/>
+                <span class="sim-inf-stage-unit">일</span>
+                <input type="number" id="sim-inf-recovery-max-h" class="sim-inf-stage-num"
+                       min="0" step="1" value="0"/>
+                <span class="sim-inf-stage-unit">시간</span>
+              </div>
             </div>
+            <div class="sim-fields-hint" id="sim-inf-recovery-hint"></div>
             <div class="sim-option-row">
               <label>회복 후</label>
               <select id="sim-inf-immune" style="flex:1;max-width:220px"
@@ -542,9 +565,9 @@
             </div>
             <div id="sim-inf-stages"></div>
             <div class="sim-fields-hint">
-              감염된 뒤 <b>경과한 웨이브 수</b>가 범위에 들어가면 그 단계의 증상 서사가 주입됩니다
-              (분이 아니라 웨이브 단위 — 시간 개념이 꺼진 시나리오에서도 동작합니다).
-              마지막 단계를 넘기면 그 단계가 계속 유지됩니다.
+              감염된 뒤 <b>경과한 시뮬레이션 시간</b>이 범위에 들어가면 그 단계의 증상 서사가 주입됩니다
+              (양끝 포함 · 조건에 맞는 첫 단계가 이깁니다). 마지막 단계를 넘기면 그 단계가 계속 유지되고,
+              첫 단계가 0에서 시작하지 않으면 그 전까지는 아무 증상도 전달되지 않습니다.
             </div>
           </div>
         </div>

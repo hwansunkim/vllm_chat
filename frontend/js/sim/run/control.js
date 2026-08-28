@@ -81,7 +81,7 @@ export async function startSimulation() {
       lang_fix_enabled:       sim.lang_fix_enabled ?? true,
       lang_fix_retries:       sim.lang_fix_retries ?? 2,
       location_graph:         sim.location_graph || [],
-      // 확률은 0~1, max_waves >= min_waves — 벗어나면 서버가 422로 거부한다.
+      // 전염 확률은 0~1, 모든 분 값은 0~52560000이고 max >= min — 벗어나면 서버가 422로 거부한다.
       infection_model:        buildInfectionModel(sim.infection_model),
     }),
   });

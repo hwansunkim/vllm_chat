@@ -198,24 +198,38 @@ class Simulation(_LocationMixin, _InfectionMixin, _TargetsMixin, _EventsMixin, _
         im = infection_model or {}
         self._infection_enabled:      bool  = bool(im.get("enabled", False))
         self._infection_disease_name: str   = im.get("disease_name", "") or ""
+        # 전염만 wave/접촉 기준 확률로 남는다. 증상 진행과 회복은 시뮬레이션 내
+        # 경과 시간(분) 기준이다 — 같은 wave라도 야간 취침처럼 오래 경과한 wave와
+        # 5분짜리 wave가 병의 진행에 다르게 기여해야 하기 때문.
         self._infection_transmission: float = float(im.get("transmission_probability", 0.3) or 0.0)
-        self._infection_recovery:     float = float(im.get("recovery_probability", 0.1) or 0.0)
         self._infection_immune:       bool  = bool(im.get("immune_after_recovery", True))
-        self._infection_stages:       list[dict] = [
-            {
+        # 회복까지 걸리는 시간(분) 구간. 감염 시점에 [min, max]에서 균등 샘플한다.
+        # max <= 0 이면 자연 회복이 없다(만성) — 구 recovery_probability=0에 대응.
+        self._infection_recovery_min: int = max(0, int(im.get("recovery_min_minutes", 7200) or 0))
+        self._infection_recovery_max: int = max(0, int(im.get("recovery_max_minutes", 14400) or 0))
+        if 0 < self._infection_recovery_max < self._infection_recovery_min:
+            self._infection_recovery_min = self._infection_recovery_max
+        self._infection_stages:       list[dict] = []
+        for s in (im.get("symptom_stages") or []):
+            lo = max(0, int(s.get("min_minutes", 0) or 0))
+            hi = max(0, int(s.get("max_minutes", 0) or 0))
+            if lo > hi:
+                lo = hi  # 스키마 validator와 같은 규칙 — min을 max로 낮춘다
+            self._infection_stages.append({
                 "id":           s.get("id", ""),
                 "label":        s.get("label", ""),
-                "min_waves":    int(s.get("min_waves", 0)),
-                "max_waves":    int(s.get("max_waves", 0)),
+                "min_minutes":  lo,
+                "max_minutes":  hi,
                 "symptom_text": s.get("symptom_text", ""),
-            }
-            for s in (im.get("symptom_stages") or [])
-        ]
+            })
 
         self._agent_path: dict[str, list[str]] = {}
 
-        # {agent_key: {"status": "S"|"I"|"R", "infected_since_wave": int|None,
-        #              "recovered_wave": int|None, "notify_recovery": bool}}
+        # {agent_key: {"status": "S"|"I"|"R",
+        #              "infected_at_minutes": int|None,   # 감염 시점의 경과분 앵커
+        #              "recover_at_minutes":  int|None,   # 감염 후 회복까지의 목표 경과분(델타)
+        #              "recovered_wave": int|None, "recovered_at_minutes": int|None,
+        #              "notify_recovery": bool}}
         self._agent_infection: dict[str, dict] = {}
 
         self._agent_location:  dict[str, str]  = {}
@@ -239,10 +253,12 @@ class Simulation(_LocationMixin, _InfectionMixin, _TargetsMixin, _EventsMixin, _
         for key in self.agents:
             self._agent_visual[key] = (agent_visuals or {}).get(key, "")
             self._agent_infection[key] = {
-                "status":              "S",
-                "infected_since_wave": None,
-                "recovered_wave":      None,
-                "notify_recovery":     False,
+                "status":               "S",
+                "infected_at_minutes":  None,
+                "recover_at_minutes":   None,
+                "recovered_wave":       None,
+                "recovered_at_minutes": None,
+                "notify_recovery":      False,
             }
 
         all_keys = list(self.agents.keys())
@@ -279,6 +295,28 @@ class Simulation(_LocationMixin, _InfectionMixin, _TargetsMixin, _EventsMixin, _
         """
         return self._agent_llm.get(agent_key) or self._llm
 
+    # ── 시뮬레이션 내 경과 시간 ────────────────────────────────────────────────
+
+    def _current_elapsed_minutes(self, wave: int | None = None) -> int:
+        """이번 run 기준 '지금'의 시뮬레이션 내 경과 분.
+
+        에이전트에게 보여지는 시각 계산(`_assemble_agent_prompt`)과 목표 기간 판정
+        (`run()`)이 쓰는 기준과 **정확히 같은 값**이어야 한다 — 감염 진행이 프롬프트
+        속 시계와 어긋나면 "밤새 앓았는데 증상은 그대로"류의 모순이 생긴다.
+
+        - variable 모드: LLM 분류로 누적된 `self._elapsed_minutes`
+        - fixed 모드(time_per_wave > 0): `wave * time_per_wave` (결정론적)
+        - 시간 개념 비활성(fixed + time_per_wave == 0): 항상 0
+          → 감염자는 첫 증상 단계에 머물고 자연 회복도 일어나지 않는다. 시간 기준
+            모델에서 이는 버그가 아니라 "시간이 흐르지 않는 세계"의 정의다.
+        """
+        if self._time_mode == "variable":
+            return self._elapsed_minutes
+        if self._time_per_wave > 0:
+            wave_idx = self.completed_waves if wave is None else int(wave)
+            return max(0, wave_idx) * self._time_per_wave
+        return 0
+
     # ── 런타임 상태 스냅샷 (재개용) ────────────────────────────────────────────
 
     def export_agent_state(self) -> dict[str, dict]:
@@ -306,15 +344,19 @@ class Simulation(_LocationMixin, _InfectionMixin, _TargetsMixin, _EventsMixin, _
     def _export_infection(self, key: str) -> dict:
         """감염 상태 직렬화.
 
-        `infected_since_wave`는 **이번 run의 wave 번호**다(run()의 wave_num은 재개할
-        때마다 0부터 다시 센다). 그대로 저장하면 재개 후 `wave - infected_since_wave`가
-        음수가 되어 증상 진행이 1단계로 되감긴다. 그래서 저장 시점의 경과 wave 수를
-        `elapsed_waves`로 함께 남겨 복원 쪽에서 새 run의 wave 0 기준으로 재기준화한다.
+        `infected_at_minutes`는 **이번 run 기준의 경과분 앵커**다(fixed 모드에서
+        `_current_elapsed_minutes`는 재개할 때마다 wave 0 = 0분부터 다시 센다).
+        그대로 저장하면 재개 후 `now - infected_at_minutes`가 음수가 되어 증상
+        진행이 1단계로 되감긴다. 그래서 저장 시점의 **경과 분**을
+        `elapsed_minutes_since_infection`으로 함께 남겨 복원 쪽에서 새 run의
+        기준점으로 재기준화한다. `recover_at_minutes`는 절대값이 아니라 감염
+        시점부터의 델타라 앵커와 무관하게 그대로 저장하면 된다.
         """
         entry = dict(self._agent_infection.get(key, {}))
-        since = entry.get("infected_since_wave")
+        since = entry.get("infected_at_minutes")
         if entry.get("status") == "I" and isinstance(since, int):
-            entry["elapsed_waves"] = max(0, self.completed_waves - since)
+            now = self._current_elapsed_minutes(self.completed_waves)
+            entry["elapsed_minutes_since_infection"] = max(0, now - since)
         return entry
 
     def restore_agent_state(self, states: dict[str, dict] | None) -> None:
@@ -345,24 +387,30 @@ class Simulation(_LocationMixin, _InfectionMixin, _TargetsMixin, _EventsMixin, _
                 self._agent_path[key] = list(path)
             infection = st.get("infection")
             if isinstance(infection, dict) and infection.get("status") in ("S", "I", "R"):
-                status = infection["status"]
-                since  = infection.get("infected_since_wave")
-                rec    = infection.get("recovered_wave")
+                status     = infection["status"]
+                rec        = infection.get("recovered_wave")
+                rec_min    = infection.get("recovered_at_minutes")
+                since      = None
+                recover_at = None
                 if status == "I":
-                    # 새 run은 wave 0부터 다시 세므로, 저장된 경과 wave 수만큼 과거로
-                    # 앵커를 옮긴다 → 재개 첫 wave에서 elapsed가 저장 시점 값을 이어받는다.
-                    elapsed = infection.get("elapsed_waves")
-                    if isinstance(elapsed, int):
-                        since = -max(0, elapsed)
-                    elif not isinstance(since, int):
-                        since = 0
-                else:
-                    since = None
+                    # 새 run은 (fixed 모드에서) 경과 0분부터 다시 세므로, 저장된 경과
+                    # 분만큼 과거로 앵커를 옮긴다 → 재개 첫 wave에서 경과분이 저장
+                    # 시점 값을 그대로 이어받는다. variable 모드는 elapsed_minutes_init
+                    # 으로 누적 경과가 복원되므로 base가 그 값이 되어 역시 이어진다.
+                    base    = self._current_elapsed_minutes(0)
+                    elapsed = infection.get("elapsed_minutes_since_infection")
+                    since   = base - max(0, elapsed) if isinstance(elapsed, int) else base
+                    recover_at = infection.get("recover_at_minutes")
+                    if not isinstance(recover_at, int):
+                        # 구버전 스냅샷(회복 목표 없음) — 지금 규칙으로 새로 뽑는다.
+                        recover_at = self._sample_recovery_minutes()
                 self._agent_infection[key] = {
-                    "status":              status,
-                    "infected_since_wave": since,
-                    "recovered_wave":      rec if isinstance(rec, int) else None,
-                    "notify_recovery":     bool(infection.get("notify_recovery", False)),
+                    "status":               status,
+                    "infected_at_minutes":  since,
+                    "recover_at_minutes":   recover_at,
+                    "recovered_wave":       rec     if isinstance(rec, int)     else None,
+                    "recovered_at_minutes": rec_min if isinstance(rec_min, int) else None,
+                    "notify_recovery":      bool(infection.get("notify_recovery", False)),
                 }
 
     # ── I/O ──────────────────────────────────────────────────────────────────

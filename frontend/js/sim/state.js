@@ -110,6 +110,48 @@ export function durationPartsToMinutes(value, unitId) {
   return normalizeTargetDuration(n * durationUnitMinutes(unitId));
 }
 
+// ── 일 + 시간 복합 입력 (감염병 모델의 경과 시간 필드 전용) ────────────────────
+// target_duration_minutes가 (숫자 + 단위 셀렉트)인 것과 달리, 증상 단계/회복 시간은
+// "2일 12시간"처럼 두 칸을 동시에 채우는 편이 자연스럽다. 저장은 언제나 분(int).
+// durationPartsToMinutes()와 달리 0을 null로 바꾸지 않는다 — 여기서는 0이 유효한 값이다
+// (min_minutes=0 = 감염 즉시, recovery_max_minutes=0 = 자연 회복 없음).
+const MINUTES_PER_DAY  = 1440;
+const MINUTES_PER_HOUR = 60;
+
+/** 임의의 입력을 [0, MAX_TARGET_DURATION_MINUTES] 범위의 정수 분으로. 비숫자는 fallback. */
+export function normalizeDurationMinutes(v, fallback = 0) {
+  const n = typeof v === 'number' ? v : parseFloat(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(MAX_TARGET_DURATION_MINUTES, Math.max(0, Math.round(n)));
+}
+
+/** (일, 시간) → 분. 빈 칸/비숫자는 0으로 본다(둘 다 비면 0분). */
+export function dayHourToMinutes(days, hours) {
+  const d = normalizeDurationMinutes(String(days ?? '').trim() === '' ? 0 : days);
+  const h = normalizeDurationMinutes(String(hours ?? '').trim() === '' ? 0 : hours);
+  return normalizeDurationMinutes(d * MINUTES_PER_DAY + h * MINUTES_PER_HOUR);
+}
+
+/**
+ * 분 → { days, hours } 역산 (입력 폼 복원용).
+ * 시간 미만(분 단위 나머지)은 두 칸으로 표현할 수 없어 버려진다 — 화면에 보이는 값과
+ * 저장값이 어긋나지 않도록, 호출부는 사용자가 그 칸을 건드릴 때만 다시 분으로 환산한다.
+ */
+export function minutesToDayHour(minutes) {
+  const m = normalizeDurationMinutes(minutes);
+  return {
+    days:  Math.floor(m / MINUTES_PER_DAY),
+    hours: Math.floor((m % MINUTES_PER_DAY) / MINUTES_PER_HOUR),
+  };
+}
+
+/** 분 → "2일 12시간" 사람이 읽는 문자열 (0분은 "0시간"). */
+export function formatDayHour(minutes) {
+  const { days, hours } = minutesToDayHour(minutes);
+  if (!days && !hours) return '0시간';
+  return [days ? `${days}일` : '', hours ? `${hours}시간` : ''].filter(Boolean).join(' ');
+}
+
 /**
  * 시간 개념 자체가 꺼져 있는지 판정 — 이때만 백엔드가 목표 기간을 무시한다.
  * 주의: time_mode='variable'이면 wave당 시간이 0이어도 LLM 분류로 시간이 흐르므로 활성이다.
@@ -125,21 +167,28 @@ export function isTimeConceptDisabled(timeMode, timePerWave) {
 }
 
 // ── 감염병 모델 (백엔드 InfectionModelConfig / SymptomStage와 1:1 대응) ────────
-// 확률 두 개는 서버가 `ge=0.0, le=1.0`으로 검증한다 — 범위 밖 값은 422이므로
+// 전염 확률은 서버가 `ge=0.0, le=1.0`으로 검증한다 — 범위 밖 값은 422이므로
 // 상태로 읽어들이는 모든 경로가 normalizeProbability()를 통과하도록 한다.
+// 전염만 wave·접촉 기준이고, 증상 진행과 회복은 "감염 후 경과 분" 기준이다.
 export const DEFAULT_TRANSMISSION_PROBABILITY = 0.3;
-export const DEFAULT_RECOVERY_PROBABILITY     = 0.1;
+
+// 회복까지 걸리는 시간 — 감염 시점에 [min, max]분에서 균등 샘플되어 확정된다.
+// max === 0은 "자연 회복 없음(만성)"이라는 별도 의미라 min과 비교하지 않는다(백엔드도 허용).
+export const DEFAULT_RECOVERY_MIN_MINUTES = 7200;   // 5일
+export const DEFAULT_RECOVERY_MAX_MINUTES = 14400;  // 10일
 
 // 백엔드 기본값은 빈 배열이지만, 단계가 하나도 없는 채로 감염 모델을 켜면 주입할 서사가
 // 없어 에이전트가 자기 몸 상태를 영영 인지하지 못한다. 그래서 "감염 설정을 만든 적이 없는"
 // 시나리오에는 바로 쓸 수 있는 3단계를 채워준다(time_categories가 항상 4슬롯을 채워
 // 보내는 것과 같은 규칙). 사용자가 명시적으로 전부 지운 경우(빈 배열)는 그대로 존중한다.
+// 구간은 "감염 후 경과 분"이고 양끝을 포함한다. 첫 단계는 반드시 0분에서 시작해야
+// 감염 직후에도 증상이 주입된다(min_minutes > 0이면 그 전까지는 증상 없음).
 export const DEFAULT_SYMPTOM_STAGES = [
-  { id: 'incubation', label: '잠복기', min_waves: 0, max_waves: 2,
+  { id: 'incubation', label: '잠복기', min_minutes: 0,    max_minutes: 2880,  // 0 ~ 2일
     symptom_text: '목이 조금 칼칼하다. 피곤해서 그런 거겠지, 별일 아닐 것이다.' },
-  { id: 'onset',      label: '발현기', min_waves: 3, max_waves: 5,
+  { id: 'onset',      label: '발현기', min_minutes: 2880, max_minutes: 7200,  // 2일 ~ 5일
     symptom_text: '몸이 으슬으슬하고 기침이 멎지 않는다. 이마가 뜨겁다.' },
-  { id: 'acute',      label: '급성기', min_waves: 6, max_waves: 12,
+  { id: 'acute',      label: '급성기', min_minutes: 7200, max_minutes: 20160, // 5일 ~ 14일
     symptom_text: '고열로 눈앞이 흐리다. 온몸이 쑤시고 서 있기조차 버겁다.' },
 ];
 
@@ -153,7 +202,7 @@ export function normalizeProbability(v, fallback = 0) {
 
 /**
  * 증상 단계 목록 정규화.
- * 백엔드는 max_waves < min_waves를 422로 거부하므로(TimeCategory와 같은 검증 패턴)
+ * 백엔드는 max_minutes < min_minutes를 422로 거부하므로(TimeCategory와 같은 검증 패턴)
  * 여기서 미리 바로잡는다. id는 엔진이 쓰지 않지만 편집 UI의 키라 비지 않고 유일해야 한다.
  */
 export function normalizeSymptomStages(list) {
@@ -165,10 +214,8 @@ export function normalizeSymptomStages(list) {
     let id = String(raw.id ?? '').trim() || `stage${i + 1}`;
     if (seen.has(id)) id = `${id}_${i + 1}`;
     seen.add(id);
-    let min = parseInt(raw.min_waves);
-    if (!Number.isFinite(min) || min < 0) min = 0;
-    let max = parseInt(raw.max_waves);
-    if (!Number.isFinite(max) || max < 0) max = min;
+    let min = normalizeDurationMinutes(raw.min_minutes, 0);
+    let max = normalizeDurationMinutes(raw.max_minutes, min);
     // min을 max에 맞춰 낮춘다(그 반대가 아니라) — 사용자가 방금 고친 쪽은 보통 max이고,
     // max를 min까지 끌어올리면 화면에 남은 값과 실제 전송값이 어긋나며, 끌어올린 값이
     // 다른 단계 구간과 겹치거나 그 사이에 공백을 만들 수 있다.
@@ -176,8 +223,8 @@ export function normalizeSymptomStages(list) {
     out.push({
       id,
       label:        String(raw.label ?? '').trim() || id,
-      min_waves:    min,
-      max_waves:    max,
+      min_minutes:  min,
+      max_minutes:  max,
       symptom_text: String(raw.symptom_text ?? ''),
     });
   });
@@ -191,15 +238,21 @@ export function normalizeSymptomStages(list) {
  */
 export function buildInfectionModel(raw) {
   const src = (raw && typeof raw === 'object') ? raw : null;
+  let recMin = normalizeDurationMinutes(src?.recovery_min_minutes, DEFAULT_RECOVERY_MIN_MINUTES);
+  const recMax = normalizeDurationMinutes(src?.recovery_max_minutes, DEFAULT_RECOVERY_MAX_MINUTES);
+  // max === 0은 "자연 회복 없음(만성)"이라는 별도 의미 — 백엔드가 이 경우만 min과의
+  // 대소 검증을 건너뛴다. 그 외에는 증상 단계와 같은 규칙으로 min을 max까지 낮춘다.
+  if (recMax > 0 && recMax < recMin) recMin = recMax;
   return {
     enabled:                  !!src?.enabled,
     disease_name:             String(src?.disease_name ?? '').trim(),
     transmission_probability: normalizeProbability(src?.transmission_probability, DEFAULT_TRANSMISSION_PROBABILITY),
-    recovery_probability:     normalizeProbability(src?.recovery_probability,     DEFAULT_RECOVERY_PROBABILITY),
     // 감염 설정 자체가 없던 시나리오만 기본 단계로 채운다(위 주석 참고).
     symptom_stages:           src && Array.isArray(src.symptom_stages)
                                 ? normalizeSymptomStages(src.symptom_stages)
                                 : DEFAULT_SYMPTOM_STAGES.map(s => ({ ...s })),
+    recovery_min_minutes:     recMin,
+    recovery_max_minutes:     recMax,
     immune_after_recovery:    src?.immune_after_recovery ?? true,
   };
 }

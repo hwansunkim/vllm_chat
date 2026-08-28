@@ -1071,6 +1071,369 @@ class AppearanceUpdateTests(unittest.TestCase):
             self.assertEqual(sim._agent_visual["a"], "빨간 코트")
 
 
+class InfectionTimeModelTests(unittest.TestCase):
+    """감염 모델의 시간 축 (ABM/simulation/infection.py + core.py).
+
+    핵심 불변식: **전염만 wave/접촉 기준**이고, 증상 단계 progression과 회복은
+    시뮬레이션 내 경과 분(`_current_elapsed_minutes`) 기준이다. 이게 깨지면
+    variable 모드에서 5분짜리 식사 wave와 7시간짜리 취침 wave가 병의 진행에
+    똑같이 기여해 "밤새 앓았는데 증상은 그대로"류의 모순이 생긴다.
+
+    LLM 계약도 함께 지킨다: 프롬프트에는 status·확률·경과분 같은 raw 값이 아니라
+    시나리오가 쓴 symptom_text만 들어간다.
+    """
+
+    STAGES = [
+        {"id": "incubation", "label": "잠복기", "min_minutes": 0,   "max_minutes": 119,
+         "symptom_text": "아직 아무렇지도 않다."},
+        {"id": "onset",      "label": "발현기", "min_minutes": 120, "max_minutes": 299,
+         "symptom_text": "목이 칼칼하다."},
+        {"id": "acute",      "label": "급성기", "min_minutes": 300, "max_minutes": 600,
+         "symptom_text": "온몸이 불덩이다."},
+    ]
+
+    def _model(self, **over) -> dict:
+        model = {
+            "enabled":                  True,
+            "disease_name":             "테스트열",
+            "transmission_probability": 0.0,
+            "symptom_stages":           [dict(s) for s in self.STAGES],
+            "recovery_min_minutes":     0,
+            "recovery_max_minutes":     0,   # 기본은 만성 — 회복이 단계 테스트를 방해하지 않게
+            "immune_after_recovery":    True,
+        }
+        model.update(over)
+        return model
+
+    def _sim(self, tmp, *, infection, time_mode="fixed", time_per_wave=60,
+             elapsed_init=0, keys=("a", "b"), locations=None):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096) for k in keys}
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=_ScriptedLLM({k: [{"content": "...", "target": "self"}] for k in keys}),
+            time_per_wave=time_per_wave, time_mode=time_mode,
+            elapsed_minutes_init=elapsed_init,
+            agent_locations=locations,
+            infection_model=infection,
+        )
+        sim._emitted = []
+        sim._emit = lambda t, d: sim._emitted.append((t, d))
+        return sim
+
+    @staticmethod
+    def _symptom(sim, key, wave=None):
+        """증상 컨텍스트에서 '[몸 상태]' 머리말을 뗀 본문. 없으면 None."""
+        text = sim._build_symptom_context(key, wave)
+        return None if text is None else text.split("\n", 1)[1]
+
+    # ── 1. fixed 모드: 경과 분에 따라 단계가 바뀐다 ──────────────────────────────
+
+    def test_fixed_mode_stage_follows_elapsed_minutes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, infection=self._model(), time_per_wave=60)
+            self.assertTrue(sim._set_infected("a", 0, "event"))
+
+            # wave * 60분 = 경과분. 단계 경계는 분으로만 판정된다.
+            self.assertEqual(self._symptom(sim, "a", 0),  "아직 아무렇지도 않다.")  #    0분
+            self.assertEqual(self._symptom(sim, "a", 1),  "아직 아무렇지도 않다.")  #   60분
+            self.assertEqual(self._symptom(sim, "a", 2),  "목이 칼칼하다.")        #  120분
+            self.assertEqual(self._symptom(sim, "a", 5),  "온몸이 불덩이다.")      #  300분
+            # 정의 범위(600분)를 넘어가면 가장 늦은 단계를 계속 유지한다.
+            self.assertEqual(self._symptom(sim, "a", 40), "온몸이 불덩이다.")      # 2400분
+
+    def test_same_wave_count_gives_different_stage_when_wave_is_longer(self):
+        # 같은 "2 wave 경과"라도 wave 길이가 다르면 단계가 달라야 한다 —
+        # 이 어서션이 실패하면 모델이 다시 wave 기준으로 되돌아간 것이다.
+        with tempfile.TemporaryDirectory() as tmp:
+            short = self._sim(tmp, infection=self._model(), time_per_wave=10)
+            long  = self._sim(tmp, infection=self._model(), time_per_wave=180)
+            short._set_infected("a", 0, "event")
+            long._set_infected("a", 0, "event")
+
+            self.assertEqual(self._symptom(short, "a", 2), "아직 아무렇지도 않다.")  #  20분
+            self.assertEqual(self._symptom(long,  "a", 2), "온몸이 불덩이다.")       # 360분
+
+    # ── 2. variable 모드: 누적 _elapsed_minutes로 단계 전이 ──────────────────────
+
+    def test_variable_mode_stage_follows_accumulated_minutes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, infection=self._model(), time_mode="variable",
+                            time_per_wave=0)
+            self.assertTrue(sim._set_infected("a", 0, "event"))
+            self.assertEqual(sim._agent_infection["a"]["infected_at_minutes"], 0)
+
+            # variable 모드에서는 wave 번호가 아니라 누적 경과분만이 기준이다.
+            self.assertEqual(self._symptom(sim, "a", 99), "아직 아무렇지도 않다.")
+            sim._elapsed_minutes = 150
+            self.assertEqual(self._symptom(sim, "a", 0),  "목이 칼칼하다.")
+            sim._elapsed_minutes = 400
+            self.assertEqual(self._symptom(sim, "a", 0),  "온몸이 불덩이다.")
+
+    def test_variable_mode_anchors_infection_at_current_elapsed(self):
+        # 유행 도중(경과 500분)에 감염된 사람은 500분을 0으로 삼아 다시 잠복기부터.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, infection=self._model(), time_mode="variable",
+                            time_per_wave=0, elapsed_init=500)
+            sim._set_infected("a", 3, "transmission")
+
+            self.assertEqual(sim._agent_infection["a"]["infected_at_minutes"], 500)
+            self.assertEqual(self._symptom(sim, "a", 3), "아직 아무렇지도 않다.")
+            sim._elapsed_minutes = 500 + 320
+            self.assertEqual(self._symptom(sim, "a", 9), "온몸이 불덩이다.")
+
+    # ── 3. 회복: recover_at_minutes 도달 시 회복 / max<=0이면 영구 감염 ──────────
+
+    def test_recovers_only_after_sampled_minutes_elapse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp, time_per_wave=60,
+                infection=self._model(recovery_min_minutes=180,
+                                      recovery_max_minutes=180),  # 결정론적 3시간
+            )
+            sim._set_infected("a", 0, "event")
+            self.assertEqual(sim._agent_infection["a"]["recover_at_minutes"], 180)
+
+            sim._apply_infection_wave(1)   #  60분 — 아직
+            self.assertEqual(sim._agent_infection["a"]["status"], "I")
+            sim._apply_infection_wave(2)   # 120분 — 아직
+            self.assertEqual(sim._agent_infection["a"]["status"], "I")
+            sim._apply_infection_wave(3)   # 180분 — 도달
+            self.assertEqual(sim._agent_infection["a"]["status"], "R")
+
+    def test_recovery_time_is_sampled_within_range(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for _ in range(20):
+                sim = self._sim(tmp, infection=self._model(recovery_min_minutes=100,
+                                                           recovery_max_minutes=200))
+                sim._set_infected("a", 0, "event")
+                self.assertTrue(100 <= sim._agent_infection["a"]["recover_at_minutes"] <= 200)
+
+    def test_zero_recovery_max_means_never_recovers(self):
+        # 구 recovery_probability=0(만성)에 대응하는 계약.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=60,
+                            infection=self._model(recovery_min_minutes=0,
+                                                  recovery_max_minutes=0))
+            sim._set_infected("a", 0, "event")
+            self.assertIsNone(sim._agent_infection["a"]["recover_at_minutes"])
+
+            for wave in range(1, 60):
+                sim._apply_infection_wave(wave)
+            self.assertEqual(sim._agent_infection["a"]["status"], "I")
+
+    # ── 4. immune_after_recovery 분기 유지 ──────────────────────────────────────
+
+    def test_immune_after_recovery_branches(self):
+        for immune, expected in ((True, "R"), (False, "S")):
+            with self.subTest(immune=immune):
+                with tempfile.TemporaryDirectory() as tmp:
+                    sim = self._sim(
+                        tmp, time_per_wave=60,
+                        infection=self._model(recovery_min_minutes=60,
+                                              recovery_max_minutes=60,
+                                              immune_after_recovery=immune),
+                    )
+                    sim._set_infected("a", 0, "event")
+                    sim._apply_infection_wave(1)
+                    self.assertEqual(sim._agent_infection["a"]["status"], expected)
+                    # 회복 안내는 상태와 무관하게 한 번 뜬다(raw 값 노출 없이).
+                    self.assertIn("씻은 듯이", sim._build_symptom_context("a", 1))
+
+    def test_sis_agent_can_be_reinfected_and_restarts_stages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp, time_per_wave=60,
+                infection=self._model(recovery_min_minutes=60, recovery_max_minutes=60,
+                                      immune_after_recovery=False),
+            )
+            sim._set_infected("a", 0, "event")
+            sim._apply_infection_wave(1)
+            self.assertEqual(sim._agent_infection["a"]["status"], "S")
+
+            # 재감염 — 앵커가 재감염 시점으로 옮겨져 다시 잠복기부터 시작해야 한다.
+            self.assertTrue(sim._set_infected("a", 10, "transmission"))
+            self.assertEqual(sim._agent_infection["a"]["infected_at_minutes"], 600)
+            self.assertEqual(self._symptom(sim, "a", 10), "아직 아무렇지도 않다.")
+
+    # ── 5. /continue·/resume 직렬화·복원: 경과 분이 이어진다 ────────────────────
+
+    def test_continue_rebases_minute_anchor(self):
+        # /continue는 같은 sim_obj를 재사용하며 completed_waves를 0으로 되돌린다.
+        # rebase 없이 되돌리면 fixed 모드의 '지금'이 0분이 되어 급성기 환자가
+        # 잠복기로 되감긴다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, infection=self._model(), time_per_wave=60)
+            sim._set_infected("a", 0, "event")
+            sim.completed_waves = 5                       # 경과 300분 = 급성기
+            self.assertEqual(self._symptom(sim, "a", 5), "온몸이 불덩이다.")
+
+            sim.rebase_infection_anchors()
+            sim.completed_waves = 0
+            self.assertEqual(self._symptom(sim, "a", 0), "온몸이 불덩이다.")
+            self.assertEqual(sim._agent_infection["a"]["infected_at_minutes"], -300)
+
+    def test_continue_rebase_is_noop_in_variable_mode(self):
+        # variable 모드는 _elapsed_minutes가 그대로 누적된 채 이어지므로 '지금'이
+        # 되감기지 않는다 — 앵커를 건드리면 오히려 경과가 두 번 빠진다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, infection=self._model(), time_mode="variable",
+                            time_per_wave=0)
+            sim._set_infected("a", 0, "event")
+            sim._elapsed_minutes  = 400
+            sim.completed_waves   = 5
+
+            sim.rebase_infection_anchors()
+            sim.completed_waves = 0
+            self.assertEqual(sim._agent_infection["a"]["infected_at_minutes"], 0)
+            self.assertEqual(self._symptom(sim, "a", 0), "온몸이 불덩이다.")
+
+    def test_export_restore_preserves_elapsed_minutes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=60,
+                            infection=self._model(recovery_min_minutes=900,
+                                                  recovery_max_minutes=900))
+            sim._set_infected("a", 0, "event")
+            sim.completed_waves = 5                        # 300분 경과
+
+            state = sim.export_agent_state()
+            saved = state["a"]["infection"]
+            self.assertEqual(saved["elapsed_minutes_since_infection"], 300)
+            self.assertEqual(saved["recover_at_minutes"], 900)  # 델타라 그대로 저장
+
+            fresh = self._sim(tmp, time_per_wave=60,
+                              infection=self._model(recovery_min_minutes=900,
+                                                    recovery_max_minutes=900))
+            fresh.restore_agent_state(state)
+
+            self.assertEqual(fresh._agent_infection["a"]["status"], "I")
+            self.assertEqual(fresh._agent_infection["a"]["infected_at_minutes"], -300)
+            self.assertEqual(fresh._agent_infection["a"]["recover_at_minutes"], 900)
+            self.assertEqual(self._symptom(fresh, "a", 0), "온몸이 불덩이다.")
+            # 남은 600분(=10 wave)이 지나야 회복한다 — 복원으로 시계가 리셋되지 않는다.
+            fresh._apply_infection_wave(9)
+            self.assertEqual(fresh._agent_infection["a"]["status"], "I")
+            fresh._apply_infection_wave(10)
+            self.assertEqual(fresh._agent_infection["a"]["status"], "R")
+
+    def test_restore_preserves_elapsed_minutes_in_variable_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, infection=self._model(), time_mode="variable",
+                            time_per_wave=0)
+            sim._set_infected("a", 0, "event")
+            sim._elapsed_minutes = 350
+            state = sim.export_agent_state()
+            self.assertEqual(state["a"]["infection"]["elapsed_minutes_since_infection"], 350)
+
+            # /resume은 누적 경과를 elapsed_minutes_init으로 되살린 새 Simulation을 만든다.
+            fresh = self._sim(tmp, infection=self._model(), time_mode="variable",
+                              time_per_wave=0, elapsed_init=350)
+            fresh.restore_agent_state(state)
+            self.assertEqual(fresh._agent_infection["a"]["infected_at_minutes"], 0)
+            self.assertEqual(self._symptom(fresh, "a", 0), "온몸이 불덩이다.")
+
+    # ── 6. 시간 개념 꺼짐 — 첫 단계 고정(회귀 아님) ─────────────────────────────
+
+    def test_time_disabled_pins_first_stage_and_blocks_recovery(self):
+        # fixed + time_per_wave=0 = 시간이 흐르지 않는 세계. 경과분이 항상 0이라
+        # 모든 감염자가 첫 단계에 머물고 자연 회복도 없다. 이는 시간 기준 모델의
+        # 정의상 결과이지 회귀가 아니다(프론트가 경고 배지로 안내한다).
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=0,
+                            infection=self._model(recovery_min_minutes=1,
+                                                  recovery_max_minutes=1))
+            sim._set_infected("a", 0, "event")
+
+            self.assertEqual(sim._current_elapsed_minutes(50), 0)
+            self.assertEqual(self._symptom(sim, "a", 50), "아직 아무렇지도 않다.")
+            for wave in range(1, 20):
+                sim._apply_infection_wave(wave)
+            self.assertEqual(sim._agent_infection["a"]["status"], "I")
+
+    def test_transmission_stays_wave_based_even_without_time(self):
+        # 전염은 접촉 사건이라 시간 축과 무관하게 wave 기준으로 계속 동작해야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=0,
+                            infection=self._model(transmission_probability=1.0),
+                            locations={"a": "매장", "b": "매장"})
+            sim._set_infected("a", 0, "event")
+
+            sim._apply_infection_wave(0)
+            self.assertEqual(sim._agent_infection["b"]["status"], "I")
+
+    # ── LLM 계약: raw 값은 절대 프롬프트에 안 들어간다 ───────────────────────────
+
+    def test_prompt_never_leaks_raw_infection_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=60,
+                            infection=self._model(recovery_min_minutes=900,
+                                                  recovery_max_minutes=900))
+            sim._set_infected("a", 0, "event")
+            ctx = sim._assemble_agent_prompt("a", 5)
+            blob = json.dumps(ctx, ensure_ascii=False, default=str)
+
+            for leak in ("infected_at_minutes", "recover_at_minutes",
+                         "transmission_probability", "recovery_min_minutes",
+                         "elapsed_minutes"):
+                self.assertNotIn(leak, blob, f"raw 값 누출: {leak}")
+            self.assertIn("온몸이 불덩이다.", blob)
+
+    # ── 스키마 계약 (backend/api/simulation/schemas.py) ──────────────────────────
+
+    def test_schema_defaults_and_validation(self):
+        from backend.api.simulation.schemas import InfectionModelConfig, SymptomStage
+
+        cfg = InfectionModelConfig()
+        self.assertFalse(cfg.enabled)
+        self.assertEqual(cfg.transmission_probability, 0.3)
+        self.assertEqual(cfg.recovery_min_minutes, 7200)
+        self.assertEqual(cfg.recovery_max_minutes, 14400)
+        self.assertTrue(cfg.immune_after_recovery)
+        self.assertEqual(cfg.symptom_stages, [])
+        # 폐기된 필드는 스키마에서 사라졌다(구 설정이 와도 조용히 무시된다).
+        self.assertNotIn("recovery_probability", cfg.model_dump())
+        self.assertNotIn(
+            "recovery_probability",
+            InfectionModelConfig(recovery_probability=0.5).model_dump(),
+        )
+
+        stage = SymptomStage(id="s", label="l", min_minutes=0, max_minutes=2880,
+                             symptom_text="t")
+        self.assertEqual(stage.max_minutes, 2880)
+        with self.assertRaises(ValidationError):
+            SymptomStage(id="s", label="l", min_minutes=100, max_minutes=50,
+                         symptom_text="t")
+        with self.assertRaises(ValidationError):
+            SymptomStage(id="s", label="l", min_minutes=-1, max_minutes=50,
+                         symptom_text="t")
+
+        with self.assertRaises(ValidationError):
+            InfectionModelConfig(recovery_min_minutes=1000, recovery_max_minutes=500)
+        # max=0은 "자연 회복 없음(만성)"이라는 별도 의미라서 허용된다.
+        self.assertEqual(
+            InfectionModelConfig(recovery_min_minutes=1000,
+                                 recovery_max_minutes=0).recovery_max_minutes,
+            0,
+        )
+
+    def test_engine_clamps_out_of_order_ranges(self):
+        # 스키마를 거치지 않는 경로(저장된 시나리오 JSON 등)로 뒤집힌 값이 들어와도
+        # 엔진이 방어적으로 min을 max로 낮춘다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, infection=self._model(
+                recovery_min_minutes=500, recovery_max_minutes=200,
+                symptom_stages=[{"id": "x", "label": "x", "min_minutes": 300,
+                                 "max_minutes": 100, "symptom_text": "어지럽다."}],
+            ))
+            self.assertEqual(sim._infection_recovery_min, 200)
+            self.assertEqual(sim._infection_stages[0]["min_minutes"], 100)
+
+            sim._set_infected("a", 0, "event")
+            self.assertTrue(200 >= sim._agent_infection["a"]["recover_at_minutes"] >= 200)
+
+
 class ConversationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()

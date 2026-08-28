@@ -74,43 +74,71 @@ class TimeCategory(BaseModel):
         return v
 
 
-class SymptomStage(BaseModel):
-    """감염 후 경과 wave 구간별 증상 서사.
+# 분 단위 입력의 공통 상한(= 100년). 프론트의 MAX_TARGET_DURATION_MINUTES와 같은 값으로,
+# 목표 기간·증상 단계·회복 시간 등 모든 "시뮬레이션 내 분" 입력에 함께 적용한다.
+MAX_DURATION_MINUTES = 52560000
 
-    ``min_waves <= (현재 wave - 감염된 wave) <= max_waves`` 인 구간의 ``symptom_text``가
-    해당 에이전트의 상황 컨텍스트에 매 턴 주입된다. 시간 개념(time_per_wave)이 꺼진
-    시나리오에서도 동작해야 하므로 분이 아니라 wave 단위로 정의한다.
+
+class SymptomStage(BaseModel):
+    """감염 후 **경과 시간(분)** 구간별 증상 서사.
+
+    ``min_minutes <= (지금의 경과분 - 감염 시점의 경과분) <= max_minutes`` 인 첫 구간의
+    ``symptom_text``가 해당 에이전트의 상황 컨텍스트에 매 턴 주입된다. 정의된 최대 구간을
+    넘어서면 가장 늦은 단계를 계속 유지한다.
+
+    wave가 아니라 분으로 정의하는 이유: variable 시간 모드에서는 wave 길이가 5분~7시간까지
+    들쭉날쭉해 "N wave 경과"가 병의 진행을 전혀 대표하지 못한다. 프론트는 이 값을
+    (일 + 시간) 복합 입력으로 받아 분으로 변환해 보낸다.
+
+    주의: 시간 개념이 꺼진 시나리오(``time_mode="fixed"`` AND ``time_per_wave == 0``)에서는
+    경과분이 항상 0이라 모든 감염자가 첫 단계에 머물고 자연 회복도 일어나지 않는다.
     """
     id:           str
     label:        str
-    min_waves:    int
-    max_waves:    int
+    min_minutes:  int = Field(default=0, ge=0, le=MAX_DURATION_MINUTES)
+    max_minutes:  int = Field(default=0, ge=0, le=MAX_DURATION_MINUTES)
     symptom_text: str
 
-    @field_validator("max_waves")
+    @field_validator("max_minutes")
     @classmethod
     def _max_not_below_min(cls, v: int, info) -> int:
-        min_v = info.data.get("min_waves")
+        min_v = info.data.get("min_minutes")
         if min_v is not None and v < min_v:
-            raise ValueError("max_waves must be >= min_waves")
+            raise ValueError("max_minutes must be >= min_minutes")
         return v
 
 
 class InfectionModelConfig(BaseModel):
     """결정론적 감염병 모델(SIR/SIS) 설정.
 
-    감염 판정은 전적으로 엔진(순수 파이썬)이 수행한다. LLM은 status·확률 같은 raw 값을
-    절대 보지 않고, 오직 ``symptom_stages``의 서사 텍스트만 상황 컨텍스트로 받는다.
+    감염 판정은 전적으로 엔진(순수 파이썬)이 수행한다. LLM은 status·확률·경과 시간 같은
+    raw 값을 절대 보지 않고, 오직 ``symptom_stages``의 서사 텍스트만 상황 컨텍스트로 받는다.
+
+    시간 축이 둘로 나뉜다: **전염은 wave·접촉 기준 확률**, **증상 진행과 회복은
+    시뮬레이션 내 경과 시간(분) 기준**이다.
     """
     enabled:                  bool  = False
     disease_name:             str   = ""
     # 감염자와 같은 wave·같은 장소에 있는 비감염자 1명당 이번 wave에 전염될 확률
     transmission_probability: float = Field(default=0.3, ge=0.0, le=1.0)
-    # 감염(I) 상태 에이전트가 이번 wave에 회복할 확률
-    recovery_probability:     float = Field(default=0.1, ge=0.0, le=1.0)
     symptom_stages:           list[SymptomStage] = []
+    # 회복까지 걸리는 시간(분) 구간. 감염 시점에 [min, max]에서 한 번 균등 샘플하고,
+    # 감염 후 경과분이 그 값에 도달하면 회복시킨다(wave당 주사위를 굴리던
+    # recovery_probability 모델은 폐기됨 — wave 길이에 따라 이환 기간이 달라졌다).
+    # recovery_max_minutes == 0 이면 자연 회복 없음(만성).
+    recovery_min_minutes:     int   = Field(default=7200,  ge=0, le=MAX_DURATION_MINUTES)   # 5일
+    recovery_max_minutes:     int   = Field(default=14400, ge=0, le=MAX_DURATION_MINUTES)   # 10일
     # True = SIR(회복 후 면역, 재감염 불가) / False = SIS(회복 후 S로 복귀, 재감염 가능)
     immune_after_recovery:    bool  = True
+
+    @field_validator("recovery_max_minutes")
+    @classmethod
+    def _recovery_max_not_below_min(cls, v: int, info) -> int:
+        # v == 0 은 "자연 회복 없음(만성)"이라는 별도 의미라서 min과 비교하지 않는다.
+        min_v = info.data.get("recovery_min_minutes")
+        if min_v is not None and 0 < v < min_v:
+            raise ValueError("recovery_max_minutes must be >= recovery_min_minutes")
+        return v
 
 
 DEFAULT_SYSTEM_AGENT_PROMPT = (

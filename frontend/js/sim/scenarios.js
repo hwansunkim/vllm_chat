@@ -76,7 +76,8 @@ export function buildScenarioConfig() {
     server_id:              sim.server_id         ?? null,
     temperature:            normalizeTemperature(sim.temperature),
     system_agent:           sim.system_agent,
-    // 확률 범위(0~1)와 max_waves >= min_waves를 서버가 422로 거부하므로 정규화해서 저장한다.
+    // 전염 확률 범위(0~1)와 분 값의 범위·대소(max >= min)를 서버가 422로 거부하므로
+    // 정규화해서 저장한다.
     infection_model:        buildInfectionModel(sim.infection_model),
   };
 }

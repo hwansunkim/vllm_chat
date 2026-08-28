@@ -2,7 +2,8 @@
 // Markdown export: screenplay-style with selectable event types.
 
 import { sim, agentLabel, getAgentIcon, simTimeLabel, normalizeWeekday,
-         normalizeTargetDuration, buildInfectionModel, infectionBadge } from '../state.js';
+         normalizeTargetDuration, buildInfectionModel, infectionBadge,
+         formatDayHour } from '../state.js';
 import { stripCodeFence } from '../utils/json.js';
 import { downloadFile, safeFilename, nowTag } from '../utils/download.js';
 
@@ -228,13 +229,16 @@ function _buildMarkdown(log, events, statusStr, checks) {
   if (infection.enabled) {
     md += `## 🦠 감염병 모델\n\n`;
     md += `> **질병** ${infection.disease_name || '(이름 없음)'}\n`;
-    md += `> **전염 확률** ${infection.transmission_probability} · **회복 확률** ${infection.recovery_probability}\n`;
+    const recovery = infection.recovery_max_minutes === 0
+      ? '자연 회복 없음(만성)'
+      : `${formatDayHour(infection.recovery_min_minutes)} ~ ${formatDayHour(infection.recovery_max_minutes)}`;
+    md += `> **전염 확률** ${infection.transmission_probability} · **회복까지** ${recovery}\n`;
     md += `> **회복 후** ${infection.immune_after_recovery ? '면역 획득 (SIR)' : '재감염 가능 (SIS)'}\n\n`;
     if (infection.symptom_stages.length) {
-      md += `| 단계 | 경과 웨이브 | 증상 서사 |\n|------|------------|-----------|\n`;
+      md += `| 단계 | 감염 후 경과 시간 | 증상 서사 |\n|------|------------------|-----------|\n`;
       for (const s of infection.symptom_stages) {
         const text = (s.symptom_text || '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
-        md += `| ${s.label} | ${s.min_waves}~${s.max_waves} | ${text} |\n`;
+        md += `| ${s.label} | ${formatDayHour(s.min_minutes)} ~ ${formatDayHour(s.max_minutes)} | ${text} |\n`;
       }
       md += `\n`;
     }
