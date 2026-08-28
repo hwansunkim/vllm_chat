@@ -2,6 +2,7 @@
 // Scenario events editor (wave-keyed system messages / agent enter/exit).
 
 import { sim, esc, getAllGroups } from '../state.js';
+import { updateSectionBadges } from './sections.js';
 
 const EVENT_LABELS = {
   system_message: '📢 시스템 메시지',
@@ -37,6 +38,7 @@ function _renderTargetChips(idx, currentTargets) {
 export function renderScenarioEvents() {
   const list = document.getElementById('sim-events-list');
   list.innerHTML = '';
+  updateSectionBadges(sim);   // 이벤트 개수가 섹션 헤더 뱃지에 그대로 노출된다
 
   const sorted = sim.events
     .map((e, i) => ({ ...e, _i: i }))

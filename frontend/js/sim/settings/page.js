@@ -9,6 +9,8 @@ import { renderOutputFields } from './output-fields.js';
 import { renderAgentListInConfig, renderStartAgentSelect, refreshAgentTempPlaceholders } from './agents.js';
 import { renderScenarioEvents } from './events.js';
 import { getServerList, invalidateServerList } from './server-list.js';
+import { applySectionState, updateSectionBadges } from './sections.js';
+import { autoGrowAll } from './textareas.js';
 
 export function renderSettingsPage() {
   // 설정 패널을 열 때마다 서버 목록을 새로 읽는다 — 그 사이 서버 모달에서
@@ -63,6 +65,13 @@ export function renderSettingsPage() {
   renderServerSelect();        // 비동기 — 드롭다운 별도 렌더링
   renderSystemAgentConfig();   // system 에이전트 설정 동기 렌더링
   renderInfectionConfig();     // 감염병 모델 설정
+
+  // 레이아웃 마무리 — 내용이 모두 채워진 뒤여야 뱃지/높이가 맞는다.
+  // (섹션이 접혀 있어도 readConfigFromUI()가 읽는 input/textarea는 DOM에 그대로 있다.
+  //  접기는 display:none 이 아니라 grid-template-rows 클리핑이기 때문.)
+  applySectionState(sim);
+  updateSectionBadges(sim);
+  autoGrowAll(document.getElementById('sim-settings-main'));
 }
 
 export function readConfigFromUI() {
@@ -602,6 +611,7 @@ function renderLocationGraph() {
   const graph = sim.location_graph || [];
   const nodeNames = graph.map(n => n.name);
   container.innerHTML = '';
+  updateSectionBadges(sim);   // 장소 개수가 섹션 헤더 뱃지에 그대로 노출된다
 
   // zone 자유 텍스트의 오타로 "우리집"/"우리 집"이 서로 다른 zone으로 갈라지면 인지 기능이
   // 조용히 깨진다. 이미 쓰인 zone을 datalist로 제안해 표기를 통일시킨다.

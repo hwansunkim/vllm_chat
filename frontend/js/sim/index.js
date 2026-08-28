@@ -30,6 +30,8 @@ import { switchTab, fetchAgentContext } from './context.js';
 import { openExportModal, initExportModal } from './export/markdown.js';
 import { initResizeHandles } from './resize.js';
 import { initImportChatAgentEvents } from './settings/import-chat-agent.js';
+import { initSettingsSections } from './settings/sections.js';
+import { initAutoGrow, initTextEditorOverlay } from './settings/textareas.js';
 
 export function initSimulationEvents() {
   document.getElementById('sim-btn').addEventListener('click', showSimView);
@@ -76,6 +78,11 @@ export function initSimulationEvents() {
   initEarlyStopToggle();
   initTimeModeToggle();
   initTargetDurationUI();
+
+  // 설정 페이지 레이아웃 — 섹션 아코디언 + 네비 레일, auto-grow textarea, 확대 오버레이.
+  initSettingsSections();
+  initAutoGrow();
+  initTextEditorOverlay();
 
   // "💬 채팅에서 가져오기" — 에이전트 카드 편집기 섹션 헤더의 진입점.
   initImportChatAgentEvents();
@@ -127,8 +134,11 @@ export function initSimulationEvents() {
       const res = await fetch('/api/simulation/default-output-format');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      document.getElementById('sim-output-format').value = data.template;
+      const ta = document.getElementById('sim-output-format');
+      ta.value = data.template;
       sim.output_format_template = data.template;
+      // auto-grow 위임 리스너가 높이를 다시 잡도록 알린다.
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
     } catch (e) {
       console.error('[sim] 기본 출력 포맷 불러오기 실패:', e);
     }

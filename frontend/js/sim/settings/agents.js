@@ -5,6 +5,8 @@ import { sim, esc, _expandedAgents, getAllGroups, detectGender, getAgentIcon,
          normalizeTemperature, normalizeAgentTemperature } from '../state.js';
 import { renderScenarioEvents } from './events.js';
 import { getServerList, peekServerList } from './server-list.js';
+import { updateSectionBadges } from './sections.js';
+import { autoGrowAll } from './textareas.js';
 
 export function renderStartAgentSelect() {
   const sel  = document.getElementById('sim-start-agent');
@@ -46,7 +48,7 @@ export function renderAgentListInConfig() {
         <span class="track"></span><span class="thumb"></span>
       </label>
       <span class="sim-acrd-active-label${isActive ? ' active' : ''}">${isActive ? '초기' : '대기'}</span>
-      <span class="sim-acrd-arrow">${isExpanded ? '▲' : '▼'}</span>
+      <span class="sim-acrd-arrow${isExpanded ? ' expanded' : ''}" aria-hidden="true">▾</span>
       <button class="sim-acrd-del" data-idx="${idx}" title="삭제">🗑</button>
     `;
 
@@ -124,19 +126,28 @@ export function renderAgentListInConfig() {
       </div>
       <div class="sim-acrd-prompt-row">
         <label>외모 묘사 <span style="font-weight:400;color:#94a3b8">(모르는 사람에게 보이는 외모)</span></label>
-        <textarea class="sim-acrd-prompt" data-idx="${idx}" data-field="visual_description"
-                  rows="2" placeholder="키가 크고 검은 도복을 입은 청년...">${esc(agent.visual_description || '')}</textarea>
+        <textarea class="sim-acrd-prompt" data-idx="${idx}" data-field="visual_description" data-autogrow
+                  placeholder="키가 크고 검은 도복을 입은 청년...">${esc(agent.visual_description || '')}</textarea>
       </div>
       <div class="sim-acrd-prompt-row">
         <label>시스템 프롬프트</label>
-        <textarea class="sim-acrd-prompt" data-idx="${idx}" data-field="system_prompt"
-                  placeholder="에이전트의 성격과 역할을 입력하세요...">${esc(agent.system_prompt)}</textarea>
+        <div class="sim-ta-wrap sim-acrd-prompt-wrap">
+          <textarea class="sim-acrd-prompt" data-idx="${idx}" data-field="system_prompt" data-autogrow
+                    placeholder="에이전트의 성격과 역할을 입력하세요...">${esc(agent.system_prompt)}</textarea>
+          <button type="button" class="sim-zoom-btn" title="확대 편집">⤢</button>
+        </div>
       </div>
     `;
 
     row.appendChild(header);
     row.appendChild(body);
     list.appendChild(row);
+
+    // 확대 오버레이 제목 — 따옴표가 섞인 이름도 안전하도록 속성이 아니라 프로퍼티로 넣는다.
+    const promptWrap = body.querySelector('.sim-acrd-prompt-wrap');
+    if (promptWrap) {
+      promptWrap.dataset.zoomTitle = `👤 ${agent.display_name || agent.name} — 시스템 프롬프트`;
+    }
 
     // Header area click → toggle expand (skip buttons/inputs/labels)
     header.addEventListener('click', e => {
@@ -268,6 +279,10 @@ export function renderAgentListInConfig() {
   const cached = peekServerList();
   if (cached) _fillAgentServerSelects(cached);
   else getServerList().then(_fillAgentServerSelects);
+
+  // 카드 추가/삭제로 개수가 바뀌면 섹션 헤더의 요약 뱃지도 따라와야 한다.
+  updateSectionBadges(sim);
+  autoGrowAll(list);
 }
 
 // 에이전트 온도 입력이 비었을 때 보여줄 안내문 — 상속하는 시뮬레이션 기본값을 노출한다.
@@ -334,11 +349,14 @@ function _toggleExpand(agentName, bodyEl, arrowEl) {
   if (_expandedAgents.has(agentName)) {
     _expandedAgents.delete(agentName);
     bodyEl.classList.add('sim-acrd-collapsed');
-    arrowEl.textContent = '▼';
+    arrowEl.classList.remove('expanded');
   } else {
     _expandedAgents.add(agentName);
     bodyEl.classList.remove('sim-acrd-collapsed');
-    arrowEl.textContent = '▲';
+    arrowEl.classList.add('expanded');
+    // 카드는 display:none 으로 접히므로 접혀 있는 동안 scrollHeight 가 0 이다.
+    // 펼친 직후 다시 재보지 않으면 프롬프트 textarea 가 전부 MIN 으로 찌부러진다.
+    autoGrowAll(bodyEl);
   }
 }
 

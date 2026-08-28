@@ -194,286 +194,394 @@
 
   <!-- Body -->
   <div id="sim-settings-body">
+    <div id="sim-settings-layout">
 
-    <!-- Background -->
-    <div class="sim-settings-section">
-      <div class="sim-settings-section-title"><span>📋 배경 설명<span class="sim-help" aria-hidden="true" data-tooltip="모든 에이전트의 시스템 프롬프트 앞에 공통으로 붙는 장면 설정. 시대·장소·관계 등 전원이 공유하는 전제를 적습니다.">?</span></span></div>
-      <div class="sim-settings-section-body">
-        <textarea id="sim-background" rows="4" placeholder="장면 배경을 입력하세요..."></textarea>
+    <!-- 좌측 섹션 네비 레일 (js/sim/settings/sections.js가 항목을 채운다) -->
+    <nav id="sim-settings-nav" aria-label="설정 섹션"></nav>
+
+    <div id="sim-settings-main">
+
+    <!-- ── 배경 설명 ─────────────────────────────────────────────────────── -->
+    <div class="sim-settings-section" data-section="background" data-sec-icon="📋" data-sec-label="배경 설명">
+      <div class="sim-settings-section-title">
+        <span class="sim-sec-title-text">📋 배경 설명<span class="sim-help" aria-hidden="true" data-tooltip="모든 에이전트의 시스템 프롬프트 앞에 공통으로 붙는 장면 설정. 시대·장소·관계 등 전원이 공유하는 전제를 적습니다.">?</span></span>
+        <span class="sim-sec-badge" data-sec-badge="background"></span>
+        <button type="button" class="sim-sec-toggle" data-sec-toggle="background" aria-expanded="true" title="섹션 접기/펼치기">▾</button>
+      </div>
+      <div class="sim-sec-wrap">
+        <div class="sim-sec-inner">
+          <div class="sim-settings-section-body">
+            <div class="sim-ta-wrap" data-zoom-title="📋 배경 설명">
+              <textarea id="sim-background" data-autogrow placeholder="장면 배경을 입력하세요..."></textarea>
+              <button type="button" class="sim-zoom-btn" title="확대 편집">⤢</button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
-    <!-- Agents -->
-    <div class="sim-settings-section">
+    <!-- ── 에이전트 ──────────────────────────────────────────────────────── -->
+    <div class="sim-settings-section" data-section="agents" data-sec-icon="👤" data-sec-label="에이전트">
       <div class="sim-settings-section-title">
-        <span>👤 에이전트<span class="sim-help" aria-hidden="true" data-tooltip="시뮬레이션에 참여할 등장인물. 각 카드에서 페르소나·그룹·시작 위치·개별 temperature를 설정하고, 처음부터 등장할지 여부를 토글합니다.">?</span></span>
+        <span class="sim-sec-title-text">👤 에이전트<span class="sim-help" aria-hidden="true" data-tooltip="시뮬레이션에 참여할 등장인물. 각 카드에서 페르소나·그룹·시작 위치·개별 temperature를 설정하고, 처음부터 등장할지 여부를 토글합니다.">?</span></span>
+        <span class="sim-sec-badge" data-sec-badge="agents"></span>
         <button id="sim-import-chat-btn" class="sim-settings-add-btn" title="등록된 채팅 에이전트를 시뮬레이션 에이전트로 복사합니다">💬 채팅에서 가져오기</button>
         <button id="sim-add-agent-btn" class="sim-settings-add-btn">+ 추가</button>
+        <button type="button" class="sim-sec-toggle" data-sec-toggle="agents" aria-expanded="true" title="섹션 접기/펼치기">▾</button>
       </div>
-      <div id="sim-agent-list"></div>
-    </div>
-
-    <!-- Output Fields -->
-    <div class="sim-settings-section">
-      <div class="sim-settings-section-title">
-        <span>🏷 출력 필드<span class="sim-help" aria-hidden="true" data-tooltip="에이전트 응답 JSON에 포함시킬 추가 메타데이터 필드. content(발화)와 target(대상)은 항상 포함됩니다.">?</span></span>
-        <button id="sim-add-field-btn" class="sim-settings-add-btn">+ 추가</button>
-      </div>
-      <div id="sim-fields-list"></div>
-      <div class="sim-fields-hint"><code>content</code>와 <code>target</code>은 항상 포함됩니다. 에이전트가 추가로 출력할 메타데이터 필드를 정의하세요.</div>
-    </div>
-
-    <!-- Output Format Template -->
-    <div class="sim-settings-section">
-      <div class="sim-settings-section-title">
-        <span>📝 출력 포맷 지시<span class="sim-help" aria-hidden="true" data-tooltip="에이전트 프롬프트 끝에 붙는 출력 형식 지시문. 비워두면 기본 JSON 포맷을 사용하며, &lt;TARGETS&gt; &lt;FIELD_LINES&gt; &lt;FIELD_HINTS&gt; 플레이스홀더가 실행 시 치환됩니다.">?</span></span>
-        <button id="sim-reset-format-btn" class="sim-settings-add-btn">기본값 불러오기</button>
-      </div>
-      <div class="sim-settings-section-body">
-        <textarea id="sim-output-format" rows="10"
-          placeholder="비워두면 기본 JSON 출력 형식을 사용합니다.&#10;플레이스홀더: &lt;TARGETS&gt;, &lt;FIELD_LINES&gt;, &lt;FIELD_HINTS&gt;"></textarea>
-      </div>
-      <div class="sim-fields-hint">비워두면 기본 출력 포맷 지시를 사용합니다. <code>&lt;TARGETS&gt;</code>, <code>&lt;FIELD_LINES&gt;</code>, <code>&lt;FIELD_HINTS&gt;</code> 플레이스홀더를 사용할 수 있습니다.</div>
-    </div>
-
-    <!-- Run settings + Options (2 columns) -->
-    <div class="sim-settings-two-col">
-      <div class="sim-settings-section">
-        <div class="sim-settings-section-title"><span>🚀 실행 설정</span></div>
-        <div class="sim-option-row">
-          <label>시작 에이전트<span class="sim-help" aria-hidden="true" data-tooltip="wave 0에서 가장 먼저 발화할 에이전트. 이후 순서는 각 응답의 target 값에 따라 결정됩니다.">?</span></label>
-          <select id="sim-start-agent"></select>
+      <div class="sim-sec-wrap">
+        <div class="sim-sec-inner">
+          <div id="sim-agent-list"></div>
         </div>
-        <div class="sim-option-row">
-          <label>최대 wave 수 <span class="sim-opt-note">(안전장치)</span><span class="sim-help" aria-hidden="true" data-tooltip="이번 실행에서 진행할 wave 수 상한. 목표 기간과 함께 쓰면 둘 중 먼저 도달하는 조건에서 종료됩니다.">?</span></label>
-          <input type="number" id="sim-max-waves" value="10" min="1" max="5000"/>
+      </div>
+    </div>
+
+    <!-- ── 실행 설정 ─────────────────────────────────────────────────────── -->
+    <div class="sim-settings-section" data-section="run" data-sec-icon="🚀" data-sec-label="실행 설정">
+      <div class="sim-settings-section-title">
+        <span class="sim-sec-title-text">🚀 실행 설정<span class="sim-help" aria-hidden="true" data-tooltip="이번 실행의 시작점·길이·사용할 LLM 서버 등 '지금 돌린다'에 직접 관계된 파라미터.">?</span></span>
+        <span class="sim-sec-badge" data-sec-badge="run"></span>
+        <button type="button" class="sim-sec-toggle" data-sec-toggle="run" aria-expanded="true" title="섹션 접기/펼치기">▾</button>
+      </div>
+      <div class="sim-sec-wrap">
+        <div class="sim-sec-inner">
+          <div class="sim-option-row">
+            <label>시작 에이전트<span class="sim-help" aria-hidden="true" data-tooltip="wave 0에서 가장 먼저 발화할 에이전트. 이후 순서는 각 응답의 target 값에 따라 결정됩니다.">?</span></label>
+            <select id="sim-start-agent"></select>
+          </div>
+          <div class="sim-option-row">
+            <label>최대 wave 수 <span class="sim-opt-note">(안전장치)</span><span class="sim-help" aria-hidden="true" data-tooltip="이번 실행에서 진행할 wave 수 상한. 목표 기간과 함께 쓰면 둘 중 먼저 도달하는 조건에서 종료됩니다.">?</span></label>
+            <input type="number" id="sim-max-waves" value="10" min="1" max="5000"/>
+          </div>
+          <div class="sim-option-row">
+            <label>목표 기간 <span class="sim-opt-note">(이번 실행 기준)</span><span class="sim-help" aria-hidden="true" data-tooltip="시뮬레이션 내 경과 시간이 이 기간에 도달하면 정상 종료됩니다. 비워두면 사용하지 않습니다. 단위(일·주·개월·년)는 내부적으로 분으로 환산해 저장/전송합니다.">?</span></label>
+            <div class="sim-duration-row">
+              <input type="number" id="sim-target-duration-value" class="sim-duration-value"
+                     min="0" step="any" placeholder="미사용"/>
+              <select id="sim-target-duration-unit" class="sim-duration-unit">
+                <option value="day">일</option>
+                <option value="week">주</option>
+                <option value="month">개월</option>
+                <option value="year">년</option>
+              </select>
+            </div>
+          </div>
+          <div class="sim-server-hint" id="sim-target-duration-hint"></div>
+          <div class="sim-option-row">
+            <label>LLM 서버<span class="sim-help" aria-hidden="true" data-tooltip="이 시뮬레이션의 추론 요청을 처리할 vLLM 서버. '기본 서버'를 고르면 전역 설정에서 선택된 서버를 사용합니다.">?</span></label>
+            <select id="sim-server-select"><option value="">기본 서버</option></select>
+          </div>
+          <div class="sim-server-hint" id="sim-server-hint"></div>
+          <div class="sim-option-row sim-temp-row">
+            <label>temperature <span id="sim-temperature-val">0.7</span><span class="sim-help" aria-hidden="true" data-tooltip="시뮬레이션 전체 기본 샘플링 온도. 값이 높을수록 응답이 다양해집니다. 에이전트 카드에서 개별 오버라이드할 수 있습니다.">?</span></label>
+            <input type="range" id="sim-temperature" min="0" max="2" step="0.1" value="0.7"/>
+          </div>
         </div>
-        <div class="sim-option-row">
-          <label>목표 기간 <span class="sim-opt-note">(이번 실행 기준)</span><span class="sim-help" aria-hidden="true" data-tooltip="시뮬레이션 내 경과 시간이 이 기간에 도달하면 정상 종료됩니다. 비워두면 사용하지 않습니다. 단위(일·주·개월·년)는 내부적으로 분으로 환산해 저장/전송합니다.">?</span></label>
-          <div class="sim-duration-row">
-            <input type="number" id="sim-target-duration-value" class="sim-duration-value"
-                   min="0" step="any" placeholder="미사용"/>
-            <select id="sim-target-duration-unit" class="sim-duration-unit">
-              <option value="day">일</option>
-              <option value="week">주</option>
-              <option value="month">개월</option>
-              <option value="year">년</option>
+      </div>
+    </div>
+
+    <!-- ── 시간 설정 (가변 시간 설정을 하위로 흡수) ────────────────────────── -->
+    <div class="sim-settings-section" data-section="time" data-sec-icon="⏱" data-sec-label="시간 설정">
+      <div class="sim-settings-section-title">
+        <span class="sim-sec-title-text">⏱ 시간 설정<span class="sim-help" aria-hidden="true" data-tooltip="시뮬레이션 안에서 시간이 어떻게 흐르는지 — 시작 시점, wave당 경과 시간, 고정/가변 모드, 조기 종료 조건.">?</span></span>
+        <span class="sim-sec-badge" data-sec-badge="time"></span>
+        <button type="button" class="sim-sec-toggle" data-sec-toggle="time" aria-expanded="false" title="섹션 접기/펼치기">▾</button>
+      </div>
+      <div class="sim-sec-wrap">
+        <div class="sim-sec-inner">
+          <div class="sim-option-row">
+            <label>시작 요일<span class="sim-help" aria-hidden="true" data-tooltip="시뮬레이션 내 시작 요일. 자정을 넘기면 요일이 자동으로 다음 날로 넘어갑니다.">?</span></label>
+            <select id="sim-start-weekday">
+              <option value="mon">월요일</option>
+              <option value="tue">화요일</option>
+              <option value="wed">수요일</option>
+              <option value="thu">목요일</option>
+              <option value="fri">금요일</option>
+              <option value="sat">토요일</option>
+              <option value="sun">일요일</option>
             </select>
           </div>
-        </div>
-        <div class="sim-server-hint" id="sim-target-duration-hint"></div>
-        <div class="sim-option-row">
-          <label>LLM 서버<span class="sim-help" aria-hidden="true" data-tooltip="이 시뮬레이션의 추론 요청을 처리할 vLLM 서버. '기본 서버'를 고르면 전역 설정에서 선택된 서버를 사용합니다.">?</span></label>
-          <select id="sim-server-select"><option value="">기본 서버</option></select>
-        </div>
-        <div class="sim-server-hint" id="sim-server-hint"></div>
-        <div class="sim-option-row sim-temp-row">
-          <label>temperature <span id="sim-temperature-val">0.7</span><span class="sim-help" aria-hidden="true" data-tooltip="시뮬레이션 전체 기본 샘플링 온도. 값이 높을수록 응답이 다양해집니다. 에이전트 카드에서 개별 오버라이드할 수 있습니다.">?</span></label>
-          <input type="range" id="sim-temperature" min="0" max="2" step="0.1" value="0.7"/>
-        </div>
-      </div>
-      <div class="sim-settings-section">
-        <div class="sim-settings-section-title"><span>⚙ 옵션</span></div>
-        <div class="sim-option-row">
-          <label>step delay (s)<span class="sim-help" aria-hidden="true" data-tooltip="wave와 wave 사이에 쉬는 실제 시간(초). 서버 부하를 낮추거나 진행 상황을 눈으로 따라가기 쉽게 할 때 올립니다. 0 = 지연 없음.">?</span></label>
-          <input type="number" id="sim-step-delay" value="1.0" step="0.5" min="0"/>
-        </div>
-        <div class="sim-option-row">
-          <label>token limit<span class="sim-help" aria-hidden="true" data-tooltip="에이전트 한 명에게 전달되는 프롬프트(시스템 프롬프트 + 메모리)의 토큰 상한. 한도에 근접하면 메모리를 압축하고, 그래도 넘치면 오래된 메모리부터 잘라냅니다.">?</span></label>
-          <input type="number" id="sim-token-limit" value="8192" min="512" step="512"/>
-        </div>
-        <div class="sim-option-row">
-          <label>LLM max tokens<span class="sim-help" aria-hidden="true" data-tooltip="에이전트 응답 생성 시 최대 출력 토큰 수">?</span></label>
-          <input type="number" id="sim-llm-max-tokens" value="16384" min="512" step="512"/>
-        </div>
-        <div class="sim-option-row">
-          <label>요약 간격 (wave)<span class="sim-help" aria-hidden="true" data-tooltip="0 = 요약 비활성, N = N웨이브마다 LLM 요약">?</span></label>
-          <input type="number" id="sim-summary-interval" value="0" min="0" max="20" step="1"/>
-        </div>
-        <div class="sim-option-row">
-          <label>시작 요일<span class="sim-help" aria-hidden="true" data-tooltip="시뮬레이션 내 시작 요일. 자정을 넘기면 요일이 자동으로 다음 날로 넘어갑니다.">?</span></label>
-          <select id="sim-start-weekday">
-            <option value="mon">월요일</option>
-            <option value="tue">화요일</option>
-            <option value="wed">수요일</option>
-            <option value="thu">목요일</option>
-            <option value="fri">금요일</option>
-            <option value="sat">토요일</option>
-            <option value="sun">일요일</option>
-          </select>
-        </div>
-        <div class="sim-option-row">
-          <label>시작 시각<span class="sim-help" aria-hidden="true" data-tooltip="시뮬레이션 내 시작 시각 (HH:MM). wave당 시간이 0이면 무시됩니다.">?</span></label>
-          <input type="time" id="sim-start-time" value="09:00"/>
-        </div>
-        <div class="sim-option-row">
-          <label>wave당 시간 (분)<span class="sim-help" aria-hidden="true" data-tooltip="wave마다 경과하는 시간(분). 0 = 시간 개념 비활성. 시간 모드가 '가변'이면 무시됩니다.">?</span></label>
-          <input type="number" id="sim-time-per-wave" value="30" min="0" max="720" step="5"/>
-        </div>
-        <div class="sim-option-row">
-          <label>시간 모드<span class="sim-help" aria-hidden="true" data-tooltip="고정 = wave당 시간(분) 값을 그대로 사용. 가변 = wave가 끝날 때마다 LLM이 대화 내용을 분류해 시간 경과 폭을 다르게 계산">?</span></label>
-          <select id="sim-time-mode">
-            <option value="fixed">고정</option>
-            <option value="variable">가변</option>
-          </select>
-        </div>
-        <div class="sim-option-row">
-          <label>조기 종료<span class="sim-help" aria-hidden="true" data-tooltip="아무도 발화하지 않는 wave가 이어지면 최대 wave 수에 도달하기 전에 종료합니다. 침묵 허용 = 종료까지 견디는 연속 침묵 wave 수. (조기 종료 활성 + 시간 개념 활성 시에만 적용)">?</span></label>
-          <div class="sim-lang-fix-row">
-            <label class="sim-toggle-small">
-              <input type="checkbox" id="sim-early-stop-enabled" checked>
-              <span>활성화</span>
-            </label>
-            <span class="sim-lang-fix-sep">침묵 허용</span>
-            <input type="number" id="sim-max-silence-waves" value="3" min="1" max="20" step="1"
-                   class="sim-lang-fix-count"/>
-            <span class="sim-lang-fix-unit">wave</span>
+          <div class="sim-option-row">
+            <label>시작 시각<span class="sim-help" aria-hidden="true" data-tooltip="시뮬레이션 내 시작 시각 (HH:MM). wave당 시간이 0이면 무시됩니다.">?</span></label>
+            <input type="time" id="sim-start-time" value="09:00"/>
           </div>
-        </div>
-        <div class="sim-option-row">
-          <label>언어 교잡 수정<span class="sim-help" aria-hidden="true" data-tooltip="응답에 지정 언어가 아닌 문장이 섞이면 감지해 다시 생성합니다. 재시도 = 외국어 감지 시 최대 재시도 횟수.">?</span></label>
-          <div class="sim-lang-fix-row">
-            <label class="sim-toggle-small">
-              <input type="checkbox" id="sim-lang-fix-enabled" checked>
-              <span>활성화</span>
-            </label>
-            <span class="sim-lang-fix-sep">재시도</span>
-            <input type="number" id="sim-lang-fix-retries" value="2" min="1" max="10" step="1"
-                   class="sim-lang-fix-count"/>
-            <span class="sim-lang-fix-unit">회</span>
+          <div class="sim-option-row">
+            <label>wave당 시간 (분)<span class="sim-help" aria-hidden="true" data-tooltip="wave마다 경과하는 시간(분). 0 = 시간 개념 비활성. 시간 모드가 '가변'이면 무시됩니다.">?</span></label>
+            <input type="number" id="sim-time-per-wave" value="30" min="0" max="720" step="5"/>
+          </div>
+          <div class="sim-option-row">
+            <label>시간 모드<span class="sim-help" aria-hidden="true" data-tooltip="고정 = wave당 시간(분) 값을 그대로 사용. 가변 = wave가 끝날 때마다 LLM이 대화 내용을 분류해 시간 경과 폭을 다르게 계산">?</span></label>
+            <select id="sim-time-mode">
+              <option value="fixed">고정</option>
+              <option value="variable">가변</option>
+            </select>
+          </div>
+          <div class="sim-option-row">
+            <label>조기 종료<span class="sim-help" aria-hidden="true" data-tooltip="아무도 발화하지 않는 wave가 이어지면 최대 wave 수에 도달하기 전에 종료합니다. 침묵 허용 = 종료까지 견디는 연속 침묵 wave 수. (조기 종료 활성 + 시간 개념 활성 시에만 적용)">?</span></label>
+            <div class="sim-lang-fix-row">
+              <label class="sim-toggle-small">
+                <input type="checkbox" id="sim-early-stop-enabled" checked>
+                <span>활성화</span>
+              </label>
+              <span class="sim-lang-fix-sep">침묵 허용</span>
+              <input type="number" id="sim-max-silence-waves" value="3" min="1" max="20" step="1"
+                     class="sim-lang-fix-count"/>
+              <span class="sim-lang-fix-unit">wave</span>
+            </div>
+          </div>
+
+          <!-- 가변 시간 설정 — 시간 모드가 '가변'일 때만 표시 (page.js:_updateVariableTimeUI) -->
+          <div class="sim-sec-sub sim-hidden" id="sim-variable-time-section">
+            <div class="sim-sec-sub-title">
+              <span>⏱ 가변 시간 설정<span class="sim-help" aria-hidden="true" data-tooltip="시간 모드가 '가변'일 때만 사용합니다. wave가 끝날 때마다 LLM이 그 wave를 아래 카테고리 중 하나로 분류하고, 지정한 최소~최대 범위(분) 안에서 무작위로 시간을 경과시킵니다.">?</span></span>
+              <button id="sim-add-timecat-btn" class="sim-settings-add-btn">+ 카테고리 추가</button>
+            </div>
+            <div class="sim-fields-hint">wave가 끝날 때마다 그 wave의 대화 내용을 LLM이 아래 카테고리 중 하나로 분류하고, 그 범위(분) 내에서 무작위로 시간을 경과시킵니다.</div>
+            <div id="sim-time-cat-list"></div>
+            <div class="sim-option-row" style="margin-top:8px">
+              <label>강제 재투입 시간(분)<span class="sim-help" aria-hidden="true" data-tooltip="연속 침묵으로 강제 재투입될 때 경과시킬 시간(분), 쉼표로 구분. 침묵 회차가 늘수록 다음 값을 사용하고 끝에서 고정됩니다.">?</span></label>
+              <input type="text" id="sim-idle-schedule" value="60,120,180" placeholder="예: 60,120,180"/>
+            </div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- 가변 시간 설정 -->
-    <div class="sim-settings-section sim-hidden" id="sim-variable-time-section">
+    <!-- ── 생성 옵션 ─────────────────────────────────────────────────────── -->
+    <div class="sim-settings-section" data-section="tuning" data-sec-icon="⚙" data-sec-label="생성 옵션">
       <div class="sim-settings-section-title">
-        <span>⏱ 가변 시간 설정<span class="sim-help" aria-hidden="true" data-tooltip="시간 모드가 '가변'일 때만 사용합니다. wave가 끝날 때마다 LLM이 그 wave를 아래 카테고리 중 하나로 분류하고, 지정한 최소~최대 범위(분) 안에서 무작위로 시간을 경과시킵니다.">?</span></span>
-        <button id="sim-add-timecat-btn" class="sim-settings-add-btn">+ 카테고리 추가</button>
+        <span class="sim-sec-title-text">⚙ 생성 옵션<span class="sim-help" aria-hidden="true" data-tooltip="응답 생성 품질·속도·안정성에 관한 튜닝 값. 기본값 그대로도 동작합니다.">?</span></span>
+        <span class="sim-sec-badge" data-sec-badge="tuning"></span>
+        <button type="button" class="sim-sec-toggle" data-sec-toggle="tuning" aria-expanded="false" title="섹션 접기/펼치기">▾</button>
       </div>
-      <div class="sim-settings-section-body">
-        <div class="sim-fields-hint">wave가 끝날 때마다 그 wave의 대화 내용을 LLM이 아래 카테고리 중 하나로 분류하고, 그 범위(분) 내에서 무작위로 시간을 경과시킵니다.</div>
-        <div id="sim-time-cat-list"></div>
-        <div class="sim-option-row" style="margin-top:8px">
-          <label>강제 재투입 시간(분)<span class="sim-help" aria-hidden="true" data-tooltip="연속 침묵으로 강제 재투입될 때 경과시킬 시간(분), 쉼표로 구분. 침묵 회차가 늘수록 다음 값을 사용하고 끝에서 고정됩니다.">?</span></label>
-          <input type="text" id="sim-idle-schedule" value="60,120,180" placeholder="예: 60,120,180"/>
+      <div class="sim-sec-wrap">
+        <div class="sim-sec-inner">
+          <div class="sim-option-row">
+            <label>step delay (s)<span class="sim-help" aria-hidden="true" data-tooltip="wave와 wave 사이에 쉬는 실제 시간(초). 서버 부하를 낮추거나 진행 상황을 눈으로 따라가기 쉽게 할 때 올립니다. 0 = 지연 없음.">?</span></label>
+            <input type="number" id="sim-step-delay" value="1.0" step="0.5" min="0"/>
+          </div>
+          <div class="sim-option-row">
+            <label>token limit<span class="sim-help" aria-hidden="true" data-tooltip="에이전트 한 명에게 전달되는 프롬프트(시스템 프롬프트 + 메모리)의 토큰 상한. 한도에 근접하면 메모리를 압축하고, 그래도 넘치면 오래된 메모리부터 잘라냅니다.">?</span></label>
+            <input type="number" id="sim-token-limit" value="8192" min="512" step="512"/>
+          </div>
+          <div class="sim-option-row">
+            <label>LLM max tokens<span class="sim-help" aria-hidden="true" data-tooltip="에이전트 응답 생성 시 최대 출력 토큰 수">?</span></label>
+            <input type="number" id="sim-llm-max-tokens" value="16384" min="512" step="512"/>
+          </div>
+          <div class="sim-option-row">
+            <label>요약 간격 (wave)<span class="sim-help" aria-hidden="true" data-tooltip="0 = 요약 비활성, N = N웨이브마다 LLM 요약">?</span></label>
+            <input type="number" id="sim-summary-interval" value="0" min="0" max="20" step="1"/>
+          </div>
+          <div class="sim-option-row">
+            <label>언어 교잡 수정<span class="sim-help" aria-hidden="true" data-tooltip="응답에 지정 언어가 아닌 문장이 섞이면 감지해 다시 생성합니다. 재시도 = 외국어 감지 시 최대 재시도 횟수.">?</span></label>
+            <div class="sim-lang-fix-row">
+              <label class="sim-toggle-small">
+                <input type="checkbox" id="sim-lang-fix-enabled" checked>
+                <span>활성화</span>
+              </label>
+              <span class="sim-lang-fix-sep">재시도</span>
+              <input type="number" id="sim-lang-fix-retries" value="2" min="1" max="10" step="1"
+                     class="sim-lang-fix-count"/>
+              <span class="sim-lang-fix-unit">회</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
 
-    <!-- System Agent -->
-    <div class="sim-settings-section">
+    <!-- ── 출력 정의 (출력 필드 + 출력 포맷 지시 병합) ────────────────────── -->
+    <div class="sim-settings-section" data-section="output" data-sec-icon="🏷" data-sec-label="출력 정의">
       <div class="sim-settings-section-title">
-        <span>🎬 system 에이전트<span class="sim-help" aria-hidden="true" data-tooltip="이야기 흐름을 감시하다가 정체·반복이 보이면 개입해 상황을 서술하거나 특정 에이전트를 지목하는 내레이터. 비활성화하면 전혀 개입하지 않습니다.">?</span></span>
+        <span class="sim-sec-title-text">🏷 출력 정의<span class="sim-help" aria-hidden="true" data-tooltip="에이전트 응답 JSON의 구조 — 추가 메타데이터 필드와, 프롬프트 끝에 붙는 출력 형식 지시문.">?</span></span>
+        <span class="sim-sec-badge" data-sec-badge="output"></span>
+        <button type="button" class="sim-sec-toggle" data-sec-toggle="output" aria-expanded="false" title="섹션 접기/펼치기">▾</button>
+      </div>
+      <div class="sim-sec-wrap">
+        <div class="sim-sec-inner">
+          <div class="sim-sec-sub">
+            <div class="sim-sec-sub-title">
+              <span>🏷 출력 필드<span class="sim-help" aria-hidden="true" data-tooltip="에이전트 응답 JSON에 포함시킬 추가 메타데이터 필드. content(발화)와 target(대상)은 항상 포함됩니다.">?</span></span>
+              <button id="sim-add-field-btn" class="sim-settings-add-btn">+ 추가</button>
+            </div>
+            <div id="sim-fields-list"></div>
+            <div class="sim-fields-hint"><code>content</code>와 <code>target</code>은 항상 포함됩니다. 에이전트가 추가로 출력할 메타데이터 필드를 정의하세요.</div>
+          </div>
+          <div class="sim-sec-sub">
+            <div class="sim-sec-sub-title">
+              <span>📝 출력 포맷 지시<span class="sim-help" aria-hidden="true" data-tooltip="에이전트 프롬프트 끝에 붙는 출력 형식 지시문. 비워두면 기본 JSON 포맷을 사용하며, &lt;TARGETS&gt; &lt;FIELD_LINES&gt; &lt;FIELD_HINTS&gt; 플레이스홀더가 실행 시 치환됩니다.">?</span></span>
+              <button id="sim-reset-format-btn" class="sim-settings-add-btn">기본값 불러오기</button>
+            </div>
+            <div class="sim-settings-section-body">
+              <div class="sim-ta-wrap" data-zoom-title="📝 출력 포맷 지시">
+                <textarea id="sim-output-format" data-autogrow
+                  placeholder="비워두면 기본 JSON 출력 형식을 사용합니다.&#10;플레이스홀더: &lt;TARGETS&gt;, &lt;FIELD_LINES&gt;, &lt;FIELD_HINTS&gt;"></textarea>
+                <button type="button" class="sim-zoom-btn" title="확대 편집">⤢</button>
+              </div>
+            </div>
+            <div class="sim-fields-hint">비워두면 기본 출력 포맷 지시를 사용합니다. <code>&lt;TARGETS&gt;</code>, <code>&lt;FIELD_LINES&gt;</code>, <code>&lt;FIELD_HINTS&gt;</code> 플레이스홀더를 사용할 수 있습니다.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── 위치 그래프 ───────────────────────────────────────────────────── -->
+    <div class="sim-settings-section" id="sim-location-section" data-section="world" data-sec-icon="🗺" data-sec-label="위치 그래프">
+      <div class="sim-settings-section-title">
+        <span class="sim-sec-title-text">🗺 위치 그래프<span class="sim-help" aria-hidden="true" data-tooltip="에이전트가 오갈 수 있는 장소와 그 연결 관계. 연결된 장소로만 이동할 수 있고, 외부 공간으로 표시한 장소의 에이전트는 서로를 볼 수 없습니다. zone(구역)을 같게 지정한 장소끼리는 서로의 존재를 인지하지만, 대화는 같은 장소에 있을 때만 가능합니다(예: 안방·거실·부엌 → zone '우리집'). 비워두면 위치 개념 없이 진행됩니다.">?</span></span>
+        <span class="sim-sec-badge" data-sec-badge="world"></span>
+        <button id="sim-add-location-btn" class="sim-settings-add-btn">+ 장소 추가</button>
+        <button type="button" class="sim-sec-toggle" data-sec-toggle="world" aria-expanded="false" title="섹션 접기/펼치기">▾</button>
+      </div>
+      <div class="sim-sec-wrap">
+        <div class="sim-sec-inner">
+          <div id="sim-location-graph" class="sim-location-graph-container">
+            <div class="sim-loc-empty">장소를 추가하면 에이전트가 지도 위에서 이동합니다.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── system 에이전트 ───────────────────────────────────────────────── -->
+    <div class="sim-settings-section" id="sim-system-agent-section" data-section="director" data-sec-icon="🎬" data-sec-label="system 에이전트">
+      <div class="sim-settings-section-title">
+        <span class="sim-sec-title-text">🎬 system 에이전트<span class="sim-help" aria-hidden="true" data-tooltip="이야기 흐름을 감시하다가 정체·반복이 보이면 개입해 상황을 서술하거나 특정 에이전트를 지목하는 내레이터. 비활성화하면 전혀 개입하지 않습니다.">?</span></span>
+        <span class="sim-sec-badge" data-sec-badge="director"></span>
         <label class="sim-sys-toggle">
           <input type="checkbox" id="sim-sys-enabled">
           <span>활성화</span>
         </label>
+        <button type="button" class="sim-sec-toggle" data-sec-toggle="director" aria-expanded="false" title="섹션 접기/펼치기">▾</button>
       </div>
-      <div id="sim-sys-config" class="sim-hidden">
-        <div class="sim-option-row">
-          <label>아이콘<span class="sim-help" aria-hidden="true" data-tooltip="타임라인에서 system 에이전트의 메시지 앞에 표시할 이모지 (최대 4자)">?</span></label>
-          <input type="text" id="sim-sys-icon" value="🎬" maxlength="4" style="width:44px;text-align:center"/>
-          <label style="margin-left:12px">표시 이름<span class="sim-help" aria-hidden="true" data-tooltip="타임라인에 표시될 이름. 내부 식별자는 그대로 system 으로 유지됩니다.">?</span></label>
-          <input type="text" id="sim-sys-display-name" value="내레이터" style="flex:1;max-width:120px"/>
+      <div class="sim-sec-wrap">
+        <div class="sim-sec-inner">
+          <div id="sim-sys-config" class="sim-hidden">
+            <div class="sim-option-row">
+              <label>아이콘<span class="sim-help" aria-hidden="true" data-tooltip="타임라인에서 system 에이전트의 메시지 앞에 표시할 이모지 (최대 4자)">?</span></label>
+              <input type="text" id="sim-sys-icon" value="🎬" maxlength="4" style="width:44px;text-align:center"/>
+              <label style="margin-left:12px">표시 이름<span class="sim-help" aria-hidden="true" data-tooltip="타임라인에 표시될 이름. 내부 식별자는 그대로 system 으로 유지됩니다.">?</span></label>
+              <input type="text" id="sim-sys-display-name" value="내레이터" style="flex:1;max-width:120px"/>
+            </div>
+            <div class="sim-option-row">
+              <label>개입 주기 (wave)<span class="sim-help" aria-hidden="true" data-tooltip="N wave마다 system 에이전트가 개입 여부를 판단합니다. 1 = 매 wave 검토.">?</span></label>
+              <input type="number" id="sim-sys-interval" value="1" min="1" max="20"/>
+            </div>
+            <div class="sim-option-row">
+              <label>침묵 기준 (wave)<span class="sim-help" aria-hidden="true" data-tooltip="N웨이브 동안 발화 없으면 침묵으로 판단">?</span></label>
+              <input type="number" id="sim-sys-silence" value="3" min="1" max="20"/>
+            </div>
+            <div class="sim-settings-section-body">
+              <div class="sim-ta-wrap" data-zoom-title="🎬 내레이터 페르소나">
+                <textarea id="sim-sys-prompt" data-autogrow
+                  placeholder="비워두면 기본 내레이터 페르소나를 사용합니다."></textarea>
+                <button type="button" class="sim-zoom-btn" title="확대 편집">⤢</button>
+              </div>
+            </div>
+            <div class="sim-fields-hint">비워두면 기본 페르소나: 이야기 흐름 분석 → 침묵·반복 에이전트에 개입</div>
+            <div class="sim-option-row" style="margin-top:8px">
+              <label style="font-weight:600">감독 노트<span class="sim-help" aria-hidden="true" data-tooltip="이 시뮬레이션의 서사 목표·결말 조건. system 에이전트가 매 개입마다 참조하는 불변 지침이라 페르소나보다 우선합니다.">?</span></label>
+            </div>
+            <div class="sim-settings-section-body">
+              <div class="sim-ta-wrap" data-zoom-title="🎬 감독 노트">
+                <textarea id="sim-sys-director-note" data-autogrow
+                  placeholder="이 시뮬레이션의 서사 목표·결말 조건을 적으세요.&#10;예) 모든 등장인물이 선택의 순간에 직면해야 하며, 어떤 결말이든 정적 균형이 아닌 변화가 있어야 한다."></textarea>
+                <button type="button" class="sim-zoom-btn" title="확대 편집">⤢</button>
+              </div>
+            </div>
+            <div class="sim-fields-hint">감독 노트는 불변 나침반 — system 에이전트가 매 개입마다 이 방향을 유지합니다</div>
+          </div>
         </div>
-        <div class="sim-option-row">
-          <label>개입 주기 (wave)<span class="sim-help" aria-hidden="true" data-tooltip="N wave마다 system 에이전트가 개입 여부를 판단합니다. 1 = 매 wave 검토.">?</span></label>
-          <input type="number" id="sim-sys-interval" value="1" min="1" max="20"/>
-        </div>
-        <div class="sim-option-row">
-          <label>침묵 기준 (wave)<span class="sim-help" aria-hidden="true" data-tooltip="N웨이브 동안 발화 없으면 침묵으로 판단">?</span></label>
-          <input type="number" id="sim-sys-silence" value="3" min="1" max="20"/>
-        </div>
-        <div class="sim-settings-section-body">
-          <textarea id="sim-sys-prompt" rows="10"
-            placeholder="비워두면 기본 내레이터 페르소나를 사용합니다."></textarea>
-        </div>
-        <div class="sim-fields-hint">비워두면 기본 페르소나: 이야기 흐름 분석 → 침묵·반복 에이전트에 개입</div>
-        <div class="sim-option-row" style="margin-top:8px">
-          <label style="font-weight:600">감독 노트<span class="sim-help" aria-hidden="true" data-tooltip="이 시뮬레이션의 서사 목표·결말 조건. system 에이전트가 매 개입마다 참조하는 불변 지침이라 페르소나보다 우선합니다.">?</span></label>
-        </div>
-        <div class="sim-settings-section-body">
-          <textarea id="sim-sys-director-note" rows="7"
-            placeholder="이 시뮬레이션의 서사 목표·결말 조건을 적으세요.&#10;예) 모든 등장인물이 선택의 순간에 직면해야 하며, 어떤 결말이든 정적 균형이 아닌 변화가 있어야 한다."></textarea>
-        </div>
-        <div class="sim-fields-hint">감독 노트는 불변 나침반 — system 에이전트가 매 개입마다 이 방향을 유지합니다</div>
       </div>
     </div>
 
-    <!-- 감염병 모델 -->
-    <div class="sim-settings-section" id="sim-infection-section">
+    <!-- ── 감염병 모델 ───────────────────────────────────────────────────── -->
+    <div class="sim-settings-section" id="sim-infection-section" data-section="infection" data-sec-icon="🦠" data-sec-label="감염병 모델">
       <div class="sim-settings-section-title">
-        <span>🦠 감염병 모델</span>
+        <span class="sim-sec-title-text">🦠 감염병 모델</span>
+        <span class="sim-sec-badge" data-sec-badge="infection"></span>
         <label class="sim-inf-toggle">
           <input type="checkbox" id="sim-inf-enabled">
           <span>활성화</span>
         </label>
+        <button type="button" class="sim-sec-toggle" data-sec-toggle="infection" aria-expanded="false" title="섹션 접기/펼치기">▾</button>
       </div>
-      <div id="sim-inf-config" class="sim-hidden">
-        <div class="sim-fields-hint">
-          감염 판정은 전적으로 엔진이 합니다 — LLM은 상태·확률을 절대 보지 않고,
-          아래 <b>증상 서사</b> 텍스트만 매 턴 전달받습니다.
-          같은 wave에 같은 장소(외부 공간 제외)에 함께 있으면 접촉으로 봅니다.
+      <div class="sim-sec-wrap">
+        <div class="sim-sec-inner">
+          <div id="sim-inf-config" class="sim-hidden">
+            <div class="sim-fields-hint">
+              감염 판정은 전적으로 엔진이 합니다 — LLM은 상태·확률을 절대 보지 않고,
+              아래 <b>증상 서사</b> 텍스트만 매 턴 전달받습니다.
+              같은 wave에 같은 장소(외부 공간 제외)에 함께 있으면 접촉으로 봅니다.
+            </div>
+            <div class="sim-option-row">
+              <label>질병명</label>
+              <input type="text" id="sim-inf-disease-name" placeholder="예: 붉은열병"
+                     style="flex:1;max-width:200px"
+                     title="회복 안내 문구와 감염 상태 표시에 사용됩니다"/>
+            </div>
+            <div class="sim-option-row sim-temp-row">
+              <label>전염 확률 <span id="sim-inf-transmission-val">0.30</span></label>
+              <input type="range" id="sim-inf-transmission" min="0" max="1" step="0.05" value="0.3"
+                     title="같은 wave·같은 장소에 있는 감염자 1명당 전염될 확률"/>
+            </div>
+            <div class="sim-option-row sim-temp-row">
+              <label>회복 확률 <span id="sim-inf-recovery-val">0.10</span></label>
+              <input type="range" id="sim-inf-recovery" min="0" max="1" step="0.05" value="0.1"
+                     title="감염 상태인 에이전트가 이번 wave에 회복할 확률"/>
+            </div>
+            <div class="sim-option-row">
+              <label>회복 후</label>
+              <select id="sim-inf-immune" style="flex:1;max-width:220px"
+                      title="SIR = 회복하면 면역이 생겨 다시 걸리지 않음 / SIS = 회복해도 다시 걸릴 수 있음">
+                <option value="sir">면역 획득 (SIR)</option>
+                <option value="sis">재감염 가능 (SIS)</option>
+              </select>
+            </div>
+            <div class="sim-option-row sim-inf-stages-head">
+              <label style="font-weight:600">증상 단계</label>
+              <button id="sim-inf-add-stage-btn" class="sim-settings-add-btn">+ 단계 추가</button>
+            </div>
+            <div id="sim-inf-stages"></div>
+            <div class="sim-fields-hint">
+              감염된 뒤 <b>경과한 웨이브 수</b>가 범위에 들어가면 그 단계의 증상 서사가 주입됩니다
+              (분이 아니라 웨이브 단위 — 시간 개념이 꺼진 시나리오에서도 동작합니다).
+              마지막 단계를 넘기면 그 단계가 계속 유지됩니다.
+            </div>
+          </div>
         </div>
-        <div class="sim-option-row">
-          <label>질병명</label>
-          <input type="text" id="sim-inf-disease-name" placeholder="예: 붉은열병"
-                 style="flex:1;max-width:200px"
-                 title="회복 안내 문구와 감염 상태 표시에 사용됩니다"/>
-        </div>
-        <div class="sim-option-row sim-temp-row">
-          <label>전염 확률 <span id="sim-inf-transmission-val">0.30</span></label>
-          <input type="range" id="sim-inf-transmission" min="0" max="1" step="0.05" value="0.3"
-                 title="같은 wave·같은 장소에 있는 감염자 1명당 전염될 확률"/>
-        </div>
-        <div class="sim-option-row sim-temp-row">
-          <label>회복 확률 <span id="sim-inf-recovery-val">0.10</span></label>
-          <input type="range" id="sim-inf-recovery" min="0" max="1" step="0.05" value="0.1"
-                 title="감염 상태인 에이전트가 이번 wave에 회복할 확률"/>
-        </div>
-        <div class="sim-option-row">
-          <label>회복 후</label>
-          <select id="sim-inf-immune" style="flex:1;max-width:220px"
-                  title="SIR = 회복하면 면역이 생겨 다시 걸리지 않음 / SIS = 회복해도 다시 걸릴 수 있음">
-            <option value="sir">면역 획득 (SIR)</option>
-            <option value="sis">재감염 가능 (SIS)</option>
-          </select>
-        </div>
-        <div class="sim-option-row sim-inf-stages-head">
-          <label style="font-weight:600">증상 단계</label>
-          <button id="sim-inf-add-stage-btn" class="sim-settings-add-btn">+ 단계 추가</button>
-        </div>
-        <div id="sim-inf-stages"></div>
-        <div class="sim-fields-hint">
-          감염된 뒤 <b>경과한 웨이브 수</b>가 범위에 들어가면 그 단계의 증상 서사가 주입됩니다
-          (분이 아니라 웨이브 단위 — 시간 개념이 꺼진 시나리오에서도 동작합니다).
-          마지막 단계를 넘기면 그 단계가 계속 유지됩니다.
-        </div>
-      </div>
-    </div>
-
-    <!-- 위치 그래프 -->
-    <div class="sim-settings-section" id="sim-location-section">
-      <div class="sim-settings-section-title">
-        <span>🗺 위치 그래프<span class="sim-help" aria-hidden="true" data-tooltip="에이전트가 오갈 수 있는 장소와 그 연결 관계. 연결된 장소로만 이동할 수 있고, 외부 공간으로 표시한 장소의 에이전트는 서로를 볼 수 없습니다. zone(구역)을 같게 지정한 장소끼리는 서로의 존재를 인지하지만, 대화는 같은 장소에 있을 때만 가능합니다(예: 안방·거실·부엌 → zone '우리집'). 비워두면 위치 개념 없이 진행됩니다.">?</span></span>
-        <button id="sim-add-location-btn" class="sim-settings-add-btn">+ 장소 추가</button>
-      </div>
-      <div id="sim-location-graph" class="sim-location-graph-container">
-        <div class="sim-loc-empty">장소를 추가하면 에이전트가 지도 위에서 이동합니다.</div>
       </div>
     </div>
 
-    <!-- Events -->
-    <div class="sim-settings-section">
+    <!-- ── 시나리오 이벤트 ───────────────────────────────────────────────── -->
+    <div class="sim-settings-section" data-section="events" data-sec-icon="📜" data-sec-label="시나리오 이벤트">
       <div class="sim-settings-section-title">
-        <span>📜 시나리오 이벤트<span class="sim-help" aria-hidden="true" data-tooltip="지정한 wave에 자동으로 발생하는 사건. 시스템 메시지 주입, 에이전트 등장·퇴장을 예약해 실행 도중 상황을 바꿉니다.">?</span></span>
+        <span class="sim-sec-title-text">📜 시나리오 이벤트<span class="sim-help" aria-hidden="true" data-tooltip="지정한 wave에 자동으로 발생하는 사건. 시스템 메시지 주입, 에이전트 등장·퇴장을 예약해 실행 도중 상황을 바꿉니다.">?</span></span>
+        <span class="sim-sec-badge" data-sec-badge="events"></span>
         <button id="sim-add-event-btn" class="sim-settings-add-btn">+ 추가</button>
+        <button type="button" class="sim-sec-toggle" data-sec-toggle="events" aria-expanded="false" title="섹션 접기/펼치기">▾</button>
       </div>
-      <div id="sim-events-list"></div>
+      <div class="sim-sec-wrap">
+        <div class="sim-sec-inner">
+          <div id="sim-events-list"></div>
+        </div>
+      </div>
     </div>
 
+    </div><!-- /#sim-settings-main -->
+    </div><!-- /#sim-settings-layout -->
+  </div>
+</div>
+
+<!-- 장문 텍스트 확대 편집 오버레이 (js/sim/settings/textareas.js) -->
+<div id="sim-text-editor-overlay" class="sim-replay-modal-overlay sim-hidden">
+  <div class="sim-replay-modal-box sim-text-editor-box">
+    <div class="sim-replay-header">
+      <div class="sim-replay-title"><span id="sim-text-editor-title">텍스트 편집</span></div>
+      <div class="sim-replay-actions">
+        <button type="button" id="sim-text-editor-cancel" class="sim-ctrl-btn">취소 (Esc)</button>
+        <button type="button" id="sim-text-editor-save" class="sim-ctrl-btn save">저장 (Ctrl+↵)</button>
+      </div>
+    </div>
+    <textarea id="sim-text-editor-area" spellcheck="false"></textarea>
   </div>
 </div>
 

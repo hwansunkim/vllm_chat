@@ -2,11 +2,13 @@
 // Editor for the configurable per-agent output metadata fields.
 
 import { sim, esc } from '../state.js';
+import { updateSectionBadges } from './sections.js';
 
 export function renderOutputFields() {
   const list = document.getElementById('sim-fields-list');
   if (!list) return;
   list.innerHTML = '';
+  updateSectionBadges(sim);   // 필드 개수가 섹션 헤더 뱃지에 그대로 노출된다
 
   if (!sim.extra_fields.length) {
     list.innerHTML = '<div class="sim-fields-empty">메타데이터 필드 없음 — content, target만 사용됩니다.</div>';

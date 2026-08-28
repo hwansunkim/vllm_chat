@@ -1,23 +1,17 @@
 // 사이드바 접기/펼치기 — 상태는 localStorage에 영속화한다.
+import { readJSON, writeJSON } from './utils.js';
+
 const STORAGE_KEY = 'vllm-chat.sidebar-collapsed';
 const COLLAPSED_CLASS = 'sidebar-collapsed';
 
-// 프라이빗 브라우징 등에서 localStorage 접근 자체가 예외를 던질 수 있으므로
-// 읽기/쓰기 모두 try/catch로 감싸고, 실패하면 기본값(펼침)으로 동작한다.
+// 접근 불가(프라이빗 브라우징) / 손상된 값 처리는 utils의 readJSON/writeJSON이 맡는다.
+// 구버전은 '1'/'0' 문자열로 저장했는데 JSON.parse('1') === 1 이라 그대로 호환된다.
 function readCollapsed() {
-  try {
-    return localStorage.getItem(STORAGE_KEY) === '1';
-  } catch (e) {
-    return false;
-  }
+  return !!readJSON(STORAGE_KEY, false);
 }
 
 function saveCollapsed(collapsed) {
-  try {
-    localStorage.setItem(STORAGE_KEY, collapsed ? '1' : '0');
-  } catch (e) {
-    /* 저장 불가 — 이번 세션에서만 상태를 유지한다 */
-  }
+  writeJSON(STORAGE_KEY, collapsed);
 }
 
 function applyCollapsed(collapsed) {
