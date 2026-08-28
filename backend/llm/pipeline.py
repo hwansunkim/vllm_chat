@@ -56,12 +56,16 @@ def build_messages(
     system_prompt: str,
     retrieved: list[dict],
     recent_turns: list,
+    web_context: str = "",
 ) -> list:
     parts = [system_prompt] if system_prompt else []
 
     if retrieved:
         mem_lines = "\n".join(f"[{m['type']}] {m['content']}" for m in retrieved)
         parts.append(f"[관련 메모리]\n{mem_lines}")
+
+    if web_context:
+        parts.append(web_context)
 
     msgs = []
     if parts:

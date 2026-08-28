@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from datetime import datetime
 
@@ -17,6 +18,9 @@ from ..db.database import get_db
 from ..llm.client import async_stream_chat
 from ..llm.registry import get_registry
 from ..llm.pipeline import build_messages
+from ..websearch import async_build_search_query, format_search_context, web_search
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/conversations")
 
@@ -56,7 +60,7 @@ def get_conversation(conv_id: str):
         conn.close()
         raise HTTPException(404)
     turns = conn.execute(
-        """SELECT role, content, thinking, memories_json, context_pct, prompt_tokens, max_tokens
+        """SELECT role, content, thinking, memories_json, context_pct, prompt_tokens, max_tokens, sources_json
            FROM turns WHERE conversation_id=? ORDER BY created_at""",
         (conv_id,),
     ).fetchall()
@@ -103,6 +107,7 @@ async def send_chat(conv_id: str, body: ChatMessage):
     )
     active_turns = get_active_turns(conn, conv_id)
     active_turns.append({"role": "user", "content": user_content})
+    prior_turns = active_turns[:-1]
     messages = build_messages(effective_system, retrieved, active_turns)
 
     temperature = float(used_agent.get("temperature", 0.7)) if used_agent else 0.7
@@ -121,9 +126,11 @@ async def send_chat(conv_id: str, body: ChatMessage):
     save_turn(conn, conv_id, "user", user_content)
 
     async def event_generator():
+        nonlocal messages
         full_thinking = ""
         full_answer   = ""
         usage: dict   = {}
+        sources: list = []
         conn_closed    = False
 
         def close_conn() -> None:
@@ -133,6 +140,36 @@ async def send_chat(conv_id: str, body: ChatMessage):
                 conn_closed = True
 
         try:
+            if body.web_search and config.WEB_SEARCH_MODE == "toggle":
+                # 검색 단계 실패가 답변 생성을 막지 않도록 자체 격리한다.
+                # web_search()/async_build_search_query() 는 각자 폴백하지만,
+                # 그 밖의 예외(직렬화 등)도 여기서 삼키고 검색 없이 진행한다.
+                try:
+                    search_query = (
+                        await async_build_search_query(user_content, prior_turns)
+                        if config.WEB_SEARCH_REWRITE_QUERY else user_content
+                    )
+                    results = await web_search(search_query)
+                    sources = [
+                        {"title": r.title, "url": r.url, "snippet": r.snippet}
+                        for r in results
+                    ]
+                    yield (
+                        "event: search\n"
+                        f"data: {json.dumps({'query': search_query, 'results': sources}, ensure_ascii=False)}\n\n"
+                    )
+                    messages = build_messages(
+                        effective_system, retrieved, active_turns,
+                        web_context=format_search_context(results),
+                    )
+                except Exception as e:
+                    logger.warning("web search phase failed: %s", e)
+                    sources = []
+                    yield (
+                        "event: search\n"
+                        f"data: {json.dumps({'query': '', 'results': []}, ensure_ascii=False)}\n\n"
+                    )
+
             try:
                 async for event in async_stream_chat(
                     messages, temperature=temperature, max_tokens=max_tokens,
@@ -168,6 +205,7 @@ async def send_chat(conv_id: str, body: ChatMessage):
                 context_pct=round(context_pct, 4),
                 prompt_tokens=prompt_tokens,
                 max_tokens=max_model_len,
+                sources_json=json.dumps(sources, ensure_ascii=False) if sources else None,
             )
 
             new_title = conv["title"]
@@ -189,6 +227,7 @@ async def send_chat(conv_id: str, body: ChatMessage):
                 },
                 "archived_count": archived_count,
                 "title":          new_title,
+                "sources":        sources,
                 "used_agent": {
                     "name":    used_agent["name"],
                     "icon":    used_agent["icon"],

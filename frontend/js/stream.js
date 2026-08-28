@@ -2,6 +2,7 @@ import { scrollToBottom, removeEmptyState } from './utils.js';
 import { renderMarkdown, highlightCodeBlocks } from './markdown.js';
 import { updateContextBar } from './context-bar.js';
 import { esc } from './utils.js';
+import { renderSourceRefs } from './sources.js';
 
 export function createStreamRow() {
   removeEmptyState();
@@ -29,6 +30,7 @@ export async function readSSEStream(body, row) {
   let answerBuf       = '';
   let renderTimer     = null;
   let isFirstAnswer   = true;
+  let searchRendered  = false;
 
   function ensureThinking() {
     if (thinkingBlock) return;
@@ -82,7 +84,13 @@ export async function readSSEStream(body, row) {
   }
 
   function handleEvent(type, data) {
-    if (type === 'thinking') {
+    if (type === 'search') {
+      searchRendered = true;
+      const box = renderSourceRefs(data.query, data.results);
+      wrap.insertBefore(box, wrap.firstChild);
+      scrollToBottom();
+
+    } else if (type === 'thinking') {
       ensureThinking();
       thinkingContent.textContent += data.chunk;
       thinkingContent.scrollTop = thinkingContent.scrollHeight;
@@ -103,6 +111,12 @@ export async function readSSEStream(body, row) {
         bubble.classList.remove('streaming-cursor');
       }
       collapseThinking();
+
+      // search 이벤트로 이미 렌더한 경우 done.sources 는 무시 (중복 방지).
+      if (!searchRendered && data.sources?.length > 0) {
+        const box = renderSourceRefs(null, data.sources);
+        wrap.insertBefore(box, wrap.firstChild);
+      }
 
       if (data.memories?.length > 0) {
         const memRefs = document.createElement('div');

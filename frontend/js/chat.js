@@ -14,8 +14,9 @@ export async function sendMessage() {
   state.isSending = true;
   input.value = '';
   input.style.height = 'auto';
-  document.getElementById('send-btn').disabled    = true;
-  document.getElementById('thinking-btn').disabled = true;
+  document.getElementById('send-btn').disabled     = true;
+  document.getElementById('thinking-btn').disabled  = true;
+  document.getElementById('websearch-btn').disabled = true;
 
   appendMessage('user', content);
   scrollToBottom();
@@ -25,7 +26,11 @@ export async function sendMessage() {
     const response = await fetch(`/api/conversations/${state.currentConvId}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content, thinking: state.thinkingEnabled }),
+      body: JSON.stringify({
+        content,
+        thinking: state.thinkingEnabled,
+        web_search: state.webSearchEnabled,
+      }),
     });
 
     if (!response.ok) {
@@ -46,6 +51,7 @@ export async function sendMessage() {
     state.isSending = false;
     document.getElementById('send-btn').disabled = false;
     updateThinkingBtn(state.currentServerThinking);
+    document.getElementById('websearch-btn').disabled = !state.currentConvId;
   }
 }
 
@@ -57,6 +63,13 @@ export function initChatEvents() {
     const btn = document.getElementById('thinking-btn');
     btn.classList.toggle('active', state.thinkingEnabled);
     btn.title = state.thinkingEnabled ? '사고 모드 끄기' : '사고 모드 켜기';
+  };
+
+  document.getElementById('websearch-btn').onclick = () => {
+    state.webSearchEnabled = !state.webSearchEnabled;
+    const btn = document.getElementById('websearch-btn');
+    btn.classList.toggle('active', state.webSearchEnabled);
+    btn.title = state.webSearchEnabled ? '웹 검색 끄기' : '웹 검색 켜기';
   };
 
   document.getElementById('message-input').addEventListener('keydown', e => {

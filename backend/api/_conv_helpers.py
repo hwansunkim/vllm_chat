@@ -22,16 +22,17 @@ def get_active_turns(conn, conv_id: str) -> list[dict]:
 def save_turn(
     conn, conv_id: str, role: str, content: str,
     *, thinking="", memories_json=None, context_pct=None, prompt_tokens=None, max_tokens=None,
+    sources_json=None,
 ) -> str:
     tid = str(uuid.uuid4())
     now = datetime.now().isoformat()
     conn.execute(
         """INSERT INTO turns
            (id, conversation_id, role, content, thinking, memories_json,
-            context_pct, prompt_tokens, max_tokens, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            context_pct, prompt_tokens, max_tokens, sources_json, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (tid, conv_id, role, content, thinking or "", memories_json,
-         context_pct, prompt_tokens, max_tokens, now),
+         context_pct, prompt_tokens, max_tokens, sources_json, now),
     )
     conn.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
     conn.commit()

@@ -31,6 +31,8 @@ async def lifespan(app: FastAPI):
 
     state.event_loop = None
     await llm_client.teardown()
+    from .websearch.service import close_provider
+    await close_provider()
 
 
 app = FastAPI(lifespan=lifespan)

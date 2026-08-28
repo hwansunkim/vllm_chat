@@ -2,8 +2,9 @@ import { state } from './state.js';
 import { esc, scrollToBottom, removeEmptyState } from './utils.js';
 import { renderMarkdown, highlightCodeBlocks } from './markdown.js';
 import { updateContextBar } from './context-bar.js';
+import { renderSourceRefs } from './sources.js';
 
-export function appendMessage(role, content, memories = [], usageInfo = null, usedAgent = null) {
+export function appendMessage(role, content, memories = [], usageInfo = null, usedAgent = null, sources = []) {
   removeEmptyState();
 
   const messagesEl = document.getElementById('messages');
@@ -77,6 +78,11 @@ export function appendMessage(role, content, memories = [], usageInfo = null, us
     memRefs.appendChild(toggle);
     memRefs.appendChild(list);
     wrap.appendChild(memRefs);
+  }
+
+  if (role === 'assistant' && Array.isArray(sources) && sources.length > 0) {
+    // 스트림(stream.js) 과 동일하게 wrap 최상단에 배치한다.
+    wrap.insertBefore(renderSourceRefs(null, sources), wrap.firstChild);
   }
 
   row.appendChild(avatar);

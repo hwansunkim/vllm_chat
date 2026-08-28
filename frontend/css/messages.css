@@ -64,6 +64,47 @@
   border-radius: 4px; margin-right: 4px; font-size: 10px;
 }
 
+/* ── Web search source refs ─────────────────────────────────────────────────── */
+.source-refs {
+  font-size: 12px;
+  display: flex; flex-direction: column; gap: 5px;
+  margin-bottom: 2px;
+}
+
+.source-query {
+  font-size: 11px; font-weight: 600; color: #0369a1;
+  display: inline-flex; align-items: baseline; gap: 4px;
+  word-break: break-word; line-height: 1.4;
+}
+
+.source-toggle {
+  background: none; border: 1px solid #bae6fd;
+  color: #0284c7; padding: 3px 10px; border-radius: 20px;
+  cursor: pointer; font-size: 11px; font-weight: 500;
+  display: inline-flex; align-items: center; gap: 4px;
+  align-self: flex-start; transition: all 0.15s;
+}
+.source-toggle:hover { background: #f0f9ff; border-color: #7dd3fc; }
+
+.source-empty { font-size: 11px; color: #94a3b8; font-style: italic; }
+
+.source-list {
+  background: #f0f9ff; border: 1px solid #bae6fd;
+  border-radius: 10px; padding: 8px 12px;
+  margin-top: 2px; display: none;
+  flex-direction: column; gap: 8px;
+}
+.source-list.open { display: flex; }
+
+.source-item { font-size: 12px; line-height: 1.45; }
+.source-title {
+  color: #0369a1; font-weight: 600; text-decoration: none;
+  word-break: break-word;
+}
+.source-title:hover { text-decoration: underline; }
+.source-snippet { color: #475569; margin-top: 2px; }
+.source-domain { color: #94a3b8; font-size: 10px; margin-top: 2px; }
+
 /* ── Archive divider ─────────────────────────────────────────────────────────── */
 .archive-notice {
   text-align: center; color: #94a3b8;

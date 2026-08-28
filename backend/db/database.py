@@ -73,6 +73,7 @@ def init_tables(conn: sqlite3.Connection) -> None:
             context_pct     REAL,
             prompt_tokens   INTEGER,
             max_tokens      INTEGER,
+            sources_json    TEXT,
             archived        INTEGER NOT NULL DEFAULT 0,
             created_at      TEXT NOT NULL
         );
@@ -179,6 +180,8 @@ def migrate_db(conn: sqlite3.Connection) -> None:
     turn_cols = {r[1] for r in conn.execute("PRAGMA table_info(turns)").fetchall()}
     if "thinking" not in turn_cols:
         conn.execute("ALTER TABLE turns ADD COLUMN thinking TEXT NOT NULL DEFAULT ''")
+    if "sources_json" not in turn_cols:
+        conn.execute("ALTER TABLE turns ADD COLUMN sources_json TEXT")
 
     conn.commit()
 

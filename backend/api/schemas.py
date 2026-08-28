@@ -13,6 +13,7 @@ class NewConversation(BaseModel):
 class ChatMessage(BaseModel):
     content: str
     thinking: bool = False
+    web_search: bool = False
 
 
 class UpdateTitle(BaseModel):

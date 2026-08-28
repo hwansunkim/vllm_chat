@@ -57,3 +57,15 @@
 #thinking-btn:hover:not(:disabled) { border-color: #6366f1; color: #6366f1; }
 #thinking-btn.active { background: #eef2ff; border-color: #6366f1; color: #4f46e5; }
 #thinking-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+#websearch-btn {
+  width: 40px; height: 40px;
+  background: none; color: #94a3b8;
+  border: 1.5px solid #e2e8f0; border-radius: 10px;
+  font-size: 16px; cursor: pointer;
+  transition: all 0.2s; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+#websearch-btn:hover:not(:disabled) { border-color: #0284c7; color: #0284c7; }
+#websearch-btn.active { background: #f0f9ff; border-color: #0284c7; color: #0369a1; }
+#websearch-btn:disabled { opacity: 0.35; cursor: not-allowed; }

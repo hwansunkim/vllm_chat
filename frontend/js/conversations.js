@@ -39,6 +39,10 @@ export async function loadConversations() {
         document.getElementById('thinking-btn').disabled = true;
         state.thinkingEnabled = false;
         document.getElementById('thinking-btn').classList.remove('active');
+        document.getElementById('websearch-btn').disabled = true;
+        state.webSearchEnabled = false;
+        document.getElementById('websearch-btn').classList.remove('active');
+        document.getElementById('websearch-btn').title = '웹 검색 켜기';
         updateContextBar(null);
       }
       await loadConversations();
@@ -53,6 +57,7 @@ export async function loadConversations() {
 export async function openConversation(id) {
   state.currentConvId = id;
   document.getElementById('send-btn').disabled = false;
+  document.getElementById('websearch-btn').disabled = false;
   updateThinkingBtn(state.currentServerThinking);
   document.querySelectorAll('.conv-item').forEach(el =>
     el.classList.toggle('active', el.dataset.id === id)
@@ -69,12 +74,13 @@ export async function openConversation(id) {
 
   data.turns.forEach(turn => {
     const memories = turn.memories_json ? JSON.parse(turn.memories_json) : [];
+    const sources  = turn.sources_json ? JSON.parse(turn.sources_json) : [];
     appendMessage(turn.role, turn.content, memories, {
       context_pct: turn.context_pct,
       prompt_tokens: turn.prompt_tokens,
       max_model_len: turn.max_tokens,
       thinking: turn.thinking || '',
-    });
+    }, null, sources);
   });
 
   scrollToBottom();

@@ -23,6 +23,13 @@ from backend.llm.providers.base import LLMHTTPError
 from backend.llm.providers.openai import OpenAIProvider
 from backend.llm.providers.vllm import VLLMProvider, _extract_reply
 from backend.llm.registry import NoProviderError
+from backend.llm.pipeline import build_messages
+from backend.websearch import service as websearch_service
+from backend.websearch.context import format_search_context
+from backend.websearch.schemas import SearchResult
+from backend.websearch.providers.duckduckgo import (
+    DuckDuckGoProvider, _unwrap_ddg_url,
+)
 
 
 class FakeStreamResponse:
@@ -1757,6 +1764,250 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(rows, [("user", "hello")])
         self.assertTrue(any("event: error" in chunk for chunk in chunks))
+
+
+    async def test_web_search_emits_search_event_and_injects_context(self):
+        captured = {}
+
+        async def fake_build_query(user_msg, recent_turns):
+            captured["recent_turns"] = recent_turns
+            return f"q::{user_msg}"
+
+        async def fake_web_search(query):
+            captured["query"] = query
+            return [
+                SearchResult(title="제목1", url="https://example.com/1", snippet="스니펫1"),
+                SearchResult(title="제목2", url="https://example.com/2", snippet="스니펫2"),
+            ]
+
+        async def ok_stream(messages, **kwargs):
+            captured["messages"] = messages
+            yield {"type": "answer", "chunk": "답"}
+            yield {"type": "usage", "data": {"prompt_tokens": 3, "completion_tokens": 1,
+                                             "answer": "답", "thinking": ""}}
+
+        old_build = conversations.async_build_search_query
+        old_search = conversations.web_search
+        old_stream = conversations.async_stream_chat
+        conversations.async_build_search_query = fake_build_query
+        conversations.web_search = fake_web_search
+        conversations.async_stream_chat = ok_stream
+        try:
+            response = await conversations.send_chat(
+                "conv-1", ChatMessage(content="파이썬 뉴스", web_search=True),
+            )
+            chunks = [chunk async for chunk in response.body_iterator]
+        finally:
+            conversations.async_build_search_query = old_build
+            conversations.web_search = old_search
+            conversations.async_stream_chat = old_stream
+
+        joined = "".join(chunks)
+        self.assertIn("event: search", joined)
+        self.assertIn("https://example.com/1", joined)
+        self.assertEqual(captured["query"], "q::파이썬 뉴스")
+        # 시스템 메시지에 검색 컨텍스트가 주입된다
+        self.assertIn("제목1", captured["messages"][0]["content"])
+        self.assertIn("스니펫2", captured["messages"][0]["content"])
+
+        conn = sqlite3.connect(config.DB_PATH)
+        row = conn.execute(
+            "SELECT sources_json FROM turns WHERE conversation_id=? AND role='assistant'",
+            ("conv-1",),
+        ).fetchone()
+        conn.close()
+        self.assertIn("example.com/1", row[0])
+
+    async def test_no_search_event_when_toggle_off(self):
+        async def ok_stream(messages, **kwargs):
+            yield {"type": "usage", "data": {"prompt_tokens": 1, "completion_tokens": 1,
+                                             "answer": "", "thinking": ""}}
+
+        old_stream = conversations.async_stream_chat
+        conversations.async_stream_chat = ok_stream
+        try:
+            response = await conversations.send_chat(
+                "conv-1", ChatMessage(content="hi", web_search=False),
+            )
+            chunks = [chunk async for chunk in response.body_iterator]
+        finally:
+            conversations.async_stream_chat = old_stream
+
+        self.assertNotIn("event: search", "".join(chunks))
+
+
+_DDG_SAMPLE_HTML = """
+<html><body>
+<div class="results">
+  <div class="result results_links results_links_deep web-result">
+    <div class="links_main links_deep result__body">
+      <h2 class="result__title">
+        <a rel="nofollow" class="result__a"
+           href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FPython&amp;rut=abc">
+          Python (programming language)
+        </a>
+      </h2>
+      <a class="result__snippet"
+         href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FPython">
+        Python is a <b>high-level</b>, general-purpose programming language.
+      </a>
+    </div>
+  </div>
+  <div class="result results_links results_links_deep web-result">
+    <div class="links_main links_deep result__body">
+      <h2 class="result__title">
+        <a rel="nofollow" class="result__a"
+           href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.python.org%2F&amp;rut=def">
+          Welcome to Python.org
+        </a>
+      </h2>
+      <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.python.org%2F">
+        The official home of the Python Programming Language.
+      </a>
+    </div>
+  </div>
+  <div class="result results_links results_links_deep web-result">
+    <div class="links_main links_deep result__body">
+      <h2 class="result__title">
+        <a rel="nofollow" class="result__a"
+           href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FPython&amp;rut=ghi">
+          Python (duplicate)
+        </a>
+      </h2>
+      <a class="result__snippet">A duplicate URL that should be de-duped.</a>
+    </div>
+  </div>
+</div>
+</body></html>
+"""
+
+
+class _FakeDDGResponse:
+    def __init__(self, text):
+        self.text = text
+
+    def raise_for_status(self):
+        return None
+
+
+class _FakeDDGClient:
+    def __init__(self, text):
+        self._text = text
+        self.seen = {}
+
+    async def post(self, url, **kwargs):
+        self.seen["url"] = url
+        self.seen["data"] = kwargs.get("data")
+        return _FakeDDGResponse(self._text)
+
+    async def aclose(self):
+        return None
+
+
+class WebSearchContextTests(unittest.TestCase):
+    def test_format_empty_returns_empty_string(self):
+        self.assertEqual(format_search_context([]), "")
+
+    def test_format_includes_number_title_and_url(self):
+        text = format_search_context([
+            SearchResult(title="티어리스트", url="https://example.com/a", snippet="요약"),
+        ])
+        self.assertIn("[1]", text)
+        self.assertIn("티어리스트", text)
+        self.assertIn("https://example.com/a", text)
+        self.assertIn("요약", text)
+
+    def test_build_messages_injects_web_context_into_system(self):
+        msgs = build_messages("SYS", [], [{"role": "user", "content": "hi"}],
+                              web_context="WEBCTX-MARKER")
+        self.assertEqual(msgs[0]["role"], "system")
+        self.assertIn("WEBCTX-MARKER", msgs[0]["content"])
+
+    def test_build_messages_without_web_context_unchanged(self):
+        msgs = build_messages("SYS", [], [{"role": "user", "content": "hi"}])
+        self.assertEqual(msgs[0]["content"], "SYS")
+
+
+class DuckDuckGoParserTests(unittest.IsolatedAsyncioTestCase):
+    def test_unwrap_redirect_url(self):
+        wrapped = "//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fpage&rut=x"
+        self.assertEqual(_unwrap_ddg_url(wrapped), "https://example.com/page")
+
+    def test_unwrap_passthrough_for_plain_url(self):
+        self.assertEqual(_unwrap_ddg_url("https://plain.example/x"),
+                         "https://plain.example/x")
+
+    async def test_provider_parses_sample_html_into_results(self):
+        provider = DuckDuckGoProvider()
+        provider._client = _FakeDDGClient(_DDG_SAMPLE_HTML)
+
+        results = await provider.search("python", k=5)
+
+        self.assertEqual(len(results), 2)  # 3번째는 URL 중복으로 제거
+        self.assertIsInstance(results[0], SearchResult)
+        self.assertEqual(results[0].title, "Python (programming language)")
+        self.assertEqual(results[0].url, "https://en.wikipedia.org/wiki/Python")
+        self.assertIn("high-level", results[0].snippet)
+        self.assertEqual(results[1].url, "https://www.python.org/")
+        self.assertEqual(provider._client.seen["data"], {"q": "python", "kl": "wt-wt"})
+
+    async def test_provider_respects_k_limit(self):
+        provider = DuckDuckGoProvider()
+        provider._client = _FakeDDGClient(_DDG_SAMPLE_HTML)
+
+        results = await provider.search("python", k=1)
+
+        self.assertEqual(len(results), 1)
+
+    async def test_provider_truncates_snippet(self):
+        long_snip = "x" * 5000
+        html = _DDG_SAMPLE_HTML.replace(
+            "Python is a <b>high-level</b>, general-purpose programming language.",
+            long_snip,
+        )
+        provider = DuckDuckGoProvider()
+        provider._client = _FakeDDGClient(html)
+
+        results = await provider.search("python", k=5)
+
+        self.assertLessEqual(len(results[0].snippet), config.WEB_SEARCH_MAX_SNIPPET_CHARS)
+
+
+class WebSearchServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_web_search_returns_empty_list_on_provider_error(self):
+        class BoomProvider:
+            async def search(self, query, k):
+                raise RuntimeError("429 blocked")
+
+            async def close(self):
+                pass
+
+        old = websearch_service.get_provider
+        websearch_service.get_provider = lambda: BoomProvider()
+        try:
+            result = await websearch_service.web_search("anything")
+        finally:
+            websearch_service.get_provider = old
+
+        self.assertEqual(result, [])
+
+    async def test_web_search_passes_through_results(self):
+        class OkProvider:
+            async def search(self, query, k):
+                return [SearchResult(title="t", url="https://u", snippet="s")]
+
+            async def close(self):
+                pass
+
+        old = websearch_service.get_provider
+        websearch_service.get_provider = lambda: OkProvider()
+        try:
+            result = await websearch_service.web_search("q")
+        finally:
+            websearch_service.get_provider = old
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].title, "t")
 
 
 if __name__ == "__main__":
