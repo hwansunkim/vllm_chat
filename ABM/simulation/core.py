@@ -298,15 +298,22 @@ class Simulation(_LocationMixin, _InfectionMixin, _TargetsMixin, _EventsMixin, _
     # ── 시뮬레이션 내 경과 시간 ────────────────────────────────────────────────
 
     def _current_elapsed_minutes(self, wave: int | None = None) -> int:
-        """이번 run 기준 '지금'의 시뮬레이션 내 경과 분.
+        """시나리오 시작부터 '지금'까지의 시뮬레이션 내 총 경과 분.
 
         에이전트에게 보여지는 시각 계산(`_assemble_agent_prompt`)과 목표 기간 판정
         (`run()`)이 쓰는 기준과 **정확히 같은 값**이어야 한다 — 감염 진행이 프롬프트
         속 시계와 어긋나면 "밤새 앓았는데 증상은 그대로"류의 모순이 생긴다.
 
-        - variable 모드: LLM 분류로 누적된 `self._elapsed_minutes`
-        - fixed 모드(time_per_wave > 0): `wave * time_per_wave` (결정론적)
-        - 시간 개념 비활성(fixed + time_per_wave == 0): 항상 0
+        `self._elapsed_minutes`는 두 모드 모두에서 **이전 run들의 누적 경과**를 담는
+        자리다(`elapsed_minutes_init`으로 복원되고, `/continue`는 리셋 직전에 이번
+        run의 경과를 여기에 접어 넣는다). 그래서 어느 모드든 반환값은
+        "이전 run들의 누적 + 이번 run의 wave 경과"다.
+
+        - variable 모드: LLM 분류로 누적된 `self._elapsed_minutes`(wave 무관)
+        - fixed 모드(time_per_wave > 0): `_elapsed_minutes + wave * time_per_wave`.
+          `_elapsed_minutes`를 빼먹으면 `run()`이 호출마다 wave 0부터 다시 세므로
+          `/continue`·`/resume` 첫 wave에서 시계가 시작 시각으로 되감긴다.
+        - 시간 개념 비활성(fixed + time_per_wave == 0): `_elapsed_minutes`(보통 0)
           → 감염자는 첫 증상 단계에 머물고 자연 회복도 일어나지 않는다. 시간 기준
             모델에서 이는 버그가 아니라 "시간이 흐르지 않는 세계"의 정의다.
         """
@@ -314,8 +321,8 @@ class Simulation(_LocationMixin, _InfectionMixin, _TargetsMixin, _EventsMixin, _
             return self._elapsed_minutes
         if self._time_per_wave > 0:
             wave_idx = self.completed_waves if wave is None else int(wave)
-            return max(0, wave_idx) * self._time_per_wave
-        return 0
+            return self._elapsed_minutes + max(0, wave_idx) * self._time_per_wave
+        return self._elapsed_minutes
 
     # ── 런타임 상태 스냅샷 (재개용) ────────────────────────────────────────────
 
@@ -344,12 +351,12 @@ class Simulation(_LocationMixin, _InfectionMixin, _TargetsMixin, _EventsMixin, _
     def _export_infection(self, key: str) -> dict:
         """감염 상태 직렬화.
 
-        `infected_at_minutes`는 **이번 run 기준의 경과분 앵커**다(fixed 모드에서
-        `_current_elapsed_minutes`는 재개할 때마다 wave 0 = 0분부터 다시 센다).
-        그대로 저장하면 재개 후 `now - infected_at_minutes`가 음수가 되어 증상
-        진행이 1단계로 되감긴다. 그래서 저장 시점의 **경과 분**을
-        `elapsed_minutes_since_infection`으로 함께 남겨 복원 쪽에서 새 run의
-        기준점으로 재기준화한다. `recover_at_minutes`는 절대값이 아니라 감염
+        `infected_at_minutes`는 경과분 축의 **절대 앵커**지만, 그 축의 원점은
+        재개 방식에 따라 달라질 수 있다(예: 구버전 스냅샷, 또는 저장된
+        elapsed_minutes와 다른 `elapsed_minutes_init`으로 되살아나는 경우).
+        그래서 앵커를 그대로 믿지 않고 저장 시점의 **감염 후 경과 분**을
+        `elapsed_minutes_since_infection`으로 함께 남겨, 복원 쪽에서 새 run의
+        원점 기준으로 다시 계산한다. `recover_at_minutes`는 절대값이 아니라 감염
         시점부터의 델타라 앵커와 무관하게 그대로 저장하면 된다.
         """
         entry = dict(self._agent_infection.get(key, {}))
@@ -393,10 +400,11 @@ class Simulation(_LocationMixin, _InfectionMixin, _TargetsMixin, _EventsMixin, _
                 since      = None
                 recover_at = None
                 if status == "I":
-                    # 새 run은 (fixed 모드에서) 경과 0분부터 다시 세므로, 저장된 경과
-                    # 분만큼 과거로 앵커를 옮긴다 → 재개 첫 wave에서 경과분이 저장
-                    # 시점 값을 그대로 이어받는다. variable 모드는 elapsed_minutes_init
-                    # 으로 누적 경과가 복원되므로 base가 그 값이 되어 역시 이어진다.
+                    # base = 재개 첫 wave의 '지금'. 두 모드 모두 elapsed_minutes_init
+                    # (finalize_run이 저장한 총 경과)이 반영되므로, 저장된 감염 후
+                    # 경과분만큼 과거로 앵커를 옮기면 증상 진행이 정확히 이어진다.
+                    # fixed 모드도 이제 `_elapsed_minutes + wave*tpw`라 base가 올바른
+                    # 원점이 된다 — 별도 보정 불필요.
                     base    = self._current_elapsed_minutes(0)
                     elapsed = infection.get("elapsed_minutes_since_infection")
                     since   = base - max(0, elapsed) if isinstance(elapsed, int) else base

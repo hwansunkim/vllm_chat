@@ -51,6 +51,8 @@ class _RunnerMixin:
         # 목표 기간은 '이번 run() 호출 이후' 경과분 기준이다. max_waves가 실행마다
         # 새로 주어지는 예산인 것과 동일한 성격 — resume/continue도 목표 기간만큼
         # 더 진행한다(누적 경과가 이미 목표를 넘었다고 즉시 멈추지 않는다).
+        # `_elapsed_minutes`는 두 모드 모두 '이전 run들의 누적'이므로 이게 곧
+        # 이번 run 시작 시점의 총 경과다(fixed는 wave 0 = 아직 0분 진행).
         elapsed_baseline = self._elapsed_minutes
         end_reason = "max_waves"
 
@@ -339,14 +341,15 @@ class _RunnerMixin:
             # ── 목표 기간 도달 체크 ───────────────────────────────────────────
             # 침묵 조기종료(early_stop_enabled/max_silence_waves)와 독립적으로,
             # 이번 wave까지의 경과 시간이 목표에 도달하면 정상 종료한다.
-            # 경과 시간 기준은 에이전트에게 보여지는 시각 계산(step.py)과 동일하게 둔다:
-            #   - variable: 누적된 self._elapsed_minutes
-            #   - fixed:    (wave_num + 1) * time_per_wave  (결정론적)
+            # 경과 시간 기준은 에이전트에게 보여지는 시각 계산(step.py) 및 감염
+            # 진행과 동일한 `_current_elapsed_minutes`로 단일화한다 — 모드별로
+            # 따로 계산하면 한쪽만 고칠 때 시계와 종료 조건이 어긋난다.
+            # baseline을 빼므로 값은 "이번 run() 이후 경과"다: variable은 누적분의
+            # 증가량, fixed는 (wave_num + 1) * time_per_wave (이전 누적은 상쇄).
             if target_minutes > 0:
-                if self._time_mode == "variable":
-                    elapsed_since_start = self._elapsed_minutes - elapsed_baseline
-                else:
-                    elapsed_since_start = (wave_num + 1) * self._time_per_wave
+                elapsed_since_start = (
+                    self._current_elapsed_minutes(wave_num + 1) - elapsed_baseline
+                )
                 if elapsed_since_start >= target_minutes:
                     logger.info(
                         f"[W{wave_num}] 목표 기간 도달 — 경과 {elapsed_since_start}분 "

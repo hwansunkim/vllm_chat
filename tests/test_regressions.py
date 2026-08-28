@@ -1434,6 +1434,273 @@ class InfectionTimeModelTests(unittest.TestCase):
             self.assertTrue(200 >= sim._agent_infection["a"]["recover_at_minutes"] >= 200)
 
 
+class FixedClockContinuityTests(unittest.TestCase):
+    """fixed 시간 모드의 시계가 run 경계를 넘어 연속되는지 (m4).
+
+    증상이었던 버그: `_current_elapsed_minutes`의 fixed 분기가 `wave*time_per_wave`
+    만 계산해서, `/continue`·`/resume`이 wave를 0으로 되돌리면 에이전트가 보는
+    `[현재 시각]`이 시나리오 시작 시각으로 되감겼다("1차 run 종료 시 월 14:00 →
+    재개 첫 wave 월 09:00"). 감염 경과만 rebase/restore 보정으로 이어지고 시계는
+    되감기는 비대칭이 남았다.
+
+    불변식: `_elapsed_minutes`는 **두 모드 모두** '이전 run들의 누적 경과'를 담고,
+    `_current_elapsed_minutes(w)`는 '누적 + 이번 run의 wave 경과'를 돌려준다.
+    """
+
+    STAGES = InfectionTimeModelTests.STAGES
+
+    def _sim(self, tmp, *, time_mode="fixed", time_per_wave=30, elapsed_init=0,
+             infection=None, start_time="09:00"):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096) for k in ("a", "b")}
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=_ScriptedLLM({k: [{"content": "...", "target": "self"}] for k in ("a", "b")}),
+            time_per_wave=time_per_wave, time_mode=time_mode,
+            elapsed_minutes_init=elapsed_init,
+            sim_start_time=start_time,
+            infection_model=infection,
+        )
+        sim._emit = lambda t, d: None
+        return sim
+
+    @staticmethod
+    def _infection_model():
+        return {
+            "enabled":                  True,
+            "disease_name":             "테스트열",
+            "transmission_probability": 0.0,
+            "symptom_stages":           [dict(s) for s in InfectionTimeModelTests.STAGES],
+            "recovery_min_minutes":     0,
+            "recovery_max_minutes":     0,
+            "immune_after_recovery":    True,
+        }
+
+    @staticmethod
+    def _clock(sim, wave):
+        """에이전트 프롬프트에 실제로 주입되는 '[현재 시각: ...]' 문자열."""
+        return sim._format_time_str(
+            sim._sim_start_minutes + sim._current_elapsed_minutes(wave)
+        )
+
+    # ── 1. /continue 후 프롬프트 시계가 연속된다 ─────────────────────────────────
+
+    def test_fixed_continue_keeps_clock_moving_forward(self):
+        from backend.api.simulation.runner import fold_elapsed_and_reset_waves
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=30)
+            sim.completed_waves = 2                       # 2 wave × 30분 = 60분
+            self.assertEqual(sim._current_elapsed_minutes(), 60)
+
+            fold_elapsed_and_reset_waves(sim)             # = /continue 준비 단계
+
+            self.assertEqual(sim.completed_waves, 0)
+            # 되감기지 않는다: 재개 첫 wave가 곧 60분 지점.
+            self.assertEqual(sim._current_elapsed_minutes(0), 60)
+            self.assertEqual(sim._current_elapsed_minutes(1), 90)
+            self.assertEqual(sim._current_elapsed_minutes(2), 120)
+
+    def test_fixed_continue_clock_string_does_not_rewind(self):
+        # 회귀 전 증상 그대로: 09:00 시작 + 10 wave × 30분 = 14:00 → 재개 첫 wave가
+        # 09:00으로 돌아가면 안 된다.
+        from backend.api.simulation.runner import fold_elapsed_and_reset_waves
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=30, start_time="09:00")
+            sim.completed_waves = 10
+            end_of_run = self._clock(sim, 10)
+            self.assertIn("오후 2시", end_of_run)
+
+            fold_elapsed_and_reset_waves(sim)
+
+            self.assertEqual(self._clock(sim, 0), end_of_run)
+            self.assertNotIn("오전 9시", self._clock(sim, 0))
+            self.assertIn("오후 2시 30분", self._clock(sim, 1))
+
+    def test_repeated_continues_keep_accumulating(self):
+        # 여러 번 이어서 실행해도 누적이 계속 쌓인다(한 번만 접히는 게 아니다).
+        from backend.api.simulation.runner import fold_elapsed_and_reset_waves
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=30)
+            for _ in range(3):
+                sim.completed_waves = 4                   # 매 run 120분
+                fold_elapsed_and_reset_waves(sim)
+            self.assertEqual(sim._elapsed_minutes, 360)
+            self.assertEqual(sim._current_elapsed_minutes(0), 360)
+
+    # ── 2. /resume·/load 직렬화 왕복 후에도 연속 ─────────────────────────────────
+
+    def test_fixed_resume_roundtrip_restores_total_elapsed(self):
+        # finalize_run이 DB에 넣는 값 = 총 경과. /resume·/load는 그 값을
+        # elapsed_minutes_init으로 새 Simulation을 만든다.
+        from backend.api.simulation.runner import _total_elapsed_minutes
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=30)
+            sim.completed_waves = 7                       # 210분
+
+            persisted = _total_elapsed_minutes(sim)
+            self.assertEqual(persisted, 210)              # raw _elapsed_minutes(0)이 아니다
+
+            fresh = self._sim(tmp, time_per_wave=30, elapsed_init=persisted)
+            self.assertEqual(fresh._current_elapsed_minutes(0), 210)
+            self.assertEqual(fresh._current_elapsed_minutes(3), 300)
+            self.assertEqual(self._clock(fresh, 0), self._clock(sim, 7))
+
+    def test_persisted_elapsed_survives_continue_then_resume(self):
+        # /continue로 이어 돌린 뒤 저장해도 총계가 두 run을 모두 포함한다.
+        from backend.api.simulation.runner import (
+            _total_elapsed_minutes, fold_elapsed_and_reset_waves,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=30)
+            sim.completed_waves = 4                       # 1차 run 120분
+            fold_elapsed_and_reset_waves(sim)
+            sim.completed_waves = 6                       # 2차 run 180분
+
+            self.assertEqual(_total_elapsed_minutes(sim), 300)
+
+    def test_total_elapsed_falls_back_for_legacy_sim_objects(self):
+        # 헬퍼가 없는 목/구버전 객체에서도 finalize_run이 터지지 않는다.
+        from backend.api.simulation.runner import _total_elapsed_minutes
+
+        class _Legacy:
+            _elapsed_minutes = 42
+
+        self.assertEqual(_total_elapsed_minutes(_Legacy()), 42)
+        self.assertIsNone(_total_elapsed_minutes(object()))
+
+    # ── 3. 감염 경과 연속 + rebase가 no-op이 됨 ─────────────────────────────────
+
+    def test_fixed_continue_keeps_infection_elapsed_and_rebase_is_noop(self):
+        from backend.api.simulation.runner import fold_elapsed_and_reset_waves
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=60, infection=self._infection_model())
+            sim._set_infected("a", 0, "event")
+            sim.completed_waves = 5                       # 300분 = 급성기
+            anchor_before = sim._agent_infection["a"]["infected_at_minutes"]
+
+            fold_elapsed_and_reset_waves(sim)
+
+            # 경과를 먼저 접었으므로 rebase는 앵커를 건드리지 않는다(no-op).
+            self.assertEqual(sim._agent_infection["a"]["infected_at_minutes"],
+                             anchor_before)
+            # 그래도 증상 단계는 되감기지 않는다 — '지금'이 연속이기 때문.
+            self.assertEqual(
+                InfectionTimeModelTests._symptom(sim, "a", 0), "온몸이 불덩이다.",
+            )
+            self.assertEqual(sim._current_elapsed_minutes(0), 300)
+
+    def test_rebase_defends_when_the_fold_is_skipped(self):
+        # 접기를 빠뜨린 재개 경로가 생기면 rebase가 앵커를 과거로 옮겨 증상 단계
+        # 되감김을 흡수한다 — no-op이 '아무 일도 안 하는 죽은 코드'가 아니라는 근거.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=60, infection=self._infection_model())
+            sim._set_infected("a", 0, "event")
+            sim.completed_waves = 5
+
+            before = sim._current_elapsed_minutes(sim.completed_waves)
+            sim.completed_waves = 0                       # 접기 없이 리셋(회귀 시뮬)
+            sim.rebase_infection_anchors(now=before)
+
+            self.assertEqual(sim._agent_infection["a"]["infected_at_minutes"], -300)
+            self.assertEqual(
+                InfectionTimeModelTests._symptom(sim, "a", 0), "온몸이 불덩이다.",
+            )
+
+    def test_fixed_resume_keeps_infection_elapsed(self):
+        from backend.api.simulation.runner import _total_elapsed_minutes
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=60, infection=self._infection_model())
+            sim._set_infected("a", 0, "event")
+            sim.completed_waves = 5                       # 300분 = 급성기
+
+            state     = sim.export_agent_state()
+            persisted = _total_elapsed_minutes(sim)
+            self.assertEqual(state["a"]["infection"]["elapsed_minutes_since_infection"], 300)
+
+            fresh = self._sim(tmp, time_per_wave=60, infection=self._infection_model(),
+                              elapsed_init=persisted)
+            fresh.restore_agent_state(state)
+
+            # 앵커가 '음수 시간'이 아니라 실제 감염 시점(0분)으로 복원된다.
+            self.assertEqual(fresh._agent_infection["a"]["infected_at_minutes"], 0)
+            self.assertEqual(
+                InfectionTimeModelTests._symptom(fresh, "a", 0), "온몸이 불덩이다.",
+            )
+            # 시계와 병의 진행이 같은 원점을 쓴다.
+            self.assertEqual(self._clock(fresh, 0), self._clock(sim, 5))
+
+    # ── 4. 목표 기간: 기존 동작 유지 + 재개 시 '이번 run 이후' 기준 ────────────────
+
+    def test_target_duration_is_per_run_in_fixed_mode(self):
+        # 이전 run에서 이미 600분이 지났어도, 이번 run은 목표 60분만큼 더 돈다.
+        sim, end = TargetDurationTests()._run(
+            time_per_wave=30, target=60, max_waves=20, elapsed_init=600,
+        )
+        self.assertEqual(end["end_reason"], "target_duration")
+        self.assertEqual(sim.completed_waves, 2)          # elapsed_init 없을 때와 동일
+        self.assertEqual(sim._current_elapsed_minutes(), 660)
+
+    def test_target_duration_fixed_baseline_unchanged(self):
+        # elapsed_init=0인 기존 경로의 결과는 그대로.
+        sim, end = TargetDurationTests()._run(time_per_wave=30, target=60, max_waves=20)
+        self.assertEqual(sim.completed_waves, 2)
+        self.assertEqual(end["end_reason"], "target_duration")
+
+    # ── 5. variable / 시간 개념 꺼짐 모드는 무변경 ────────────────────────────────
+
+    def test_variable_mode_is_unaffected_by_the_fold(self):
+        from backend.api.simulation.runner import (
+            _total_elapsed_minutes, fold_elapsed_and_reset_waves,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_mode="variable", time_per_wave=0)
+            sim._elapsed_minutes = 400
+            sim.completed_waves  = 5
+
+            self.assertEqual(_total_elapsed_minutes(sim), 400)   # wave와 무관
+            fold_elapsed_and_reset_waves(sim)
+            self.assertEqual(sim._elapsed_minutes, 400)          # 접기는 no-op
+            self.assertEqual(sim._current_elapsed_minutes(9), 400)
+
+    def test_variable_mode_target_duration_unchanged(self):
+        sim, end = TargetDurationTests()._run(
+            time_mode="variable", target=20, max_waves=20,
+            category="meal_or_brief", elapsed_init=500,
+        )
+        self.assertEqual(end["end_reason"], "target_duration")
+        self.assertGreaterEqual(sim._elapsed_minutes - 500, 20)
+
+    def test_time_disabled_mode_stays_frozen_at_zero(self):
+        from backend.api.simulation.runner import (
+            _total_elapsed_minutes, fold_elapsed_and_reset_waves,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=0)         # fixed + tpw=0 = 시간 없음
+            sim.completed_waves = 50
+
+            self.assertEqual(sim._current_elapsed_minutes(50), 0)
+            self.assertEqual(_total_elapsed_minutes(sim), 0)
+            fold_elapsed_and_reset_waves(sim)
+            self.assertEqual(sim._elapsed_minutes, 0)
+            self.assertEqual(sim._current_elapsed_minutes(50), 0)
+
+    def test_time_disabled_mode_still_ignores_target_duration(self):
+        sim, end = TargetDurationTests()._run(time_per_wave=0, target=10, max_waves=3)
+        self.assertEqual(sim.completed_waves, 3)
+        self.assertEqual(end["end_reason"], "max_waves")
+
+
 class ConversationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()

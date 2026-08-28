@@ -203,22 +203,32 @@ class _InfectionMixin:
                 self._set_recovered(key, wave, at_minutes=now)
 
     # ── 경과분 앵커 재기준화 (/continue 전용) ────────────────────────────────────
-    def rebase_infection_anchors(self) -> None:
-        """`completed_waves`를 0으로 되돌리기 **직전에** 호출해 감염 경과를 보존한다.
+    def rebase_infection_anchors(self, now: int | None = None) -> None:
+        """리셋으로 '지금'이 되감겼으면 감염 앵커를 새 원점 기준으로 옮긴다.
 
-        fixed 시간 모드에서 `_current_elapsed_minutes`는 `wave * time_per_wave`라
-        `run()`이 호출마다 wave 0부터 다시 세면 '지금'이 0분으로 되감긴다.
-        `infected_at_minutes`를 옛 기준 그대로 둔 채 `/continue`하면 다음 wave에서
-        `now - since`가 갑자기 작아져(심하면 음수) 증상 단계가 앞 단계로 되감긴다 —
-        위치/외모가 재개 시 초기화되던 것과 같은 버그 클래스다.
+        `now`는 **리셋 전의 '지금'**(총 경과 분)이다. 생략하면 현재
+        `completed_waves`로부터 계산하므로, 그때는 반드시 `completed_waves = 0`
+        **직전에** 호출해야 한다. `/continue`처럼 경과를 `_elapsed_minutes`로 접는
+        경로는 접기 전 값을 명시적으로 넘기고 리셋 뒤에 호출한다 — 접은 뒤에
+        인자 없이 부르면 `now`가 접힌 값을 한 번 더 세어 앵커가 두 배로 밀린다.
 
-        variable 모드는 `_elapsed_minutes`가 누적된 채 유지되므로 재기준화 전후의
-        '지금'이 같고, 아래 계산은 자연히 no-op이 된다. `/load`·`/resume`은 새
-        프로세스에서 export/restore를 거치며 같은 재기준화를 하므로 영향 없다 —
-        `/continue`만 같은 프로세스의 `sim_obj`를 그대로 재사용해서 이 단계를
-        건너뛰었다.
+        **정상 동작 시 이 함수는 두 시간 모드 모두에서 no-op이다.** `/continue`가
+        리셋 직전에 경과를 `_elapsed_minutes`로 접게 고쳐진 뒤로(m4), fixed 모드도
+        `_current_elapsed_minutes = _elapsed_minutes + wave*time_per_wave`라 리셋
+        전후의 '지금'이 같아 아래 `now == base` 가드에 걸린다 — variable 모드가
+        원래 그랬던 것과 동일.
+
+        남겨두는 이유: `_elapsed_minutes` 접기를 빠뜨린 새 재개 경로가 생기면
+        (또는 fixed 분기가 다시 wave 전용으로 회귀하면) `infected_at_minutes`가
+        옛 기준에 남아 `now - since`가 갑자기 작아지고(심하면 음수) 증상 단계가
+        앞 단계로 되감긴다 — 위치/외모가 재개 시 초기화되던 것과 같은 버그
+        클래스라, 이 방어선이 그 회귀를 조용히 흡수한다.
+
+        `/load`·`/resume`은 새 프로세스에서 export/restore를 거치며 같은
+        재기준화를 하므로 이 함수와 무관하다.
         """
-        now  = self._current_elapsed_minutes(self.completed_waves)
+        if now is None:
+            now = self._current_elapsed_minutes(self.completed_waves)
         base = self._current_elapsed_minutes(0)   # 리셋 직후의 '지금'
         if now == base:
             return

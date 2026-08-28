@@ -12,7 +12,7 @@ import uuid
 from fastapi import APIRouter, HTTPException
 
 from ....db.database import get_db
-from ..runner import finalize_run, swap_event_queue
+from ..runner import fold_elapsed_and_reset_waves, finalize_run, swap_event_queue
 from ..schemas import SimContinueConfig, SimStartConfig
 from ..state import _sim, _sim_lock
 from .llm_config import _make_agent_llm_map, _make_llm
@@ -182,10 +182,10 @@ def continue_simulation(cfg: SimContinueConfig):
             sim_obj._event_queue    = eq
             sim_obj._stop_event     = stop_ev
             sim_obj._sim_id         = run_sim_id
-            # completed_waves를 0으로 되돌리기 전에 감염 경과 앵커를 먼저 옮겨둔다 —
-            # 순서를 바꾸면 재기준화 계산(completed_waves 기준)이 이미 0을 보게 된다.
-            sim_obj.rebase_infection_anchors()
-            sim_obj.completed_waves = 0
+            # 이번까지의 총 경과를 _elapsed_minutes로 접고 completed_waves를 0으로
+            # 되돌린다 — 접기를 빠뜨리면 fixed 모드에서 에이전트가 보는 [현재 시각]이
+            # 시나리오 시작 시각으로 되감긴다. 순서 의존이 있어 헬퍼로 묶어뒀다.
+            fold_elapsed_and_reset_waves(sim_obj)
 
             if db is not None:
                 config_json = _sim.get("config_json") or "{}"
