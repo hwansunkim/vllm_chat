@@ -12,8 +12,12 @@ from tenacity import wait_none
 from backend import config, state
 from backend.api import conversations
 from backend.api import _conv_helpers
-from backend.api.schemas import ChatMessage
-from backend.db.database import get_db, init_tables, migrate_db
+from backend.api import servers as servers_api
+from backend.api.schemas import ChatMessage, ServerCreate, ServerUpdate
+from backend.db.database import (
+    get_db, init_tables, migrate_db, seed_default_servers,
+)
+from backend.llm.providers.anthropic import AnthropicProvider
 from backend.api.simulation import runtime as sim_runtime
 from backend.api.simulation.schemas import AgentConfig, SimContinueConfig, SimStartConfig
 from backend.llm import bridge
@@ -112,11 +116,14 @@ class FakeChatProvider:
         self.calls = 0
         self.seen_timeouts = []
         self.seen_temperatures = []
+        self.seen_thinking_levels = []
 
-    async def chat(self, messages, *, temperature=0.7, max_tokens=4096, timeout=None):
+    async def chat(self, messages, *, temperature=0.7, max_tokens=4096, timeout=None,
+                   thinking_level=None):
         self.calls += 1
         self.seen_timeouts.append(timeout)
         self.seen_temperatures.append(temperature)
+        self.seen_thinking_levels.append(thinking_level)
         await asyncio.sleep(0.01)  # 실제 IO 처럼 루프에 양보 → 스레드 동시성 노출
         if self.error is not None:
             raise self.error
@@ -1766,6 +1773,103 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("event: error" in chunk for chunk in chunks))
 
 
+    async def _run_chat_capturing_kwargs(self, msg, *, server_level=None, provider=None):
+        """send_chat 을 끝까지 돌리고 async_stream_chat 이 받은 kwargs 를 돌려준다."""
+        captured = {}
+
+        async def ok_stream(messages, **kwargs):
+            captured.update(kwargs)
+            yield {"type": "answer", "chunk": "답"}
+            yield {"type": "usage", "data": {"prompt_tokens": 3, "completion_tokens": 1,
+                                             "answer": "답", "thinking": ""}}
+
+        class LeveledProvider(FakeProvider):
+            thinking_level = server_level
+
+        if provider is not None:
+            conversations.get_registry = lambda: FakeChatRegistry(provider)
+        elif server_level is not None:
+            conversations.get_registry = lambda: FakeChatRegistry(LeveledProvider())
+
+        old_stream = conversations.async_stream_chat
+        conversations.async_stream_chat = ok_stream
+        try:
+            response = await conversations.send_chat("conv-1", msg)
+            chunks = [chunk async for chunk in response.body_iterator]
+        finally:
+            conversations.async_stream_chat = old_stream
+        return captured, chunks
+
+    async def test_chat_without_level_inherits_server_default(self):
+        captured, chunks = await self._run_chat_capturing_kwargs(
+            ChatMessage(content="hello"), server_level="high"
+        )
+
+        self.assertEqual(captured["thinking_level"], "high")
+        self.assertTrue(any('"thinking_level": "high"' in c for c in chunks))
+
+    async def test_chat_level_overrides_server_default(self):
+        captured, _ = await self._run_chat_capturing_kwargs(
+            ChatMessage(content="hello", thinking_level="low"), server_level="high"
+        )
+
+        self.assertEqual(captured["thinking_level"], "low")
+
+    async def test_chat_can_turn_thinking_off_on_a_thinking_server(self):
+        captured, chunks = await self._run_chat_capturing_kwargs(
+            ChatMessage(content="hello", thinking_level="off"), server_level="medium"
+        )
+
+        self.assertEqual(captured["thinking_level"], "off")
+        # off 면 max_tokens 상향(MAX_COMPLETION_TOKENS_THINKING)이 일어나지 않아야 한다.
+        self.assertEqual(captured["max_tokens"], config.MAX_COMPLETION_TOKENS)
+        self.assertTrue(any('"thinking_mode": false' in c for c in chunks))
+
+    async def test_thinking_raises_max_tokens_ceiling(self):
+        captured, _ = await self._run_chat_capturing_kwargs(
+            ChatMessage(content="hello", thinking_level="low")
+        )
+
+        self.assertEqual(captured["max_tokens"], config.MAX_COMPLETION_TOKENS_THINKING)
+
+    async def test_openai_reasoning_provider_raises_max_tokens_even_at_off(self):
+        # QA m-5: 추론 모델은 off 여도 서버가 reasoning 을 하므로 4096 이면 빈 답이 온다.
+        class ReasoningProvider(FakeProvider):
+            thinking_level = "off"
+
+            def needs_thinking_headroom(self, thinking_level=None):
+                return True
+
+        captured, _ = await self._run_chat_capturing_kwargs(
+            ChatMessage(content="hello", thinking_level="off"),
+            provider=ReasoningProvider(),
+        )
+
+        self.assertEqual(captured["thinking_level"], "off")
+        self.assertEqual(captured["max_tokens"], config.MAX_COMPLETION_TOKENS_THINKING)
+
+    async def test_classic_provider_at_high_level_still_uses_provider_verdict(self):
+        # 일반 OpenAI 모델은 사고가 no-op 이므로 상향하지 않는다.
+        class ClassicProvider(FakeProvider):
+            thinking_level = "off"
+
+            def needs_thinking_headroom(self, thinking_level=None):
+                return False
+
+        captured, _ = await self._run_chat_capturing_kwargs(
+            ChatMessage(content="hello", thinking_level="high"),
+            provider=ClassicProvider(),
+        )
+
+        self.assertEqual(captured["thinking_level"], "high")
+        self.assertEqual(captured["max_tokens"], config.MAX_COMPLETION_TOKENS)
+
+    async def test_provider_without_level_attribute_degrades_to_off(self):
+        # 구 provider 객체/테스트 더블이 thinking_level 을 갖지 않아도 500 이 나면 안 된다.
+        captured, _ = await self._run_chat_capturing_kwargs(ChatMessage(content="hello"))
+
+        self.assertEqual(captured["thinking_level"], "off")
+
     async def test_web_search_emits_search_event_and_injects_context(self):
         captured = {}
 
@@ -2008,6 +2112,489 @@ class WebSearchServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].title, "t")
+
+
+class CapturingStreamClient:
+    """stream() 요청 바디를 캡처하는 클라이언트 (한 라운드만 응답)."""
+
+    def __init__(self):
+        self.json_body = None
+
+    def stream(self, *args, **kwargs):
+        self.json_body = kwargs.get("json")
+        payload = {"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]}
+        return FakeStreamResponse([f"data: {json.dumps(payload)}", "data: [DONE]"])
+
+    async def aclose(self):
+        return None
+
+
+class ThinkingLevelTranslationTests(unittest.IsolatedAsyncioTestCase):
+    """thinking_level(off/low/medium/high) → 프로바이더별 요청 바디 번역표."""
+
+    async def _stream_body(self, provider, **kwargs) -> dict:
+        fake = CapturingStreamClient()
+        provider._client = fake
+        async for _ in provider.stream_chat([{"role": "user", "content": "hi"}], **kwargs):
+            pass
+        return fake.json_body
+
+    # ── vLLM ─────────────────────────────────────────────────────────
+    async def test_vllm_off_omits_chat_template_kwargs(self):
+        p = VLLMProvider("s", "t", "http://vllm", "m", thinking_level="off")
+        body = await self._stream_body(p)
+        self.assertNotIn("chat_template_kwargs", body)
+
+    async def test_vllm_enables_thinking_for_every_non_off_level(self):
+        for level in ("low", "medium", "high"):
+            with self.subTest(level=level):
+                p = VLLMProvider("s", "t", "http://vllm", "m", thinking_level=level)
+                body = await self._stream_body(p)
+                self.assertEqual(
+                    body["chat_template_kwargs"],
+                    {"enable_thinking": True, "reasoning_effort": level},
+                )
+
+    # ── OpenAI ───────────────────────────────────────────────────────
+    def test_openai_reasoning_models_send_reasoning_effort(self):
+        # o1-mini / o1-preview 는 reasoning_effort 를 거부하므로 제외
+        # (OpenAIReasoningEffortExclusionTests 참고).
+        for model in ("gpt-5", "gpt-5.1-mini", "o1", "o3", "o3-mini", "o4-mini"):
+            for level in ("low", "medium", "high"):
+                with self.subTest(model=model, level=level):
+                    p = OpenAIProvider("s", "t", "", model, thinking_level=level)
+                    self.assertEqual(p._thinking_body(level), {"reasoning_effort": level})
+
+    def test_openai_classic_models_never_send_reasoning_effort(self):
+        # gpt-4o 등 일반 모델은 이 파라미터를 400 으로 거부한다 → level 이 조용한 no-op.
+        for level in ("off", "low", "medium", "high"):
+            with self.subTest(level=level):
+                p = OpenAIProvider("s", "t", "", "gpt-4o", thinking_level=level)
+                self.assertEqual(p._thinking_body(level), {})
+
+    def test_openai_off_omits_reasoning_effort_even_on_reasoning_models(self):
+        # OpenAI 는 reasoning 을 끄는 스위치가 없다. 생략해 서버 기본값에 맡긴다.
+        p = OpenAIProvider("s", "t", "", "gpt-5", thinking_level="off")
+        self.assertEqual(p._thinking_body("off"), {})
+
+    async def test_openai_stream_body_carries_reasoning_effort(self):
+        p = OpenAIProvider("s", "t", "", "gpt-5", thinking_level="high")
+        body = await self._stream_body(p)
+        self.assertEqual(body["reasoning_effort"], "high")
+        # 추론 모델이므로 temperature 는 여전히 생략된다(기존 회귀 가드와 동일 규칙).
+        self.assertNotIn("temperature", body)
+
+    # ── Anthropic ────────────────────────────────────────────────────
+    def _anthropic_body(self, level, *, max_tokens=config.MAX_COMPLETION_TOKENS_THINKING):
+        p = AnthropicProvider("s", "t", "", "claude-x", thinking_level=level)
+        return p._build_body(
+            [{"role": "user", "content": "hi"}],
+            temperature=0.7, max_tokens=max_tokens,
+            thinking_level=None, stream=False,
+        )
+
+    def test_anthropic_off_has_no_thinking_block(self):
+        body = self._anthropic_body("off")
+        self.assertNotIn("thinking", body)
+        self.assertEqual(body["temperature"], 0.7)
+
+    def test_anthropic_budget_tokens_per_level(self):
+        for level, budget in (("low", 2048), ("medium", 8192), ("high", 24576)):
+            with self.subTest(level=level):
+                body = self._anthropic_body(level)
+                self.assertEqual(body["thinking"], {"type": "enabled", "budget_tokens": budget})
+                self.assertEqual(config.THINKING_BUDGET_BY_LEVEL[level], budget)
+
+    def test_anthropic_forces_temperature_one_when_thinking(self):
+        for level in ("low", "medium", "high"):
+            with self.subTest(level=level):
+                self.assertEqual(self._anthropic_body(level)["temperature"], 1)
+
+    def test_anthropic_max_tokens_always_exceeds_budget(self):
+        # high(24576) 는 MAX_COMPLETION_TOKENS_THINKING(16384) 보다 크므로
+        # 상향이 없으면 API 가 400 을 낸다.
+        for level in ("low", "medium", "high"):
+            for max_tokens in (512, config.MAX_COMPLETION_TOKENS_THINKING):
+                with self.subTest(level=level, max_tokens=max_tokens):
+                    body = self._anthropic_body(level, max_tokens=max_tokens)
+                    self.assertGreater(body["max_tokens"], body["thinking"]["budget_tokens"])
+
+    def test_anthropic_keeps_large_max_tokens_untouched(self):
+        body = self._anthropic_body("low", max_tokens=30000)
+        self.assertEqual(body["max_tokens"], 30000)
+
+    async def test_anthropic_llm_never_enables_thinking(self):
+        # 메모리 키워드 추출·에이전트 라우팅 경로. 서버 기본이 high 여도 꺼져야 한다.
+        p = AnthropicProvider("s", "t", "", "claude-x", thinking_level="high")
+        fake = FakePostClient({
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 2},
+        })
+        p._client = fake
+
+        await p.llm("hi", max_tokens=30)
+
+        self.assertNotIn("thinking", fake.kwargs["json"])
+        self.assertEqual(fake.kwargs["json"]["max_tokens"], 30)
+
+
+class ThinkingLevelResolutionTests(unittest.IsolatedAsyncioTestCase):
+    """서버 기본값(self.thinking_level) vs 요청별 오버라이드."""
+
+    def test_none_falls_back_to_server_default(self):
+        for cls, base in ((VLLMProvider, "http://vllm"), (AnthropicProvider, "")):
+            for level in config.THINKING_LEVELS:
+                with self.subTest(cls=cls.__name__, level=level):
+                    p = cls("s", "t", base, "m", thinking_level=level)
+                    self.assertEqual(p._effective_level(None), level)
+
+    def test_explicit_level_overrides_server_default_in_both_directions(self):
+        p = VLLMProvider("s", "t", "http://vllm", "m", thinking_level="off")
+        self.assertEqual(p._effective_level("high"), "high")
+
+        p2 = VLLMProvider("s", "t", "http://vllm", "m", thinking_level="high")
+        self.assertEqual(p2._effective_level("off"), "off")
+
+    def test_unknown_level_degrades_to_off(self):
+        p = VLLMProvider("s", "t", "http://vllm", "m", thinking_level="ultra")
+        self.assertEqual(p.thinking_level, "off")
+        self.assertEqual(p._effective_level("nonsense"), "off")
+
+    def test_thinking_bool_stays_derived_from_level(self):
+        for level, expected in (("off", False), ("low", True), ("medium", True), ("high", True)):
+            with self.subTest(level=level):
+                self.assertIs(VLLMProvider("s", "t", "http://v", "m", thinking_level=level).thinking,
+                              expected)
+
+    async def test_simulation_path_inherits_server_default(self):
+        # bridge → client.async_chat → provider.chat() 은 level 을 넘기지 않는다.
+        # 시뮬레이션에 별도 사고 UI 가 없어도 서버 기본값이 적용되는지 고정.
+        p = VLLMProvider("s", "t", "http://vllm", "m", thinking_level="medium")
+        fake = FakePostClient({
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+        })
+        p._client = fake
+
+        await p.chat([{"role": "user", "content": "hi"}])
+
+        self.assertEqual(
+            fake.kwargs["json"]["chat_template_kwargs"],
+            {"enable_thinking": True, "reasoning_effort": "medium"},
+        )
+
+    async def test_bridge_passes_thinking_level_through(self):
+        provider = FakeChatProvider()
+        registry = FakeChatRegistry(provider)
+        old = llm_client.get_registry
+        llm_client.get_registry = lambda: registry
+        state.event_loop = asyncio.get_running_loop()
+        try:
+            chat = bridge.make_sync_chat(timeout=5)
+            await asyncio.to_thread(chat, [{"role": "user", "content": "hi"}])
+            # 기본은 None = 서버 기본값 상속 (프로바이더가 해석)
+            self.assertEqual(provider.seen_thinking_levels, [None])
+
+            chat_high = bridge.make_sync_chat(timeout=5, thinking_level="high")
+            await asyncio.to_thread(chat_high, [{"role": "user", "content": "hi"}])
+            self.assertEqual(provider.seen_thinking_levels[-1], "high")
+        finally:
+            llm_client.get_registry = old
+            state.event_loop = None
+
+
+class ThinkingHeadroomTests(unittest.IsolatedAsyncioTestCase):
+    """사고가 실린 요청은 max_tokens 를 상향해야 한다 (QA M-1 / m-5)."""
+
+    def _fake_post(self, provider):
+        fake = FakePostClient({
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+        })
+        provider._client = fake
+        return fake
+
+    async def test_short_simulation_call_gets_thinking_headroom(self):
+        # ABM 의 classify_wave_time 은 max_tokens=256 으로 chat() 을 부른다.
+        # 사고가 상속되면 256 이 전부 reasoning 에 소진돼 continuation 5회 빈 왕복이 된다.
+        p = VLLMProvider("s", "t", "http://vllm", "m", thinking_level="medium")
+        fake = self._fake_post(p)
+
+        await p.chat([{"role": "user", "content": "hi"}], max_tokens=256)
+
+        self.assertEqual(fake.kwargs["json"]["max_tokens"], config.MAX_COMPLETION_TOKENS_THINKING)
+
+    async def test_off_leaves_short_max_tokens_untouched(self):
+        p = VLLMProvider("s", "t", "http://vllm", "m", thinking_level="off")
+        fake = self._fake_post(p)
+
+        await p.chat([{"role": "user", "content": "hi"}], max_tokens=256)
+
+        self.assertEqual(fake.kwargs["json"]["max_tokens"], 256)
+
+    async def test_headroom_never_lowers_a_larger_budget(self):
+        p = VLLMProvider("s", "t", "http://vllm", "m", thinking_level="high")
+        fake = self._fake_post(p)
+
+        await p.chat([{"role": "user", "content": "hi"}], max_tokens=32000)
+
+        self.assertEqual(fake.kwargs["json"]["max_tokens"], 32000)
+
+    async def test_stream_chat_also_gets_headroom(self):
+        p = VLLMProvider("s", "t", "http://vllm", "m", thinking_level="low")
+        fake = CapturingStreamClient()
+        p._client = fake
+
+        async for _ in p.stream_chat([{"role": "user", "content": "hi"}], max_tokens=256):
+            pass
+
+        self.assertEqual(fake.json_body["max_tokens"], config.MAX_COMPLETION_TOKENS_THINKING)
+
+    def test_openai_reasoning_model_needs_headroom_even_when_off(self):
+        # off 여도 OpenAI 는 reasoning 을 끌 수 없다(서버 기본값 medium).
+        for model in ("gpt-5", "o1-mini", "o3", "o4-mini"):
+            with self.subTest(model=model):
+                p = OpenAIProvider("s", "t", "", model, thinking_level="off")
+                self.assertTrue(p.needs_thinking_headroom("off"))
+
+    def test_openai_classic_model_never_needs_headroom(self):
+        # gpt-4o 는 4단계 전부 no-op 이므로 reasoning 토큰을 쓰지 않는다.
+        p = OpenAIProvider("s", "t", "", "gpt-4o", thinking_level="high")
+        for level in config.THINKING_LEVELS:
+            with self.subTest(level=level):
+                self.assertFalse(p.needs_thinking_headroom(level))
+
+    async def test_openai_reasoning_model_off_still_raises_max_tokens(self):
+        p = OpenAIProvider("s", "t", "", "gpt-5", thinking_level="off")
+        fake = self._fake_post(p)
+
+        await p.chat([{"role": "user", "content": "hi"}], max_tokens=4096)
+
+        self.assertEqual(
+            fake.kwargs["json"]["max_completion_tokens"],
+            config.MAX_COMPLETION_TOKENS_THINKING,
+        )
+        # off 이므로 reasoning_effort 는 여전히 생략된다.
+        self.assertNotIn("reasoning_effort", fake.kwargs["json"])
+
+    def test_vllm_headroom_follows_effective_level(self):
+        p = VLLMProvider("s", "t", "http://vllm", "m", thinking_level="off")
+        self.assertFalse(p.needs_thinking_headroom(None))
+        self.assertTrue(p.needs_thinking_headroom("low"))
+
+    def test_anthropic_headroom_follows_effective_level(self):
+        p = AnthropicProvider("s", "t", "", "claude-x", thinking_level="high")
+        self.assertTrue(p.needs_thinking_headroom(None))
+        self.assertFalse(p.needs_thinking_headroom("off"))
+
+
+class OpenAIReasoningEffortExclusionTests(unittest.TestCase):
+    """o1-mini / o1-preview 는 reasoning_effort 를 400 으로 거부한다 (QA m-2)."""
+
+    def test_o1_mini_and_preview_omit_reasoning_effort(self):
+        for model in ("o1-mini", "o1-preview", "o1-mini-2024-09-12"):
+            for level in ("low", "medium", "high"):
+                with self.subTest(model=model, level=level):
+                    p = OpenAIProvider("s", "t", "", model, thinking_level=level)
+                    self.assertEqual(p._thinking_body(level), {})
+
+    def test_full_o1_still_sends_reasoning_effort(self):
+        p = OpenAIProvider("s", "t", "", "o1", thinking_level="high")
+        self.assertEqual(p._thinking_body("high"), {"reasoning_effort": "high"})
+
+    def test_excluded_models_still_omit_temperature_and_need_headroom(self):
+        # 제외는 _thinking_body 한정 — 다른 두 분기는 그대로여야 한다.
+        p = OpenAIProvider("s", "t", "", "o1-mini", thinking_level="high")
+        self.assertEqual(p._temperature_body(0.7), {})
+        self.assertTrue(p.needs_thinking_headroom("high"))
+
+
+class NormalizeThinkingLevelTests(unittest.TestCase):
+    """SQLite INTEGER 는 int 로 돌아온다 — bool 폴백이 실제로 동작해야 한다 (QA m-1)."""
+
+    def test_sqlite_integers_are_coerced_like_bools(self):
+        self.assertEqual(config.normalize_thinking_level(1), "medium")
+        self.assertEqual(config.normalize_thinking_level(0), "off")
+        self.assertEqual(config.normalize_thinking_level(True), "medium")
+        self.assertEqual(config.normalize_thinking_level(False), "off")
+
+    def test_row_fallback_works_when_level_column_is_missing_or_junk(self):
+        for row in ({"thinking": 1}, {"thinking_level": None, "thinking": 1},
+                    {"thinking_level": "junk", "thinking": 1}):
+            with self.subTest(row=row):
+                self.assertEqual(servers_api._row_thinking_level(row), "medium")
+
+    def test_row_fallback_off_when_legacy_flag_is_zero(self):
+        self.assertEqual(servers_api._row_thinking_level({"thinking": 0}), "off")
+
+    def test_valid_level_still_wins_over_legacy_flag(self):
+        self.assertEqual(
+            servers_api._row_thinking_level({"thinking_level": "low", "thinking": 1}), "low")
+
+    def test_strings_and_none_are_unchanged(self):
+        self.assertEqual(config.normalize_thinking_level(None), "off")
+        self.assertIsNone(config.normalize_thinking_level(None, default=None))
+        self.assertEqual(config.normalize_thinking_level(" HIGH "), "high")
+        self.assertEqual(config.normalize_thinking_level("ultra"), "off")
+
+
+class ThinkingLevelSchemaTests(unittest.TestCase):
+    """ChatMessage / ServerCreate / ServerUpdate 의 thinking_level 계약."""
+
+    def test_chat_message_defaults_to_none_meaning_server_default(self):
+        self.assertIsNone(ChatMessage(content="hi").thinking_level)
+
+    def test_chat_message_accepts_every_level(self):
+        for level in config.THINKING_LEVELS:
+            with self.subTest(level=level):
+                self.assertEqual(ChatMessage(content="hi", thinking_level=level).thinking_level, level)
+
+    def test_invalid_level_is_rejected(self):
+        for payload in ({"content": "hi", "thinking_level": "ultra"},
+                        {"content": "hi", "thinking_level": "OFF!"}):
+            with self.subTest(payload=payload):
+                with self.assertRaises(ValidationError):
+                    ChatMessage(**payload)
+
+    def test_invalid_server_level_is_rejected(self):
+        with self.assertRaises(ValidationError):
+            ServerCreate(name="n", base_url="u", model="m", thinking_level="maximum")
+
+    def test_legacy_thinking_bool_is_coerced(self):
+        self.assertEqual(ChatMessage(content="hi", thinking=True).thinking_level, "medium")
+        self.assertEqual(ChatMessage(content="hi", thinking=False).thinking_level, "off")
+        self.assertEqual(
+            ServerCreate(name="n", base_url="u", model="m", thinking=True).thinking_level, "medium")
+        self.assertEqual(ServerUpdate(thinking=True).thinking_level, "medium")
+
+    def test_explicit_level_wins_over_legacy_bool(self):
+        msg = ChatMessage(content="hi", thinking=True, thinking_level="off")
+        self.assertEqual(msg.thinking_level, "off")
+
+    def test_server_create_defaults_to_off(self):
+        self.assertEqual(ServerCreate(name="n", base_url="u", model="m").thinking_level, "off")
+
+    def test_server_update_leaves_level_unset_when_absent(self):
+        self.assertNotIn("thinking_level", ServerUpdate(name="x").model_dump(exclude_unset=True))
+
+
+class ThinkingLevelMigrationTests(unittest.TestCase):
+    """servers.thinking(bool) → servers.thinking_level(TEXT) 값 마이그레이션."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.old_db_path = config.DB_PATH
+        config.DB_PATH = Path(self.tmpdir.name) / "memory.db"
+
+    def tearDown(self):
+        config.DB_PATH = self.old_db_path
+        self.tmpdir.cleanup()
+
+    def _legacy_db(self):
+        conn = get_db()
+        init_tables(conn)
+        # 구 스키마 재현: thinking_level 컬럼이 없는 servers 테이블
+        conn.execute("DROP TABLE servers")
+        conn.execute("""
+            CREATE TABLE servers (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, base_url TEXT NOT NULL,
+                model TEXT NOT NULL, provider_type TEXT NOT NULL DEFAULT 'vllm',
+                api_key TEXT NOT NULL DEFAULT '',
+                weight INTEGER NOT NULL DEFAULT 1,
+                enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0,
+                thinking INTEGER NOT NULL DEFAULT 0, max_model_len INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+        """)
+        for sid, thinking in (("s-on", 1), ("s-off", 0)):
+            conn.execute(
+                "INSERT INTO servers (id, name, base_url, model, thinking, created_at)"
+                " VALUES (?,?,?,?,?,?)",
+                (sid, sid, "http://x", "m", thinking, "2026-01-01T00:00:00"),
+            )
+        conn.commit()
+        return conn
+
+    def test_thinking_true_becomes_medium_and_false_becomes_off(self):
+        conn = self._legacy_db()
+        migrate_db(conn)
+        rows = dict(conn.execute("SELECT id, thinking_level FROM servers").fetchall())
+        conn.close()
+
+        self.assertEqual(rows["s-on"], "medium")
+        self.assertEqual(rows["s-off"], "off")
+
+    def test_migration_is_idempotent(self):
+        conn = self._legacy_db()
+        migrate_db(conn)
+        conn.execute("UPDATE servers SET thinking_level='high' WHERE id='s-on'")
+        conn.commit()
+        migrate_db(conn)  # 두 번째 실행이 이미 승격된 값을 덮어쓰지 않아야 한다
+        rows = dict(conn.execute("SELECT id, thinking_level FROM servers").fetchall())
+        conn.close()
+
+        self.assertEqual(rows["s-on"], "high")
+
+    def test_invalid_stored_level_is_normalized_to_off(self):
+        conn = self._legacy_db()
+        migrate_db(conn)
+        conn.execute("UPDATE servers SET thinking_level='ultra' WHERE id='s-on'")
+        conn.commit()
+        migrate_db(conn)
+        rows = dict(conn.execute("SELECT id, thinking_level FROM servers").fetchall())
+        conn.close()
+
+        self.assertEqual(rows["s-on"], "off")
+
+    def test_sanity_update_resyncs_derived_thinking_column(self):
+        # API 를 거치지 않는 외부 쓰기로 두 컬럼이 드리프트해도 기동 시 맞춰져야 한다.
+        conn = self._legacy_db()
+        migrate_db(conn)
+        conn.execute("UPDATE servers SET thinking_level='high', thinking=0 WHERE id='s-on'")
+        conn.execute("UPDATE servers SET thinking_level='off', thinking=1 WHERE id='s-off'")
+        conn.commit()
+
+        migrate_db(conn)
+        rows = {r[0]: (r[1], r[2]) for r in
+                conn.execute("SELECT id, thinking_level, thinking FROM servers").fetchall()}
+        conn.close()
+
+        self.assertEqual(rows["s-on"], ("high", 1))
+        self.assertEqual(rows["s-off"], ("off", 0))
+
+    def test_seed_honours_provider_type_and_thinking_level(self):
+        conn = get_db()
+        init_tables(conn)
+        migrate_db(conn)
+        seed = Path(self.tmpdir.name) / "servers.json"
+        seed.write_text(json.dumps([
+            {"name": "anthropic-seed", "base_url": "https://api.anthropic.com",
+             "model": "claude-x", "provider_type": "anthropic", "thinking_level": "high"},
+            {"name": "legacy-seed", "base_url": "http://v", "model": "m", "thinking": True},
+            {"name": "plain-seed", "base_url": "http://v", "model": "m"},
+        ]), encoding="utf-8")
+
+        seed_default_servers(conn, path=str(seed))
+        rows = {r["name"]: dict(r) for r in conn.execute("SELECT * FROM servers").fetchall()}
+        conn.close()
+
+        self.assertEqual(rows["anthropic-seed"]["provider_type"], "anthropic")
+        self.assertEqual(rows["anthropic-seed"]["thinking_level"], "high")
+        self.assertEqual(rows["anthropic-seed"]["thinking"], 1)
+        # provider_type 미지정 seed 는 기존대로 vllm
+        self.assertEqual(rows["legacy-seed"]["provider_type"], "vllm")
+        self.assertEqual(rows["legacy-seed"]["thinking_level"], "medium")
+        self.assertEqual(rows["plain-seed"]["thinking_level"], "off")
+
+    def test_row_to_dict_exposes_level_and_derived_bool(self):
+        conn = self._legacy_db()
+        migrate_db(conn)
+        row = conn.execute("SELECT * FROM servers WHERE id='s-on'").fetchone()
+        conn.close()
+
+        d = servers_api._row_to_dict(row)
+        self.assertEqual(d["thinking_level"], "medium")
+        self.assertIs(d["thinking"], True)
 
 
 if __name__ == "__main__":

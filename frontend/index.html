@@ -75,7 +75,33 @@
         rows="1"
         placeholder="메시지를 입력하세요... (@에이전트명 으로 직접 호출 / Enter: 전송)"
       ></textarea>
-      <button id="thinking-btn" disabled title="사고 모드 켜기">🧠</button>
+      <!-- 사고 수준(off/low/medium/high) — 버튼 + 팝오버 메뉴 -->
+      <div id="thinking-control">
+        <div id="thinking-menu" class="hidden" role="menu" aria-label="사고 수준">
+          <div class="thinking-menu-title">사고 수준</div>
+          <button type="button" class="thinking-menu-item" role="menuitemradio" aria-checked="true" data-level="off" tabindex="-1">
+            <span class="tm-mark" aria-hidden="true">✓</span>
+            <span class="tm-text"><span class="tm-label">끄기</span><span class="tm-desc">사고 없이 바로 답변</span></span>
+          </button>
+          <button type="button" class="thinking-menu-item" role="menuitemradio" aria-checked="false" data-level="low" tabindex="-1">
+            <span class="tm-mark" aria-hidden="true">✓</span>
+            <span class="tm-text"><span class="tm-label">낮음 (저)</span><span class="tm-desc">짧게 생각한 뒤 답변</span></span>
+          </button>
+          <button type="button" class="thinking-menu-item" role="menuitemradio" aria-checked="false" data-level="medium" tabindex="-1">
+            <span class="tm-mark" aria-hidden="true">✓</span>
+            <span class="tm-text"><span class="tm-label">보통 (중)</span><span class="tm-desc">균형 잡힌 사고 강도</span></span>
+          </button>
+          <button type="button" class="thinking-menu-item" role="menuitemradio" aria-checked="false" data-level="high" tabindex="-1">
+            <span class="tm-mark" aria-hidden="true">✓</span>
+            <span class="tm-text"><span class="tm-label">높음 (고)</span><span class="tm-desc">깊게 생각 · 느리고 토큰 소모 큼</span></span>
+          </button>
+        </div>
+        <button id="thinking-btn" type="button" disabled data-level="off"
+                aria-haspopup="true" aria-expanded="false" aria-controls="thinking-menu"
+                aria-label="사고 수준: 끄기" title="사고 수준: 끄기">
+          <span class="tb-icon" aria-hidden="true">🧠</span><span id="thinking-btn-level" class="tb-level"></span>
+        </button>
+      </div>
       <button id="websearch-btn" disabled title="웹 검색 켜기">🔍</button>
       <button id="send-btn" disabled>▶</button>
     </div>
@@ -851,6 +877,16 @@
             <input id="sv-max-len" type="number" min="0" step="1024" placeholder="예: 8192">
           </div>
         </div>
+        <div class="server-form-group" id="sv-thinking-row">
+          <label for="sv-thinking-level" id="sv-thinking-label">사고 수준</label>
+          <select id="sv-thinking-level">
+            <option value="off">끄기 (기본)</option>
+            <option value="low">낮음 (저)</option>
+            <option value="medium">보통 (중)</option>
+            <option value="high">높음 (고)</option>
+          </select>
+          <div class="server-form-hint" id="sv-thinking-hint"></div>
+        </div>
         <div class="server-form-row">
           <div class="server-form-group" style="flex:2;justify-content:flex-end;">
             <label>&nbsp;</label>
@@ -862,10 +898,6 @@
               <div class="server-form-check" id="sv-enabled-row">
                 <input type="checkbox" id="sv-enabled" checked>
                 <label for="sv-enabled">활성화</label>
-              </div>
-              <div class="server-form-check" id="sv-thinking-row">
-                <input type="checkbox" id="sv-thinking">
-                <label for="sv-thinking" id="sv-thinking-label">Thinking 모드</label>
               </div>
             </div>
           </div>

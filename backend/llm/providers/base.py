@@ -62,6 +62,9 @@ class LLMProvider(Protocol):
     model: str
     enabled: bool
     is_default: bool
+    # 서버 기본 사고 수준 ("off"|"low"|"medium"|"high"). 요청이 값을 주지 않으면 이게 쓰인다.
+    thinking_level: str
+    # 하위호환 파생값: thinking_level != "off"
     thinking: bool
     model_len: int
 
@@ -72,6 +75,7 @@ class LLMProvider(Protocol):
         temperature: float,
         max_tokens: int,
         timeout: float | None = None,
+        thinking_level: str | None = None,
     ) -> tuple[str, dict]: ...
 
     async def llm(
@@ -88,8 +92,16 @@ class LLMProvider(Protocol):
         *,
         temperature: float,
         max_tokens: int,
-        thinking: bool = False,
+        thinking_level: str | None = None,
     ) -> AsyncGenerator[dict, None]: ...
+
+    def needs_thinking_headroom(self, thinking_level: str | None = None) -> bool:
+        """이 요청이 reasoning 토큰을 소비하므로 max_tokens 상향이 필요한가.
+
+        보통은 `effective level != "off"` 이지만, OpenAI 추론 모델은 `off` 여도
+        reasoning 을 끌 수 없어 항상 True 다.
+        """
+        ...
 
     async def health_check(self) -> bool: ...
 

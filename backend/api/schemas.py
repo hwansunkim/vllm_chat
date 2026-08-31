@@ -1,6 +1,25 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
+
+# 프로바이더 중립 사고 수준. 백엔드가 벤더별 파라미터로 번역한다(backend/config.py 참고).
+ThinkingLevel = Literal["off", "low", "medium", "high"]
+
+
+def _coerce_legacy_thinking(data, *, when_true: str):
+    """구 `thinking: bool` 을 `thinking_level` 로 승격하는 before-validator 헬퍼.
+
+    `thinking_level` 이 명시되면 항상 그 값이 이긴다. `thinking` 만 온 구 클라이언트
+    요청은 True→`when_true` / False→"off" 로 번역된다.
+    """
+    if not isinstance(data, dict):
+        return data
+    if data.get("thinking_level") is not None:
+        return data
+    legacy = data.get("thinking")
+    if not isinstance(legacy, bool):
+        return data
+    return {**data, "thinking_level": when_true if legacy else "off"}
 
 
 class NewConversation(BaseModel):
@@ -12,8 +31,16 @@ class NewConversation(BaseModel):
 
 class ChatMessage(BaseModel):
     content: str
-    thinking: bool = False
+    # None = 서버 기본값(servers.thinking_level) 사용, 명시값 = 이 메시지 한정 오버라이드.
+    thinking_level: ThinkingLevel | None = None
     web_search: bool = False
+    # deprecated: 구 클라이언트 호환용. thinking_level 미지정 시에만 True→"medium" 으로 번역된다.
+    thinking: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_thinking(cls, data):
+        return _coerce_legacy_thinking(data, when_true="medium")
 
 
 class UpdateTitle(BaseModel):
@@ -70,8 +97,15 @@ class ServerCreate(BaseModel):
     api_key: str = ""
     weight: int = 1
     is_default: bool = False
-    thinking: bool = False
+    thinking_level: ThinkingLevel = "off"
+    # deprecated: 구 클라이언트 호환용. thinking_level 미지정 시에만 True→"medium".
+    thinking: bool | None = None
     max_model_len: int = 0  # 0 = 자동 감지
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_thinking(cls, data):
+        return _coerce_legacy_thinking(data, when_true="medium")
 
 
 class ServerHealth(BaseModel):
@@ -135,5 +169,12 @@ class ServerUpdate(BaseModel):
     weight: int | None = None
     enabled: bool | None = None
     is_default: bool | None = None
+    thinking_level: ThinkingLevel | None = None
+    # deprecated: 구 클라이언트 호환용. thinking_level 미지정 시에만 True→"medium".
     thinking: bool | None = None
     max_model_len: int | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_thinking(cls, data):
+        return _coerce_legacy_thinking(data, when_true="medium")

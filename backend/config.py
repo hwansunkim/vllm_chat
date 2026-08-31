@@ -8,6 +8,46 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 MAX_COMPLETION_TOKENS         = 4096
 MAX_COMPLETION_TOKENS_THINKING = 16384
 MAX_CONTINUATION_ROUNDS = 5
+
+# ── 사고(thinking) 수준 ────────────────────────────────────────────────
+# 프로바이더 중립 4단계. 백엔드가 벤더별 파라미터로 번역한다.
+#   vLLM      : off 외에는 chat_template_kwargs.enable_thinking=true
+#               (+ reasoning_effort 를 함께 넣어 세부 강도 지원 모델에 위임)
+#   OpenAI    : 추론 모델(gpt-5/o1/o3/o4)에만 reasoning_effort=<level>
+#   Anthropic : thinking.budget_tokens 를 아래 표로 결정
+THINKING_LEVELS = ("off", "low", "medium", "high")
+
+# Anthropic extended thinking 의 budget_tokens.
+THINKING_BUDGET_BY_LEVEL = {"low": 2048, "medium": 8192, "high": 24576}
+
+# 하위호환 별칭. 구 단일 상수(10000)를 참조하던 코드가 medium 을 가리키게 한다.
+THINKING_BUDGET_TOKENS = THINKING_BUDGET_BY_LEVEL["medium"]
+
+
+def normalize_thinking_level(value, default: str = "off"):
+    """bool / str / None 을 정규 thinking level 문자열로 변환한다.
+
+    - None                → `default` 를 그대로 반환 (호출자가 "미지정"을 구분할 수
+                            있도록 default=None 도 허용한다)
+    - bool/int            → 참→"medium", 거짓→"off" (구 `thinking` 컬럼/필드 호환)
+                            SQLite 의 INTEGER 컬럼은 Python `int` 로 돌아오고
+                            `isinstance(1, bool)` 은 False 이므로 int 도 함께 받아야
+                            DB 행 폴백이 실제로 동작한다.
+    - 유효한 level 문자열 → 소문자로 정규화해 그대로
+    - 그 외(오타/구버전)  → `default`
+    """
+    if value is None:
+        return default
+    if isinstance(value, (bool, int)):
+        return "medium" if value else "off"
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in THINKING_LEVELS:
+            return v
+    return default
+
+
+
 CONTINUE_PROMPT = "계속"
 CONTINUE_PROMPT_THINKING = "계속"
 ARCHIVE_THRESHOLD    = 0.75

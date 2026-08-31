@@ -113,15 +113,30 @@ async def send_chat(conv_id: str, body: ChatMessage):
     temperature = float(used_agent.get("temperature", 0.7)) if used_agent else 0.7
     max_tokens  = int(used_agent.get("max_tokens") or config.MAX_COMPLETION_TOKENS) if used_agent else config.MAX_COMPLETION_TOKENS
     model       = used_agent.get("model") if used_agent else None
-    thinking    = body.thinking
-    if thinking:
-        max_tokens = max(max_tokens, config.MAX_COMPLETION_TOKENS_THINKING)
 
     try:
         selected_provider = get_registry().select(model=model)
     except RuntimeError as e:
         conn.close()
         raise HTTPException(503, str(e))
+
+    # 사고 수준: body 가 값을 주면 이 메시지 한정 오버라이드, 없으면 서버 기본값.
+    # 서버가 이미 확정됐으므로 여기서 effective level 을 계산해 그대로 내려보낸다.
+    effective_level = (
+        body.thinking_level
+        if body.thinking_level is not None
+        else getattr(selected_provider, "thinking_level", "off")
+    )
+    thinking = effective_level != "off"
+    # 예산 상향 판정은 프로바이더에 맡긴다. 보통은 `effective_level != "off"` 지만,
+    # OpenAI 추론 모델(gpt-5/o-계열)은 `off` 여도 reasoning 을 끌 수 없어서 상향이
+    # 필요하다 — 안 그러면 4096 을 reasoning 이 먹고 빈 답변이 온다.
+    if getattr(selected_provider, "needs_thinking_headroom", None) is not None:
+        needs_headroom = selected_provider.needs_thinking_headroom(effective_level)
+    else:
+        needs_headroom = thinking
+    if needs_headroom:
+        max_tokens = max(max_tokens, config.MAX_COMPLETION_TOKENS_THINKING)
 
     save_turn(conn, conv_id, "user", user_content)
 
@@ -173,7 +188,8 @@ async def send_chat(conv_id: str, body: ChatMessage):
             try:
                 async for event in async_stream_chat(
                     messages, temperature=temperature, max_tokens=max_tokens,
-                    model=model, server_id=selected_provider.id, thinking=thinking
+                    model=model, server_id=selected_provider.id,
+                    thinking_level=effective_level,
                 ):
                     if event["type"] == "thinking":
                         full_thinking += event["chunk"]
@@ -239,7 +255,8 @@ async def send_chat(conv_id: str, body: ChatMessage):
                     "model":     selected_provider.model,
                     "model_len": selected_provider.model_len,
                 },
-                "thinking_mode": thinking,
+                "thinking_level": effective_level,
+                "thinking_mode": thinking,  # 하위호환 파생값 (effective_level != "off")
             }
             close_conn()
             yield f"event: done\ndata: {json.dumps(done, ensure_ascii=False)}\n\n"

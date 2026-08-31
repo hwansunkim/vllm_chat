@@ -113,6 +113,7 @@ def init_tables(conn: sqlite3.Connection) -> None:
             enabled       INTEGER NOT NULL DEFAULT 1,
             is_default    INTEGER NOT NULL DEFAULT 0,
             thinking      INTEGER NOT NULL DEFAULT 0,
+            thinking_level TEXT NOT NULL DEFAULT 'off',
             max_model_len INTEGER NOT NULL DEFAULT 0,
             created_at    TEXT NOT NULL
         );
@@ -162,7 +163,9 @@ def migrate_db(conn: sqlite3.Connection) -> None:
                 model TEXT NOT NULL, provider_type TEXT NOT NULL DEFAULT 'vllm',
                 weight INTEGER NOT NULL DEFAULT 1,
                 enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0,
-                thinking INTEGER NOT NULL DEFAULT 0, max_model_len INTEGER NOT NULL DEFAULT 0,
+                thinking INTEGER NOT NULL DEFAULT 0,
+                thinking_level TEXT NOT NULL DEFAULT 'off',
+                max_model_len INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
             )
         """)
@@ -170,12 +173,33 @@ def migrate_db(conn: sqlite3.Connection) -> None:
         server_cols = {r[1] for r in conn.execute("PRAGMA table_info(servers)").fetchall()}
         if "thinking" not in server_cols:
             conn.execute("ALTER TABLE servers ADD COLUMN thinking INTEGER NOT NULL DEFAULT 0")
+        if "thinking_level" not in server_cols:
+            # 구 bool 컬럼(thinking)을 4단계 문자열로 승격한다. 1 → 'medium'(기존
+            # Anthropic budget 10000 에 가장 가까운 단계), 0 → 'off'.
+            # `thinking` 컬럼은 남겨두되(외부/구코드 안전) 소스 오브 트루스는 thinking_level.
+            conn.execute("ALTER TABLE servers ADD COLUMN thinking_level TEXT NOT NULL DEFAULT 'off'")
+            conn.execute(
+                "UPDATE servers SET thinking_level = CASE WHEN thinking THEN 'medium' ELSE 'off' END"
+            )
         if "max_model_len" not in server_cols:
             conn.execute("ALTER TABLE servers ADD COLUMN max_model_len INTEGER NOT NULL DEFAULT 0")
         if "api_key" not in server_cols:
             conn.execute("ALTER TABLE servers ADD COLUMN api_key TEXT NOT NULL DEFAULT ''")
         if "provider_type" not in server_cols:
             conn.execute("ALTER TABLE servers ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'vllm'")
+
+    # NULL/오타/구버전 값이 섞여도 프로바이더 계층이 언제나 유효한 level 만 보게 한다.
+    levels = ",".join(f"'{lv}'" for lv in config.THINKING_LEVELS)
+    conn.execute(
+        f"UPDATE servers SET thinking_level='off' "
+        f"WHERE thinking_level IS NULL OR thinking_level NOT IN ({levels})"
+    )
+    # 파생 컬럼 재동기화. API 를 거치지 않는 외부 쓰기로 두 컬럼이 드리프트해도
+    # (예: thinking_level='high' / thinking=0) 기동 시 thinking_level 기준으로 맞춘다.
+    conn.execute(
+        "UPDATE servers SET thinking = (thinking_level != 'off') "
+        "WHERE thinking != (thinking_level != 'off')"
+    )
 
     turn_cols = {r[1] for r in conn.execute("PRAGMA table_info(turns)").fetchall()}
     if "thinking" not in turn_cols:
@@ -196,13 +220,20 @@ def seed_default_servers(conn: sqlite3.Connection, path: str = "servers.json") -
     servers = json.loads(seed_path.read_text(encoding="utf-8"))
     now = datetime.now().isoformat()
     for s in servers:
+        # seed 파일은 신규 thinking_level 과 구 thinking bool 을 모두 허용한다.
+        level = config.normalize_thinking_level(
+            s.get("thinking_level"),
+            default=config.normalize_thinking_level(s.get("thinking")),
+        )
         conn.execute(
             """INSERT INTO servers
-               (id, name, base_url, model, weight, enabled, is_default, thinking, max_model_len, created_at)
-               VALUES (?,?,?,?,?,1,?,?,?,?)""",
+               (id, name, base_url, model, provider_type, weight, enabled, is_default,
+                thinking, thinking_level, max_model_len, created_at)
+               VALUES (?,?,?,?,?,?,1,?,?,?,?,?)""",
             (str(uuid.uuid4()), s["name"], s["base_url"], s["model"],
+             s.get("provider_type") or "vllm",
              s.get("weight", 1), int(s.get("is_default", False)),
-             int(s.get("thinking", False)), s.get("max_model_len", 0), now),
+             int(level != "off"), level, s.get("max_model_len", 0), now),
         )
     conn.commit()
 

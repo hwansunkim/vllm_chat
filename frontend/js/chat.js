@@ -2,7 +2,7 @@ import { state } from './state.js';
 import { appendMessage, appendLoadingBubble, removeLoadingBubble } from './messages.js';
 import { createStreamRow, readSSEStream } from './stream.js';
 import { loadConversations } from './conversations.js';
-import { updateThinkingBtn } from './servers.js';
+import { refreshThinkingBtn, initThinkingControl } from './servers.js';
 import { scrollToBottom } from './utils.js';
 
 export async function sendMessage() {
@@ -15,7 +15,7 @@ export async function sendMessage() {
   input.value = '';
   input.style.height = 'auto';
   document.getElementById('send-btn').disabled     = true;
-  document.getElementById('thinking-btn').disabled  = true;
+  refreshThinkingBtn();   // isSending 이므로 버튼 비활성 + 열린 팝오버 닫힘
   document.getElementById('websearch-btn').disabled = true;
 
   appendMessage('user', content);
@@ -28,7 +28,9 @@ export async function sendMessage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         content,
-        thinking: state.thinkingEnabled,
+        // 항상 명시 전송한다. null 은 "서버 기본값에 맡김" 이라는 별도 의미라
+        // 사용자가 고른 'off' 를 null 로 보내면 안 된다.
+        thinking_level: state.thinkingLevel,
         web_search: state.webSearchEnabled,
       }),
     });
@@ -50,7 +52,7 @@ export async function sendMessage() {
   } finally {
     state.isSending = false;
     document.getElementById('send-btn').disabled = false;
-    updateThinkingBtn(state.currentServerThinking);
+    refreshThinkingBtn();   // 사용자가 고른 수준은 유지하고 활성 상태만 되돌린다
     document.getElementById('websearch-btn').disabled = !state.currentConvId;
   }
 }
@@ -58,12 +60,8 @@ export async function sendMessage() {
 export function initChatEvents() {
   document.getElementById('send-btn').onclick = sendMessage;
 
-  document.getElementById('thinking-btn').onclick = () => {
-    state.thinkingEnabled = !state.thinkingEnabled;
-    const btn = document.getElementById('thinking-btn');
-    btn.classList.toggle('active', state.thinkingEnabled);
-    btn.title = state.thinkingEnabled ? '사고 모드 끄기' : '사고 모드 켜기';
-  };
+  // 🧠 버튼은 단순 토글이 아니라 4단계 팝오버 메뉴다 (servers.js 가 소유).
+  initThinkingControl();
 
   document.getElementById('websearch-btn').onclick = () => {
     state.webSearchEnabled = !state.webSearchEnabled;

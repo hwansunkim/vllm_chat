@@ -13,6 +13,7 @@ from .schemas import (
     ServerHealth,
     ServerUpdate,
 )
+from .. import config
 from ..db.database import get_db
 from ..llm.registry import get_provider_class, get_registry
 
@@ -33,11 +34,22 @@ def _mask_api_key(key: str | None) -> str:
     return f"{key[:4]}...{key[-4:]}"
 
 
+def _row_thinking_level(row: dict) -> str:
+    """행에서 사고 수준을 읽는다. thinking_level 이 소스 오브 트루스이고,
+    컬럼이 없거나 값이 비정상인 구 DB 는 구 `thinking` bool 로 폴백한다."""
+    return config.normalize_thinking_level(
+        row.get("thinking_level"),
+        default=config.normalize_thinking_level(row.get("thinking")),
+    )
+
+
 def _row_to_dict(row) -> dict:
     d = dict(row)
     d["enabled"] = bool(d["enabled"])
     d["is_default"] = bool(d["is_default"])
-    d["thinking"] = bool(d.get("thinking", False))
+    d["thinking_level"] = _row_thinking_level(d)
+    # 하위호환: 구 프론트/외부 소비자를 위해 bool 파생값을 계속 내보낸다.
+    d["thinking"] = d["thinking_level"] != "off"
     d["max_model_len"] = d.get("max_model_len", 0)
     d["provider_type"] = d.get("provider_type") or "vllm"
     d["api_key"] = _mask_api_key(d.get("api_key"))
@@ -66,10 +78,12 @@ async def create_server(body: ServerCreate):
         conn.execute("UPDATE servers SET is_default=0")
 
     conn.execute(
-        """INSERT INTO servers (id, name, base_url, model, provider_type, api_key, weight, enabled, is_default, thinking, max_model_len, created_at)
-           VALUES (?,?,?,?,?,?,?,1,?,?,?,?)""",
+        """INSERT INTO servers (id, name, base_url, model, provider_type, api_key, weight, enabled, is_default, thinking, thinking_level, max_model_len, created_at)
+           VALUES (?,?,?,?,?,?,?,1,?,?,?,?,?)""",
         (sid, body.name, body.base_url.rstrip("/"), body.model, body.provider_type, body.api_key,
-         body.weight, int(body.is_default), int(body.thinking), body.max_model_len, now),
+         body.weight, int(body.is_default),
+         int(body.thinking_level != "off"), body.thinking_level,
+         body.max_model_len, now),
     )
     conn.commit()
     row = dict(conn.execute("SELECT * FROM servers WHERE id=?", (sid,)).fetchone())
@@ -111,7 +125,7 @@ async def probe_models(body: ModelProbeRequest):
         api_key=api_key,
         enabled=False,
         is_default=False,
-        thinking=False,
+        thinking_level="off",
         configured_max_len=0,
     )
     try:
@@ -161,6 +175,15 @@ async def update_server(server_id: str, body: ServerUpdate):
         raise HTTPException(404)
 
     fields = body.model_dump(exclude_unset=True)
+
+    # 사고 수준: thinking_level 이 소스 오브 트루스. 구 `thinking` bool 은
+    # 스키마 validator 가 이미 thinking_level 로 승격했으므로 여기서는 파생 컬럼을
+    # 동기화하기만 한다(NOT NULL 컬럼에 None 이 흘러들지 않도록 방어).
+    if fields.get("thinking_level") is None:
+        fields.pop("thinking_level", None)
+        fields.pop("thinking", None)
+    else:
+        fields["thinking"] = int(fields["thinking_level"] != "off")
 
     # api_key 는 GET 응답에서 마스킹되므로, 프론트가 되돌려 보낸 값을 그대로 저장하면 안 된다.
     # 계약: 빈 문자열 = "변경 안 함"(기존 키 유지). 실제 새 키를 넣었을 때만 갱신된다.

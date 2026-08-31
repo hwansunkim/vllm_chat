@@ -3,7 +3,7 @@ import { api } from './api.js';
 import { esc, scrollToBottom } from './utils.js';
 import { appendMessage } from './messages.js';
 import { updateContextBar } from './context-bar.js';
-import { updateThinkingBtn } from './servers.js';
+import { refreshThinkingBtn } from './servers.js';
 
 // ── Conversation list ────────────────────────────────────────────────────────
 
@@ -36,9 +36,9 @@ export async function loadConversations() {
             <p>새 대화를 시작하거나 기존 대화를 선택하세요</p>
           </div>`;
         document.getElementById('send-btn').disabled = true;
-        document.getElementById('thinking-btn').disabled = true;
-        state.thinkingEnabled = false;
-        document.getElementById('thinking-btn').classList.remove('active');
+        // 대화가 사라졌으니 사고 수준도 서버 기본값으로 되돌린다 (버튼은 자동 비활성).
+        state.thinkingLevel = state.currentServerThinkingLevel;
+        refreshThinkingBtn();
         document.getElementById('websearch-btn').disabled = true;
         state.webSearchEnabled = false;
         document.getElementById('websearch-btn').classList.remove('active');
@@ -58,7 +58,7 @@ export async function openConversation(id) {
   state.currentConvId = id;
   document.getElementById('send-btn').disabled = false;
   document.getElementById('websearch-btn').disabled = false;
-  updateThinkingBtn(state.currentServerThinking);
+  refreshThinkingBtn();
   document.querySelectorAll('.conv-item').forEach(el =>
     el.classList.toggle('active', el.dataset.id === id)
   );

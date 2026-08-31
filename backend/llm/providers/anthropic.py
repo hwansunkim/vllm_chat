@@ -13,7 +13,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://api.anthropic.com/v1"
 ANTHROPIC_VERSION = "2023-06-01"
-THINKING_BUDGET_TOKENS = 10000
+# 하위호환 별칭. level 별 budget 은 config.THINKING_BUDGET_BY_LEVEL 이 소스 오브 트루스.
+THINKING_BUDGET_TOKENS = config.THINKING_BUDGET_TOKENS
 # Claude 계열은 API 로 컨텍스트 길이를 노출하지 않는다. 설정값이 없을 때의 보수적 기본치.
 DEFAULT_CONTEXT_LEN = 200_000
 
@@ -73,7 +74,7 @@ class AnthropicProvider:
         api_key: str = "",
         enabled: bool = True,
         is_default: bool = False,
-        thinking: bool = False,
+        thinking_level: str = "off",
         configured_max_len: int = 0,
     ) -> None:
         self.id         = server_id
@@ -82,9 +83,12 @@ class AnthropicProvider:
         self.model      = model
         self.enabled    = enabled
         self.is_default = is_default
-        self.thinking   = thinking
+        # 서버 기본 사고 수준. 요청이 level 을 주지 않으면 이 값이 쓰인다.
+        self.thinking_level = config.normalize_thinking_level(thinking_level)
+        # 하위호환 파생값 — 구 코드의 `provider.thinking` 참조를 깨지 않는다.
+        self.thinking   = self.thinking_level != "off"
         self.model_len: int = configured_max_len or DEFAULT_CONTEXT_LEN
-        timeout = httpx.Timeout(300.0) if thinking else httpx.Timeout(120.0)
+        timeout = httpx.Timeout(300.0) if self.thinking else httpx.Timeout(120.0)
         self._client = httpx.AsyncClient(timeout=timeout)
         effective_key = api_key or getattr(config, "ANTHROPIC_API_KEY", "")
         self._headers = {
@@ -107,22 +111,41 @@ class AnthropicProvider:
 
     # ── 요청 바디 ─────────────────────────────────────────────────────
 
+    def _effective_level(self, thinking_level: str | None) -> str:
+        """요청이 준 level 과 서버 기본값을 합쳐 실제로 적용할 level 을 정한다.
+
+        `None`(미지정) 이면 서버 기본값(`self.thinking_level`)을 쓴다.
+        """
+        if thinking_level is None:
+            return self.thinking_level
+        return config.normalize_thinking_level(thinking_level)
+
+    def needs_thinking_headroom(self, thinking_level: str | None = None) -> bool:
+        """사고가 켜지면 budget 만큼의 헤드룸이 필요하다.
+
+        Anthropic 은 `_build_body()` 가 `budget + MAX_COMPLETION_TOKENS` 로 직접
+        상향하므로 이 값은 호출자(conversations.py)의 예산 계산용 신호일 뿐이다.
+        """
+        return self._effective_level(thinking_level) != "off"
+
     def _build_body(
         self,
         messages: list,
         *,
         temperature: float,
         max_tokens: int,
-        thinking: bool,
+        thinking_level: str | None,
         stream: bool,
     ) -> dict:
         system, converted = _split_system(messages)
-        use_thinking = bool(self.thinking and thinking)
+        level = self._effective_level(thinking_level)
+        use_thinking = level != "off"
+        budget = config.THINKING_BUDGET_BY_LEVEL.get(level, config.THINKING_BUDGET_TOKENS)
 
         # extended thinking 은 max_tokens > budget_tokens 를 요구하고,
         # temperature 는 1 이외의 값을 허용하지 않는다.
-        if use_thinking and max_tokens <= THINKING_BUDGET_TOKENS:
-            max_tokens = THINKING_BUDGET_TOKENS + config.MAX_COMPLETION_TOKENS
+        if use_thinking and max_tokens <= budget:
+            max_tokens = budget + config.MAX_COMPLETION_TOKENS
 
         body: dict = {
             "model":      self.model,
@@ -132,7 +155,15 @@ class AnthropicProvider:
         if system:
             body["system"] = system
         if use_thinking:
-            body["thinking"] = {"type": "enabled", "budget_tokens": THINKING_BUDGET_TOKENS}
+            body["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            # API 제약: extended thinking 은 temperature 1 만 허용한다. 시뮬레이션의
+            # 에이전트별 temperature 오버라이드가 여기서 말없이 사라지므로 알린다.
+            if temperature != 1:
+                logger.warning(
+                    "[%s] extended thinking(level=%s) 이 켜져 있어 temperature=%s 를 "
+                    "1 로 강제합니다 (Anthropic API 제약).",
+                    self.name, level, temperature,
+                )
             body["temperature"] = 1
         else:
             body["temperature"] = temperature
@@ -164,6 +195,12 @@ class AnthropicProvider:
             [{"role": "user", "content": prompt}],
             temperature=temperature,
             max_tokens=max_tokens,
+            # llm() 은 메모리 키워드 추출·에이전트 라우팅·검색 질의 재작성 같은
+            # 내부 유틸 경로다. extended thinking 을 켜면 temperature 가 1 로
+            # 강제되고 max_tokens 가 budget 만큼 부풀어 짧고 결정적인 출력이
+            # 오염된다. 서버 기본 수준과 무관하게 항상 끈다.
+            # (OpenAICompatibleProvider.llm() 도 _thinking_body() 를 쓰지 않는다)
+            thinking_level="off",
         )
         return answer
 
@@ -174,16 +211,17 @@ class AnthropicProvider:
         temperature: float = 0.7,
         max_tokens: int = config.MAX_COMPLETION_TOKENS,
         timeout: float | None = None,
+        thinking_level: str | None = None,
     ) -> tuple[str, dict]:
         body = self._build_body(
             messages,
             temperature=temperature,
             max_tokens=max_tokens,
-            # 비스트리밍 chat()/llm() 은 메모리 키워드 추출·에이전트 라우팅 같은
-            # 내부 유틸 호출 경로다. extended thinking 을 켜면 temperature 가 1 로
-            # 강제되고 max_tokens 가 14k 로 부풀어 짧고 결정적인 출력이 오염된다.
-            # (OpenAICompatibleProvider.chat() 도 _thinking_body() 를 쓰지 않는다)
-            thinking=False,
+            # 비스트리밍 chat() 의 유일한 호출자는 시뮬레이션(bridge.make_sync_chat)이다.
+            # level 을 주지 않으면 서버 기본값을 상속한다 — 시뮬레이션 전용 사고 UI 없이
+            # 선택된 서버의 설정을 그대로 따르게 하기 위함. 내부 유틸 경로인 llm() 은
+            # 명시적으로 "off" 를 넘겨 이 상속에서 빠진다.
+            thinking_level=thinking_level,
             stream=False,
         )
         try:
@@ -231,13 +269,13 @@ class AnthropicProvider:
         *,
         temperature: float = 0.7,
         max_tokens: int = config.MAX_COMPLETION_TOKENS,
-        thinking: bool = False,
+        thinking_level: str | None = None,
     ) -> AsyncGenerator[dict, None]:
         body = self._build_body(
             messages,
             temperature=temperature,
             max_tokens=max_tokens,
-            thinking=thinking,
+            thinking_level=thinking_level,
             stream=True,
         )
 

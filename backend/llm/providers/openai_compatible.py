@@ -49,6 +49,7 @@ class OpenAICompatibleProvider:
       - DEFAULT_API_KEY_ATTR : config 모듈에서 읽어올 환경변수 기반 API 키 속성명
       - HEALTH_PATH  : 생존 확인용 경로 (None 이면 /v1/models 조회로 대체)
       - _thinking_body() : 요청 바디에 추가할 벤더 전용 thinking 파라미터
+                           (인자는 이미 해석된 effective level 문자열)
     """
 
     DEFAULT_BASE_URL: str = ""
@@ -69,7 +70,7 @@ class OpenAICompatibleProvider:
         api_key: str = "",
         enabled: bool = True,
         is_default: bool = False,
-        thinking: bool = False,
+        thinking_level: str = "off",
         configured_max_len: int = 0,
     ) -> None:
         self.id        = server_id
@@ -78,9 +79,12 @@ class OpenAICompatibleProvider:
         self.model     = model
         self.enabled   = enabled
         self.is_default = is_default
-        self.thinking  = thinking
+        # 서버 기본 사고 수준. 요청이 level 을 주지 않으면 이 값이 쓰인다.
+        self.thinking_level = config.normalize_thinking_level(thinking_level)
+        # 하위호환 파생값 — 구 코드의 `provider.thinking` 참조를 깨지 않는다.
+        self.thinking  = self.thinking_level != "off"
         self.model_len: int = configured_max_len
-        timeout = httpx.Timeout(300.0) if thinking else httpx.Timeout(60.0)
+        timeout = httpx.Timeout(300.0) if self.thinking else httpx.Timeout(60.0)
         self._client = httpx.AsyncClient(timeout=timeout)
         effective_key = api_key or getattr(config, self.DEFAULT_API_KEY_ATTR, "")
         self._headers = {"Content-Type": "application/json"}
@@ -101,9 +105,37 @@ class OpenAICompatibleProvider:
 
     # ── 벤더 전용 훅 ──────────────────────────────────────────────────
 
-    def _thinking_body(self, thinking: bool) -> dict:
-        """요청 바디에 병합할 벤더 전용 thinking 파라미터. 기본은 없음."""
+    def _effective_level(self, thinking_level: str | None) -> str:
+        """요청이 준 level 과 서버 기본값을 합쳐 실제로 적용할 level 을 정한다.
+
+        `None`(미지정) 이면 서버 기본값(`self.thinking_level`)을 쓴다. 명시값은
+        서버 기본값을 오버라이드한다 — 채팅 🧠 컨트롤이 메시지별로 끄거나 올릴 수 있다.
+        """
+        if thinking_level is None:
+            return self.thinking_level
+        return config.normalize_thinking_level(thinking_level)
+
+    def _thinking_body(self, level: str) -> dict:
+        """요청 바디에 병합할 벤더 전용 thinking 파라미터. 기본은 없음.
+
+        `level` 은 `_effective_level()` 로 이미 해석된 "off"|"low"|"medium"|"high".
+        """
         return {}
+
+    def needs_thinking_headroom(self, thinking_level: str | None = None) -> bool:
+        """이 요청이 reasoning 토큰을 소비하므로 max_tokens 상향이 필요한가.
+
+        사고가 켜지면 생성 예산의 상당 부분을 reasoning 이 먼저 먹는다. 예산을
+        올려두지 않으면 답변이 나오기도 전에 `finish_reason == "length"` 로 끊겨
+        continuation 루프가 빈 왕복만 반복한다(ABM 의 `max_tokens=256` 분류 호출이
+        정확히 이 함정에 빠졌다). 벤더별로 판정이 다르므로 훅으로 둔다.
+        """
+        return self._effective_level(thinking_level) != "off"
+
+    def _with_thinking_headroom(self, max_tokens: int, thinking_level: str | None) -> int:
+        if self.needs_thinking_headroom(thinking_level):
+            return max(max_tokens, config.MAX_COMPLETION_TOKENS_THINKING)
+        return max_tokens
 
     def _temperature_body(self, temperature: float) -> dict:
         """요청 바디에 병합할 temperature 파라미터.
@@ -144,15 +176,23 @@ class OpenAICompatibleProvider:
         temperature: float = 0.7,
         max_tokens: int = config.MAX_COMPLETION_TOKENS,
         timeout: float | None = None,
+        thinking_level: str | None = None,
     ) -> tuple[str, dict]:
         # timeout 미지정 시 생성자에서 설정한 클라이언트 기본값(60s/300s)을 그대로 쓴다.
         req_timeout = httpx.Timeout(timeout) if timeout else httpx.USE_CLIENT_DEFAULT
+        # 비스트리밍 chat() 의 유일한 호출자는 시뮬레이션(bridge.make_sync_chat)이다.
+        # level 을 주지 않으면 서버 기본값을 상속한다 — 시뮬레이션 전용 사고 UI 없이
+        # 선택된 서버의 설정을 그대로 따르게 하기 위함.
+        level       = self._effective_level(thinking_level)
         full_reply  = ""
         full_thinking = ""
         total_completion_tokens = 0
         final_usage: dict = {}
         current_messages = list(messages)
-        effective_max    = max_tokens
+        # 사고가 실리는 요청은 예산을 올린다. 시뮬레이션의 짧은 유틸 호출
+        # (classify_wave_time 은 max_tokens=256)이 reasoning 에 예산을 다 쓰고
+        # 빈 응답으로 continuation 5회를 왕복하는 것을 막는다.
+        effective_max    = self._with_thinking_headroom(max_tokens, thinking_level)
         _context_retried = False
 
         for _ in range(config.MAX_CONTINUATION_ROUNDS):
@@ -165,6 +205,7 @@ class OpenAICompatibleProvider:
                         "messages":    current_messages,
                         self.MAX_TOKENS_PARAM: effective_max,
                         **self._temperature_body(temperature),
+                        **self._thinking_body(level),
                     },
                     timeout=req_timeout,
                 )
@@ -344,9 +385,10 @@ class OpenAICompatibleProvider:
         *,
         temperature: float = 0.7,
         max_tokens: int = config.MAX_COMPLETION_TOKENS,
-        thinking: bool = False,
+        thinking_level: str | None = None,
     ) -> AsyncGenerator[dict, None]:
-        effective_max    = max_tokens
+        level            = self._effective_level(thinking_level)
+        effective_max    = self._with_thinking_headroom(max_tokens, thinking_level)
         current_messages = list(messages)
         full_thinking    = ""
         full_answer      = ""
@@ -376,7 +418,7 @@ class OpenAICompatibleProvider:
                             **self._temperature_body(temperature),
                             "stream":         True,
                             "stream_options": {"include_usage": True},
-                            **self._thinking_body(thinking),
+                            **self._thinking_body(level),
                         },
                     ) as response:
                         try:

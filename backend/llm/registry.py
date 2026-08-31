@@ -4,6 +4,7 @@ import asyncio
 import logging
 import sqlite3
 
+from .. import config
 from .providers.anthropic import AnthropicProvider
 from .providers.base import LLMProvider
 from .providers.openai import OpenAIProvider
@@ -77,7 +78,11 @@ class ServerRegistry:
             api_key=row.get("api_key", ""),
             enabled=bool(row["enabled"]),
             is_default=bool(row.get("is_default", False)),
-            thinking=bool(row.get("thinking", False)),
+            # thinking_level 이 소스 오브 트루스. 컬럼이 없는 구 row 는 bool 로 폴백.
+            thinking_level=config.normalize_thinking_level(
+                row.get("thinking_level"),
+                default=config.normalize_thinking_level(row.get("thinking")),
+            ),
             configured_max_len=int(row.get("max_model_len", 0)),
         )
         self._providers[row["id"]] = p

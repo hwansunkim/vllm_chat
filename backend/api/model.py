@@ -20,7 +20,8 @@ def model_status():
             "model_len": p.model_len,
             "is_default": p.is_default,
             "enabled": p.enabled,
-            "thinking": p.thinking,
+            "thinking_level": p.thinking_level,
+            "thinking": p.thinking,  # 하위호환 파생값 (thinking_level != "off")
         }
         for p in registry.list_providers()
     ]
@@ -31,7 +32,9 @@ def model_status():
         "current_server": {
             "id": default.id,
             "name": default.name,
-            "thinking": default.thinking,
+            # 프론트는 이 값으로 채팅 🧠 컨트롤의 초기 수준을 맞춘다.
+            "thinking_level": default.thinking_level,
+            "thinking": default.thinking,  # 하위호환 파생값
         } if default else None,
         "servers": servers,
     }

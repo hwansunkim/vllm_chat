@@ -5,7 +5,36 @@ import { invalidateServerList } from './sim/settings/server-list.js';
 
 let _statusServers = [];
 
-// ── Model status + Thinking button ──────────────────────────────────────────
+// ── 사고 수준 (thinking_level) ────────────────────────────────────────────────
+// 백엔드 계약(_workspace/backend_done.md (b)): "off" | "low" | "medium" | "high".
+// 그 외 값은 422 이므로 프론트에서 나가는 값은 반드시 이 4개 중 하나여야 한다.
+
+export const THINKING_LEVELS = ['off', 'low', 'medium', 'high'];
+
+const THINKING_LEVEL_META = {
+  off:    { short: '',   label: '끄기' },
+  low:    { short: '저', label: '낮음' },
+  medium: { short: '중', label: '보통' },
+  high:   { short: '고', label: '높음' },
+};
+
+// 프로바이더/모델에 따라 조용히 무시될 수 있다는 안내 (OpenAI 일반 모델 등).
+// 상태 엔드포인트가 provider_type 을 주지 않으므로 모델별 판정 대신 일반 문구로 둔다.
+const THINKING_TOOLTIP_NOTE = '일부 모델(OpenAI 일반 모델 등)은 이 설정을 무시할 수 있습니다';
+
+export function normalizeThinkingLevel(value, fallbackBool = undefined) {
+  if (THINKING_LEVELS.includes(value)) return value;
+  // thinking_level 이 없는 구 응답 대비 — 구 bool 로 폴백한다 (백엔드 규칙과 동일).
+  if (value === undefined || value === null) return fallbackBool ? 'medium' : 'off';
+  return 'off';
+}
+
+/** 서버 응답 한 행에서 사고 수준을 읽는다. */
+function rowThinkingLevel(row) {
+  return normalizeThinkingLevel(row?.thinking_level, row?.thinking);
+}
+
+// ── Model status ─────────────────────────────────────────────────────────────
 
 export async function loadModelStatus() {
   try {
@@ -19,7 +48,10 @@ export async function loadModelStatus() {
     const serverName = data.current_server?.name ?? '서버 없음';
     document.getElementById('current-server-name').textContent = serverName;
 
-    updateThinkingBtn(data.current_server?.thinking ?? false);
+    updateThinkingBtn(
+      data.current_server?.thinking_level ?? 'off',
+      data.current_server?.id ?? null,
+    );
     renderServerDropdown(_statusServers);
   } catch {
     document.getElementById('model-badge').textContent = '연결 오류';
@@ -27,22 +59,136 @@ export async function loadModelStatus() {
   }
 }
 
-export function updateThinkingBtn(supportsThinking) {
-  state.currentServerThinking = supportsThinking;
-  const btn = document.getElementById('thinking-btn');
-  if (!state.currentConvId) return;
+// ── Thinking button + popover menu ───────────────────────────────────────────
 
-  if (!supportsThinking) {
-    if (state.thinkingEnabled) {
-      state.thinkingEnabled = false;
-      btn.classList.remove('active');
-    }
-    btn.disabled = true;
-    btn.title = '이 서버는 Thinking 모드를 지원하지 않습니다';
-  } else {
-    btn.disabled = false;
-    btn.title = state.thinkingEnabled ? '사고 모드 끄기' : '사고 모드 켜기';
+// 마지막으로 반영한 "현재 서버 기본값" 의 지문 — `${id}:${level}`.
+// 채팅 컨트롤을 리셋할지 말지는 오직 이 값이 바뀌었는지로 판단한다.
+let _serverDefaultKey = null;
+
+/**
+ * 선택된 서버의 기본 사고 수준을 반영한다. loadModelStatus 에서만 호출된다.
+ *
+ * 채팅 컨트롤의 현재 값(state.thinkingLevel)은 **기본값 자체가 달라졌을 때만** 리셋한다:
+ *   - 다른 서버로 전환됨 (id 변경)
+ *   - 현재 서버의 thinking_level 을 편집함 (level 변경)
+ * loadModelStatus 는 무관한 서버를 저장/삭제한 뒤에도 불리므로, 그 경우
+ * 무조건 리셋하면 사용자가 올려둔 수준이 조용히 사라진다.
+ */
+export function updateThinkingBtn(serverLevel, serverId = null) {
+  const level = normalizeThinkingLevel(serverLevel);
+  const key   = `${serverId ?? ''}:${level}`;
+
+  state.currentServerThinkingLevel = level;
+  if (key !== _serverDefaultKey) {
+    _serverDefaultKey = key;
+    state.thinkingLevel = level;
+    closeThinkingMenu();
   }
+  refreshThinkingBtn();
+}
+
+/** state.thinkingLevel / currentConvId / isSending 을 버튼 표시에 반영한다. */
+export function refreshThinkingBtn() {
+  const btn = document.getElementById('thinking-btn');
+  if (!btn) return;
+
+  const level = normalizeThinkingLevel(state.thinkingLevel);
+  state.thinkingLevel = level;
+  const meta = THINKING_LEVEL_META[level];
+
+  btn.dataset.level = level;
+  btn.classList.toggle('active', level !== 'off');
+  const levelEl = document.getElementById('thinking-btn-level');
+  if (levelEl) levelEl.textContent = meta.short;
+
+  btn.disabled = !state.currentConvId || state.isSending;
+  btn.title = `사고 수준: ${meta.label}\n${THINKING_TOOLTIP_NOTE}`;
+  btn.setAttribute('aria-label', `사고 수준: ${meta.label}`);
+
+  for (const item of thinkingMenuItems()) {
+    const on = item.dataset.level === level;
+    item.setAttribute('aria-checked', on ? 'true' : 'false');
+    item.classList.toggle('selected', on);
+  }
+
+  if (btn.disabled) closeThinkingMenu();
+}
+
+function thinkingMenuItems() {
+  return Array.from(document.querySelectorAll('#thinking-menu .thinking-menu-item'));
+}
+
+function setThinkingLevel(level) {
+  state.thinkingLevel = normalizeThinkingLevel(level);
+  refreshThinkingBtn();
+}
+
+function isThinkingMenuOpen() {
+  const menu = document.getElementById('thinking-menu');
+  return !!menu && !menu.classList.contains('hidden');
+}
+
+function openThinkingMenu() {
+  const menu = document.getElementById('thinking-menu');
+  const btn  = document.getElementById('thinking-btn');
+  if (!menu || !btn || btn.disabled) return;
+  menu.classList.remove('hidden');
+  btn.setAttribute('aria-expanded', 'true');
+  const items = thinkingMenuItems();
+  (items.find(i => i.getAttribute('aria-checked') === 'true') ?? items[0])?.focus();
+}
+
+function closeThinkingMenu(focusBtn = false) {
+  const menu = document.getElementById('thinking-menu');
+  const btn  = document.getElementById('thinking-btn');
+  if (!menu || menu.classList.contains('hidden')) return;
+  menu.classList.add('hidden');
+  btn?.setAttribute('aria-expanded', 'false');
+  if (focusBtn) btn?.focus();
+}
+
+function onThinkingMenuKeydown(e) {
+  const items = thinkingMenuItems();
+  const idx   = items.indexOf(document.activeElement);
+  if (e.key === 'Escape')          { e.preventDefault(); closeThinkingMenu(true); }
+  else if (e.key === 'ArrowDown')  { e.preventDefault(); items[(idx + 1 + items.length) % items.length]?.focus(); }
+  else if (e.key === 'ArrowUp')    { e.preventDefault(); items[(idx - 1 + items.length) % items.length]?.focus(); }
+  else if (e.key === 'Home')       { e.preventDefault(); items[0]?.focus(); }
+  else if (e.key === 'End')        { e.preventDefault(); items[items.length - 1]?.focus(); }
+  else if (e.key === 'Tab')        { closeThinkingMenu(); }
+}
+
+/** 🧠 버튼 + 팝오버 메뉴의 이벤트를 1회 등록한다 (chat.js 의 initChatEvents 에서 호출). */
+export function initThinkingControl() {
+  const btn  = document.getElementById('thinking-btn');
+  const menu = document.getElementById('thinking-menu');
+  const root = document.getElementById('thinking-control');
+  if (!btn || !menu || !root) return;
+
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    if (btn.disabled) return;
+    if (isThinkingMenuOpen()) closeThinkingMenu(true);
+    else openThinkingMenu();
+  });
+  btn.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); openThinkingMenu(); }
+  });
+
+  menu.addEventListener('click', e => {
+    const item = e.target.closest('.thinking-menu-item');
+    if (!item) return;
+    e.stopPropagation();
+    setThinkingLevel(item.dataset.level);
+    closeThinkingMenu(true);
+  });
+  menu.addEventListener('keydown', onThinkingMenuKeydown);
+
+  document.addEventListener('click', e => {
+    if (!root.contains(e.target)) closeThinkingMenu();
+  });
+
+  refreshThinkingBtn();
 }
 
 // ── Server dropdown ──────────────────────────────────────────────────────────
@@ -57,7 +203,10 @@ function renderServerDropdown(servers) {
     const isActive  = s.is_default;
     const modelShort = s.model.split('/').pop();
     const ctxInfo   = s.model_len ? ` · ${(s.model_len / 1000).toFixed(0)}K ctx` : '';
-    const thinkTag  = s.thinking ? ' <span style="font-size:10px;color:#d97706">🧠</span>' : '';
+    const lvl       = rowThinkingLevel(s);
+    const thinkTag  = lvl !== 'off'
+      ? ` <span class="ss-thinking-tag" title="사고 수준: ${THINKING_LEVEL_META[lvl].label}">🧠 ${THINKING_LEVEL_META[lvl].short}</span>`
+      : '';
     return `
       <div class="server-dropdown-item ${isActive ? 'active' : ''}" data-id="${s.id}">
         <span class="ss-check">${isActive ? '✓' : ''}</span>
@@ -115,8 +264,7 @@ const PROVIDERS = {
     defaultBaseUrl: '',
     apiKeyLabel: 'API Key (없으면 빈칸)',
     apiKeyPlaceholder: '예: local',
-    thinkingEnabled: true,
-    thinkingLabel: 'Thinking 모드 (chat_template_kwargs 전송)',
+    thinkingHint: 'low/medium/high는 모두 사고 활성으로 전송됩니다 (모델이 세부 강도를 지원하면 반영)',
     // vLLM 은 보통 모델 1개만 서빙하고 주소를 아는 사용자가 모델명도 안다 → 직접 입력 유지
     canProbeModels: false,
     filterNonChatModels: false,
@@ -131,8 +279,7 @@ const PROVIDERS = {
     defaultBaseUrl: 'https://api.openai.com/v1',
     apiKeyLabel: 'API Key * (없으면 연결 실패)',
     apiKeyPlaceholder: '예: sk-...',
-    thinkingEnabled: false,
-    thinkingLabel: 'Thinking 모드 — 이 프로바이더에서는 지원하지 않습니다',
+    thinkingHint: '추론 모델(gpt-5, o-계열)에만 적용됩니다. 일반 모델은 무시됩니다.',
     canProbeModels: true,
     // /v1/models 에 embedding·tts·whisper·dall-e 등이 섞여 온다
     filterNonChatModels: true,
@@ -147,8 +294,7 @@ const PROVIDERS = {
     defaultBaseUrl: 'https://api.anthropic.com/v1',
     apiKeyLabel: 'API Key * (없으면 연결 실패)',
     apiKeyPlaceholder: '예: sk-ant-...',
-    thinkingEnabled: true,   // openai 와 달리 extended thinking 을 지원한다
-    thinkingLabel: 'Extended thinking 사용 (budget 10k 토큰)',
+    thinkingHint: 'low≈2k · medium≈8k · high≈24k 토큰 예산',
     canProbeModels: true,
     // Anthropic 은 챗 모델만 반환한다
     filterNonChatModels: false,
@@ -270,8 +416,6 @@ async function onProbeModelsClick() {
 
 // 폼에서 마지막으로 적용된 provider. select 변경 시 "무엇에서 무엇으로" 를 알기 위해 유지한다.
 let _formProviderType = DEFAULT_PROVIDER;
-// openai 로 전환하며 thinking 을 강제로 끌 때, 되돌아올 경우를 위해 직전 상태를 보관한다.
-let _thinkingBeforeDisable = null;
 
 /**
  * 선택된 provider 에 맞게 폼 필드의 라벨/placeholder/활성 상태를 조정한다.
@@ -295,24 +439,9 @@ function applyProviderFieldVisibility(providerType) {
   document.getElementById('sv-probe-btn')
     .classList.toggle('hidden', !meta.canProbeModels);
 
-  const thinkingEl  = document.getElementById('sv-thinking');
-  const thinkingRow = document.getElementById('sv-thinking-row');
-  document.getElementById('sv-thinking-label').textContent = meta.thinkingLabel;
-
-  if (!meta.thinkingEnabled) {
-    if (!thinkingEl.disabled) _thinkingBeforeDisable = thinkingEl.checked;
-    thinkingEl.checked  = false;
-    thinkingEl.disabled = true;
-    thinkingRow.classList.add('unsupported');
-  } else {
-    // 비활성화 때문에 꺼졌던 값이면 되돌려준다.
-    if (thinkingEl.disabled && _thinkingBeforeDisable !== null) {
-      thinkingEl.checked = _thinkingBeforeDisable;
-    }
-    _thinkingBeforeDisable = null;
-    thinkingEl.disabled = false;
-    thinkingRow.classList.remove('unsupported');
-  }
+  // 사고 수준은 3개 프로바이더 모두에서 설정할 수 있다(백엔드가 번역/무시를 담당).
+  // 따라서 select 를 비활성화하지 않고 프로바이더별 안내 문구만 갈아끼운다.
+  document.getElementById('sv-thinking-hint').textContent = meta.thinkingHint;
 }
 
 /**
@@ -397,7 +526,10 @@ function renderServers() {
     const providerBadge =
       `<span class="server-provider-badge ${providerType}">${esc(providerMeta_.badge)}</span>`;
     const defaultBadge  = s.is_default ? '<span class="server-default-badge">기본</span>' : '';
-    const thinkingBadge = s.thinking   ? '<span class="server-thinking-badge">Thinking</span>' : '';
+    const thinkingLevel = rowThinkingLevel(s);
+    const thinkingBadge = thinkingLevel !== 'off'
+      ? `<span class="server-thinking-badge" title="사고 수준: ${THINKING_LEVEL_META[thinkingLevel].label}">🧠 ${THINKING_LEVEL_META[thinkingLevel].short}</span>`
+      : '';
     const statusBadge   = s.enabled
       ? '<span class="server-status enabled">활성</span>'
       : '<span class="server-status disabled">비활성</span>';
@@ -499,12 +631,10 @@ function showServerForm(serverId = null) {
   document.getElementById('sv-enabled').checked  = server?.enabled ?? true;
   document.getElementById('sv-enabled-row').style.display = serverId ? 'flex' : 'none';
 
-  // thinking 은 provider 규칙 적용 전에 채워야 한다
-  // (applyProviderFieldVisibility 가 지원하지 않는 provider 에서 강제로 끄기 때문)
+  // 사고 수준은 provider 와 무관하게 항상 편집 가능하다 — 값만 채우면 된다.
   const providerType = PROVIDERS[server?.provider_type] ? server.provider_type : DEFAULT_PROVIDER;
-  document.getElementById('sv-thinking').checked  = server?.thinking ?? false;
-  document.getElementById('sv-thinking').disabled = false;
-  _thinkingBeforeDisable = null;
+  document.getElementById('sv-thinking-level').value =
+    server ? rowThinkingLevel(server) : 'off';
   document.getElementById('sv-provider').value = providerType;
   _formProviderType = providerType;
   applyProviderFieldVisibility(providerType);
@@ -555,7 +685,9 @@ async function saveServer() {
     weight:        parseInt(document.getElementById('sv-weight').value) || 1,
     max_model_len: parseInt(document.getElementById('sv-max-len').value) || 0,
     is_default:    document.getElementById('sv-default').checked,
-    thinking:      document.getElementById('sv-thinking').checked,
+    // ServerUpdate 는 부분 업데이트라 null 을 보내면 무시된다 —
+    // 폼은 항상 유효한 4개 값 중 하나를 명시해 보낸다.
+    thinking_level: normalizeThinkingLevel(document.getElementById('sv-thinking-level').value),
   };
   if (_editServerId) body.enabled = document.getElementById('sv-enabled').checked;
 

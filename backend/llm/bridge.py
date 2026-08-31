@@ -63,6 +63,7 @@ def make_sync_chat(
     server_id: str | None = None,
     timeout: int = 120,
     temperature: float = 0.7,
+    thinking_level: str | None = None,
 ):
     """(messages, *, max_tokens) -> (content, reasoning, usage) 동기 콜러블을 만든다.
 
@@ -74,6 +75,10 @@ def make_sync_chat(
     기존 하드코딩 값). 샘플링 온도를 다르게 쓰려면 서로 다른 콜러블을 만든다.
     reasoning 계열 모델처럼 temperature 를 받지 않는 provider 는 각자
     `_temperature_body()` 에서 이 값을 무시한다.
+
+    `thinking_level` 은 기본이 None 이며, 이는 "선택된 서버의 기본 사고 수준을
+    그대로 상속"을 뜻한다. 시뮬레이션에는 별도 사고 UI 가 없고 서버 설정을
+    공유한다는 계약이 여기서 성립한다 — ABM 코드는 이 값을 알 필요가 없다.
     """
     # provider.chat() 은 finish_reason=="length" 일 때 최대 MAX_CONTINUATION_ROUNDS 회
     # 연속 생성하므로, 스레드 쪽 가드는 per-request 타임아웃의 그 배수보다 커야 한다.
@@ -93,6 +98,7 @@ def make_sync_chat(
                 max_tokens=max_tokens,
                 timeout=timeout,
                 server_id=server_id,
+                thinking_level=thinking_level,
             ),
             timeout=guard,
         )

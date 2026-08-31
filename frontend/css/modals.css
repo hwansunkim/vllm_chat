@@ -344,6 +344,7 @@
 .ss-check { width: 14px; font-size: 12px; color: #0284c7; flex-shrink: 0; }
 .ss-info { flex: 1; min-width: 0; }
 .ss-name { font-size: 13px; font-weight: 600; color: #1e293b; }
+.ss-thinking-tag { font-size: 10px; font-weight: 700; color: #d97706; cursor: help; }
 .ss-model { font-size: 11px; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ── Server Modal ────────────────────────────────────────────────────────────── */
@@ -398,9 +399,11 @@
   font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 20px;
   background: #dcfce7; color: #16a34a; letter-spacing: 0.3px;
 }
+/* 사고 수준 뱃지 — off 면 아예 렌더하지 않는다 (🧠 저 / 🧠 중 / 🧠 고) */
 .server-thinking-badge {
   font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 20px;
   background: #fef3c7; color: #d97706; letter-spacing: 0.3px;
+  display: inline-flex; align-items: center; gap: 3px; cursor: help;
 }
 /* provider_type 구분용 뱃지 — 여러 프로바이더가 섞여 있을 때 한눈에 구분 */
 .server-provider-badge {
@@ -473,8 +476,6 @@
 .server-form-check { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
 .server-form-check input[type="checkbox"] { accent-color: #0284c7; width: 15px; height: 15px; cursor: pointer; }
 .server-form-check label { font-size: 13px; color: #475569; cursor: pointer; }
-/* provider 가 지원하지 않는 옵션 — 사라지지 않고 흐리게 남아 "왜 못 켜는지"를 보여준다 */
-.server-form-check.unsupported label { color: #cbd5e1; cursor: not-allowed; }
 .server-form-check input[type="checkbox"]:disabled { opacity: 0.45; cursor: not-allowed; }
 .server-form-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; border-top: 1px solid #f1f5f9; }
 .btn-server-primary {

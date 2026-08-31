@@ -26,11 +26,13 @@ async def async_stream_chat(
     max_tokens: int = config.MAX_COMPLETION_TOKENS,
     model: str | None = None,
     server_id: str | None = None,
-    thinking: bool = False,
+    thinking_level: str | None = None,
 ):
+    """`thinking_level=None` 이면 선택된 서버의 기본 사고 수준을 그대로 쓴다."""
     provider = get_registry().select(model=model, server_id=server_id)
     async for event in provider.stream_chat(
-        messages, temperature=temperature, max_tokens=max_tokens, thinking=thinking
+        messages, temperature=temperature, max_tokens=max_tokens,
+        thinking_level=thinking_level,
     ):
         if event["type"] == "usage":
             event["data"]["max_model_len"] = provider.model_len
@@ -45,11 +47,16 @@ async def async_chat(
     timeout: float | None = None,
     model: str | None = None,
     server_id: str | None = None,
+    thinking_level: str | None = None,
 ) -> tuple[str, dict]:
-    """비스트리밍 멀티턴 호출. 반환 usage 에는 "thinking" 키가 포함된다."""
+    """비스트리밍 멀티턴 호출. 반환 usage 에는 "thinking" 키가 포함된다.
+
+    `thinking_level=None` 이면 선택된 서버의 기본 사고 수준을 그대로 쓴다.
+    """
     provider = get_registry().select(model=model, server_id=server_id)
     return await provider.chat(
-        messages, temperature=temperature, max_tokens=max_tokens, timeout=timeout
+        messages, temperature=temperature, max_tokens=max_tokens, timeout=timeout,
+        thinking_level=thinking_level,
     )
 
 

@@ -46,17 +46,61 @@
 #send-btn:hover:not(:disabled) { background: #4338ca; }
 #send-btn:disabled { background: #c7d2fe; cursor: not-allowed; }
 
+/* ── 사고 수준 컨트롤 (버튼 + 팝오버 메뉴) ───────────────────────────────────── */
+#thinking-control { position: relative; flex-shrink: 0; }
+
 #thinking-btn {
-  width: 40px; height: 40px;
+  min-width: 40px; height: 40px; padding: 0 7px;
   background: none; color: #94a3b8;
   border: 1.5px solid #e2e8f0; border-radius: 10px;
   cursor: pointer; font-size: 17px;
-  transition: all 0.2s; flex-shrink: 0;
-  display: flex; align-items: center; justify-content: center;
+  transition: all 0.2s;
+  display: flex; align-items: center; justify-content: center; gap: 2px;
 }
 #thinking-btn:hover:not(:disabled) { border-color: #6366f1; color: #6366f1; }
 #thinking-btn.active { background: #eef2ff; border-color: #6366f1; color: #4f46e5; }
 #thinking-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+#thinking-btn:focus-visible { outline: 2px solid #6366f1; outline-offset: 2px; }
+/* off 일 때는 아이콘을 흐리게 — 켜져 있는지 한눈에 구분된다 */
+#thinking-btn[data-level="off"] .tb-icon { opacity: 0.45; filter: grayscale(1); }
+#thinking-btn .tb-icon  { font-size: 16px; line-height: 1; }
+#thinking-btn .tb-level {
+  font-size: 11px; font-weight: 700; line-height: 1;
+  letter-spacing: 0; color: inherit;
+}
+#thinking-btn .tb-level:empty { display: none; }
+
+#thinking-menu {
+  position: absolute; bottom: calc(100% + 8px); right: 0;
+  z-index: 60; min-width: 216px;
+  background: white; border: 1px solid #e2e8f0; border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.14);
+  padding: 6px; display: flex; flex-direction: column; gap: 2px;
+}
+#thinking-menu.hidden { display: none; }
+.thinking-menu-title {
+  font-size: 10px; font-weight: 700; color: #94a3b8;
+  text-transform: uppercase; letter-spacing: 0.6px;
+  padding: 6px 10px 4px;
+}
+.thinking-menu-item {
+  display: flex; align-items: flex-start; gap: 8px;
+  width: 100%; text-align: left;
+  padding: 7px 10px; border: none; border-radius: 8px;
+  background: none; cursor: pointer; font-family: inherit; color: #334155;
+}
+.thinking-menu-item:hover { background: #f1f5f9; }
+.thinking-menu-item:focus-visible { outline: 2px solid #6366f1; outline-offset: -2px; }
+.thinking-menu-item.selected { background: #eef2ff; }
+.thinking-menu-item .tm-mark {
+  width: 12px; flex-shrink: 0; font-size: 11px; line-height: 1.5;
+  color: #4f46e5; visibility: hidden;
+}
+.thinking-menu-item.selected .tm-mark { visibility: visible; }
+.thinking-menu-item .tm-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.thinking-menu-item .tm-label { font-size: 13px; font-weight: 600; }
+.thinking-menu-item.selected .tm-label { color: #4338ca; }
+.thinking-menu-item .tm-desc { font-size: 11px; color: #94a3b8; line-height: 1.4; }
 
 #websearch-btn {
   width: 40px; height: 40px;
