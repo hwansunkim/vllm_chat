@@ -70,10 +70,20 @@ def fold_elapsed_and_reset_waves(sim_obj) -> None:
 
     접기가 제대로 됐다면 `before == _current_elapsed_minutes(0)`이라 재기준화는
     no-op이다 — 접기를 빠뜨린 회귀를 흡수하는 방어선으로만 남겨둔다.
+
+    경과 분과 같은 맥락으로 wave 표시 카운터도 누적으로 올린다: `completed_waves`를
+    0으로 되돌리기 전에 `_wave_base += completed_waves` 해야 이어서 실행한 run 의
+    wave 라벨(피드 뱃지·DB `simulation_log.wave`)이 되감기지 않고 연속된다.
     """
     before = _total_elapsed_minutes(sim_obj) or 0
     sim_obj._elapsed_minutes = before
+    sim_obj._wave_base = getattr(sim_obj, "_wave_base", 0) + sim_obj.completed_waves
     sim_obj.completed_waves  = 0
+    # 요약 카덴스도 재개 지점 기준으로 맞춘다 — 안 그러면 `run()`의
+    # `waves_since = disp_wave - _last_summarized_wave`가 첫 wave에서 폭증해
+    # 이어서 실행하자마자 요약이 한 번 조기 발동한다. `/resume`은 새 Simulation을
+    # `wave_base_init`으로 만들며 `__init__`에서 이미 이 값을 세팅한다(대칭).
+    sim_obj._last_summarized_wave = sim_obj._wave_base - 1
     sim_obj.rebase_infection_anchors(now=before)
 
 

@@ -5,7 +5,14 @@ class _SystemMixin:
     """system 에이전트 실행 (개입, world_event, director_memo 갱신)."""
 
     def _run_system_agent(self, wave_num: int, current_wave: dict) -> dict:
-        """system 에이전트를 실행해 개입/월드이벤트를 주입. 수정된 current_wave 반환."""
+        """system 에이전트를 실행해 개입/월드이벤트를 주입. 수정된 current_wave 반환.
+
+        `wave_num`은 runner가 넘기는 **누적 표시 wave(disp_wave)**다 — 디렉터 프롬프트의
+        "Wave N" 표기, `system_intervention`/`world_event` 이벤트 라벨, director_memo에
+        쓰인다. 시각 계산만은 per-run 축이어야 하므로 `self.completed_waves`를 쓴다
+        (디렉터는 wave 시작 시점에 도므로 이 값이 곧 '이번 wave 진입 직전까지 완료된
+        wave 수' = 옛 per-run wave_num과 동일하다).
+        """
         from ..system_agent import run_system_agent
 
         # 디렉터는 wave_num **시작** 시점에 돈다 → `_last_spoke_wave`는 wave_num-1까지만
@@ -35,7 +42,8 @@ class _SystemMixin:
         current_time_str = ""
         if self._time_mode == "variable" or self._time_per_wave > 0:
             current_time_str = self._format_time_str(
-                self._sim_start_minutes + self._current_elapsed_minutes(wave_num)
+                self._sim_start_minutes
+                + self._current_elapsed_minutes(self.completed_waves)
             )
 
         result = run_system_agent(

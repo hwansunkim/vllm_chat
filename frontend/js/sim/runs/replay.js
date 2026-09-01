@@ -6,7 +6,7 @@ import { fmtTime, statusIcon } from '../utils/time.js';
 import { applyScenario } from '../scenarios.js';
 import { setStatus } from '../run/control.js';
 import { renderAgentCards, updateAgentInfection, updateAgentMeetingBadge } from '../run/cards.js';
-import { renderHistoricalFeed } from '../run/feed.js';
+import { renderHistoricalFeed, resetWaveCardBuffer } from '../run/feed.js';
 import { initD3Graph, refreshInfectionStyles } from '../graph/d3.js';
 import { initLocationMap, updateAgentInfectionOnMap, setMeetingIntentOnMap } from '../map/d3.js';
 import { updateScenarioLabel } from '../views.js';
@@ -96,6 +96,13 @@ export async function openRunReplay(runId, runNum) {
 
   // 인터뷰 진입점 — config 스냅샷이 있고(없으면 API가 400) 종료된 실행일 때만(아니면 409).
   // 진행 중인 실행에서는 버튼을 비활성 상태로 남겨 왜 못 하는지 알 수 있게 한다.
+  // 이어서 실행으로 만들어진 run 은 wave 번호가 누적(start_wave..start_wave+total_waves).
+  // 구버전 row 는 start_wave 가 0/null 이라 기존처럼 per-run 개수만 보여준다.
+  const startWave = run.start_wave || 0;
+  const waveLabel = startWave > 0 && run.total_waves > 0
+    ? `W${startWave}–${startWave + run.total_waves} (${run.total_waves}wave)`
+    : `${run.total_waves}wave`;
+
   const canInterview   = !!parsedConfig && isInterviewable(run);
   const showInterview  = !!parsedConfig;
   const interviewTitle = canInterview
@@ -112,7 +119,7 @@ export async function openRunReplay(runId, runNum) {
           <span class="sim-replay-run-badge">#${runNum}</span>
           <span>${esc(run.scenario_name || '직접 실행')}</span>
           <span class="sim-replay-status">${statusIcon[run.status] || run.status}</span>
-          <span class="sim-replay-meta">${fmtTime(run.started_at, { includeYear: true })} · ${run.total_waves}wave · ${run.total_turns}turn</span>
+          <span class="sim-replay-meta">${fmtTime(run.started_at, { includeYear: true })} · ${waveLabel} · ${run.total_turns}turn</span>
         </div>
         <div class="sim-replay-actions">
           ${showInterview ? `<button id="sim-replay-interview-btn" class="sim-ctrl-btn settings sim-itv-open-btn" style="font-size:12px;padding:4px 10px" title="${esc(interviewTitle)}" ${canInterview ? '' : 'disabled'}>🎤 인터뷰</button>` : ''}
@@ -216,6 +223,16 @@ export async function openRunReplay(runId, runNum) {
       // 않을 수 있다. SSE를 붙이기 전에 채워두면 이후 해소 이벤트와도 맞물린다.
       await restoreMeetingIntents(runId);
       closeReplay();
+
+      // /resume 는 과거 피드를 복원하지 않는다(renderHistoricalFeed 미호출). 깨끗한
+      // 슬레이트로 시작해야, 이전 /load 세션이 남긴 stale _currentWave 가 재개 run 의
+      // 첫 wave_start(누적값, 예: W13) divider 생성을 `wave > _currentWave` 비교로
+      // 막는 일이 없다. wave 는 이제 백엔드가 누적으로 emit 하므로 오프셋 계산은 불필요.
+      document.getElementById('sim-feed').innerHTML =
+        '<div id="sim-feed-empty">이어서 실행 준비 중...</div>';
+      resetWaveCardBuffer();
+      document.getElementById('sim-turn-text').textContent = '대기 중';
+
       setStatus('running');
       connectSSE();
     });

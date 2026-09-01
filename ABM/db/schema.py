@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS simulation_runs (
     scenario_name TEXT,
     run_number    INTEGER DEFAULT 1,
     status        TEXT    DEFAULT 'running',
+    start_wave    INTEGER DEFAULT 0,
     total_waves   INTEGER DEFAULT 0,
     total_turns   INTEGER DEFAULT 0,
     started_at    REAL    NOT NULL,
@@ -160,6 +161,7 @@ def migrate(conn: sqlite3.Connection) -> None:
         ("active_agents_json", "ALTER TABLE simulation_runs ADD COLUMN active_agents_json TEXT"),
         ("pending_wave_json",  "ALTER TABLE simulation_runs ADD COLUMN pending_wave_json TEXT"),
         ("elapsed_minutes",    "ALTER TABLE simulation_runs ADD COLUMN elapsed_minutes INTEGER"),
+        ("start_wave",         "ALTER TABLE simulation_runs ADD COLUMN start_wave INTEGER DEFAULT 0"),
     ]:
         if col not in cols:
             conn.execute(ddl)

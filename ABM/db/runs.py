@@ -34,7 +34,14 @@ class RunsMixin:
         scenario_id: str | None,
         scenario_name: str | None,
         config_json: str,
+        start_wave: int = 0,
     ):
+        """`start_wave` = 이 run의 첫 wave가 갖는 누적 표시 wave 번호.
+
+        fresh /start는 0, /continue·/resume은 직전 run의 (start_wave + total_waves).
+        누적 마지막 wave = start_wave + total_waves 로 유도한다(`finish_run`은
+        `total_waves`에 계속 per-run 값을 넣는다 — 하위호환·run_number 분석용).
+        """
         conn = self._conn()
         run_number = 1
         if scenario_id:
@@ -45,9 +52,10 @@ class RunsMixin:
             run_number = (row["cnt"] or 0) + 1
         conn.execute(
             "INSERT INTO simulation_runs "
-            "(run_id, scenario_id, scenario_name, run_number, status, started_at, config_json) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (run_id, scenario_id, scenario_name, run_number, "running", time.time(), config_json),
+            "(run_id, scenario_id, scenario_name, run_number, status, started_at, config_json, start_wave) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (run_id, scenario_id, scenario_name, run_number, "running", time.time(),
+             config_json, int(start_wave or 0)),
         )
         conn.commit()
 

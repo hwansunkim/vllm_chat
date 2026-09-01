@@ -112,6 +112,10 @@ def load_simulation(run_id: str):
             idle_minutes_schedule=cfg.idle_minutes_schedule,
             infection_model=cfg.infection_model.model_dump(),
             elapsed_minutes_init=run.get("elapsed_minutes") or 0,
+            # /load 는 실행하지 않지만, 이후 /continue 로 이어갈 때
+            # fold_elapsed_and_reset_waves 가 _wave_base 를 올바르게 누적하도록
+            # 직전 run 의 누적 끝 wave 를 미리 세팅해 둔다.
+            wave_base_init=(run.get("start_wave") or 0) + (run.get("total_waves") or 0),
         )
         # 저장된 런타임 상태(이동한 위치, 바뀐 외모, 인지관계)를 시나리오 초기값 위에 덮어씀.
         # 저장된 상태가 없는 구버전 실행은 위 초기값을 그대로 유지한다.
@@ -158,7 +162,12 @@ def load_simulation(run_id: str):
             for key, entry in sim_obj._agent_infection.items()
         }
 
-        return {"status": "loaded", "log": log_entries, "infection": infection_snapshot}
+        # 이 run 을 이어서 실행하면 첫 wave 가 가질 누적 표시 wave 번호.
+        # 프론트가 피드 divider 초기화·리플레이 메타 표시에 쓸 수 있다(선택).
+        start_wave = (run.get("start_wave") or 0) + (run.get("total_waves") or 0)
+
+        return {"status": "loaded", "log": log_entries, "infection": infection_snapshot,
+                "start_wave": start_wave}
 
     except Exception as e:
         with _sim_lock:

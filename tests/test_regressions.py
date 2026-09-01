@@ -1716,6 +1716,335 @@ class FixedClockContinuityTests(unittest.TestCase):
         self.assertEqual(end["end_reason"], "max_waves")
 
 
+class CumulativeWaveTests(unittest.TestCase):
+    """`/continue`·`/resume` 후 wave 번호가 이어지도록 하는 wave 카운터 2개 분리.
+
+    - `run()` 루프 = per-run 0-based `run_wave` → 시간/감염/목표기간 계산 전용(무변경).
+    - `self._wave_base` = 이 run 이전까지 누적 wave(fresh /start는 0).
+    - emit·영속화 라벨 = `disp_wave = _wave_base + run_wave`.
+    - `self.completed_waves`는 per-run 유지, `cumulative_waves`가 누적 리포팅용.
+    """
+
+    def _sim(self, tmp, *, wave_base_init=0, time_per_wave=30, elapsed_init=0,
+             infection=None, keys=("a", "b"), locations=None):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096) for k in keys}
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=_ScriptedLLM({k: [{"content": "...", "target": "self"}] for k in keys}),
+            time_per_wave=time_per_wave, time_mode="fixed",
+            elapsed_minutes_init=elapsed_init,
+            wave_base_init=wave_base_init,
+            agent_locations=locations,
+            infection_model=infection,
+        )
+        sim._emitted = []
+        sim._emit = lambda t, d: sim._emitted.append((t, d))
+        return sim
+
+    @staticmethod
+    def _infection_model(**over):
+        model = {
+            "enabled":                  True,
+            "disease_name":             "테스트열",
+            "transmission_probability": 1.0,
+            "symptom_stages":           [],
+            "recovery_min_minutes":     0,
+            "recovery_max_minutes":     0,
+            "immune_after_recovery":    True,
+        }
+        model.update(over)
+        return model
+
+    # ── 1. run()이 emit하는 wave가 누적값 ──────────────────────────────────────
+
+    def test_run_emits_cumulative_wave_numbers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, wave_base_init=10)
+            sim.run("a", max_waves=3, step_delay=0.0, early_stop_enabled=False)
+
+            wave_starts = [d["wave"] for t, d in sim._emitted if t == "wave_start"]
+            self.assertEqual(wave_starts, [10, 11, 12])
+            # per-run 카운터는 그대로 3.
+            self.assertEqual(sim.completed_waves, 3)
+            self.assertEqual(sim.cumulative_waves, 13)
+
+    def test_fresh_start_is_unchanged_by_the_split(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, wave_base_init=0)
+            sim.run("a", max_waves=3, step_delay=0.0, early_stop_enabled=False)
+
+            wave_starts = [d["wave"] for t, d in sim._emitted if t == "wave_start"]
+            self.assertEqual(wave_starts, [0, 1, 2])
+            self.assertEqual(sim._wave_base, 0)
+            self.assertEqual(sim.cumulative_waves, 3)
+
+    def test_turn_complete_and_log_use_cumulative_wave(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, wave_base_init=7)
+            sim.run("a", max_waves=2, step_delay=0.0, early_stop_enabled=False)
+
+            tc_waves = {d["wave"] for t, d in sim._emitted if t == "turn_complete"}
+            self.assertTrue(tc_waves <= {7, 8})
+            self.assertIn(7, tc_waves)
+            # shared_log 엔트리도 누적 wave로 저장된다(요약 구간 계산이 이 값에 의존).
+            log_waves = {e["wave"] for e in sim.shared_log if isinstance(e.get("wave"), int)}
+            self.assertTrue(log_waves <= {7, 8})
+
+    # ── 2. 시각/경과 계산은 _wave_base와 무관 ─────────────────────────────────
+
+    def test_current_elapsed_minutes_is_independent_of_wave_base(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base0 = self._sim(tmp, wave_base_init=0, time_per_wave=30)
+            base5 = self._sim(tmp, wave_base_init=5, time_per_wave=30)
+            for w in (0, 1, 3, 10):
+                self.assertEqual(
+                    base0._current_elapsed_minutes(w),
+                    base5._current_elapsed_minutes(w),
+                    f"wave_base가 시각 계산에 샜다 (wave={w})",
+                )
+            base5.completed_waves = 4
+            self.assertEqual(base5._current_elapsed_minutes(), 120)   # 4 * 30, base 무관
+
+    def test_target_duration_baseline_ignores_wave_base(self):
+        # 이전 run에서 누적 wave가 600이어도 이번 run은 목표 60분만큼만 더 돈다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, wave_base_init=600, time_per_wave=30)
+            emitted = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            sim.run("a", max_waves=20, step_delay=0.0, early_stop_enabled=False,
+                    target_duration_minutes=60)
+            end = [d for t, d in emitted if t == "simulation_end"][-1]
+            self.assertEqual(end["end_reason"], "target_duration")
+            self.assertEqual(sim.completed_waves, 2)          # (1+1)*30 = 60
+            wave_starts = [d["wave"] for t, d in emitted if t == "wave_start"]
+            self.assertEqual(wave_starts, [600, 601])
+
+    # ── 3. 감염 이벤트 라벨은 disp_wave, 경과 계산은 run_wave ────────────────────
+
+    def test_infection_update_event_uses_disp_wave(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=60,
+                            infection=self._infection_model(),
+                            locations={"a": "매장", "b": "매장"})
+            sim._set_infected("a", 0, "event")
+            sim._emitted.clear()
+
+            # run_wave=2 (경과 120분), disp_wave=42 (표시 라벨)
+            sim._apply_infection_wave(2, 42)
+
+            updates = [d for t, d in sim._emitted if t == "infection_update"]
+            b_update = next(d for d in updates if d["agent"] == "b")
+            self.assertEqual(b_update["wave"], 42)                    # 라벨 = disp_wave
+            self.assertEqual(b_update["elapsed_minutes"], 120)       # 시간 = run_wave 기준
+            self.assertEqual(sim._agent_infection["b"]["infected_at_minutes"], 120)
+
+    def test_apply_infection_wave_disp_defaults_to_run_wave(self):
+        # disp_wave 생략 시 run_wave를 라벨로 재사용(단위 테스트 하위 호환).
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=60,
+                            infection=self._infection_model(),
+                            locations={"a": "매장", "b": "매장"})
+            sim._set_infected("a", 0, "event")
+            sim._emitted.clear()
+            sim._apply_infection_wave(3)
+            b_update = next(d for t, d in sim._emitted
+                            if t == "infection_update" and d["agent"] == "b")
+            self.assertEqual(b_update["wave"], 3)
+
+    # ── 4. _last_summarized_wave 초기값 = wave_base - 1 ────────────────────────
+
+    def test_last_summarized_wave_starts_at_base_minus_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self._sim(tmp, wave_base_init=0)._last_summarized_wave, -1)
+            self.assertEqual(self._sim(tmp, wave_base_init=13)._last_summarized_wave, 12)
+
+    # ── 5. DB: start_wave 컬럼 라운드트립 ─────────────────────────────────────
+
+    def test_create_run_persists_start_wave(self):
+        from ABM.db import SimDB
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            db = SimDB(os.path.join(tmp, "sim.db"))
+            try:
+                db.create_run("r1", "scn", "시나리오", "{}", start_wave=7)
+                db.create_run("r2", "scn", "시나리오", "{}")   # 기본값 0
+
+                self.assertEqual(db.get_run("r1")["start_wave"], 7)
+                self.assertEqual(db.get_run("r2")["start_wave"], 0)
+                runs = {r["run_id"]: r for r in db.get_runs("scn")}
+                self.assertEqual(runs["r1"]["start_wave"], 7)
+            finally:
+                conn = getattr(db._local, "conn", None)
+                if conn is not None:
+                    conn.close()
+
+
+class ResumeContinueWaveBaseTests(unittest.TestCase):
+    """PART 2 — 백엔드 글루: /resume·/continue 가 누적 wave base 를 엔진에 전달.
+
+    - `/resume`: `create_run(start_wave=이전 start_wave + total_waves)` +
+      `Simulation(wave_base_init=...)` + 응답에 `start_wave`.
+    - `fold_elapsed_and_reset_waves`: `completed_waves` 리셋 직전 `_wave_base` 누적.
+    - 3-1 버그: `/resume` 이 조기종료 설정(`early_stop_enabled`,
+      `max_silence_waves`)을 `run()` 까지 전달.
+    """
+
+    def tearDown(self):
+        s = sim_runtime._sim
+        s["status"]      = "idle"
+        s["thread"]      = None
+        s["sim_obj"]     = None
+        s["event_queue"] = None
+        s["stop_event"]  = None
+
+    # ── fold_elapsed_and_reset_waves ─────────────────────────────────────────
+
+    def test_fold_accumulates_wave_base_and_resets_completed(self):
+        from backend.api.simulation.runner import fold_elapsed_and_reset_waves
+
+        class _Sim:
+            def __init__(self):
+                self.completed_waves  = 4
+                self._wave_base       = 10
+                self._elapsed_minutes = 0
+                self.rebased_now      = "unset"
+            def _current_elapsed_minutes(self, w=0):
+                return self._elapsed_minutes
+            def rebase_infection_anchors(self, now=None):
+                self.rebased_now = now
+
+        sim = _Sim()
+        fold_elapsed_and_reset_waves(sim)
+        self.assertEqual(sim._wave_base, 14)          # 10 + 4
+        self.assertEqual(sim.completed_waves, 0)
+
+        # 여러 번 이어서 실행해도 계속 누적된다.
+        sim.completed_waves = 6
+        fold_elapsed_and_reset_waves(sim)
+        self.assertEqual(sim._wave_base, 20)          # 14 + 6
+        self.assertEqual(sim.completed_waves, 0)
+
+    def test_fold_defaults_wave_base_to_zero_when_absent(self):
+        from backend.api.simulation.runner import fold_elapsed_and_reset_waves
+
+        class _Sim:
+            completed_waves  = 3
+            _elapsed_minutes = 0
+            def _current_elapsed_minutes(self, w=0):
+                return 0
+            def rebase_infection_anchors(self, now=None):
+                pass
+
+        sim = _Sim()
+        fold_elapsed_and_reset_waves(sim)
+        self.assertEqual(sim._wave_base, 3)
+        self.assertEqual(sim.completed_waves, 0)
+
+    # ── /resume 엔드포인트 (의존성 stub) ──────────────────────────────────────
+
+    def _run_resume(self, run_row, *, snapshots=None, states=None):
+        """stub 의존성으로 resume_simulation 을 돌리고 (응답, 기록된 호출)을 반환."""
+        from unittest import mock
+        import ABM.agent as abm_agent
+        import ABM.simulation as abm_simulation
+        import ABM.db as abm_db
+        import ABM.memory_compressor as abm_mc
+        from backend.api.simulation.runtime import resume as resume_mod
+
+        calls = {"create_run": None, "run": None, "sim_kwargs": None}
+
+        class FakeAgent:
+            def __init__(self, *a, **k):
+                self.memory = []
+                self._memory_block = None
+
+        class FakeSim:
+            def __init__(self, *a, **k):
+                calls["sim_kwargs"] = k
+                self.agents         = {}
+                self.background_log = []
+                self.shared_log     = []
+                self.edges          = []
+                self.completed_waves = 0
+                self._pending_wave  = None
+                self.active_agents  = set()
+            def restore_agent_state(self, s):        pass
+            def export_agent_state(self):            return {}
+            def _current_elapsed_minutes(self, w=0): return 0
+            def run(self, *a, **k):
+                calls["run"] = {"args": a, "kwargs": k}
+
+        class FakeDB:
+            def create_run(self, *a, **k):
+                calls["create_run"] = {"args": a, "kwargs": k}
+            def finish_run(self, *a, **k):           pass
+            def save_agent_snapshots(self, *a, **k): pass
+            def get_run(self, rid):                  return run_row
+            def get_agent_snapshots(self, rid):      return snapshots or {}
+            def get_agent_states(self, rid):         return states or {}
+
+        fake_db = FakeDB()
+        sim_runtime._sim["status"]      = "idle"
+        sim_runtime._sim["event_queue"] = None
+
+        with mock.patch.object(resume_mod, "get_sim_db", lambda: fake_db), \
+             mock.patch.object(resume_mod, "_make_llm", lambda *a, **k: None), \
+             mock.patch.object(resume_mod, "_make_agent_llm_map", lambda *a, **k: {}), \
+             mock.patch.object(abm_agent, "Agent", FakeAgent), \
+             mock.patch.object(abm_simulation, "Simulation", FakeSim), \
+             mock.patch.object(abm_db, "SimDB", lambda *a, **k: fake_db), \
+             mock.patch.object(abm_mc, "build_memory_block", lambda *a, **k: None):
+            resp = resume_mod.resume_simulation("prev-run")
+            t = sim_runtime._sim.get("thread")
+            if t is not None:
+                t.join(timeout=5)
+                self.assertFalse(t.is_alive(), "resume thread hung")
+        return resp, calls
+
+    @staticmethod
+    def _run_row(cfg: SimStartConfig, *, start_wave=0, total_waves=0):
+        return {
+            "config_json":        cfg.model_dump_json(),
+            "start_wave":         start_wave,
+            "total_waves":        total_waves,
+            "scenario_id":        "scn",
+            "scenario_name":      "시나리오",
+            "active_agents_json": None,
+            "pending_wave_json":  None,
+            "elapsed_minutes":    0,
+        }
+
+    def _cfg(self, **over):
+        base = dict(agents=[AgentConfig(name="a", system_prompt="너는 a다.")],
+                    background="테스트", start_agent="a")
+        base.update(over)
+        return SimStartConfig(**base)
+
+    def test_resume_passes_cumulative_start_wave_to_create_run(self):
+        resp, calls = self._run_resume(
+            self._run_row(self._cfg(), start_wave=5, total_waves=8))
+        self.assertEqual(calls["create_run"]["kwargs"].get("start_wave"), 13)
+        self.assertEqual(calls["sim_kwargs"].get("wave_base_init"), 13)
+        self.assertEqual(resp.get("start_wave"), 13)
+
+    def test_resume_start_wave_defaults_zero_for_legacy_rows(self):
+        row = self._run_row(self._cfg(), start_wave=0, total_waves=0)
+        row["start_wave"]  = None          # 구버전 row: 컬럼 없음/NULL
+        row["total_waves"] = None
+        resp, calls = self._run_resume(row)
+        self.assertEqual(calls["create_run"]["kwargs"].get("start_wave"), 0)
+        self.assertEqual(resp.get("start_wave"), 0)
+
+    def test_resume_forwards_early_stop_settings_to_run(self):
+        resp, calls = self._run_resume(
+            self._run_row(self._cfg(early_stop_enabled=False, max_silence_waves=9)))
+        self.assertIs(calls["run"]["kwargs"].get("early_stop_enabled"), False)
+        self.assertEqual(calls["run"]["kwargs"].get("max_silence_waves"), 9)
+
+
 class ConversationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()

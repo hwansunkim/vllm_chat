@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import queue
 import threading
@@ -189,9 +190,24 @@ def continue_simulation(cfg: SimContinueConfig):
             # 시나리오 시작 시각으로 되감긴다. 순서 의존이 있어 헬퍼로 묶어뒀다.
             fold_elapsed_and_reset_waves(sim_obj)
 
+            config_json = _sim.get("config_json") or "{}"
+
+            # 3-1: 원래 실행의 조기종료 설정을 복원해 run()에 다시 넘긴다.
+            # /continue 요청 본문(SimContinueConfig)에는 이 두 필드가 없어서,
+            # 이어서 실행하면 항상 기본값으로 돌던 버그가 있었다.
+            max_silence_waves  = 3
+            early_stop_enabled = True
+            try:
+                _start_cfg = SimStartConfig(**json.loads(config_json))
+                max_silence_waves  = _start_cfg.max_silence_waves
+                early_stop_enabled = _start_cfg.early_stop_enabled
+            except Exception:
+                pass  # 스냅샷이 없거나 파싱 실패 → 방어적으로 기본값 유지
+
             if db is not None:
-                config_json = _sim.get("config_json") or "{}"
-                db.create_run(run_sim_id, scenario_id, scenario_name, config_json)
+                # fold 이후라 _wave_base 가 누적값(직전 run 들의 wave 합).
+                db.create_run(run_sim_id, scenario_id, scenario_name, config_json,
+                              start_wave=getattr(sim_obj, "_wave_base", 0))
 
             # Use pending wave (agents targeted last but not yet responded) if available,
             # otherwise start fresh from cfg.start_agent.
@@ -207,6 +223,8 @@ def continue_simulation(cfg: SimContinueConfig):
                 step_delay=cfg.step_delay,
                 events=[],
                 resume_wave=pending,
+                max_silence_waves=max_silence_waves,
+                early_stop_enabled=early_stop_enabled,
                 target_duration_minutes=cfg.target_duration_minutes,
             )
             finalize_run(db, run_sim_id, stop_ev, sim_obj, eq)

@@ -155,8 +155,12 @@ class _InfectionMixin:
 
     # ── 매 wave 모델 적용 ─────────────────────────────────────────────────────
 
-    def _apply_infection_wave(self, wave: int) -> None:
+    def _apply_infection_wave(self, run_wave: int, disp_wave: int | None = None) -> None:
         """이번 wave의 전염 + 회복 판정. 이동(move_to) 반영 **이후**에 호출할 것.
+
+        `run_wave` = per-run 카운터 → 경과 시간(`now`) 계산 전용.
+        `disp_wave` = 누적 표시 wave → `infection_update` 이벤트·`recovered_wave` 라벨용.
+        생략하면 `run_wave`를 그대로 라벨로 쓴다(단위 테스트 하위 호환).
 
         전염과 회복은 이번 wave 시작 시점의 감염자 명단(`infected_now`)을 기준으로 함께
         판정한다 — 이번 wave에 갓 감염된 사람이 같은 wave 안에서 곧바로 2차 전파를
@@ -165,7 +169,9 @@ class _InfectionMixin:
         if not self._infection_enabled:
             return
 
-        now = self._current_elapsed_minutes(wave)
+        if disp_wave is None:
+            disp_wave = run_wave
+        now = self._current_elapsed_minutes(run_wave)
         infected_now = {
             key for key in self.active_agents
             if self._infection_entry(key)["status"] == _I
@@ -185,7 +191,7 @@ class _InfectionMixin:
                         continue  # R(면역) — SIR에서는 재감염되지 않음
                     for _ in carriers:
                         if random.random() < self._infection_transmission:
-                            if self._set_infected(key, wave, "transmission", at_minutes=now):
+                            if self._set_infected(key, disp_wave, "transmission", at_minutes=now):
                                 newly_infected.add(key)
                             break  # 이미 감염 — 남은 감염자와의 판정은 무의미
 
@@ -200,7 +206,7 @@ class _InfectionMixin:
             if not isinstance(since, int) or not isinstance(target, int):
                 continue
             if now - since >= target:
-                self._set_recovered(key, wave, at_minutes=now)
+                self._set_recovered(key, disp_wave, at_minutes=now)
 
     # ── 경과분 앵커 재기준화 (/continue 전용) ────────────────────────────────────
     def rebase_infection_anchors(self, now: int | None = None) -> None:

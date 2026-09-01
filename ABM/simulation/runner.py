@@ -56,12 +56,16 @@ class _RunnerMixin:
         elapsed_baseline = self._elapsed_minutes
         end_reason = "max_waves"
 
-        for wave_num in range(max_waves):
+        for run_wave in range(max_waves):
+            # per-run 카운터(run_wave)는 시간/감염/목표기간 계산 전용이다.
+            # emit·영속화(피드 뱃지, DB wave 컬럼, 요약 구간)에는 이전 run들의 누적을
+            # 더한 disp_wave를 쓴다 — /continue·/resume 후에도 wave 번호가 이어지도록.
+            disp_wave = self._wave_base + run_wave
             if self._stop_event.is_set():
                 end_reason = "stopped"
                 break
 
-            for event in events_by_wave.get(wave_num, []):
+            for event in events_by_wave.get(run_wave, []):
                 ev_result = self._execute_event(event)
                 entrant   = ev_result.get("entrant")
                 if entrant and entrant not in current_wave:
@@ -85,17 +89,17 @@ class _RunnerMixin:
             # 빈 wave를 되살려 침묵 조기종료(early_stop)를 무력화한다.
             # 판정식도 `(wave_num+1) % interval` → `wave_num % interval`로 바뀌지만
             # 실제로 개입이 꽂히는 wave 번호는 예전과 동일하다(wave 0만 스킵).
-            if self._sys_enabled and wave_num > 0 and not self._stop_event.is_set():
-                if wave_num % self._sys_interval == 0:
-                    logger.info(f"[W{wave_num}] system 에이전트 호출 시작, current_wave={list(current_wave.keys())}")
+            if self._sys_enabled and disp_wave > 0 and not self._stop_event.is_set():
+                if disp_wave % self._sys_interval == 0:
+                    logger.info(f"[W{disp_wave}] system 에이전트 호출 시작, current_wave={list(current_wave.keys())}")
                     try:
-                        current_wave = self._run_system_agent(wave_num, current_wave)
-                        logger.info(f"[W{wave_num}] system 에이전트 완료, current_wave={list(current_wave.keys())}")
+                        current_wave = self._run_system_agent(disp_wave, current_wave)
+                        logger.info(f"[W{disp_wave}] system 에이전트 완료, current_wave={list(current_wave.keys())}")
                     except Exception as e:
-                        logger.error(f"[W{wave_num}] system 에이전트 예외: {e}", exc_info=True)
+                        logger.error(f"[W{disp_wave}] system 에이전트 예외: {e}", exc_info=True)
 
             self._emit("wave_start", {
-                "wave":   wave_num,
+                "wave":   disp_wave,
                 "agents": list(current_wave.keys()),
             })
 
@@ -103,7 +107,8 @@ class _RunnerMixin:
             with ThreadPoolExecutor(max_workers=len(current_wave)) as executor:
                 future_map = {
                     executor.submit(
-                        self._step_agent, agent_key, wave_num, turn_counter + i, incoming
+                        self._step_agent, agent_key, run_wave, disp_wave,
+                        turn_counter + i, incoming,
                     ): agent_key
                     for i, (agent_key, incoming) in enumerate(current_wave.items())
                 }
@@ -112,7 +117,7 @@ class _RunnerMixin:
                     try:
                         results[agent_key] = future.result()
                     except Exception as e:
-                        logger.error(f"Wave {wave_num} agent {agent_key} 예외: {e}")
+                        logger.error(f"Wave {disp_wave} agent {agent_key} 예외: {e}")
                         results[agent_key] = {"success": False, "agent_key": agent_key}
                     if self._stop_event.is_set():
                         break
@@ -123,7 +128,7 @@ class _RunnerMixin:
 
             turn_counter += len(current_wave)
             total_turns  += len(current_wave)
-            self.completed_waves = wave_num + 1
+            self.completed_waves = run_wave + 1
 
             # ── 발화 라우팅 (이동 적용 *전* 위치 스냅샷 기준) ──────────────────
             # turn.py의 1차 _resolve_targets() 해석(엣지/피드/DB 기록)과 반드시 같은
@@ -168,7 +173,7 @@ class _RunnerMixin:
                 self._agent_visual[speaker_key] = update_appearance
                 display = self._key_to_alias.get(speaker_key, speaker_key)
                 self._emit("appearance_update", {
-                    "wave": wave_num, "agent": speaker_key,
+                    "wave": disp_wave, "agent": speaker_key,
                     "display_name": display,
                     "description":  update_appearance,
                 })
@@ -209,7 +214,7 @@ class _RunnerMixin:
             meeting_before = dict(self._meeting_intent)
             self._apply_move_intents(results)
             self._update_meeting_paths(scene_injections)
-            self._emit_meeting_updates(wave_num, meeting_before)
+            self._emit_meeting_updates(disp_wave, meeting_before)
 
             for agent_key in list(self.active_agents):
                 path = self._agent_path.get(agent_key)
@@ -226,7 +231,7 @@ class _RunnerMixin:
                 to_exterior      = next_loc in self._exterior_locations
                 from_exterior    = old_loc  in self._exterior_locations
                 self._emit("agent_move", {
-                    "wave": wave_num, "agent": agent_key,
+                    "wave": disp_wave, "agent": agent_key,
                     "display_name": display,
                     "from": old_loc, "to": next_loc,
                     "to_exterior": to_exterior,
@@ -279,7 +284,7 @@ class _RunnerMixin:
             # (외모 변경 처리 자체는 위(124~174행)에서 이동 *전* 스냅샷 기준으로 이미
             # 끝났다 — 예전엔 여기 이동 이후에 중복으로 처리했었는데, 그 버전은 위치
             # 스냅샷이 틀리고 이름 노출·외부공간 격리도 안 됐던 구버전이라 제거했다.)
-            self._apply_infection_wave(wave_num)
+            self._apply_infection_wave(run_wave, disp_wave)
 
             # ── next_wave 구성 ────────────────────────────────────────────────
             # 조립 자체는 이동이 끝난 뒤에 한다(도착/이탈 씬 메시지가 필요하므로).
@@ -305,7 +310,7 @@ class _RunnerMixin:
                     # 시간 주도형 + 조기 종료 ON: max_silence_waves 초과 시 종료
                     silence_count += 1
                     forced_silence_reinject = True
-                    logger.info(f"[W{wave_num}] 침묵 #{silence_count}/{max_silence_waves}")
+                    logger.info(f"[W{disp_wave}] 침묵 #{silence_count}/{max_silence_waves}")
                     if silence_count < max_silence_waves:
                         next_wave = {key: [] for key in self.active_agents}
                     else:
@@ -331,7 +336,7 @@ class _RunnerMixin:
                     idx = min(silence_count, len(self._idle_minutes_schedule)) - 1
                     self._elapsed_minutes += self._idle_minutes_schedule[idx]
                 elif organically_filled or has_content:
-                    category_id = self._classify_wave_time(wave_num, results)
+                    category_id = self._classify_wave_time(disp_wave, results)
                     cat = next((c for c in self._time_categories if c["id"] == category_id), None) \
                           or next((c for c in self._time_categories if c["id"] == "normal_scene"), self._time_categories[0])
                     lo, hi = cat["min_minutes"], cat["max_minutes"]
@@ -341,18 +346,18 @@ class _RunnerMixin:
                 # else: 이번 wave에 성공한 발화가 전혀 없음 — 시간 미누적
 
             current_wave = next_wave
-            logger.info(f"[W{wave_num}] next_wave: {list(current_wave.keys())}")
+            logger.info(f"[W{disp_wave}] next_wave: {list(current_wave.keys())}")
 
             if self._summary_interval > 0 and not self._stop_event.is_set():
-                waves_since = wave_num - self._last_summarized_wave
+                waves_since = disp_wave - self._last_summarized_wave
                 if waves_since >= self._summary_interval:
-                    logger.info(f"[W{wave_num}] 요약 에이전트 호출 시작")
+                    logger.info(f"[W{disp_wave}] 요약 에이전트 호출 시작")
                     try:
-                        self._run_wave_summary(self._last_summarized_wave + 1, wave_num)
-                        self._last_summarized_wave = wave_num
-                        logger.info(f"[W{wave_num}] 요약 에이전트 완료")
+                        self._run_wave_summary(self._last_summarized_wave + 1, disp_wave)
+                        self._last_summarized_wave = disp_wave
+                        logger.info(f"[W{disp_wave}] 요약 에이전트 완료")
                     except Exception as e:
-                        logger.error(f"[W{wave_num}] 요약 에이전트 예외: {e}", exc_info=True)
+                        logger.error(f"[W{disp_wave}] 요약 에이전트 예외: {e}", exc_info=True)
 
             # ── 목표 기간 도달 체크 ───────────────────────────────────────────
             # 침묵 조기종료(early_stop_enabled/max_silence_waves)와 독립적으로,
@@ -364,11 +369,11 @@ class _RunnerMixin:
             # 증가량, fixed는 (wave_num + 1) * time_per_wave (이전 누적은 상쇄).
             if target_minutes > 0:
                 elapsed_since_start = (
-                    self._current_elapsed_minutes(wave_num + 1) - elapsed_baseline
+                    self._current_elapsed_minutes(run_wave + 1) - elapsed_baseline
                 )
                 if elapsed_since_start >= target_minutes:
                     logger.info(
-                        f"[W{wave_num}] 목표 기간 도달 — 경과 {elapsed_since_start}분 "
+                        f"[W{disp_wave}] 목표 기간 도달 — 경과 {elapsed_since_start}분 "
                         f">= 목표 {target_minutes}분, 정상 종료"
                     )
                     end_reason = "target_duration"

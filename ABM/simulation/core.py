@@ -74,6 +74,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         time_categories:  list[dict] | None            = None,
         idle_minutes_schedule: list[int] | None        = None,
         elapsed_minutes_init: int                      = 0,
+        wave_base_init:   int                           = 0,
         infection_model:  dict | None                  = None,
     ):
         self.agents         = agents
@@ -96,6 +97,13 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         self.completed_waves: int = 0
         self._pending_wave: dict  = {}
 
+        # 이 run() 호출 이전까지 누적된 wave 수. fresh /start는 0이고, /continue·
+        # /resume은 이전 run들의 (start_wave + total_waves)로 주입된다. run()의 루프
+        # 카운터(per-run 0-based)와 더해 emit·영속화용 **표시 wave**(disp_wave)를 만든다.
+        # 시간/감염/목표기간 계산은 이 값과 무관하게 per-run 카운터만 쓴다 —
+        # 시계 연속성은 이미 `_elapsed_minutes`(elapsed_minutes_init) 복원이 담당한다.
+        self._wave_base: int = max(0, int(wave_base_init))
+
         if initial_agents is not None:
             self.active_agents: set[str] = set(initial_agents) & set(agents.keys())
         else:
@@ -107,7 +115,8 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         )
 
         self._summary_interval:    int        = max(0, summary_interval)
-        self._last_summarized_wave: int       = -1
+        # 재개 후 첫 요약 구간이 재개 지점(disp_wave 축)부터 측정되도록 base 기준으로 둔다.
+        self._last_summarized_wave: int       = self._wave_base - 1
         self._last_summary:        dict | None = None
 
         sa = system_agent or {}
@@ -283,6 +292,15 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
     def _time_enabled(self) -> bool:
         """시간 개념이 켜져 있는가 (fixed + time_per_wave>0, 또는 variable 모드)."""
         return self._time_mode == "variable" or self._time_per_wave > 0
+
+    @property
+    def cumulative_waves(self) -> int:
+        """이 run 이전까지 누적 wave + 이번 run에서 완료한 wave 수(표시/리포팅용).
+
+        `completed_waves`는 per-run 값(테스트·`_current_elapsed_minutes` 폴백 의존)이라
+        그대로 두고, 재개 체인 전체에서 몇 wave가 진행됐는지는 이 프로퍼티로 읽는다.
+        """
+        return self._wave_base + self.completed_waves
 
     def contract_flags(self) -> dict:
         """계약 빌더/검증기에 넘길 현재 실행 설정의 feature 플래그."""

@@ -45,6 +45,10 @@ def resume_simulation(run_id: str):
             _sim["status"] = "idle"
         raise HTTPException(400, "이 실행은 설정 스냅샷이 없어 재개할 수 없습니다")
 
+    # 이 재개 run 의 첫 wave 가 가질 누적 표시 wave 번호.
+    # 직전 run 의 시작점(start_wave, 구버전 row 는 0) + 그 run 이 완료한 wave 수.
+    prior_cum = (run.get("start_wave") or 0) + (run.get("total_waves") or 0)
+
     snapshots        = db.get_agent_snapshots(run_id)
     saved_states     = db.get_agent_states(run_id)
     active_json      = run.get("active_agents_json")
@@ -73,7 +77,8 @@ def resume_simulation(run_id: str):
             run_sim_id    = str(uuid.uuid4())
             new_db        = SimDB(os.path.join(LOG_DIR, "simulation.db"))
             scenario_name = run.get("scenario_name")
-            new_db.create_run(run_sim_id, run.get("scenario_id"), scenario_name, config_json)
+            new_db.create_run(run_sim_id, run.get("scenario_id"), scenario_name, config_json,
+                              start_wave=prior_cum)
 
             alias_map    = {a.display_name: a.name for a in cfg.agents if a.display_name.strip()}
             key_to_alias = {v: k for k, v in alias_map.items()}
@@ -127,6 +132,9 @@ def resume_simulation(run_id: str):
                 idle_minutes_schedule=cfg.idle_minutes_schedule,
                 infection_model=cfg.infection_model.model_dump(),
                 elapsed_minutes_init=run.get("elapsed_minutes") or 0,
+                # 재개 run 의 wave 라벨이 직전 run 에 이어지도록 누적 base 주입.
+                # 시간·감염·목표기간 계산에는 들어가지 않는다(회귀 방지).
+                wave_base_init=prior_cum,
             )
             # 저장된 런타임 상태(이동한 위치, 바뀐 외모, 인지관계)를 시나리오 초기값 위에 덮어씀.
             # 저장된 상태가 없는 구버전 실행은 위 초기값을 그대로 유지한다.
@@ -149,6 +157,11 @@ def resume_simulation(run_id: str):
                 step_delay=cfg.step_delay,
                 events=[],
                 resume_wave=saved_pending,
+                # 3-1 버그 수정: 재개 시 조기종료 설정이 유실돼 항상 기본값
+                # (max_silence_waves=3, early_stop_enabled=True)으로 돌던 것을 고침.
+                # cfg 는 이미 복원된 SimStartConfig 라 두 필드가 존재한다.
+                max_silence_waves=cfg.max_silence_waves,
+                early_stop_enabled=cfg.early_stop_enabled,
                 target_duration_minutes=cfg.target_duration_minutes,
             )
             finalize_run(new_db, run_sim_id, stop_ev, sim, eq)
@@ -158,4 +171,4 @@ def resume_simulation(run_id: str):
     t = threading.Thread(target=_run, daemon=True)
     _sim["thread"] = t
     t.start()
-    return {"status": "resuming"}
+    return {"status": "resuming", "start_wave": prior_cum}

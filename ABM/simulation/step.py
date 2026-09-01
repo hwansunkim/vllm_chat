@@ -242,18 +242,23 @@ class _StepMixin:
     def _step_agent(
         self,
         agent_key: str,
-        wave:      int,
+        run_wave:  int,
+        disp_wave: int,
         turn:      int,
         incoming:  list[dict],
     ) -> dict:
-        """단일 에이전트 한 스텝. 결과 dict 반환."""
+        """단일 에이전트 한 스텝. 결과 dict 반환.
+
+        `run_wave` = per-run 0-based 카운터 → 시각 계산(`_assemble_agent_prompt`)에만 쓴다.
+        `disp_wave` = 누적 표시 wave → emit·메모리 압축 라벨·`_apply_turn_result`에 쓴다.
+        """
         if self._stop_event.is_set():
             return {"success": False, "agent_key": agent_key}
 
         active_agent  = self.agents[agent_key]
         incoming_msgs = self._inject_incoming(active_agent, incoming)
 
-        ctx             = self._assemble_agent_prompt(agent_key, wave)
+        ctx             = self._assemble_agent_prompt(agent_key, run_wave)
         visible_agents  = ctx["visible_agents"]
         extended_alias  = ctx["key_to_alias"]
         target_sections = ctx["target_sections"]
@@ -266,7 +271,7 @@ class _StepMixin:
 
         if situation_text:
             self._emit("turn_situation", {
-                "wave":  wave,
+                "wave":  disp_wave,
                 "agent": agent_key,
                 "text":  situation_text,
             })
@@ -275,13 +280,13 @@ class _StepMixin:
             # (프론트가 "[몸 상태]" 접두사로 구분) — 한 턴에 turn_situation이 두 번
             # 발생할 수 있는 건 의도된 동작이다.
             self._emit("turn_situation", {
-                "wave":  wave,
+                "wave":  disp_wave,
                 "agent": agent_key,
                 "text":  symptom_text,
             })
 
         self._maybe_compress(
-            active_agent, agent_key, wave, visible_agents, target_sections,
+            active_agent, agent_key, disp_wave, visible_agents, target_sections,
             sit_targets, ephemeral_msgs,
         )
 
@@ -296,7 +301,7 @@ class _StepMixin:
 
         self._emit("turn_start", {
             "turn":        turn,
-            "wave":        wave,
+            "wave":        disp_wave,
             "speaker":     agent_key,
             "memory_size": len(active_agent.memory),
             "est_tokens":  est_tokens,
@@ -322,7 +327,7 @@ class _StepMixin:
 
         if content and self._lang_fix_enabled and _has_foreign_chars(content):
             logger.warning(f"언어 교잡 감지 ({agent_key}): 재시도 시작")
-            self._emit("turn_language_fix", {"speaker": agent_key, "wave": wave, "turn": turn})
+            self._emit("turn_language_fix", {"speaker": agent_key, "wave": disp_wave, "turn": turn})
             content, reasoning, usage, error = self._retry_language_fix(
                 active_agent, agent_key, visible_agents, target_sections, content,
                 max_retries=self._lang_fix_retries,
@@ -340,7 +345,7 @@ class _StepMixin:
 
         extras = parse_json_extras(content)
         result = self._apply_turn_result(
-            active_agent, agent_key, content, reasoning, usage, wave, turn, est_tokens,
+            active_agent, agent_key, content, reasoning, usage, disp_wave, turn, est_tokens,
             time_str=time_str,
         )
         result["move_to"]            = extras.get("move_to")
