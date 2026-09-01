@@ -7,11 +7,12 @@ import {
   addTypingIndicator, removeTypingIndicator,
   updateWaveIndicator, addSummaryCard, addInterventionCard, addWorldEventCard,
   addMovementCard, addAppearanceCard, addSituationCard, applyWaveTimeStr,
-  addInfectionCard,
+  addInfectionCard, addMeetingCard, flushPendingWaveCards,
 } from './feed.js';
-import { updateAgentCard, updateAgentLocation, updateAgentInfection, getCardEl } from './cards.js';
+import { updateAgentCard, updateAgentLocation, updateAgentInfection,
+         updateAgentMeetingBadge, getCardEl } from './cards.js';
 import { addD3Edge, refreshInfectionStyles } from '../graph/d3.js';
-import { moveAgentOnMap, updateAgentInfectionOnMap } from '../map/d3.js';
+import { moveAgentOnMap, updateAgentInfectionOnMap, setMeetingIntentOnMap } from '../map/d3.js';
 import { setStatus } from './control.js';
 import { recordTurnError, recordConnectionError } from './errors.js';
 import { fetchAgentContext } from '../context.js';
@@ -93,6 +94,10 @@ export function connectSSE() {
     addSummaryCard(d);
   });
 
+  // 디렉터 개입 / 세계 사건. 페이로드의 `wave` 는 "이 개입이 실제로 소비되는 wave"이고,
+  // 엔진이 디렉터를 wave 루프 상단에서 돌리므로 해당 wave 의 wave_start 보다 **먼저**
+  // 도착한다. 그래서 피드는 이 카드를 바로 붙이지 않고 그 wave 의 구분선 뒤로 미룬다
+  // (feed.js 의 _appendWaveCard / flushPendingWaveCards).
   es.addEventListener('system_intervention', e => {
     const d = JSON.parse(e.data);
     addInterventionCard(d);
@@ -108,6 +113,15 @@ export function connectSSE() {
     addMovementCard(d);
     updateAgentLocation(d.agent, d.to);
     moveAgentOnMap(d.agent, d.to);
+  });
+
+  // 만남 lock(_meeting_intent)의 생성/해소. "누가 누구를 만나러 이동 중"을 노출한다.
+  // move_to에 사람을 지목하는 시나리오에서만 발생하며, 그 외에는 이벤트가 0건이다.
+  es.addEventListener('meeting_update', e => {
+    const d = JSON.parse(e.data);
+    addMeetingCard(d);            // 피드 한 줄
+    updateAgentMeetingBadge(d);   // chaser 카드의 "→ 목표" 뱃지
+    setMeetingIntentOnMap(d);     // 위치 지도의 점선 추격선
   });
 
   // 감염 모델의 상태 전이(시드/전파/회복). 엔진이 계산한 결과이며 LLM 판단이 아니다.
@@ -127,6 +141,9 @@ export function connectSSE() {
   es.addEventListener('simulation_end', e => {
     const d = JSON.parse(e.data);
     setStatus('done');
+    // 마지막 wave 가 시작되기 전에 종료됐다면 보류 중인 디렉터 카드가 남는다.
+    // 삼켜버리면 사용자는 개입이 있었다는 사실 자체를 잃으므로 전부 흘려보낸다.
+    flushPendingWaveCards(null);
     removeTypingIndicator();
     document.querySelectorAll('.sim-agent-card').forEach(c => c.classList.remove('speaking'));
     const reason = END_REASON_LABELS[d.end_reason];
@@ -141,6 +158,7 @@ export function connectSSE() {
     // EventSource의 error 이벤트에는 브라우저 스펙상 메시지 데이터가 없다.
     // 고정 문구만 같은 로그에 남겨 turn_error들과 시간순으로 함께 보이게 한다.
     recordConnectionError();
+    flushPendingWaveCards(null);
     removeTypingIndicator();
     setStatus('error');
     es.close();

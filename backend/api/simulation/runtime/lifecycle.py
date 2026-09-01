@@ -75,7 +75,9 @@ def start_simulation(cfg: SimStartConfig):
                 a.name: Agent(a.name, a.system_prompt, LOG_DIR,
                               token_limit=cfg.token_limit,
                               extra_fields=[f.model_dump() for f in cfg.extra_fields],
-                              output_format_template=cfg.output_format_template or None)
+                              # 오버라이드가 실제로 설정됐을 때만 전달. 비어 있으면
+                              # 엔진이 현재 설정으로 출력 계약을 생성한다.
+                              output_format_template=cfg.effective_output_format_override())
                 for a in cfg.agents
             }
             background_log = [{"role": "user", "content": f"[배경] {cfg.background}"}]

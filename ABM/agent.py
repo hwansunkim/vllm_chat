@@ -5,106 +5,22 @@ import logging
 from datetime import datetime
 from .config import TOKEN_LIMIT
 from .constants import DEFAULT_EXTRA_FIELDS as _DEFAULT_EXTRA_FIELDS
+from .prompt_contract import (
+    DEFAULT_OUTPUT_FORMAT_TEMPLATE,
+    build_output_contract,
+)
 
 logger = logging.getLogger(__name__)
 
 _RESERVED_LOG_KEYS = frozenset({"timestamp", "datetime_str", "content", "reasoning", "targets"})
 
-DEFAULT_OUTPUT_FORMAT_TEMPLATE = """
+# 출력 계약(JSON 스키마 / move_to 의미 / target ID 규칙)의 정본은 이제
+# `ABM/prompt_contract.py`다 — 엔진이 소유하고 실행 시 생성하는 "계약 층".
+# 아래 두 이름은 기존 import 경로(`from ABM.agent import ...`)를 위한 재노출이다.
+__all__ = ["Agent", "DEFAULT_OUTPUT_FORMAT_TEMPLATE", "_build_output_format"]
 
-[Important Output Format]
-당신의 응답은 반드시 다음 JSON 형식이어야 합니다. 다른 텍스트는 출력하지 마세요.
-{
-    "content": "당신의 말이나 행동을 자신의 말투로 (반드시 한국어로만)",
-    "action_note": "행동이나 생각, 상황 묘사. 텍스트로 서술. 예: '한숨을 쉰다', '눈을 흘김'",
-<FIELD_LINES>
-    "target": ["id1", "id2"] 또는 "all" 또는 "self",
-    "move_to": null,
-    "update_appearance": null
-}
-
-- content: 당신의 말, 대사. **반드시 한국어로만 작성. 중국어 한자·영어 등 외국어 절대 금지.**
-- action_note: 행동이나 생각 묘사. 이 내용은 다른 에이전트에게 **시각적 정보**로 전달됨.
-<FIELD_HINTS>
-- move_to: 이동할 위치 이름 (이동 없으면 null)
-- update_appearance: 외모 변화가 있을 때 새 외모 전체 묘사 (없으면 null)
-- target: 반드시 아래 시스템 ID만 사용 (표시 이름 절대 금지):
-<TARGETS><TARGETS_FOOTER>
-⚠ content 필드는 반드시 한국어로만 작성하십시오. 외국어·한자 사용 금지.
-"""
-
-
-def _build_output_format(
-    available_targets: list[str],
-    extra_fields: list[dict],
-    key_to_alias: dict[str, str] | None = None,
-    template: str | None = None,
-    target_sections: list[tuple[str, list[str]]] | None = None,
-    location_name: str = "",
-    situation_targets: bool = False,
-) -> str:
-    """Dynamically build the JSON output format instruction from configured fields."""
-    if situation_targets:
-        # 위치 기반 모드: 대화 상대는 상황 컨텍스트에서 ID 포함하여 제공됨
-        targets_block = "  ([현재 상황] 컨텍스트에서 대화 상대와 ID를 확인하세요)\n"
-    elif target_sections:
-        parts: list[str] = []
-        for section_label, members in target_sections:
-            parts.append(f"[{section_label}]")
-            for t in members:
-                alias = (key_to_alias or {}).get(t, "")
-                parts.append(f'  - ID: "{t}"' + (f'  ({alias})' if alias else ""))
-        targets_block = ("\n".join(parts) + "\n") if parts else "  (없음)\n"
-    else:
-        lines: list[str] = []
-        for t in available_targets:
-            alias = (key_to_alias or {}).get(t, "")
-            lines.append(f'  - ID: "{t}"' + (f'  ({alias})' if alias else ""))
-        targets_block = ("\n".join(lines) + "\n") if lines else "  (없음)\n"
-
-    _FIELD_DESCS: dict[str, str] = {
-        "action_note": "행동이나 생각 묘사. 이 내용은 다른 에이전트에게 **시각적 정보**로 전달됨.",
-    }
-
-    def _line(f: dict) -> str:
-        if f["name"] == "action_note":
-            return '    "action_note": "행동이나 생각, 상황 묘사. 텍스트로 서술. 예: \'한숨을 쉰다\', \'눈을 흘김\'",'
-        return f'    "{f["name"]}": "{f["default"]}",'
-
-    def _hint(f: dict) -> str:
-        desc = _FIELD_DESCS.get(f["name"])
-        if desc:
-            return f'- {f["name"]}: {desc}'
-        return f'- {f["name"]}: 적절한 값 (기본값 예시: "{f["default"]}")'
-
-    tmpl = template if template is not None else DEFAULT_OUTPUT_FORMAT_TEMPLATE
-    # 템플릿에 action_note가 이미 하드코딩돼 있으면 <FIELD_LINES>/<FIELD_HINTS>에서 제외 (중복 방지)
-    hardcoded = {name for name in ("action_note",) if f'"{name}"' in tmpl}
-    active_fields = [f for f in extra_fields if f["name"] not in hardcoded]
-
-    field_lines = "\n".join(_line(f) for f in active_fields)
-    field_hints = "\n".join(_hint(f) for f in active_fields)
-
-    # 그룹이 2개 이상일 때 그룹별 단축 표기 추가 (브릿지 에이전트용)
-    named_sections = [
-        label for label, _ in (target_sections or [])
-        if label != "기타"
-    ]
-    if len(named_sections) >= 2:
-        group_shortcuts = " / ".join(
-            f'[{label}] 전체: "group:{label}"' for label in named_sections
-        )
-        targets_footer = f'  {group_shortcuts} / 모두에게: "all" / 혼잣말·독백·탄식 등: "self"\n'
-    else:
-        targets_footer = '  전체에게: "all" / 혼잣말·독백·탄식 등: "self"\n'
-
-    return (
-        tmpl
-        .replace("<FIELD_LINES>", field_lines)
-        .replace("<FIELD_HINTS>", field_hints)
-        .replace("<TARGETS>", targets_block)
-        .replace("<TARGETS_FOOTER>", targets_footer)
-    )
+# 구 이름 alias. 새 코드는 `prompt_contract.build_output_contract`를 직접 쓸 것.
+_build_output_format = build_output_contract
 
 
 def _estimate_tokens(text: str) -> int:
@@ -134,6 +50,15 @@ class Agent:
         self._token_limit              = token_limit
         self._extra_fields             = extra_fields if extra_fields is not None else list(_DEFAULT_EXTRA_FIELDS)
         self._output_format_template   = output_format_template
+        # ── 엔진 계약 층 ──────────────────────────────────────────────────────
+        # `system_prompt`는 **사용자 소유**(페르소나 + 배경)로 순수하게 남긴다.
+        # 지도/시간/감염 같은 정적 엔진 규칙은 여기에 따로 담기고, 시뮬레이션이
+        # `set_engine_contract()`로 채워 넣는다. 이렇게 분리해야 (1) 인터뷰처럼
+        # 페르소나만 필요한 경로가 계약을 상속하지 않고, (2) 같은 Agent 객체를
+        # 다시 초기화해도 계약이 중복 누적되지 않는다(예전 `+=` 주입의 버그).
+        self.engine_contract: str = ""
+        self._has_location_graph: bool = False
+        self._has_zone: bool = False
         self._trimmed_count: int  = 0
         self._total_added:   int  = 0
         self._last_prompt_tokens: int | None = None
@@ -163,6 +88,23 @@ class Agent:
         with open(self.log_file, 'w', encoding='utf-8') as f:
             json.dump(self._log_buffer, f, ensure_ascii=False, indent=2)
 
+    def set_engine_contract(
+        self,
+        world_contract: str,
+        *,
+        has_location_graph: bool = False,
+        has_zone: bool = False,
+    ) -> None:
+        """시뮬레이션이 소유한 정적 계약 블록(지도/시간/감염)을 이 에이전트에 건다.
+
+        `+=`가 아니라 **대입**이다 — 같은 Agent를 두 번 초기화해도 계약이 두 번
+        붙지 않는다. `has_*` 플래그는 출력 계약의 `move_to` 문구를 조건부로
+        만드는 데 쓰인다(그래프 없는 시나리오에 rendezvous 안내가 새지 않도록).
+        """
+        self.engine_contract = world_contract or ""
+        self._has_location_graph = bool(has_location_graph)
+        self._has_zone = bool(has_zone)
+
     def get_system_message(
         self,
         available_targets: list[str],
@@ -171,14 +113,22 @@ class Agent:
         location_name: str = "",
         situation_targets: bool = False,
     ) -> dict:
+        """[사용자 페르소나] + [엔진 정적 계약] + [엔진 출력 계약] (계약이 맨 뒤).
+
+        출력 계약은 매 턴 타깃이 달라지므로 여기서 새로 만든다.
+        `_output_format_template`(사용자 오버라이드)이 명시적으로 주어졌을 때만
+        그걸 쓰고, 아니면 언제나 엔진이 현재 설정으로 생성한다.
+        """
         return {
             "role": "system",
-            "content": self.system_prompt + _build_output_format(
+            "content": self.system_prompt + self.engine_contract + build_output_contract(
                 available_targets, self._extra_fields, key_to_alias,
                 template=self._output_format_template,
                 target_sections=target_sections,
                 location_name=location_name,
                 situation_targets=situation_targets,
+                has_location_graph=self._has_location_graph,
+                has_zone=self._has_zone,
             ),
         }
 

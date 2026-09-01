@@ -68,7 +68,7 @@ function _autoExpand(id, sim) {
     // applyScenario 도 action_note 를 강제로 채운다). "비어 있지 않으면 펼침"으로 두면
     // 사실상 언제나 펼쳐져 접기의 의미가 사라지므로, 기본 3종을 넘어선 게 있을 때만 펼친다.
     case 'output':
-      return !!sim.output_format_template ||
+      return !!sim.output_format_override ||
              (sim.extra_fields || []).some(f => !BASELINE_OUTPUT_FIELDS.has(f.name));
     default:          return null;
   }
@@ -147,7 +147,8 @@ function _badgeText(id, sim) {
       return (sim.summary_interval ?? 0) > 0 ? `요약 ${sim.summary_interval}w` : '';
     case 'output': {
       const n = sim.extra_fields?.length ?? 0;
-      return sim.output_format_template ? `필드 ${n} · 포맷` : `필드 ${n}`;
+      // "오버라이드"는 출력 계약을 직접 편집 중일 때만 — 엔진 생성분은 기본이라 배지가 없다.
+      return sim.output_format_override ? `필드 ${n} · 오버라이드` : `필드 ${n}`;
     }
     case 'world':
       return sim.location_graph?.length ? `장소 ${sim.location_graph.length}` : '';

@@ -126,15 +126,17 @@ export function renderAgentListInConfig() {
         </div>
       </div>
       <div class="sim-acrd-prompt-row">
-        <label>외모 묘사 <span style="font-weight:400;color:#94a3b8">(모르는 사람에게 보이는 외모)</span></label>
+        <label>외모 묘사 <span class="sim-acrd-label-hint">(모르는 사람에게 보이는 외모)</span></label>
         <textarea class="sim-acrd-prompt" data-idx="${idx}" data-field="visual_description" data-autogrow
                   placeholder="키가 크고 검은 도복을 입은 청년...">${esc(agent.visual_description || '')}</textarea>
       </div>
       <div class="sim-acrd-prompt-row">
-        <label>시스템 프롬프트</label>
+        <label>캐릭터 · 배경 프롬프트
+          <span class="sim-acrd-label-hint">(페르소나·상황만. 출력 형식·이동 규칙은 자동 주입됨)</span>
+        </label>
         <div class="sim-ta-wrap sim-acrd-prompt-wrap">
           <textarea class="sim-acrd-prompt" data-idx="${idx}" data-field="system_prompt" data-autogrow
-                    placeholder="에이전트의 성격과 역할을 입력하세요...">${esc(agent.system_prompt)}</textarea>
+                    placeholder="이 인물이 누구이고 어떤 상황에 있는지 쓰세요. 성격·말투·목표·관계 등.&#10;JSON 출력 형식이나 move_to 규칙은 쓸 필요가 없습니다 — 엔진이 실행 시점에 붙입니다.">${esc(agent.system_prompt)}</textarea>
           <button type="button" class="sim-zoom-btn" title="확대 편집">⤢</button>
         </div>
       </div>
@@ -147,7 +149,7 @@ export function renderAgentListInConfig() {
     // 확대 오버레이 제목 — 따옴표가 섞인 이름도 안전하도록 속성이 아니라 프로퍼티로 넣는다.
     const promptWrap = body.querySelector('.sim-acrd-prompt-wrap');
     if (promptWrap) {
-      promptWrap.dataset.zoomTitle = `👤 ${agent.display_name || agent.name} — 시스템 프롬프트`;
+      promptWrap.dataset.zoomTitle = `👤 ${agent.display_name || agent.name} — 캐릭터 · 배경 프롬프트`;
     }
 
     // Header area click → toggle expand (skip buttons/inputs/labels)

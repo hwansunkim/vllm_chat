@@ -183,6 +183,18 @@ class _LocationMixin:
             else:
                 lines.append(f"이동 중: {dest} 방향 ({steps}칸 남음, 다음: {path[0]})")
 
+        # 사람을 만나러 가는 중이면 목적지 좌표가 아니라 **누구를** 쫓는지 보여준다.
+        # 경로 줄만 있으면 도중에 상대가 움직여 목적지가 바뀔 때 이유를 알 수 없다.
+        # (이미 같은 자리에 있으면 [이 자리의 사람들]에 나오므로 중복 표시하지 않는다.
+        #  lock 자체는 다음 wave 시작 시 "동석"으로 정리된다.)
+        meet_key = self._meeting_intent.get(agent_key)
+        if meet_key and meet_key in self.active_agents:
+            meet_loc = self._agent_location.get(meet_key, "")
+            if meet_loc and meet_loc != my_loc:
+                label = self._meeting_label(agent_key, meet_key)
+                lines.append(f"{label}을(를) 만나러 이동 중 (현재 {label}는 {meet_loc}에 있음)")
+                lines.append("※ 생각이 바뀌면 move_to에 다른 장소나 다른 사람을 지정하세요 — 만나러 가던 것은 취소됩니다.")
+
         if known or strangers:
             lines.append("")
             lines.append("[이 자리의 사람들]")
@@ -205,19 +217,31 @@ class _LocationMixin:
         if my_zone and (known_elsewhere or strangers_elsewhere):
             lines.append("")
             lines.append(f"[같은 구역({my_zone})의 다른 곳]")
+
+            # 각 줄에 그 사람을 만나러 가는 **정확한 입력값**을 인라인으로 붙인다.
+            # 블록 끝의 정적 안내("move_to로 이동하세요")만으로는 채택률이 낮았고,
+            # 특히 "장소명을 넣어야 하나 ID를 넣어야 하나"에서 모델이 갈렸다.
+            # 이미 그 사람을 만나러 가는 중(meet_key)이면 힌트를 생략한다 —
+            # 위쪽 "만나러 이동 중" 줄이 이미 상태를 보여주고 있어 중복이다.
+            def _meet_hint(real_key: str, addressable_id: str) -> str:
+                if meet_key and real_key == meet_key:
+                    return ""
+                return f'  → 만나려면 move_to: "{addressable_id}"'
+
             if known_elsewhere:
-                labels = [
-                    f'{self._key_to_alias.get(k, k)} (ID: "{k}") — {loc}'
-                    for k, loc in known_elsewhere
-                ]
-                lines.append(f"아는 사람: {', '.join(labels)}")
+                lines.append("아는 사람:")
+                for k, loc in known_elsewhere:
+                    label = self._key_to_alias.get(k, k)
+                    lines.append(f'  - {label} (ID: "{k}") — {loc}{_meet_hint(k, k)}')
             if strangers_elsewhere:
                 lines.append("처음 보는 사람:")
-                for sid, _, visual, loc in strangers_elsewhere:
+                for sid, real_key, visual, loc in strangers_elsewhere:
                     desc = f'  - ID: "{sid}"'
                     if visual:
                         desc += f"  {visual}"
-                    lines.append(f"{desc} — {loc}")
-            lines.append("※ 이들은 지금 다른 장소에 있어 말을 걸 수 없습니다. 대화하려면 move_to로 그 장소까지 이동하세요.")
+                    # 낯선 이는 실명이 아니라 stranger_N ID로만 지목할 수 있다
+                    # (`_resolve_meet_target`의 인지 규칙과 같은 제약).
+                    lines.append(f"{desc} — {loc}{_meet_hint(real_key, sid)}")
+            lines.append("※ 이들은 지금 다른 장소에 있어 말을 걸 수 없습니다. 대화하려면 move_to로 그 사람에게 가야 합니다.")
 
         return "\n".join(lines)

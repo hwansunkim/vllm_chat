@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -2595,6 +2596,1472 @@ class ThinkingLevelMigrationTests(unittest.TestCase):
         d = servers_api._row_to_dict(row)
         self.assertEqual(d["thinking_level"], "medium")
         self.assertIs(d["thinking"], True)
+
+
+class MeetingHelperTests(unittest.TestCase):
+    """랑데부 계산 순수 함수 (ABM/simulation/meeting.py).
+
+    Simulation 상태와 무관한 계산만 담당하므로 여기서 단위로 못 박아 둔다.
+    """
+
+    # X — M — N — Z 선형 그래프 + Z에 매달린 W, 그리고 아무와도 연결 안 된 고립 노드.
+    GRAPH = {
+        "X": ["M"], "M": ["X", "N"], "N": ["M", "Z"], "Z": ["N", "W"], "W": ["Z"],
+        "고립": [],
+    }
+
+    def _find_path(self, start, goal):
+        from collections import deque
+        if start == goal:
+            return []
+        if goal not in self.GRAPH or start not in self.GRAPH:
+            return []
+        visited, q = {start}, deque([(start, [])])
+        while q:
+            node, path = q.popleft()
+            for nb in self.GRAPH.get(node, []):
+                if nb == goal:
+                    return path + [nb]
+                if nb not in visited:
+                    visited.add(nb)
+                    q.append((nb, path + [nb]))
+        return []
+
+    def test_hop_count_separates_same_node_from_unreachable(self):
+        from ABM.simulation.meeting import hop_count
+
+        # _find_path는 둘 다 []로 돌려준다 — 비용 비교에서 반드시 갈라져야 한다.
+        self.assertEqual(hop_count(self._find_path, "X", "X"), 0)
+        self.assertEqual(hop_count(self._find_path, "X", "Z"), 3)
+        self.assertIsNone(hop_count(self._find_path, "X", "고립"))
+
+    def test_weak_components_merges_convergent_intents(self):
+        from ABM.simulation.meeting import weak_components
+
+        # a→c, b→c 는 방향이 c로만 향하지만 세 사람이 한 자리에 모여야 하므로
+        # 하나의 컴포넌트다. d↔e 는 별개.
+        self.assertEqual(
+            weak_components({"a": "c", "b": "c", "d": "e", "e": "d"}),
+            [["a", "b", "c"], ["d", "e"]],
+        )
+
+    def test_weak_components_is_order_independent(self):
+        from ABM.simulation.meeting import weak_components
+
+        chain = {"c": "b", "b": "a"}
+        self.assertEqual(weak_components(chain), [["a", "b", "c"]])
+        self.assertEqual(weak_components(dict(reversed(list(chain.items())))),
+                         [["a", "b", "c"]])
+        self.assertEqual(weak_components({}), [])
+
+    def test_gathering_node_minimises_total_hops(self):
+        from ABM.simulation.meeting import gathering_node
+
+        # a@X, b@M, c@Z → X:0+1+3=4, M:1+0+2=3, Z:3+2+0=5 → M
+        self.assertEqual(
+            gathering_node({"a": "X", "b": "M", "c": "Z"}, self._find_path), "M")
+
+    def test_gathering_node_breaks_ties_by_agent_key(self):
+        from ABM.simulation.meeting import gathering_node
+
+        # a@X, b@Z 는 어느 쪽으로 가도 총 3홉 — 사전순 앞선 a의 자리(X)로 고정.
+        self.assertEqual(gathering_node({"a": "X", "b": "Z"}, self._find_path), "X")
+        # key만 바꾸면 결과도 그 규칙대로 따라 움직인다(자리 이름이 아니라 key 기준).
+        self.assertEqual(gathering_node({"z": "X", "b": "Z"}, self._find_path), "Z")
+
+    def test_gathering_node_skips_unreachable_candidates_and_empty_input(self):
+        from ABM.simulation.meeting import gathering_node
+
+        # 고립 노드는 다른 참가자가 갈 수 없으므로 후보에서 빠지고, X가 남는다.
+        self.assertEqual(
+            gathering_node({"a": "X", "b": "고립"}, self._find_path), None)
+        self.assertEqual(gathering_node({"a": "X", "b": "M"}, self._find_path), "X")
+        self.assertIsNone(gathering_node({}, self._find_path))
+
+
+class _MeetingSimHarness:
+    """만남(추격/랑데부) 테스트용 공통 하네스. 그 자체는 TestCase가 아니다."""
+
+    # X — M — N — Z 선형 + Z에 붙은 W, 그리고 Z 밖의 외부 공간. 전부 같은 구역.
+    LOCATION_GRAPH = [
+        {"name": "X", "connects_to": ["M"],      "zone": "집"},
+        {"name": "M", "connects_to": ["X", "N"], "zone": "집"},
+        {"name": "N", "connects_to": ["M", "Z"], "zone": "집"},
+        {"name": "Z", "connects_to": ["N", "W", "밖"], "zone": "집"},
+        {"name": "W", "connects_to": ["Z"],      "zone": "집"},
+        {"name": "밖", "connects_to": ["Z"], "zone": "집", "is_exterior": True},
+    ]
+
+    def _run(self, script, locations, *, max_waves=1, graph=None, keys=None,
+             events=None, **sim_kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        keys = keys or sorted(locations)
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {
+                key: Agent(key, f"너는 {key}다.", tmp, token_limit=4096)
+                for key in keys
+            }
+            sim = Simulation(
+                agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+                llm=_ScriptedLLM(script),
+                agent_locations=dict(locations),
+                location_graph=self.LOCATION_GRAPH if graph is None else graph,
+                **sim_kw,
+            )
+            emitted = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            sim.run(keys[0], max_waves=max_waves, step_delay=0.0,
+                    early_stop_enabled=False, events=events,
+                    resume_wave={k: [] for k in keys})
+            return sim, emitted
+
+    @staticmethod
+    def _meet(target):
+        """상대를 지목하는 첫 턴 + 그 뒤로는 아무 것도 선언하지 않는 턴."""
+        return [{"content": "만나러 간다.", "target": "self", "move_to": target},
+                {"content": "...", "target": "self"}]
+
+    IDLE = [{"content": "...", "target": "self"}]
+
+    @staticmethod
+    def _meeting_events(emitted, chaser=None):
+        return [d for t, d in emitted
+                if t == "meeting_update" and (chaser is None or d["chaser"] == chaser)]
+
+    def _flow(self, emitted, chaser):
+        """chaser의 meeting_update 흐름을 (status, reason) 시퀀스로."""
+        return [(d["status"], d["reason"]) for d in self._meeting_events(emitted, chaser)]
+
+
+class MeetingRendezvousTests(_MeetingSimHarness, unittest.TestCase):
+    """`move_to`에 사람을 지목했을 때의 추격/랑데부 (ABM/simulation/meeting.py).
+
+    핵심 불변식: 서로를 만나려는 두 사람은 **반드시 수렴**해야 한다. 각자 상대의
+    '현재 위치'를 목적지로 삼으면 두 자리를 영원히 맞바꾸며 엇갈린다(간선 스왑).
+    """
+
+    def test_mutual_intent_converges_without_swapping(self):
+        # a@X와 b@Z가 서로를 지목 → 총 홉 동점(3:3)이므로 사전순 앞선 a의 자리 X로
+        # 집결. b만 걸어오고 a는 한 발짝도 움직이지 않아야 한다(스왑 없음).
+        sim, emitted = self._run(
+            {"a": self._meet("b"), "b": self._meet("a")},
+            {"a": "X", "b": "Z"}, max_waves=5,
+        )
+
+        self.assertEqual(sim._agent_location["a"], "X")
+        self.assertEqual(sim._agent_location["b"], "X")
+        self.assertEqual(sim._meeting_intent, {})   # 동석 성립 → lock 해제
+        movers = {d["agent"] for t, d in emitted if t == "agent_move"}
+        self.assertEqual(movers, {"b"})
+
+    def test_rendezvous_node_is_not_recomputed_midway(self):
+        # 랑데부는 한 번 정하면 도착까지 고정이다. 매 웨이브 다시 계산하면 b가
+        # 다가오는 동안 총 홉 균형이 바뀌어 목적지가 흔들린다.
+        sim, _ = self._run(
+            {"a": self._meet("b"), "b": self._meet("a")},
+            {"a": "X", "b": "Z"}, max_waves=2,
+        )
+
+        self.assertEqual(sim._agent_location["a"], "X")
+        self.assertEqual(sim._agent_location["b"], "M")   # Z → N → M …
+        self.assertEqual(sim._agent_path["b"], ["X"])     # 목적지는 계속 X
+
+    def test_one_way_chase_targets_the_movers_final_destination(self):
+        # b는 a를 만날 생각이 없고 Z→W로 이동 중. a가 b의 '현재 위치' Z를 쫓으면
+        # 도착했을 때 b는 이미 없다. 최종 목적지 W로 직행해야 한다.
+        sim, _ = self._run(
+            {"a": self._meet("b"),
+             "b": [{"content": "저리 간다.", "target": "self", "move_to": "W"}] + self.IDLE},
+            {"a": "X", "b": "Z"}, max_waves=1,
+        )
+
+        self.assertEqual(sim._agent_location["b"], "W")
+        self.assertEqual(sim._agent_location["a"], "M")
+        self.assertEqual(sim._agent_path["a"], ["N", "Z", "W"])  # Z가 아니라 W까지
+
+    def test_one_way_chase_eventually_catches_up(self):
+        sim, _ = self._run(
+            {"a": self._meet("b"),
+             "b": [{"content": "저리 간다.", "target": "self", "move_to": "W"}] + self.IDLE},
+            {"a": "X", "b": "Z"}, max_waves=6,
+        )
+
+        self.assertEqual(sim._agent_location["a"], "W")
+        self.assertEqual(sim._agent_location["b"], "W")
+        self.assertEqual(sim._meeting_intent, {})
+
+    def test_new_move_to_cancels_the_lock(self):
+        # 두 번째 턴에서 장소를 직접 지정하면 만남 lock은 그 발화로 취소되고,
+        # 새 목적지가 기존 추격 경로를 덮어쓴다. (a는 wave 0에 X→M까지 갔다가
+        # wave 1에 발길을 돌려 X로 되돌아온다.)
+        sim, _ = self._run(
+            {"a": [{"content": "만나러 간다.", "target": "self", "move_to": "b"},
+                   {"content": "아니, 돌아간다.", "target": "self", "move_to": "X"}],
+             "b": self.IDLE},
+            {"a": "X", "b": "Z"}, max_waves=2,
+        )
+
+        self.assertEqual(sim._meeting_intent, {})
+        self.assertEqual(sim._agent_location["a"], "X")
+        self.assertNotIn("a", sim._agent_path)
+
+    def test_staying_put_cancels_the_chase_path_too(self):
+        # 자기가 지금 있는 곳을 move_to로 선언 = "여기 있겠다". lock만 풀고 경로를
+        # 남겨두면 몸은 계속 옛 목적지로 걸어가는 유령 추격이 된다.
+        sim, _ = self._run(
+            {"a": [{"content": "만나러 간다.", "target": "self", "move_to": "b"},
+                   {"content": "역시 여기 있겠다.", "target": "self", "move_to": "M"}],
+             "b": self.IDLE},
+            {"a": "X", "b": "Z"}, max_waves=3,
+        )
+
+        self.assertEqual(sim._meeting_intent, {})
+        self.assertEqual(sim._agent_location["a"], "M")
+        self.assertNotIn("a", sim._agent_path)
+
+    def test_target_leaving_to_exterior_breaks_lock_with_scene(self):
+        # b가 외부 공간으로 나가면 추격은 목적을 잃는다 — 가던 길을 멈추고
+        # "어디론가 가버렸다" 씬을 받아 상황을 다시 판단할 수 있어야 한다.
+        sim, _ = self._run(
+            {"a": self._meet("b"),
+             "b": [{"content": "...", "target": "self"},
+                   {"content": "나간다.", "target": "self", "move_to": "밖"}] + self.IDLE},
+            {"a": "X", "b": "Z"}, max_waves=3,
+        )
+
+        self.assertEqual(sim._agent_location["b"], "밖")
+        self.assertEqual(sim._meeting_intent, {})
+        self.assertNotIn("a", sim._agent_path)          # 추격 중단
+        self.assertEqual(sim._agent_location["a"], "N")  # 두 칸만 가고 멈춤
+        scene = [m["content"] for m in sim._pending_wave.get("a", [])
+                 if m["speaker"] == "씬"]
+        self.assertIn("[씬] b이(가) 어디론가 가버렸다.", scene)
+
+    def test_chaser_already_at_the_goal_waits_instead_of_giving_up(self):
+        # a가 b를 쫓아 M까지 왔는데 b가 뒤늦게 M으로 오기 시작한 상황. a는 가던
+        # 길을 멈추고 그 자리에서 기다려야 한다 — lock을 버리면 안 된다.
+        sim, _ = self._run(
+            {"a": self._meet("b"),
+             "b": [{"content": "...", "target": "self"},
+                   {"content": "그쪽으로 간다.", "target": "self", "move_to": "M"}] + self.IDLE},
+            {"a": "X", "b": "Z"}, max_waves=2,
+        )
+
+        self.assertEqual(sim._agent_location["a"], "M")
+        self.assertNotIn("a", sim._agent_path)          # 제자리에서 대기
+        self.assertEqual(sim._meeting_intent, {"a": "b"})  # lock 유지
+
+    def test_chain_of_three_gathers_at_the_stationary_target(self):
+        # a→c, b→c. c는 아무도 만나러 가지 않으므로 끌려다니면 안 된다.
+        sim, emitted = self._run(
+            {"a": self._meet("c"), "b": self._meet("c"), "c": self.IDLE},
+            {"a": "X", "b": "Z", "c": "N"}, max_waves=4,
+        )
+
+        self.assertEqual(
+            {k: sim._agent_location[k] for k in ("a", "b", "c")},
+            {"a": "N", "b": "N", "c": "N"},
+        )
+        self.assertEqual(sim._meeting_intent, {})
+        self.assertNotIn("c", {d["agent"] for t, d in emitted if t == "agent_move"})
+
+    def test_intent_cycle_gathers_at_min_total_hop_node(self):
+        # a→b→c→a 순환. 정지한 사람이 없으므로 총 홉 최소 노드(M)로 전원 집결.
+        sim, _ = self._run(
+            {"a": self._meet("b"), "b": self._meet("c"), "c": self._meet("a")},
+            {"a": "X", "b": "M", "c": "Z"}, max_waves=4,
+        )
+
+        self.assertEqual(
+            {k: sim._agent_location[k] for k in ("a", "b", "c")},
+            {"a": "M", "b": "M", "c": "M"},
+        )
+        self.assertEqual(sim._meeting_intent, {})
+
+    def test_exterior_agent_can_neither_chase_nor_be_chased(self):
+        # 외부 공간은 완전 격리 — 지목 자체가 성립하지 않는다.
+        sim, _ = self._run(
+            {"a": self._meet("b"), "b": self._meet("a")},
+            {"a": "밖", "b": "Z"}, max_waves=1,
+        )
+
+        self.assertEqual(sim._meeting_intent, {})
+        self.assertEqual(sim._agent_location["a"], "밖")
+        self.assertEqual(sim._agent_location["b"], "Z")
+
+    def test_unperceivable_target_outside_zone_is_ignored(self):
+        # zone이 설정된 시나리오에서 인지 범위 밖의 사람은 지목할 수 없다.
+        # (그러지 않으면 zone이 세운 벽을 move_to 한 줄로 통과한다.)
+        graph = self.LOCATION_GRAPH + [
+            {"name": "먼곳", "connects_to": ["W"], "zone": "다른동네"},
+        ]
+        sim, _ = self._run(
+            {"a": self._meet("b"), "b": self.IDLE},
+            {"a": "X", "b": "먼곳"}, max_waves=1, graph=graph,
+        )
+
+        self.assertEqual(sim._meeting_intent, {})
+        self.assertEqual(sim._agent_location["a"], "X")
+
+    def test_situation_context_shows_who_is_being_followed(self):
+        sim, emitted = self._run(
+            {"a": self._meet("b"), "b": self.IDLE},
+            {"a": "X", "b": "Z"}, max_waves=2,
+        )
+
+        texts = [d["text"] for t, d in emitted
+                 if t == "turn_situation" and d["agent"] == "a"]
+        self.assertNotIn("만나러 이동 중", texts[0])     # 아직 지목 전
+        self.assertIn("b을(를) 만나러 이동 중 (현재 b는 Z에 있음)", texts[1])
+        self.assertIn("만나러 가던 것은 취소됩니다", texts[1])
+
+    def test_meeting_lock_survives_state_roundtrip(self):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        sim, _ = self._run(
+            {"a": self._meet("b"), "b": self.IDLE},
+            {"a": "X", "b": "Z"}, max_waves=1,
+        )
+        self.assertEqual(sim._meeting_intent, {"a": "b"})
+        state = sim.export_agent_state()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096)
+                      for k in ("a", "b")}
+            revived = Simulation(
+                agents, [], tmp, llm=_ScriptedLLM({}),
+                location_graph=self.LOCATION_GRAPH,
+            )
+            revived.restore_agent_state(state)
+
+            self.assertEqual(revived._meeting_intent, {"a": "b"})
+            self.assertEqual(revived._agent_path["a"], sim._agent_path["a"])
+
+
+class MeetingUpdateEventTests(_MeetingSimHarness, unittest.TestCase):
+    """`meeting_update` SSE 이벤트 계약 (_workspace/CONTRACT_meeting_update.md).
+
+    핵심 불변식: lock의 생성/해소가 한 wave에 한 건씩, 프론트가 추격선을 그렸다
+    지울 수 있는 형태로 나가야 한다. diff 기준은 **지난 wave 종료 시점**이다 —
+    _apply_move_intents가 만든 변화가 스냅샷에 먼저 녹아버리면 start 이벤트 자체가
+    영영 나가지 않는다.
+    """
+
+    def test_start_event_payload(self):
+        sim, emitted = self._run(
+            {"a": self._meet("b"), "b": self.IDLE},
+            {"a": "X", "b": "Z"}, max_waves=1,
+            name_aliases={"민수": "a", "유나": "b"},
+        )
+
+        events = self._meeting_events(emitted)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0], {
+            "wave":            0,
+            "chaser":          "a",
+            "chaser_name":     "민수",
+            "target":          "b",
+            "target_name":     "유나",
+            "target_location": "Z",
+            "status":          "start",
+            "reason":          None,
+        })
+
+    def test_arrived_event_when_chase_completes(self):
+        sim, emitted = self._run(
+            {"a": self._meet("b"),
+             "b": [{"content": "저리 간다.", "target": "self", "move_to": "W"}] + self.IDLE},
+            {"a": "X", "b": "Z"}, max_waves=6,
+        )
+
+        self.assertEqual(self._flow(emitted, "a"),
+                         [("start", None), ("arrived", "met")])
+        arrived = self._meeting_events(emitted, "a")[-1]
+        self.assertEqual(arrived["target_location"], "W")
+        self.assertEqual(sim._agent_location["a"], "W")
+
+    def test_mutual_rendezvous_emits_start_and_arrived_for_both(self):
+        _, emitted = self._run(
+            {"a": self._meet("b"), "b": self._meet("a")},
+            {"a": "X", "b": "Z"}, max_waves=5,
+        )
+
+        self.assertEqual(self._flow(emitted, "a"),
+                         [("start", None), ("arrived", "met")])
+        self.assertEqual(self._flow(emitted, "b"),
+                         [("start", None), ("arrived", "met")])
+
+    def test_cancelled_new_move_to(self):
+        _, emitted = self._run(
+            {"a": [{"content": "만나러 간다.", "target": "self", "move_to": "b"},
+                   {"content": "아니, 돌아간다.", "target": "self", "move_to": "X"}],
+             "b": self.IDLE},
+            {"a": "X", "b": "Z"}, max_waves=2,
+        )
+
+        self.assertEqual(self._flow(emitted, "a"),
+                         [("start", None), ("cancelled", "new_move_to")])
+
+    def test_cancelled_staying(self):
+        _, emitted = self._run(
+            {"a": [{"content": "만나러 간다.", "target": "self", "move_to": "b"},
+                   {"content": "역시 여기 있겠다.", "target": "self", "move_to": "M"}],
+             "b": self.IDLE},
+            {"a": "X", "b": "Z"}, max_waves=3,
+        )
+
+        self.assertEqual(self._flow(emitted, "a"),
+                         [("start", None), ("cancelled", "staying")])
+
+    def test_cancelled_gone_when_target_leaves(self):
+        _, emitted = self._run(
+            {"a": self._meet("b"),
+             "b": [{"content": "...", "target": "self"},
+                   {"content": "나간다.", "target": "self", "move_to": "밖"}] + self.IDLE},
+            {"a": "X", "b": "Z"}, max_waves=3,
+        )
+
+        self.assertEqual(self._flow(emitted, "a"),
+                         [("start", None), ("cancelled", "gone")])
+        self.assertEqual(self._meeting_events(emitted, "a")[-1]["target_location"], "밖")
+
+    def test_chaser_leaving_simulation_cancels_the_line(self):
+        # 추격자가 퇴장하면 내부 사유는 "invalid"지만, 프론트가 추격선을 지울 수
+        # 있도록 계약서 열거 안의 값(unreachable)으로 접어 내보낸다.
+        _, emitted = self._run(
+            {"a": self._meet("b"), "b": self.IDLE},
+            {"a": "X", "b": "Z"}, max_waves=2,
+            events=[{"wave": 1, "type": "agent_exit", "agent": "a",
+                     "message": "a가 사라졌다.", "targets": ["all"]}],
+        )
+
+        self.assertEqual(self._flow(emitted, "a"),
+                         [("start", None), ("cancelled", "unreachable")])
+
+    def test_target_switch_emits_a_single_start(self):
+        # 목표를 갈아타면 취소+시작 두 건이 아니라 새 목표로의 start 한 건이다
+        # (프론트는 chaser당 추격선 하나만 그린다).
+        _, emitted = self._run(
+            {"a": [{"content": "b한테 간다.", "target": "self", "move_to": "b"},
+                   {"content": "아니 c한테.", "target": "self", "move_to": "c"}],
+             "b": self.IDLE, "c": self.IDLE},
+            {"a": "X", "b": "Z", "c": "N"}, max_waves=2,
+        )
+
+        events = self._meeting_events(emitted, "a")
+        self.assertEqual([(d["status"], d["target"]) for d in events],
+                         [("start", "b"), ("start", "c")])
+        self.assertEqual([d["wave"] for d in events], [0, 1])
+
+    def test_target_name_respects_stranger_anonymity(self):
+        # a와 b가 서로 모르는 사이면 이벤트에도 실명이 실리면 안 된다.
+        sim, emitted = self._run(
+            {"a": [{"content": "저 사람한테 간다.", "target": "self",
+                    "move_to": "stranger_1"}] + self.IDLE,
+             "b": self.IDLE},
+            {"a": "X", "b": "Z"}, max_waves=1,
+            agent_groups={"a": ["갑"], "b": ["을"]},
+            name_aliases={"민수": "a", "유나": "b"},
+        )
+
+        # zone 인지 단계에서 stranger_1이 발급돼 있어야 지목이 성립한다.
+        self.assertEqual(sim._stranger_map["a"], {"stranger_1": "b"})
+        event = self._meeting_events(emitted, "a")[0]
+        self.assertEqual(event["target"], "b")
+        self.assertEqual(event["target_name"], '낯선 이(ID: "stranger_1")')
+        self.assertEqual(event["chaser_name"], "민수")
+
+    def test_unreachable_reason_maps_to_cancelled(self):
+        # 경로가 끊겨 폐기되는 경우는 고정 지도에서 재현이 어려우므로 사유 → 페이로드
+        # 변환만 직접 못 박는다.
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096)
+                      for k in ("a", "b")}
+            sim = Simulation(agents, [], tmp, llm=_ScriptedLLM({}),
+                             agent_locations={"a": "X", "b": "Z"},
+                             location_graph=self.LOCATION_GRAPH)
+            emitted = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            sim._meeting_break_log["a"] = "unreachable"
+            sim._emit_meeting_updates(7, {"a": "b"})
+
+            self.assertEqual(self._flow(emitted, "a"), [("cancelled", "unreachable")])
+            self.assertEqual(emitted[0][1]["wave"], 7)
+            # 사유 버퍼는 wave 한정 — 소비 후 반드시 비워져야 다음 wave로 안 샌다.
+            self.assertEqual(sim._meeting_break_log, {})
+
+    def test_no_events_when_nobody_chases_anybody(self):
+        # 사람 지목 move_to가 없는 기존 시나리오는 이벤트 0건.
+        _, emitted = self._run(
+            {"a": [{"content": "저기 간다.", "target": "self", "move_to": "M"}],
+             "b": self.IDLE},
+            {"a": "X", "b": "Z"}, max_waves=3,
+        )
+
+        self.assertEqual(self._meeting_events(emitted), [])
+
+    def test_event_is_persisted(self):
+        from ABM.simulation.core import _PERSIST_EVENTS
+
+        self.assertIn("meeting_update", _PERSIST_EVENTS)
+
+
+class MeetingBackCompatTests(unittest.TestCase):
+    """사람 지목 move_to가 기존 시나리오의 동작을 건드리지 않는지 (하위 호환)."""
+
+    GRAPH = [
+        {"name": "입구", "connects_to": ["매장"]},
+        {"name": "매장", "connects_to": ["입구", "창고"]},
+        {"name": "창고", "connects_to": ["매장"]},
+    ]
+
+    def _sim(self, tmp, script, *, graph, locations=None, keys=("a", "b")):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096) for k in keys}
+        return Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=_ScriptedLLM(script),
+            agent_locations=dict(locations) if locations else None,
+            location_graph=graph,
+        )
+
+    def test_node_name_move_to_never_creates_a_meeting_lock(self):
+        # zone 미설정 + 노드명 move_to = 기존 시나리오의 전형. 만남 lock은 애초에
+        # 만들어지지 않아야 하고 이동 결과도 예전과 같아야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                {"a": [{"content": "창고 간다.", "target": "self", "move_to": "창고"}],
+                 "b": [{"content": "음.", "target": "self"}]},
+                graph=self.GRAPH, locations={"a": "매장", "b": "매장"},
+            )
+            sim._emit = lambda t, d: None
+            sim.run("a", max_waves=1, step_delay=0.0)
+
+            self.assertEqual(sim._meeting_intent, {})
+            self.assertEqual(sim._agent_location["a"], "창고")
+
+    def test_unknown_move_to_value_is_still_ignored(self):
+        # 그래프에도 없고 사람도 아닌 값 → 예전처럼 조용히 무시(제자리).
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                {"a": [{"content": "??", "target": "self", "move_to": "달나라"}],
+                 "b": [{"content": "음.", "target": "self"}]},
+                graph=self.GRAPH, locations={"a": "매장", "b": "매장"},
+            )
+            sim._emit = lambda t, d: None
+            sim.run("a", max_waves=1, step_delay=0.0)
+
+            self.assertEqual(sim._meeting_intent, {})
+            self.assertEqual(sim._agent_location["a"], "매장")
+
+    def test_graphless_scenario_keeps_legacy_direct_move(self):
+        # 위치 그래프가 없는 시나리오에서는 move_to 값이 무엇이든 예전 그대로
+        # '직접 이동'으로 처리된다 — 사람 지목 해석은 지도가 있을 때만 켜진다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                {"a": [{"content": "간다.", "target": "self", "move_to": "b"}],
+                 "b": [{"content": "음.", "target": "self"}]},
+                graph=None,
+            )
+            sim._emit = lambda t, d: None
+            sim.run("a", max_waves=1, step_delay=0.0)
+
+            self.assertEqual(sim._meeting_intent, {})
+            self.assertEqual(sim._agent_location["a"], "b")
+
+    def test_person_chase_works_without_zones(self):
+        # zone을 안 쓰는 지도라도 사람 지목은 동작한다(제약은 외부 공간뿐).
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                {"a": [{"content": "찾아간다.", "target": "self", "move_to": "b"}],
+                 "b": [{"content": "음.", "target": "self"}]},
+                graph=self.GRAPH, locations={"a": "입구", "b": "창고"},
+            )
+            sim._emit = lambda t, d: None
+            sim.run("a", max_waves=1, step_delay=0.0)
+
+            self.assertEqual(sim._meeting_intent, {"a": "b"})
+            self.assertEqual(sim._agent_location["a"], "매장")
+            self.assertEqual(sim._agent_path["a"], ["창고"])
+
+
+# ── 프롬프트 계약 층 (ABM/prompt_contract.py) ─────────────────────────────────
+
+# 이 변경 **이전에** 시나리오 저장 시점에 통째로 스냅샷돼 DB에 얼어붙은 템플릿.
+# 로드된 옛 시나리오는 이걸 `output_format_template` 오버라이드로 들고 들어온다.
+# `<MOVE_TO_HINT>` 자리표시자가 없다는 점이 핵심이다 — 치환이 no-op이 되고
+# 하드코딩된 move_to 문구가 그대로 남아야 한다(문자열이 깨지지 않아야 한다).
+_LEGACY_FROZEN_TEMPLATE = """
+
+[Important Output Format]
+당신의 응답은 반드시 다음 JSON 형식이어야 합니다. 다른 텍스트는 출력하지 마세요.
+{
+    "content": "당신의 말이나 행동을 자신의 말투로 (반드시 한국어로만)",
+    "action_note": "행동이나 생각, 상황 묘사. 텍스트로 서술. 예: '한숨을 쉰다', '눈을 흘김'",
+<FIELD_LINES>
+    "target": ["id1", "id2"] 또는 "all" 또는 "self",
+    "move_to": null,
+    "update_appearance": null
+}
+
+- content: 당신의 말, 대사. **반드시 한국어로만 작성. 중국어 한자·영어 등 외국어 절대 금지.**
+- action_note: 행동이나 생각 묘사. 이 내용은 다른 에이전트에게 **시각적 정보**로 전달됨.
+<FIELD_HINTS>
+- move_to: 이동할 위치 이름, 또는 **만나러 갈 사람의 ID** (그 사람이 있는 곳까지 따라갑니다). 이동 없으면 null
+- update_appearance: 외모 변화가 있을 때 새 외모 전체 묘사 (없으면 null)
+- target: 반드시 아래 시스템 ID만 사용 (표시 이름 절대 금지):
+<TARGETS><TARGETS_FOOTER>
+⚠ content 필드는 반드시 한국어로만 작성하십시오. 외국어·한자 사용 금지.
+"""
+
+_FIELDS = [
+    {"name": "emotion",     "default": "neutral"},
+    {"name": "action",      "default": "speak"},
+    {"name": "action_note", "default": ""},
+]
+
+_GRAPH_FLAT = {"입구": ["매장"], "매장": ["입구", "창고"], "창고": ["매장"]}
+_GRAPH_ZONED = {"안방": ["거실"], "거실": ["안방", "밖"], "밖": ["거실"]}
+_ZONES = {"안방": "집", "거실": "집"}
+
+
+class EngineContractBuilderTests(unittest.TestCase):
+    """계약 빌더는 순수 함수다 — config 조합만 보고 문자열을 만든다.
+
+    핵심 불변식: **활성화된 feature만** 지시어를 낸다. 특히 위치 그래프가 없으면
+    `move_to` 사람 지목(rendezvous)을 절대 광고하지 않아야 한다 —
+    `_MeetingMixin._is_location_name()`이 그래프 미설정 시 항상 True를 돌려주므로
+    그 경로에서 사람 지목은 아예 해석되지 않는다(동작하지 않는 기능 광고 금지).
+    """
+
+    def test_move_to_hint_is_legacy_without_location_graph(self):
+        from ABM.prompt_contract import build_move_to_hint
+
+        hint = build_move_to_hint(has_location_graph=False, has_zone=False)
+        self.assertIn("이동할 위치 이름", hint)
+        self.assertNotIn("사람의 ID", hint)
+        self.assertNotIn("중간", hint)  # 랑데부 안내 없음
+
+    def test_move_to_hint_describes_rendezvous_with_graph(self):
+        from ABM.prompt_contract import build_move_to_hint
+
+        hint = build_move_to_hint(has_location_graph=True, has_zone=False)
+        self.assertIn("만나러 갈 사람의 ID", hint)
+        self.assertIn("중간 지점", hint)     # 랑데부
+        self.assertIn("취소", hint)          # 마음 바꾸기
+        # zone이 없으면 "장소명 말고 ID" 추가 안내는 붙지 않는다.
+        self.assertNotIn("장소명이 아니라", hint)
+
+    def test_move_to_hint_adds_zone_rule(self):
+        from ABM.prompt_contract import build_move_to_hint
+
+        hint = build_move_to_hint(has_location_graph=True, has_zone=True)
+        self.assertIn("만나러 갈 사람의 ID", hint)
+        self.assertIn("장소명이 아니라", hint)
+
+    def test_map_contract_is_empty_without_graph(self):
+        from ABM.prompt_contract import build_map_contract
+
+        self.assertEqual(build_map_contract(location_graph=None), "")
+        self.assertEqual(build_map_contract(location_graph={}), "")
+
+    def test_map_contract_conditional_sections(self):
+        from ABM.prompt_contract import build_map_contract
+
+        plain = build_map_contract(location_graph=_GRAPH_FLAT)
+        self.assertIn("[위치 그래프", plain)
+        self.assertIn("매장: 입구, 창고", plain)
+        self.assertNotIn("[외부 공간]", plain)
+        self.assertNotIn("[구역:", plain)
+
+        zoned = build_map_contract(
+            location_graph=_GRAPH_ZONED,
+            exterior_locations={"밖"},
+            location_zone=_ZONES,
+        )
+        self.assertIn("안방 [구역: 집]", zoned)
+        self.assertIn("밖 [외부 공간]", zoned)
+        self.assertIn("시뮬레이션 경계 밖", zoned)
+        self.assertIn("같은 생활권", zoned)
+
+    def test_time_contract_toggles(self):
+        from ABM.prompt_contract import build_time_contract
+
+        self.assertEqual(build_time_contract(time_enabled=False), "")
+        self.assertIn("[시간 인식]", build_time_contract(time_enabled=True))
+
+    def test_infection_contract_toggles_and_names_disease(self):
+        from ABM.prompt_contract import build_infection_contract
+
+        self.assertEqual(build_infection_contract(infection_enabled=False), "")
+        named = build_infection_contract(infection_enabled=True, disease_name="독감")
+        self.assertIn("[몸 상태 인식]", named)
+        self.assertIn("독감", named)
+        # raw 상태값(S/I/R)·확률은 절대 새면 안 된다.
+        self.assertNotIn("감염 확률", named)
+        self.assertIn("지어내지 마세요", named)
+
+        unnamed = build_infection_contract(infection_enabled=True, disease_name="")
+        self.assertIn("전염병", unnamed)
+
+    def test_world_contract_combines_only_active_features(self):
+        from ABM.prompt_contract import build_world_contract
+
+        self.assertEqual(build_world_contract(), "")
+
+        full = build_world_contract(
+            location_graph=_GRAPH_ZONED, exterior_locations={"밖"},
+            location_zone=_ZONES, time_enabled=True,
+            infection_enabled=True, disease_name="독감",
+        )
+        # 조립 순서: 지도 → 시간 → 감염
+        self.assertLess(full.index("[위치 그래프"), full.index("[시간 인식]"))
+        self.assertLess(full.index("[시간 인식]"), full.index("[몸 상태 인식]"))
+
+    def test_output_contract_target_shapes(self):
+        from ABM.prompt_contract import build_output_contract
+
+        flat = build_output_contract(["a", "b"], _FIELDS, {"a": "에이", "b": "비"})
+        self.assertIn('- ID: "a"  (에이)', flat)
+        self.assertIn('전체에게: "all"', flat)
+
+        sectioned = build_output_contract(
+            [], _FIELDS, {"a": "에이"},
+            target_sections=[("아는 사람", ["a"]), ("처음 보는 사람", ["stranger_1"])],
+        )
+        self.assertIn("[아는 사람]", sectioned)
+        self.assertIn('group:아는 사람', sectioned)  # 그룹 2개 이상 → 단축 표기
+
+        situational = build_output_contract([], _FIELDS, situation_targets=True)
+        self.assertIn("[현재 상황] 컨텍스트에서", situational)
+
+        empty = build_output_contract([], _FIELDS)
+        self.assertIn("(없음)", empty)
+
+    def test_engine_contract_full_assembly_order(self):
+        from ABM.prompt_contract import build_engine_contract
+
+        text = build_engine_contract(
+            extra_fields=_FIELDS, available_targets=["a"],
+            location_graph=_GRAPH_ZONED, exterior_locations={"밖"},
+            location_zone=_ZONES, time_enabled=True,
+            infection_enabled=True, disease_name="독감",
+        )
+        order = [
+            text.index("[위치 그래프"),
+            text.index("[시간 인식]"),
+            text.index("[몸 상태 인식]"),
+            text.index("[Important Output Format]"),
+        ]
+        self.assertEqual(order, sorted(order))
+
+    def test_engine_contract_interview_carve_out(self):
+        # 인터뷰 모드는 자연어 산문 답변을 받아야 하므로 출력 스키마를 뺀다.
+        from ABM.prompt_contract import build_engine_contract
+
+        text = build_engine_contract(
+            extra_fields=_FIELDS, location_graph=_GRAPH_FLAT, time_enabled=True,
+            include_output_schema=False,
+        )
+        self.assertIn("[위치 그래프", text)
+        self.assertNotIn("[Important Output Format]", text)
+        self.assertNotIn('"update_appearance"', text)
+
+    def test_legacy_frozen_template_still_renders_equivalently(self):
+        # 옛 프리즈 템플릿이 오버라이드로 들어와도 스키마/target/update_appearance
+        # 문구는 엔진 생성본과 동등해야 한다(회귀 없음).
+        from ABM.prompt_contract import build_output_contract
+
+        kwargs = dict(key_to_alias={"a": "에이"}, has_location_graph=True)
+        frozen = build_output_contract(["a"], _FIELDS, template=_LEGACY_FROZEN_TEMPLATE, **kwargs)
+        engine = build_output_contract(["a"], _FIELDS, **kwargs)
+
+        for token in ('"target": ["id1", "id2"]', '"move_to": null',
+                      '"update_appearance": null', '- ID: "a"  (에이)',
+                      '전체에게: "all"', '"emotion": "neutral"'):
+            self.assertIn(token, frozen, token)
+            self.assertIn(token, engine, token)
+        # 자리표시자가 남지 않아야 한다.
+        self.assertNotIn("<", frozen.replace("**", ""))
+
+    def test_agent_module_reexports_stay_importable(self):
+        # backend/api/simulation/scenarios.py 가 아직 이 경로로 import 한다.
+        from ABM.agent import DEFAULT_OUTPUT_FORMAT_TEMPLATE, _build_output_format
+        from ABM.prompt_contract import (
+            DEFAULT_OUTPUT_FORMAT_TEMPLATE as CANON, build_output_contract,
+        )
+
+        self.assertIs(DEFAULT_OUTPUT_FORMAT_TEMPLATE, CANON)
+        self.assertIs(_build_output_format, build_output_contract)
+
+
+class EngineContractAssemblyTests(unittest.TestCase):
+    """Simulation이 계약을 소유·주입하는 방식 (ABM/simulation/core.py).
+
+    핵심 불변식: `agent.system_prompt`(사용자 소유)는 절대 오염되지 않는다.
+    예전엔 core.py가 `agent.system_prompt += map_section` 으로 직접 이어붙여
+    사용자 프롬프트와 엔진 지시어가 한 문자열로 뭉개졌고, 같은 Agent로
+    Simulation을 두 번 만들면 계약이 중복 누적됐다.
+    """
+
+    def _sim(self, tmp, agents, **kw):
+        from ABM.simulation import Simulation
+        return Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp, **kw,
+        )
+
+    def _agents(self, tmp):
+        from ABM.agent import Agent
+        return {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in ("a", "b")}
+
+    def test_user_system_prompt_stays_pure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = self._agents(tmp)
+            self._sim(
+                tmp, agents,
+                location_graph=[{"name": "안방", "connects_to": ["거실"], "zone": "집"},
+                                {"name": "거실", "connects_to": ["안방"], "zone": "집"}],
+                time_per_wave=30,
+                infection_model={"enabled": True, "disease_name": "독감"},
+            )
+            self.assertEqual(agents["a"].system_prompt, "너는 a다.")
+            self.assertIn("[위치 그래프", agents["a"].engine_contract)
+            self.assertIn("[시간 인식]", agents["a"].engine_contract)
+            self.assertIn("[몸 상태 인식]", agents["a"].engine_contract)
+
+    def test_contract_is_replaced_not_accumulated(self):
+        # 같은 Agent 객체로 Simulation을 두 번 만들어도 계약은 한 벌만 남아야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = self._agents(tmp)
+            graph = [{"name": "안방", "connects_to": []}]
+            self._sim(tmp, agents, location_graph=graph, time_per_wave=30)
+            first = agents["a"].engine_contract
+            self._sim(tmp, agents, location_graph=graph, time_per_wave=30)
+            self.assertEqual(agents["a"].engine_contract, first)
+            self.assertEqual(first.count("[시간 인식]"), 1)
+
+    def test_assembled_system_message_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = self._agents(tmp)
+            self._sim(
+                tmp, agents,
+                location_graph=[{"name": "안방", "connects_to": ["거실"], "zone": "집"},
+                                {"name": "거실", "connects_to": ["안방"], "zone": "집"}],
+                time_per_wave=30,
+                infection_model={"enabled": True, "disease_name": "독감"},
+            )
+            text = agents["a"].get_system_message(["b"], {"b": "비"})["content"]
+            order = [
+                text.index("너는 a다."),
+                text.index("[위치 그래프"),
+                text.index("[시간 인식]"),
+                text.index("[몸 상태 인식]"),
+                text.index("[Important Output Format]"),
+            ]
+            self.assertEqual(order, sorted(order))
+
+    def test_legacy_scenario_gets_no_world_contract_and_legacy_move_to(self):
+        # 위치 그래프·시간·감염이 전부 꺼진 옛 시나리오: 계약은 출력 스키마뿐이고
+        # move_to 문구는 레거시(장소 이름)여야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = self._agents(tmp)
+            self._sim(tmp, agents, time_per_wave=0)
+            self.assertEqual(agents["a"].engine_contract, "")
+            text = agents["a"].get_system_message(["b"])["content"]
+            self.assertNotIn("[위치 그래프", text)
+            self.assertNotIn("[시간 인식]", text)
+            self.assertNotIn("[몸 상태", text)
+            self.assertIn("- move_to: 이동할 위치 이름", text)
+            self.assertNotIn("만나러 갈 사람의 ID", text)
+
+    def test_interview_path_never_inherits_the_contract(self):
+        # 인터뷰는 cfg.system_prompt로 Agent를 새로 만들고 system 메시지를 통째로
+        # 교체한다 — 출력 스키마도, 세계 계약도 붙지 않아야 한다.
+        from ABM.agent import Agent
+        from backend.api.simulation.interview import build_interview_system_prompt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fresh = Agent("a", "너는 a다.", tmp, token_limit=4096)
+            self.assertEqual(fresh.engine_contract, "")
+
+        text = build_interview_system_prompt("너는 a다.", "에이", "memory_only")
+        for token in ("[Important Output Format]", '"update_appearance"',
+                      "[위치 그래프", "[시간 인식]"):
+            self.assertNotIn(token, text)
+
+
+class EngineContractVerificationTests(unittest.TestCase):
+    """시작 시 검증 어서션 — 활성 feature ⇒ 지시어 존재 (경고만, raise 금지)."""
+
+    def _sim(self, tmp, agents, **kw):
+        from ABM.simulation import Simulation
+        return Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp, **kw,
+        )
+
+    GRAPH = [{"name": "안방", "connects_to": ["거실"], "zone": "집"},
+             {"name": "거실", "connects_to": ["안방"], "zone": "집"}]
+
+    def test_healthy_config_produces_no_warnings(self):
+        from ABM.agent import Agent
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {"a": Agent("a", "너는 a다.", tmp, token_limit=8192)}
+            sim = self._sim(
+                tmp, agents, location_graph=self.GRAPH, time_per_wave=30,
+                infection_model={"enabled": True, "disease_name": "독감"},
+            )
+            self.assertEqual(sim._verify_engine_contract(), [])
+
+    def test_broken_override_is_warned_not_raised(self):
+        # 사용자가 출력 스키마를 통째로 지운 오버라이드를 넣은 경우.
+        from ABM.agent import Agent
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {"a": Agent(
+                "a", "너는 a다.", tmp, token_limit=8192,
+                output_format_template="\n\n[출력] 그냥 아무 말이나 하세요.\n",
+            )}
+            with self.assertLogs("ABM.simulation.core", level="WARNING") as cm:
+                sim = self._sim(tmp, agents, location_graph=self.GRAPH)
+            joined = "\n".join(cm.output)
+            self.assertIn("계약 검증", joined)
+            self.assertIn("move_to", joined)
+            # raise 하지 않는다 — 시뮬레이션 객체는 정상적으로 만들어진다.
+            self.assertIsNotNone(sim)
+            problems = sim._verify_engine_contract()
+            self.assertTrue(any("target" in p for p in problems))
+
+    def test_legacy_frozen_override_passes_verification(self):
+        # 옛 프리즈 템플릿을 들고 있는 시나리오도 경고 없이 통과해야 한다 —
+        # 세계 계약(지도/시간/감염)은 이제 오버라이드와 무관하게 따로 주입된다.
+        from ABM.agent import Agent
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {"a": Agent(
+                "a", "너는 a다.", tmp, token_limit=8192,
+                output_format_template=_LEGACY_FROZEN_TEMPLATE,
+            )}
+            sim = self._sim(
+                tmp, agents, location_graph=self.GRAPH, time_per_wave=30,
+                infection_model={"enabled": True, "disease_name": "독감"},
+            )
+            self.assertEqual(sim._verify_engine_contract(), [])
+
+    def test_verify_contract_is_a_pure_function(self):
+        from ABM.prompt_contract import verify_contract
+
+        self.assertEqual(verify_contract("아무 것도 없음"), [
+            p for p in verify_contract("아무 것도 없음")
+        ])
+        # 아무 feature도 켜지 않고 스키마도 요구하지 않으면 문제 없음.
+        self.assertEqual(verify_contract("", include_output_schema=False), [])
+        # 시간만 켜면 시간 지시어 하나만 문제로 잡힌다.
+        problems = verify_contract("", time_enabled=True, include_output_schema=False)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("[시간 인식]", problems[0])
+
+
+class ZoneMeetHintTests(_MeetingSimHarness, unittest.TestCase):
+    """[같은 구역의 다른 곳] 각 줄의 인라인 `→ 만나려면 move_to: "<ID>"` 힌트.
+
+    정적 안내("move_to로 이동하세요")만으로는 모델이 장소명과 사람 ID 사이에서
+    갈렸다. 지목해야 할 **정확한 입력값**을 그 사람 줄에 붙여준다.
+    """
+
+    def _situation(self, sim, key):
+        known, strangers = sim._compute_wave_targets(key)
+        return sim._build_situation_context(
+            key, known, strangers, sim._compute_zone_awareness(key),
+        )
+
+    def _sim(self, tmp, locations, **kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096) for k in locations}
+        return Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            agent_locations=dict(locations),
+            location_graph=self.LOCATION_GRAPH, **kw,
+        )
+
+    def test_known_person_elsewhere_gets_inline_move_to_hint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, {"a": "X", "b": "Z"})
+            text = self._situation(sim, "a")
+            self.assertIn('- b (ID: "b") — Z  → 만나려면 move_to: "b"', text)
+
+    def test_stranger_elsewhere_is_hinted_by_stranger_id_not_real_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, {"a": "X", "b": "Z"},
+                            agent_groups={"a": ["가족"], "b": ["이웃"]})
+            text = self._situation(sim, "a")
+            self.assertIn('→ 만나려면 move_to: "stranger_1"', text)
+            # 실명은 지목 수단으로 노출되지 않는다(_resolve_meet_target의 인지 규칙).
+            self.assertNotIn('move_to: "b"', text)
+
+    def test_existing_meeting_lock_suppresses_the_hint(self):
+        # 이미 그 사람을 만나러 가는 중이면 "만나러 이동 중" 줄이 상태를 보여주므로
+        # 같은 사람에 대한 힌트는 중복이라 붙이지 않는다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, {"a": "X", "b": "Z", "c": "W"})
+            sim._meeting_intent["a"] = "b"
+            text = self._situation(sim, "a")
+            self.assertIn("을(를) 만나러 이동 중", text)
+            self.assertNotIn('만나려면 move_to: "b"', text)
+            # 다른 사람(c)에 대한 힌트는 그대로 남는다.
+            self.assertIn('만나려면 move_to: "c"', text)
+
+
+class _DirectorLLM:
+    """system 에이전트(디렉터)와 일반 에이전트 응답을 함께 처리하는 스텁 LLM."""
+
+    def __init__(self):
+        self.agent_calls: list[tuple[str, str]] = []    # (system_text, user_text)
+        self.director_calls: list[str] = []             # user_text
+
+    def __call__(self, messages, max_tokens=None, **kw):
+        sys_text  = messages[0].get("content", "") if messages else ""
+        user_text = "\n".join(m.get("content", "") for m in messages[1:])
+        if "[현재 Wave:" in user_text:
+            self.director_calls.append(user_text)
+            n = len(self.director_calls)
+            return json.dumps({
+                "interventions": [{"agent": "a", "message": f"디렉터 자극 {n}"}],
+                "world_event":   None,
+                "director_memo": "",
+                "reason":        "테스트",
+            }), "", {}
+        self.agent_calls.append((sys_text, user_text))
+        return json.dumps({
+            "content": "...", "action_note": "", "target": "self",
+            "move_to": None, "update_appearance": None,
+        }), "", {}
+
+
+class SystemAgentTimeAndOrderTests(unittest.TestCase):
+    """디렉터(system 에이전트)의 실행 시점과 시각 주입.
+
+    핵심 불변식 2가지:
+      1. 디렉터는 wave **시작**에 돈다 — 개입이 그 wave에서 소비되므로 emit의
+         `wave`, 반응 wave, 표시 시각이 셋 다 일치한다. 예전엔 루프 끝에서 돌아
+         한 wave 어긋났다.
+      2. 디렉터가 보는 시각은 에이전트가 보는 시각과 **글자 단위로 같다** —
+         갈라지면 world_event가 "벽시계 8시"를 치는데 에이전트는 6:45를 본다.
+    """
+
+    def _run(self, tmp, *, waves=3, interval=1, threshold=3, **sim_kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        llm    = _DirectorLLM()
+        agents = {"a": Agent("a", "너는 a다.", tmp, token_limit=8192)}
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=llm,
+            system_agent={"enabled": True, "intervention_interval": interval,
+                          "silence_threshold": threshold, "display_name": "내레이터"},
+            **sim_kw,
+        )
+        emitted: list[tuple[str, dict]] = []
+        sim._emit = lambda t, d: emitted.append((t, d))
+        sim.run("a", max_waves=waves, step_delay=0.0, early_stop_enabled=False)
+        return sim, llm, emitted
+
+    def test_director_runs_before_wave_start_and_skips_wave_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, _, emitted = self._run(tmp, waves=3)
+
+            seq = [(t, d.get("wave")) for t, d in emitted
+                   if t in ("wave_start", "system_intervention")]
+            self.assertEqual(
+                seq,
+                [("wave_start", 0),
+                 ("system_intervention", 1), ("wave_start", 1),
+                 ("system_intervention", 2), ("wave_start", 2)],
+            )
+
+    def test_intervention_is_consumed_in_the_same_wave(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, llm, _ = self._run(tmp, waves=3)
+
+            # 에이전트는 wave마다 정확히 한 번 호출된다(a 혼자, 전원 재투입).
+            self.assertEqual(len(llm.agent_calls), 3)
+            self.assertNotIn("디렉터 자극", llm.agent_calls[0][1])   # wave 0
+            self.assertIn("디렉터 자극 1", llm.agent_calls[1][1])    # wave 1
+            self.assertIn("디렉터 자극 2", llm.agent_calls[2][1])    # wave 2
+
+    def test_interval_selects_the_same_waves_as_before(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, _, emitted = self._run(tmp, waves=7, interval=3)
+            waves = [d["wave"] for t, d in emitted if t == "system_intervention"]
+            self.assertEqual(waves, [3, 6])
+
+    def test_silence_threshold_keeps_its_meaning_after_the_reorder(self):
+        """디렉터가 wave **시작**에 돌면 `_last_spoke_wave`는 wave_num-1까지만
+        반영돼 있다(turn.py가 발화 후 갱신). 그래서 침묵 판정도 (wave_num-1)
+        기준이어야 디렉터가 wave 끝에서 돌던 이전 배치와 임계값 의미가 같다.
+        보정이 없으면 실효 임계값이 1 줄어, threshold=1에서 **직전 wave에 말한**
+        에이전트도 침묵으로 잡힌다(M-1 회귀)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            _, llm, _ = self._run(tmp, waves=4, interval=1, threshold=1)
+            # a는 _DirectorLLM 상 매 wave 발화한다. threshold=1("직전 wave 미발화 =
+            # 침묵")인데 a는 직전 wave에 늘 말했으므로 어떤 디렉터 호출에서도
+            # 침묵 목록에 없어야 한다.
+            self.assertTrue(llm.director_calls)
+            for call in llm.director_calls:
+                silent_block = call.split("[침묵 중인 에이전트")[1].split("[반복")[0]
+                self.assertIn("없음", silent_block)
+                self.assertNotIn('"a"', silent_block)
+
+    def test_director_sees_the_same_clock_as_the_agent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, llm, _ = self._run(
+                tmp, waves=3, sim_start_time="06:45", sim_start_weekday="wed",
+                time_per_wave=30,
+            )
+            # wave 1 → 06:45 + 30분
+            self.assertIn("[현재 시각]\n수요일 오전 7시 15분", llm.director_calls[0])
+            self.assertIn("[현재 시각: 수요일 오전 7시 15분]", llm.agent_calls[1][1])
+            # wave 2 → 06:45 + 60분
+            self.assertIn("[현재 시각]\n수요일 오전 7시 45분", llm.director_calls[1])
+            self.assertIn("[현재 시각: 수요일 오전 7시 45분]", llm.agent_calls[2][1])
+
+    def test_time_section_is_omitted_when_time_is_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, llm, _ = self._run(tmp, waves=2, time_per_wave=0)
+            self.assertTrue(llm.director_calls)
+            for user_msg in llm.director_calls:
+                # 섹션 헤더는 자기 줄을 차지한다. 규칙 문구 안의 "[현재 시각]"
+                # 언급("위 [현재 시각]만을 참조")과 구분하려고 개행까지 본다.
+                self.assertNotIn("[현재 시각]\n", user_msg)
+                self.assertNotIn("오전", user_msg)
+
+    def test_director_rules_forbid_inventing_clocks_and_physical_facts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, llm, _ = self._run(tmp, waves=2, time_per_wave=30)
+            rules = llm.director_calls[0]
+            self.assertIn("시각·시계·시간을 임의로 지어내지 말 것", rules)
+            self.assertIn("world_event는 물리적 사실을 새로 만들지 않습니다", rules)
+            self.assertIn("느껴진다", rules)
+
+    def test_director_off_is_unaffected(self):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        with tempfile.TemporaryDirectory() as tmp:
+            llm    = _DirectorLLM()
+            agents = {"a": Agent("a", "너는 a다.", tmp, token_limit=8192)}
+            sim = Simulation(
+                agents, [{"role": "user", "content": "[배경] 테스트"}], tmp, llm=llm,
+            )
+            emitted: list[tuple[str, dict]] = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            sim.run("a", max_waves=3, step_delay=0.0, early_stop_enabled=False)
+
+            self.assertEqual(llm.director_calls, [])
+            self.assertFalse([t for t, _ in emitted if t == "system_intervention"])
+
+
+# ── 계약 프리즈 중단 / 프리뷰 (backend/api/simulation) ─────────────────────────
+
+_BACKGROUND = [{"role": "user", "content": "[배경] 테스트"}]
+
+_ZONED_NODES = [
+    {"name": "안방", "connects_to": ["거실"], "zone": "집"},
+    {"name": "거실", "connects_to": ["안방"], "zone": "집"},
+]
+
+
+def _sim_cfg(**over) -> SimStartConfig:
+    base = dict(
+        agents=[AgentConfig(name="a", system_prompt="너는 a다."),
+                AgentConfig(name="b", system_prompt="너는 b다.")],
+        background="테스트 배경",
+        start_agent="a",
+    )
+    base.update(over)
+    return SimStartConfig(**base)
+
+
+def _agents_like_lifecycle(cfg: SimStartConfig, tmp: str) -> dict:
+    """lifecycle.py / load.py / resume.py 가 Agent 를 만드는 방식 그대로."""
+    from ABM.agent import Agent
+    return {
+        a.name: Agent(
+            a.name, a.system_prompt, tmp,
+            token_limit=cfg.token_limit,
+            extra_fields=[f.model_dump() for f in cfg.extra_fields],
+            output_format_template=cfg.effective_output_format_override(),
+        )
+        for a in cfg.agents
+    }
+
+
+class ContractFreezeTests(unittest.TestCase):
+    """C1 — 출력 계약은 더 이상 시나리오에 얼려 저장되지 않는다.
+
+    프리즈의 실제 피해: 엔진에 기능을 추가해도(예: move_to 사람 지목 → 랑데부)
+    기존 시나리오는 옛 지시어에 묶여 그 기능이 **조용히** 죽는다. 게다가 현재
+    템플릿에는 `<MOVE_TO_HINT>` 자리표시자가 있어 그대로 프리즈하면 미치환
+    문자열이 DB 에 들어간다.
+    """
+
+    def test_default_output_format_endpoint_returns_empty(self):
+        from backend.api.simulation.scenarios import get_default_output_format
+
+        body = get_default_output_format()
+        self.assertEqual(body, {"template": ""})
+        # 자리표시자·스키마가 스냅샷으로 새어 나가지 않는지
+        self.assertNotIn("<MOVE_TO_HINT>", body["template"])
+        self.assertNotIn("[Important Output Format]", body["template"])
+
+    def test_override_is_forwarded_only_when_actually_set(self):
+        self.assertIsNone(_sim_cfg().effective_output_format_override())
+        self.assertIsNone(_sim_cfg(output_format_override="").effective_output_format_override())
+        cfg = _sim_cfg(output_format_override="\n\n[출력] 커스텀\n")
+        self.assertEqual(cfg.effective_output_format_override(), "\n\n[출력] 커스텀\n")
+
+    def test_legacy_frozen_field_is_ignored_even_when_present(self):
+        cfg = _sim_cfg(output_format_template=_LEGACY_FROZEN_TEMPLATE)
+        self.assertIsNone(cfg.effective_output_format_override())
+        # 새 오버라이드가 함께 있으면 그쪽이 유일한 진실
+        both = _sim_cfg(output_format_template=_LEGACY_FROZEN_TEMPLATE,
+                        output_format_override="\n\n[출력] 커스텀\n")
+        self.assertEqual(both.effective_output_format_override(), "\n\n[출력] 커스텀\n")
+
+    def test_config_without_the_new_field_still_parses(self):
+        # DB 에 남아 있는 옛 config_json 은 output_format_override 키가 아예 없다.
+        raw = json.loads(_sim_cfg(output_format_template=_LEGACY_FROZEN_TEMPLATE)
+                         .model_dump_json())
+        raw.pop("output_format_override")
+        cfg = SimStartConfig(**raw)
+        self.assertEqual(cfg.output_format_override, "")
+        self.assertIsNone(cfg.effective_output_format_override())
+
+    def test_loaded_legacy_scenario_gets_the_current_engine_contract(self):
+        # 핵심 회귀: 옛 프리즈 문자열을 들고 있는 시나리오를 로드해도 그 값은
+        # 무시되고, 엔진이 **현재 설정**으로 계약을 다시 만든다.
+        from ABM.simulation import Simulation
+
+        cfg = _sim_cfg(output_format_template=_LEGACY_FROZEN_TEMPLATE,
+                       location_graph=_ZONED_NODES, time_per_wave=30)
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = _agents_like_lifecycle(cfg, tmp)
+            Simulation(agents, _BACKGROUND, tmp,
+                       location_graph=[dict(n) for n in _ZONED_NODES],
+                       time_per_wave=30)
+            text = agents["a"].get_system_message(["b"], {"b": "비"})["content"]
+
+        self.assertIn("만나러 갈 사람의 ID", text)
+        self.assertIn("다음 발화에서 다른 장소나 다른 사람을 넣으면", text)  # 신규 문구
+        self.assertNotIn("이동할 위치 이름, 또는", text)                    # 옛 프리즈 문구
+        self.assertIn("[위치 그래프", text)
+        self.assertIn("[시간 인식]", text)
+        self.assertEqual(agents["a"].system_prompt, "너는 a다.")
+
+    def test_explicit_override_still_wins_at_load_time(self):
+        from ABM.simulation import Simulation
+
+        cfg = _sim_cfg(output_format_override="\n\n[출력] 그냥 아무 말이나 하세요.\n",
+                       location_graph=_ZONED_NODES, time_per_wave=30)
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = _agents_like_lifecycle(cfg, tmp)
+            Simulation(agents, _BACKGROUND, tmp,
+                       location_graph=[dict(n) for n in _ZONED_NODES],
+                       time_per_wave=30)
+            text = agents["a"].get_system_message(["b"], {"b": "비"})["content"]
+
+        self.assertIn("[출력] 그냥 아무 말이나 하세요.", text)
+        self.assertNotIn("[Important Output Format]", text)
+        # 오버라이드는 출력 계약만 대체한다 — 세계 계약은 계속 엔진 소유
+        self.assertIn("[위치 그래프", text)
+        self.assertIn("[시간 인식]", text)
+
+
+class ScenarioContractPersistenceTests(unittest.TestCase):
+    """C2 — 시나리오 CRUD/복제에서 계약 필드 왕복 정합성."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.old_db_path = config.DB_PATH
+        config.DB_PATH = Path(self.tmpdir.name) / "memory.db"
+        conn = get_db()
+        init_tables(conn)
+        migrate_db(conn)
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        config.DB_PATH = self.old_db_path
+        self.tmpdir.cleanup()
+
+    def _save(self, cfg, name="시나리오"):
+        from backend.api.simulation.scenarios import create_scenario
+        from backend.api.simulation.schemas import ScenarioSave
+        return create_scenario(ScenarioSave(name=name, config=cfg))["id"]
+
+    def _loaded(self, sid) -> SimStartConfig:
+        from backend.api.simulation.scenarios import list_scenarios
+        row = next(r for r in list_scenarios() if r["id"] == sid)
+        return SimStartConfig(**row["config"])
+
+    def test_new_scenario_saves_an_empty_output_format(self):
+        # 프론트가 아직 옛 필드를 보내더라도 죽은 지시어를 저장하지 않는다.
+        sid = self._save(_sim_cfg(output_format_template=_LEGACY_FROZEN_TEMPLATE))
+        cfg = self._loaded(sid)
+        self.assertEqual(cfg.output_format_template, "")
+        self.assertEqual(cfg.output_format_override, "")
+        self.assertIsNone(cfg.effective_output_format_override())
+
+    def test_override_round_trips_through_save_load_clone_and_update(self):
+        from backend.api.simulation.scenarios import update_scenario
+        from backend.api.simulation.schemas import ScenarioSave
+
+        override = "\n\n[출력] 커스텀 계약\n"
+        sid = self._save(_sim_cfg(output_format_override=override,
+                                  location_graph=_ZONED_NODES))
+        loaded = self._loaded(sid)
+        self.assertEqual(loaded.output_format_override, override)
+        self.assertEqual([n.name for n in loaded.location_graph], ["안방", "거실"])
+
+        # 복제 = 로드한 config 를 그대로 다시 저장
+        clone_id = self._save(loaded, name="시나리오 (복사본)")
+        self.assertNotEqual(clone_id, sid)
+        self.assertEqual(self._loaded(clone_id).output_format_override, override)
+
+        # 수정 — 오버라이드 해제하면 다시 엔진 생성 경로로 돌아온다
+        update_scenario(sid, ScenarioSave(name="시나리오", config=_sim_cfg()))
+        self.assertIsNone(self._loaded(sid).effective_output_format_override())
+
+
+class ContractPreviewEndpointTests(unittest.TestCase):
+    """C4 — POST /api/simulation/contract-preview (읽기 전용)."""
+
+    def _preview(self, **kw):
+        from backend.api.simulation.contract import preview_engine_contract
+        from backend.api.simulation.schemas import ContractPreviewRequest
+        return preview_engine_contract(ContractPreviewRequest(**kw))
+
+    def test_preview_matches_what_the_engine_actually_injects(self):
+        # 미리보기가 의미를 가지려면 실제 주입본과 **글자 단위로** 같아야 한다.
+        # flat 타깃 경로와, 위치 그래프가 있을 때의 situation_targets 경로 둘 다.
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        infection = {"enabled": True, "disease_name": "독감"}
+        res = self._preview(location_graph=_ZONED_NODES, time_per_wave=30,
+                            infection_model=infection,
+                            available_targets=["b"], key_to_alias={"b": "비"})
+        # 위치 그래프가 있는 시나리오의 실제 <TARGETS>는 flat 목록이 아니라
+        # "[현재 상황]에서 확인" 안내다 — 프론트가 그때 situation_targets=True를 보낸다.
+        res_sit = self._preview(location_graph=_ZONED_NODES, time_per_wave=30,
+                                infection_model=infection, situation_targets=True,
+                                available_targets=["b"], key_to_alias={"b": "비"})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {k: Agent(k, "너는 a다.", tmp, token_limit=8192,
+                               extra_fields=_FIELDS) for k in ("a", "b")}
+            Simulation(agents, _BACKGROUND, tmp,
+                       location_graph=[dict(n) for n in _ZONED_NODES],
+                       time_per_wave=30, infection_model=infection)
+            injected = agents["a"].get_system_message(["b"], {"b": "비"})["content"]
+            injected_sit = agents["a"].get_system_message(
+                ["b"], {"b": "비"}, situation_targets=True)["content"]
+            world = agents["a"].engine_contract
+
+        self.assertEqual(injected, "너는 a다." + res.contract)
+        self.assertEqual(injected_sit, "너는 a다." + res_sit.contract)
+        self.assertNotEqual(res.contract, res_sit.contract)   # target 블록이 실제로 다르다
+        self.assertEqual(res.world_contract, world)
+        self.assertEqual(res.contract, res.world_contract + res.output_contract)
+        self.assertEqual(res.warnings, [])
+
+    def test_preview_reflects_feature_toggles(self):
+        # time_per_wave 기본값은 SimStartConfig 와 같은 30 이므로, "아무 feature
+        # 없음" 을 보려면 명시적으로 꺼야 한다 (프론트는 항상 폼 값을 보낸다).
+        bare = self._preview(time_per_wave=0)
+        self.assertEqual(bare.world_contract, "")
+        self.assertIn("- move_to: 이동할 위치 이름", bare.contract)
+        self.assertNotIn("만나러 갈 사람의 ID", bare.contract)
+        self.assertEqual(
+            bare.flags.model_dump(),
+            {"has_location_graph": False, "has_zone": False, "time_enabled": False,
+             "infection_enabled": False, "include_output_schema": True},
+        )
+
+        # 기본값(time_per_wave 생략)은 SimStartConfig 와 동일하게 시간 활성이다
+        self.assertTrue(self._preview().flags.time_enabled)
+
+        # variable 모드는 time_per_wave 가 0 이어도 시간 활성
+        timed = self._preview(time_mode="variable")
+        self.assertTrue(timed.flags.time_enabled)
+        self.assertIn("[시간 인식]", timed.world_contract)
+
+        flat = self._preview(location_graph=[{"name": "매장", "connects_to": []}])
+        self.assertTrue(flat.flags.has_location_graph)
+        self.assertFalse(flat.flags.has_zone)
+        self.assertIn("만나러 갈 사람의 ID", flat.contract)
+
+        zoned = self._preview(location_graph=_ZONED_NODES)
+        self.assertTrue(zoned.flags.has_zone)
+        self.assertIn("[구역: 집]", zoned.world_contract)
+
+        sick = self._preview(infection_model={"enabled": True, "disease_name": "독감"})
+        self.assertTrue(sick.flags.infection_enabled)
+        self.assertIn("독감", sick.world_contract)
+
+    def test_preview_renders_extra_fields_in_the_output_schema(self):
+        res = self._preview(extra_fields=[{"name": "stress", "default": "0"}])
+        self.assertIn('"stress"', res.output_contract)
+        self.assertNotIn('"emotion"', res.output_contract)
+
+    def test_preview_uses_a_placeholder_target_when_none_given(self):
+        res = self._preview()
+        self.assertIn('- ID: "agent_id"', res.output_contract)
+        self.assertIn("표시 이름", res.output_contract)
+
+    def test_preview_override_replaces_only_the_output_contract(self):
+        override = "\n\n[출력] 그냥 아무 말이나 하세요.\n"
+        res = self._preview(location_graph=_ZONED_NODES, time_per_wave=30,
+                            output_format_override=override)
+        self.assertEqual(res.output_contract, override)
+        self.assertIn("[위치 그래프", res.world_contract)
+        self.assertIn("[시간 인식]", res.world_contract)
+        # 필수 지시어가 빠진 오버라이드는 경고로 잡아 준다(차단은 하지 않는다)
+        self.assertTrue(res.warnings)
+        self.assertTrue(any("target" in w for w in res.warnings))
+
+    def test_preview_interview_carve_out_drops_the_output_schema(self):
+        res = self._preview(location_graph=_ZONED_NODES, include_output_schema=False)
+        self.assertEqual(res.output_contract, "")
+        self.assertEqual(res.contract, res.world_contract)
+        self.assertNotIn("[Important Output Format]", res.contract)
+        self.assertEqual(res.warnings, [])
+
+    def test_preview_has_no_side_effects_on_disk(self):
+        # Simulation/Agent 를 만들지 않으므로 로그 파일도 DB 도 건드리지 않는다.
+        with tempfile.TemporaryDirectory() as tmp:
+            old_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                self._preview(location_graph=_ZONED_NODES, time_per_wave=30)
+            finally:
+                os.chdir(old_cwd)
+            self.assertEqual(os.listdir(tmp), [])
 
 
 if __name__ == "__main__":

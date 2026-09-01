@@ -23,6 +23,14 @@ const TITLE_FS  = 9.5;   // 박스 제목 폰트 크기(px)
 const LABEL_DY  = 9;     // 원 아래 이름 baseline 오프셋
 const LABEL_MIN_R = 9;   // 이보다 작아지면 이름을 생략(이모지만) — 박스 밖으로 새는 것 방지
 
+// ── 추격선(meeting_update) 상수 ──────────────────────────────────────────────
+// chaser 아바타 → target 아바타를 잇는 점선 화살표. 아바타 원 안에서 시작/끝나지 않도록
+// 양 끝을 반지름 + 여유만큼 물려 놓고, 그러고도 남는 길이가 없으면(거의 겹쳐 있으면)
+// 아예 그리지 않는다 — 동석한 두 사람 사이에 점 하나짜리 선이 남는 걸 막는다.
+const CHASE_GAP_FROM = 3;    // chaser 원 바깥 여유(px)
+const CHASE_GAP_TO   = 7;    // target 원 바깥 여유(px) — 화살촉 자리
+const CHASE_MIN_LEN  = 6;    // 이보다 짧아지면 생략
+
 // ── zone(구역) 시각화 상수 ───────────────────────────────────────────────────
 // zone은 "같은 zone의 다른 장소에 있는 사람끼리 서로 존재를 인지"하는 논리적 묶음이라
 // 복도(link)로는 이어지지 않을 수 있다. 그래서 (a) 약한 클러스터링 force로 화면상
@@ -46,6 +54,9 @@ let _mapSim   = null;
 let _mapData  = { nodes: [], links: [], nodeMap: {}, zones: [] };
 let _zoneLine = null;    // d3.line(curveCatmullRomClosed) — d3 로드 후 지연 생성
 let _agentLoc = {};      // agentName -> location name (SSE agent_move로 갱신)
+// chaser agentName -> { target, targetName, targetLocation } (SSE meeting_update로 갱신).
+// 만남 lock이 살아있는 동안만 항목이 존재하며, 비어 있으면 추격선 렌더는 즉시 반환한다.
+let _meetingIntent = {};
 let _agents   = [];      // 렌더링용 아바타 데이터 (recomputeAgents가 매번 재생성)
 let _layers   = null;
 let _zoom     = null;
@@ -465,6 +476,7 @@ export function initLocationMap() {
 
   // 초기 위치는 에이전트 설정의 location. 그래프에 없는 값은 미배치로 둔다.
   _agentLoc = {};
+  _meetingIntent = {};   // 새 실행 = 진행 중인 만남 없음
   for (const a of (sim.agents || [])) {
     if (a.location && _mapData.nodeMap[a.location]) _agentLoc[a.name] = a.location;
   }
@@ -508,13 +520,29 @@ function renderMap() {
   _W = svgEl.clientWidth || 0;
   _H = svgEl.clientHeight || 0;
 
+  // 추격선 화살촉. marker는 defs 안에 한 번만 두고 id로 참조한다.
+  // markerUnits를 userSpaceOnUse로 고정 — 기본값(strokeWidth)이면 CSS에서 선 굵기를
+  // 바꿀 때 화살촉 크기까지 같이 변한다.
+  svg.append('defs').append('marker')
+    .attr('id', 'lm-chase-arrow')
+    .attr('viewBox', '0 0 8 8')
+    .attr('refX', 7).attr('refY', 4)
+    .attr('markerWidth', 8).attr('markerHeight', 8)
+    .attr('markerUnits', 'userSpaceOnUse')
+    .attr('orient', 'auto')
+    .append('path')
+    .attr('class', 'lm-chase-head')
+    .attr('d', 'M0,0.5L8,4L0,7.5Z');
+
   _gRoot = svg.append('g');
   // 속성 순서 = append 순서 = z-order. zone 배경은 복도/박스보다 뒤에 깔려야 하므로 맨 처음.
+  // 추격선은 박스 위 / 아바타 아래 — 박스를 가로질러 보이되 아바타를 덮지는 않는다.
   _layers = {
     zones:         _gRoot.append('g').attr('class', 'lm-layer-zones'),
     corridorOuter: _gRoot.append('g').attr('class', 'lm-layer-corridor-outer'),
     corridorInner: _gRoot.append('g').attr('class', 'lm-layer-corridor-inner'),
     boxes:         _gRoot.append('g').attr('class', 'lm-layer-boxes'),
+    chase:         _gRoot.append('g').attr('class', 'lm-layer-chase'),
     agents:        _gRoot.append('g').attr('class', 'lm-layer-agents'),
   };
 
@@ -688,6 +716,117 @@ function positionAgents(animate) {
   const sel = _layers.agents.selectAll('.lm-agent');
   if (animate) sel.transition().duration(550).ease(d3.easeCubicInOut).attr('transform', tf);
   else sel.interrupt().attr('transform', tf);
+  // 추격선의 양 끝은 아바타 좌표라 아바타가 움직일 때마다 같이 갱신되어야 한다.
+  // positionAgents는 tick과 renderAgents(=agent_move) 양쪽에서 불리므로 여기 한 곳이면 충분하다.
+  renderChaseLines(animate);
+}
+
+// ── 추격선 (meeting_update) ──────────────────────────────────────────────────
+/** 아바타의 절대 좌표(박스 중심 + 박스 안 오프셋). */
+function agentXY(a) {
+  return { x: (a.node.x || 0) + a.dx, y: (a.node.y || 0) + a.dy };
+}
+
+/**
+ * chaser→target 선분의 실제 끝점. 그릴 수 없으면 null.
+ *
+ * 같은 장소면 그리지 않는다. 엔진의 lock 해제 판정이 이동 적용 **전** 스냅샷에서 돌기
+ * 때문에 `status:"arrived"`는 실제 동석보다 한 wave 늦게 온다 — 이 가드가 없으면 두
+ * 아바타가 이미 같은 박스에 서 있는데도 한 wave 동안 짧은 추격선이 남는다.
+ * 위치 비교(_agentLoc와 같은 값인 a.loc)가 기준이므로, 같은 박스 안에서 격자 배치상
+ * 좌표가 떨어져 있어도 확실히 사라진다.
+ *
+ * 그 밖에: 둘 중 하나가 미배치(위치 미지정/그래프 밖)이거나 두 아바타가 거의 겹칠 만큼
+ * 가까우면 역시 생략한다. lock 상태 자체는 _meetingIntent에 그대로 남아 있어, 다시
+ * 떨어지면 선이 되살아난다.
+ */
+function chaseGeometry(chaser, target) {
+  const from = _agents.find(a => a.name === chaser);
+  const to   = _agents.find(a => a.name === target);
+  if (!from || !to) return null;
+  if (from.loc === to.loc) return null;      // 이미 동석 — arrived를 기다리지 않는다
+  const p = agentXY(from), q = agentXY(to);
+  const dx = q.x - p.x, dy = q.y - p.y;
+  const len = Math.hypot(dx, dy);
+  const gap = from.r + CHASE_GAP_FROM + to.r + CHASE_GAP_TO;
+  if (len <= gap + CHASE_MIN_LEN) return null;
+  const ux = dx / len, uy = dy / len;
+  const s = from.r + CHASE_GAP_FROM, e = to.r + CHASE_GAP_TO;
+  return {
+    x1: p.x + ux * s, y1: p.y + uy * s,
+    x2: q.x - ux * e, y2: q.y - uy * e,
+  };
+}
+
+/**
+ * _meetingIntent를 <line> 하나씩으로 그린다.
+ * 만남 lock이 하나도 없고 화면에 남은 선도 없으면 즉시 반환 — 만남 기능을 안 쓰는
+ * 시나리오에서 tick마다 도는 추가 연산이 사실상 0이 된다.
+ */
+function renderChaseLines(animate) {
+  if (!_layers || !_layers.chase) return;
+  const keys = Object.keys(_meetingIntent);
+  const live = _layers.chase.selectAll('.lm-chase');
+  if (!keys.length && live.empty()) return;
+
+  const items = [];
+  for (const chaser of keys) {
+    const info = _meetingIntent[chaser];
+    const geo  = chaseGeometry(chaser, info.target);
+    if (geo) items.push({ chaser, ...info, ...geo });
+  }
+
+  const sel = live.data(items, d => d.chaser);
+  sel.exit().remove();
+
+  const enter = sel.enter().append('line')
+    .attr('class', 'lm-chase')
+    .attr('marker-end', 'url(#lm-chase-arrow)')
+    // 새 선은 (0,0)에서 날아오지 않도록 최종 좌표에 바로 놓는다.
+    .attr('x1', d => r2(d.x1)).attr('y1', d => r2(d.y1))
+    .attr('x2', d => r2(d.x2)).attr('y2', d => r2(d.y2));
+  enter.append('title');
+
+  const all = enter.merge(sel);
+  all.select('title').text(d => {
+    const chaserLabel = _agents.find(a => a.name === d.chaser)?.label || d.chaser;
+    const where = d.targetLocation ? ` (${d.targetLocation})` : '';
+    return `${chaserLabel} → ${d.targetName}${where} 만나러 이동 중`;
+  });
+
+  const target = animate
+    ? all.transition().duration(550).ease(d3.easeCubicInOut)
+    : all.interrupt();
+  target
+    .attr('x1', d => r2(d.x1)).attr('y1', d => r2(d.y1))
+    .attr('x2', d => r2(d.x2)).attr('y2', d => r2(d.y2));
+}
+
+/**
+ * meeting_update SSE 훅 — 만남 lock의 생성/해소를 추격선에 반영한다.
+ *   status='start'                → chaser→target 점선 화살표 추가(또는 목표 교체)
+ *   status='arrived' | 'cancelled' → 제거
+ * 지도가 아직 없으면(위치 그래프 미설정) 상태만 갱신하고 조용히 넘어간다 —
+ * 나중에 지도가 만들어지면 renderChaseLines가 알아서 그린다.
+ */
+export function setMeetingIntentOnMap(d) {
+  if (!d || !d.chaser) return;
+  if (d.status === 'start') {
+    if (!d.target) return;
+    _meetingIntent[d.chaser] = {
+      target:         d.target,
+      targetName:     d.target_name || d.target,
+      targetLocation: d.target_location || '',
+    };
+  } else if (d.status === 'arrived' || d.status === 'cancelled') {
+    // 같은 웨이브에 "A 취소 + B 시작"이 순서가 뒤바뀌어 올 경우 방금 세운 lock을
+    // 지워버리지 않도록, 목표가 명시돼 있고 다르면 무시한다.
+    const cur = _meetingIntent[d.chaser];
+    if (!cur || !d.target || cur.target === d.target) delete _meetingIntent[d.chaser];
+  } else {
+    return;   // 모르는 status — 무시
+  }
+  renderChaseLines(!!_mapSim && _mapSim.alpha() < 0.05);
 }
 
 /** 배치가 끝나면 전체가 보이도록 줌을 맞춘다(사용자가 직접 줌한 뒤에는 건드리지 않음). */
@@ -777,5 +916,6 @@ export function exportLocationMap() {
 
 /** Test/debug accessor — 살아있는 force simulation과 내부 상태. */
 export function getMapSim() {
-  return { sim: _mapSim, data: _mapData, agents: _agents, agentLoc: _agentLoc };
+  return { sim: _mapSim, data: _mapData, agents: _agents, agentLoc: _agentLoc,
+           meetingIntent: _meetingIntent };
 }

@@ -416,10 +416,10 @@
       </div>
     </div>
 
-    <!-- ── 출력 정의 (출력 필드 + 출력 포맷 지시 병합) ────────────────────── -->
+    <!-- ── 출력 정의 (출력 필드 + 엔진 계약 미리보기 + 고급 오버라이드) ────── -->
     <div class="sim-settings-section" data-section="output" data-sec-icon="🏷" data-sec-label="출력 정의">
       <div class="sim-settings-section-title">
-        <span class="sim-sec-title-text">🏷 출력 정의<span class="sim-help" aria-hidden="true" data-tooltip="에이전트 응답 JSON의 구조 — 추가 메타데이터 필드와, 프롬프트 끝에 붙는 출력 형식 지시문.">?</span></span>
+        <span class="sim-sec-title-text">🏷 출력 정의<span class="sim-help" aria-hidden="true" data-tooltip="에이전트 응답 JSON의 구조 — 추가 메타데이터 필드와, 엔진이 실행 시점에 생성해 프롬프트 끝에 붙이는 계약(출력 형식 · 이동 규칙 · 시간 · 감염).">?</span></span>
         <span class="sim-sec-badge" data-sec-badge="output"></span>
         <button type="button" class="sim-sec-toggle" data-sec-toggle="output" aria-expanded="false" title="섹션 접기/펼치기">▾</button>
       </div>
@@ -433,19 +433,49 @@
             <div id="sim-fields-list"></div>
             <div class="sim-fields-hint"><code>content</code>와 <code>target</code>은 항상 포함됩니다. 에이전트가 추가로 출력할 메타데이터 필드를 정의하세요.</div>
           </div>
+
+          <!-- 엔진 계약 미리보기 — 읽기 전용. 실행 시점에 주입되는 문자열과 글자 단위로 같다. -->
           <div class="sim-sec-sub">
             <div class="sim-sec-sub-title">
-              <span>📝 출력 포맷 지시<span class="sim-help" aria-hidden="true" data-tooltip="에이전트 프롬프트 끝에 붙는 출력 형식 지시문. 비워두면 기본 JSON 포맷을 사용하며, &lt;TARGETS&gt; &lt;FIELD_LINES&gt; &lt;FIELD_HINTS&gt; 플레이스홀더가 실행 시 치환됩니다.">?</span></span>
-              <button id="sim-reset-format-btn" class="sim-settings-add-btn">기본값 불러오기</button>
+              <span>🧩 엔진 계약 미리보기<span class="sim-help" aria-hidden="true" data-tooltip="현재 설정으로 엔진이 실행 시점에 만들어 모든 에이전트 프롬프트 끝에 붙이는 계약입니다. 읽기 전용이며, 설정을 바꾸면 자동으로 다시 만들어집니다.">?</span></span>
+              <span id="sim-contract-flags" class="sim-contract-flags"></span>
+              <button type="button" id="sim-contract-refresh-btn" class="sim-settings-add-btn" title="지금 다시 생성">↻ 새로고침</button>
             </div>
-            <div class="sim-settings-section-body">
-              <div class="sim-ta-wrap" data-zoom-title="📝 출력 포맷 지시">
-                <textarea id="sim-output-format" data-autogrow
-                  placeholder="비워두면 기본 JSON 출력 형식을 사용합니다.&#10;플레이스홀더: &lt;TARGETS&gt;, &lt;FIELD_LINES&gt;, &lt;FIELD_HINTS&gt;"></textarea>
-                <button type="button" class="sim-zoom-btn" title="확대 편집">⤢</button>
+            <details id="sim-contract-details" class="sim-contract-details">
+              <summary class="sim-contract-summary">엔진이 주입할 계약 보기</summary>
+              <div class="sim-contract-body">
+                <div id="sim-contract-status" class="sim-contract-status">설정을 읽는 중…</div>
+                <div id="sim-contract-warnings" class="sim-contract-warnings sim-hidden"></div>
+                <pre id="sim-contract-pre" class="sim-contract-pre"></pre>
               </div>
+            </details>
+            <div class="sim-fields-hint">target 목록은 실행 중 매 턴 같은 자리의 사람들로 채워집니다.</div>
+          </div>
+
+          <!-- 고급 — 출력 계약 오버라이드 (opt-in) -->
+          <div class="sim-sec-sub">
+            <div class="sim-sec-sub-title">
+              <span>⚙️ 고급<span class="sim-help" aria-hidden="true" data-tooltip="엔진이 생성하는 출력 형식 계약을 직접 쓴 문자열로 대체합니다. 지도·시간·감염 계약은 대체되지 않습니다.">?</span></span>
+              <label class="sim-toggle-small sim-contract-override-toggle">
+                <input type="checkbox" id="sim-output-override-enabled">
+                <span>출력 계약 직접 편집</span>
+              </label>
             </div>
-            <div class="sim-fields-hint">비워두면 기본 출력 포맷 지시를 사용합니다. <code>&lt;TARGETS&gt;</code>, <code>&lt;FIELD_LINES&gt;</code>, <code>&lt;FIELD_HINTS&gt;</code> 플레이스홀더를 사용할 수 있습니다.</div>
+            <div id="sim-output-override-box" class="sim-hidden">
+              <div class="sim-contract-override-warning">출력 형식 계약만 고정됩니다. 지도·시간·감염 규칙은 계속 자동 최신화됩니다.</div>
+              <div class="sim-sec-sub-title">
+                <span></span>
+                <button type="button" id="sim-contract-load-generated-btn" class="sim-settings-add-btn">생성된 계약 불러오기</button>
+              </div>
+              <div class="sim-settings-section-body">
+                <div class="sim-ta-wrap" data-zoom-title="⚙️ 출력 계약 오버라이드">
+                  <textarea id="sim-output-override" data-autogrow
+                    placeholder="비워두면 엔진이 생성한 출력 계약을 그대로 사용합니다.&#10;플레이스홀더: &lt;TARGETS&gt;, &lt;FIELD_LINES&gt;, &lt;FIELD_HINTS&gt;, &lt;MOVE_TO_HINT&gt;"></textarea>
+                  <button type="button" class="sim-zoom-btn" title="확대 편집">⤢</button>
+                </div>
+              </div>
+              <div class="sim-fields-hint"><code>target</code>, <code>move_to</code>, <code>update_appearance</code> 지시어가 빠지면 위 미리보기에 경고가 표시됩니다(실행은 막지 않습니다).</div>
+            </div>
           </div>
         </div>
       </div>
@@ -987,6 +1017,11 @@
           <input type="checkbox" id="exp-chk-infection" checked>
           <span class="sim-export-check-label">🦠 감염 상태 변화</span>
           <span class="sim-export-check-desc">감염·전파·회복 기록</span>
+        </label>
+        <label class="sim-export-check-item">
+          <input type="checkbox" id="exp-chk-meeting" checked>
+          <span class="sim-export-check-label">🤝 만남 이동</span>
+          <span class="sim-export-check-desc">누가 누구를 만나러 가는지 · 도착/취소</span>
         </label>
         <label class="sim-export-check-item">
           <input type="checkbox" id="exp-chk-summary">

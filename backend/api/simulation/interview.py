@@ -360,7 +360,9 @@ def build_interview_messages(
         scratch_dir,
         token_limit=limit,
         extra_fields=[f.model_dump() for f in cfg.extra_fields],
-        output_format_template=cfg.output_format_template or None,
+        # 인터뷰는 build_interview_system_prompt 가 system 메시지를 통째로 교체하므로
+        # 어차피 출력 계약이 실리지 않는다. 그래도 다른 경로와 의미를 맞춰 둔다.
+        output_format_template=cfg.effective_output_format_override(),
     )
 
     question_msg = {

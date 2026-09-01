@@ -269,6 +269,36 @@ export function infectionBadge(status, cause) {
   return null;
 }
 
+/**
+ * meeting_update 이벤트 → 관전자 시점 한 줄 서술. 표시할 게 없으면 null.
+ * 피드 카드(run/feed.js)와 마크다운 내보내기(export/markdown.js)가 같은 문구를 쓰도록
+ * 여기 한 곳에서만 만든다 (infectionBadge와 같은 위치·같은 이유).
+ *
+ * target_name은 chaser의 인지 상태에 따라 실명일 수도 `낯선 이(ID: "stranger_2")`일 수도
+ * 있어 그대로 쓴다. 조사는 기존 씬 문구와 마찬가지로 받침 판정을 하지 않는다.
+ * 모르는 status는 null → 구버전/미래 값이 와도 카드가 생기지 않고 조용히 무시된다.
+ */
+export function meetingNarration(d) {
+  if (!d || !d.chaser) return null;
+  const chaser = d.chaser_name || agentLabel(d.chaser);
+  const target = d.target_name || (d.target ? agentLabel(d.target) : '');
+  if (!target) return null;
+
+  if (d.status === 'start') {
+    const where = d.target_location ? ` (${d.target_location})` : '';
+    return { icon: '🏃', cls: 'start', text: `${chaser}가 ${target}를 만나러 이동 중${where}` };
+  }
+  if (d.status === 'arrived') {
+    return { icon: '🤝', cls: 'arrived', text: `${chaser}가 ${target}와 만났다` };
+  }
+  if (d.status === 'cancelled') {
+    return d.reason === 'gone'
+      ? { icon: '💨', cls: 'cancelled', text: `${chaser}가 ${target}를 찾았지만 자리를 뜬 뒤였다` }
+      : { icon: '↩️', cls: 'cancelled', text: `${chaser}가 ${target}를 만나려던 것을 그만뒀다` };
+  }
+  return null;
+}
+
 export const sim = {
   status:              'idle',
   selectedAgent:       null,
@@ -291,7 +321,11 @@ export const sim = {
   location_graph: [],
   lang_fix_enabled: true,
   lang_fix_retries: 2,
-  output_format_template: '',
+  // 출력 **계약** 오버라이드. '' = 엔진이 실행 시점에 현재 설정으로 생성(기본).
+  // 값이 있으면 그 문자열이 출력 형식 계약만 대체한다 — 지도·시간·감염 계약은
+  // 오버라이드와 무관하게 계속 엔진이 자동 최신화한다.
+  // (구 `output_format_template` 은 폐기 — 백엔드가 읽지 않고 저장 시 비운다.)
+  output_format_override: '',
   summary_interval: 0,
   sim_start_time:    '09:00',  // 시뮬레이션 시작 시각 (HH:MM)
   sim_start_weekday: 'mon',    // 시뮬레이션 시작 요일 ('mon'~'sun'). 자정 롤오버 시 서버가 자동 증가

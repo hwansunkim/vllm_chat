@@ -59,6 +59,19 @@ class ExtraField(BaseModel):
     default: str = ""
 
 
+# 출력 JSON 스키마에 기본으로 실리는 추가 필드. SimStartConfig 와 계약 프리뷰가
+# 같은 기본값을 보도록 한곳에 둔다 (pydantic v2 는 모델 기본값을 deep-copy 한다).
+DEFAULT_EXTRA_FIELDS: list[ExtraField] = [
+    ExtraField(name="emotion",     default="neutral"),
+    ExtraField(name="action",      default="speak"),
+    ExtraField(name="action_note", default=""),
+]
+
+# wave당 경과 시간(분). SimStartConfig 와 계약 프리뷰가 같은 기본값을 봐야, 필드를
+# 생략한 프리뷰 요청이 실제 실행과 다른 "시간 개념 OFF" 를 보여주지 않는다.
+DEFAULT_TIME_PER_WAVE = 30
+
+
 class TimeCategory(BaseModel):
     id:           str
     label:        str
@@ -170,20 +183,31 @@ class SimStartConfig(BaseModel):
     step_delay:             float            = 1.0
     token_limit:            int              = 8192
     llm_max_tokens:         int              = 16384
-    extra_fields:           list[ExtraField] = [
-        ExtraField(name="emotion",     default="neutral"),
-        ExtraField(name="action",      default="speak"),
-        ExtraField(name="action_note", default=""),
-    ]
+    extra_fields:           list[ExtraField] = DEFAULT_EXTRA_FIELDS
     events:                 list[ScenarioEvent] = []
     location_graph:         list[LocationNode]  = []
     lang_fix_enabled:       bool             = True
     lang_fix_retries:       int              = 2
+    # ── 출력 계약(프롬프트 계약 층) ────────────────────────────────────────────
+    # 출력 JSON 스키마·move_to 의미·target ID 규칙은 **엔진이 소유**하며
+    # (`ABM/prompt_contract.py`) 실행 시점에 현재 설정으로 생성된다. 따라서 아래
+    # 두 필드가 **비어 있는 것이 정상 경로**이고, 그래야 엔진을 업그레이드했을 때
+    # 기존 시나리오도 자동으로 새 계약을 받는다.
+    #
+    # output_format_override — 고급 사용자용 opt-in 오버라이드. 값이 있을 때만
+    #   출력 계약 템플릿을 통째로 대체한다. 이후 엔진 업데이트가 이 시나리오의
+    #   **출력 계약에만** 자동 반영되지 않는다(지도/시간/감염 계약은 계속 최신).
+    #   동기화는 사용자 책임.
+    output_format_override: str              = ""
+    # output_format_template — (구) 시나리오 저장 시점에 전체 템플릿이 통째로
+    #   스냅샷되던 필드. 옛 config_json 을 그대로 파싱하기 위해 필드만 남긴다.
+    #   **런타임에서 무조건 무시**되며(= 엔진이 항상 재생성), 저장 시에도
+    #   기록하지 않는다. 새 코드는 output_format_override 만 볼 것.
     output_format_template: str              = ""
     summary_interval:       int              = 0   # 0 = 비활성, N = N웨이브마다 LLM 요약
     sim_start_time:         str              = "09:00"  # HH:MM, 시뮬레이션 내 시작 시각
     sim_start_weekday:      Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"] = "mon"  # 시뮬레이션 내 시작 요일. 자정 롤오버마다 자동 증가
-    time_per_wave:          int              = 30        # wave당 경과 시간(분). 0 = 시간 개념 비활성
+    time_per_wave:          int              = DEFAULT_TIME_PER_WAVE  # wave당 경과 시간(분). 0 = 시간 개념 비활성
     time_mode:              Literal["fixed", "variable"] = "fixed"  # "fixed" = time_per_wave 고정, "variable" = wave 내용을 LLM이 분류해 가변 경과
     time_categories:        list[TimeCategory] = [
         TimeCategory(id="meal_or_brief",      label="식사·짧은 용무",      min_minutes=5,   max_minutes=10),
@@ -220,11 +244,76 @@ class SimStartConfig(BaseModel):
             raise ValueError("idle_minutes_schedule must not be empty")
         return v
 
+    # ── 계약 층 헬퍼 ──────────────────────────────────────────────────────────
+
+    def effective_output_format_override(self) -> str | None:
+        """`Agent(output_format_template=...)` 에 넘길 값.
+
+        오버라이드가 **실제로 설정됐을 때만** 문자열을, 아니면 `None`(= 엔진이
+        실행 시점에 현재 설정으로 생성)을 돌려준다. 구 `output_format_template`
+        (프리즈 스냅샷)은 여기서 의도적으로 보지 않는다 — 옛 시나리오도 로드하면
+        최신 엔진 계약을 받아야 하기 때문이다.
+        """
+        return self.output_format_override or None
+
 
 class ScenarioSave(BaseModel):
     name:        str
     description: str = ""
     config:      SimStartConfig
+
+
+# ── 엔진 프롬프트 계약 프리뷰 ─────────────────────────────────────────────────
+
+class ContractPreviewRequest(BaseModel):
+    """계약 문자열에 영향을 주는 config 조각만 받는다.
+
+    `SimStartConfig` 의 부분집합이라 프론트는 편집 중인 설정 객체를 그대로 잘라
+    보내면 된다. 여기 없는 필드는 계약을 바꾸지 않는다.
+    """
+    location_graph:         list[LocationNode]  = []
+    time_mode:              Literal["fixed", "variable"] = "fixed"
+    # SimStartConfig.time_per_wave 와 같은 기본값이어야 한다 — 생략된 프리뷰 요청이
+    # 실제 실행과 다른 "시간 개념 OFF" 를 보여주면 오도한다.
+    time_per_wave:          int                 = DEFAULT_TIME_PER_WAVE
+    infection_model:        InfectionModelConfig = InfectionModelConfig()
+    extra_fields:           list[ExtraField]    = DEFAULT_EXTRA_FIELDS
+    output_format_override: str                 = ""
+    # 인터뷰 모드처럼 출력 스키마를 빼는 경로를 미리 보고 싶을 때 False.
+    include_output_schema:  bool                = True
+    # 위치 그래프가 있는 시나리오는 실행 중 <TARGETS> 자리에 flat ID 목록이 아니라
+    # "([현재 상황] 컨텍스트에서 …)" 안내가 들어간다(step.py 의 sit_targets). 프론트는
+    # location_graph 가 비어있지 않으면 이 값을 True 로 보내 프리뷰가 실제 주입본과
+    # 같은 target 블록을 그리게 한다.
+    situation_targets:      bool                = False
+    # 프리뷰용 더미 타깃(선택). 비우면 자리표시자 ID 하나로 렌더한다 — 실제 실행에서는
+    # 매 턴 같은 자리에 있는 사람들로 채워진다.
+    available_targets:      list[str]           = []
+    key_to_alias:           dict[str, str]      = {}
+
+    def time_enabled(self) -> bool:
+        return self.time_mode == "variable" or self.time_per_wave > 0
+
+
+class ContractFlags(BaseModel):
+    """이 설정에서 켜진 계약 feature. 프론트가 "무엇 때문에 이 블록이 붙었는지" 표시용."""
+    has_location_graph:    bool
+    has_zone:              bool
+    time_enabled:          bool
+    infection_enabled:     bool
+    include_output_schema: bool
+
+
+class ContractPreviewResponse(BaseModel):
+    # world_contract + output_contract. 실제 주입되는 순서/문자열 그대로.
+    contract:        str
+    # 지도/시간/감염 정적 블록 (= Agent.engine_contract). 오버라이드와 무관하게 항상 엔진 소유.
+    world_contract:  str
+    # 출력 JSON 스키마 + move_to 의미 + target ID 규칙. output_format_override 가 대체하는 부분.
+    output_contract: str
+    flags:           ContractFlags
+    # verify_contract 진단. 정상 설정이면 빈 배열. 오버라이드가 필수 지시어를 빠뜨리면 채워진다.
+    warnings:        list[str] = []
 
 
 class SimContinueConfig(BaseModel):

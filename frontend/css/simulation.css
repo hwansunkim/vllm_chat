@@ -344,7 +344,7 @@
 .sim-zoom-btn:focus-visible { opacity: 1; outline: 2px solid #6366f1; }
 /* auto-grow 가 인라인 height 를 직접 설정하므로(입력할 때마다 덮어쓴다) 수동 리사이즈
    핸들은 의미를 잃는다. 대신 상한(420px)에 닿으면 JS 가 내부 스크롤로 전환한다.
-   #sim-background / #sim-output-format 등 id 선택자의 `resize: vertical` 을 이기려면
+   #sim-background / #sim-output-override 등 id 선택자의 `resize: vertical` 을 이기려면
    여기도 id 를 하나 물려야 한다. */
 #sim-settings-view textarea[data-autogrow] { resize: none; overflow-y: hidden; }
 
@@ -412,11 +412,64 @@
 
 /* 대개 비워두는 필드라 항상 200px 를 점유할 이유가 없다.
    내용이 있으면 auto-grow(textareas.js)가 알아서 늘린다. */
-#sim-output-format {
+#sim-output-override {
   width: 100%; min-height: 60px; font-size: 12px; color: #334155;
   border: none; outline: none; resize: vertical;
   line-height: 1.6; box-sizing: border-box; font-family: monospace;
 }
+
+/* ── 엔진 계약 미리보기 (읽기 전용) ──────────────────────────────────────────
+   실행 시점에 엔진이 만들어 주입하는 문자열을 그대로 보여준다. 계약은 길어질 수
+   있으므로 <pre> 안에서만 스크롤시키고 섹션 본문은 가로로 넘치지 않게 둔다. */
+.sim-contract-flags { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.sim-contract-flag {
+  font-size: 10px; font-weight: 600; letter-spacing: 0;
+  text-transform: none; white-space: nowrap;
+  color: #94a3b8; background: #f1f5f9; border: 1px solid #e2e8f0;
+  border-radius: 9px; padding: 1px 7px;
+}
+.sim-contract-flag.on {
+  color: #4338ca; background: #eef2ff; border-color: #c7d2fe;
+}
+
+.sim-contract-details { padding: 0 16px 4px; }
+.sim-contract-summary {
+  cursor: pointer; font-size: 12px; color: #64748b;
+  padding: 6px 0; list-style: none; user-select: none;
+}
+.sim-contract-summary::-webkit-details-marker { display: none; }
+.sim-contract-summary::before { content: '▶ '; font-size: 9px; color: #94a3b8; }
+.sim-contract-details[open] > .sim-contract-summary::before { content: '▼ '; }
+.sim-contract-summary:hover { color: #4f46e5; }
+
+.sim-contract-status { font-size: 11px; color: #94a3b8; padding: 2px 0 6px; }
+.sim-contract-status.error { color: #b91c1c; }
+
+.sim-contract-warnings {
+  border: 1px solid #fde68a; background: #fffbeb; border-radius: 6px;
+  padding: 8px 10px; margin-bottom: 8px; font-size: 11px; color: #92400e;
+}
+.sim-contract-warning-head { font-weight: 700; margin-bottom: 4px; }
+.sim-contract-warnings ul { margin: 0; padding-left: 16px; line-height: 1.6; }
+
+.sim-contract-pre {
+  margin: 0; max-height: 340px; overflow: auto;
+  background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
+  padding: 10px 12px; font-family: monospace; font-size: 11px;
+  line-height: 1.6; color: #334155; white-space: pre-wrap; word-break: break-word;
+}
+.sim-contract-pre:empty { display: none; }
+
+/* 고급 — 출력 계약 오버라이드 (opt-in) */
+.sim-contract-override-toggle { flex-shrink: 0; }
+.sim-contract-override-warning {
+  margin: 0 16px; padding: 7px 10px;
+  border: 1px solid #fecaca; background: #fef2f2; border-radius: 6px;
+  font-size: 11px; color: #b91c1c; line-height: 1.5;
+}
+
+/* 에이전트 카드 라벨 옆 보조 설명 (외모 묘사 / 캐릭터·배경 프롬프트) */
+.sim-acrd-label-hint { font-weight: 400; color: #94a3b8; }
 
 .sim-settings-two-col {
   display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
@@ -1084,6 +1137,39 @@
 .inf-recovered .sim-infection-cause { color: #166534; }
 .inf-recovered .sim-infection-wave  { color: #86efac; }
 
+/* ── 만남 이동 카드 (meeting_update) ─────────────────────────────────────────── */
+/* 이동 카드(파랑)·감염 카드(빨강/초록)와 구분되도록 호박색 계열. 한 줄짜리라
+   패딩을 얕게 잡아 대사 흐름을 끊지 않는다. */
+.sim-meeting-card {
+  margin: 6px 0; padding: 6px 14px;
+  border-radius: 10px; font-size: 12px;
+  background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%);
+  border: 1px solid #fcd34d;
+}
+.sim-meeting-card.meet-arrived {
+  background: linear-gradient(135deg, #f0fdfa 0%, #ccfbf1 100%);
+  border-color: #5eead4;
+}
+.sim-meeting-card.meet-cancelled {
+  background: #f8fafc; border-color: #e2e8f0;
+}
+.sim-meeting-header { display: flex; align-items: center; gap: 6px; }
+.sim-meeting-icon   { font-size: 13px; }
+.sim-meeting-text   { flex: 1; color: #92400e; font-size: 11.5px; }
+.sim-meeting-wave   { font-size: 10px; font-weight: 600; color: #fcd34d; }
+.meet-arrived   .sim-meeting-text { color: #0f766e; }
+.meet-arrived   .sim-meeting-wave { color: #5eead4; }
+.meet-cancelled .sim-meeting-text { color: #94a3b8; font-style: italic; }
+.meet-cancelled .sim-meeting-wave { color: #cbd5e1; }
+
+/* 에이전트 카드의 "→ 목표" 소형 뱃지 — 만나러 가는 동안만 보인다. */
+.sim-card-meeting {
+  padding: 0 5px; border-radius: 6px;
+  background: #fef3c7; color: #b45309;
+  font-size: 9px; font-weight: 600;
+  max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 /* ── System intervention card ────────────────────────────────────────────────── */
 .sim-intervention-card {
   margin: 8px 0; border-radius: 8px;
@@ -1394,6 +1480,25 @@
 @keyframes lm-agent-pulse {
   0%   { stroke: #6366f1; stroke-width: 4; }
   100% { stroke: #c7d2fe; stroke-width: 1.5; }
+}
+
+/* 추격선 — "chaser가 target을 만나러 이동 중"(meeting_update).
+   복도(무방향 회색 선)와 헷갈리지 않도록 방향성 있는 호박색 점선 + 화살촉으로 그린다.
+   dashoffset 애니메이션이 target 쪽으로 흐르며 진행 방향을 보여준다.
+   pointer-events:stroke — 얇은 선 위에서만 <title> 툴팁을 받고, 아래 박스 드래그는 안 막는다. */
+.lm-chase {
+  fill: none; stroke: #f59e0b; stroke-width: 1.8;
+  stroke-dasharray: 5 4; stroke-linecap: round;
+  opacity: 0.9; pointer-events: stroke;
+  animation: lm-chase-flow 1.1s linear infinite;
+}
+.lm-chase-head { fill: #f59e0b; }
+@keyframes lm-chase-flow {
+  from { stroke-dashoffset: 9; }
+  to   { stroke-dashoffset: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lm-chase { animation: none; }
 }
 
 /* 위치 그래프 미설정 안내 */

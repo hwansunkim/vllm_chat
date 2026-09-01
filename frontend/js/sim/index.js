@@ -31,6 +31,7 @@ import { openExportModal, initExportModal } from './export/markdown.js';
 import { initResizeHandles } from './resize.js';
 import { initImportChatAgentEvents } from './settings/import-chat-agent.js';
 import { initSettingsSections } from './settings/sections.js';
+import { initContractPreview } from './settings/contract-preview.js';
 import { initAutoGrow, initTextEditorOverlay } from './settings/textareas.js';
 
 export function initSimulationEvents() {
@@ -129,18 +130,9 @@ export function initSimulationEvents() {
     if (found) { applyScenario(found); e.target.value = ''; }
   });
 
-  document.getElementById('sim-reset-format-btn').addEventListener('click', async () => {
-    try {
-      const res = await fetch('/api/simulation/default-output-format');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const ta = document.getElementById('sim-output-format');
-      ta.value = data.template;
-      sim.output_format_template = data.template;
-      // auto-grow 위임 리스너가 높이를 다시 잡도록 알린다.
-      ta.dispatchEvent(new Event('input', { bubbles: true }));
-    } catch (e) {
-      console.error('[sim] 기본 출력 포맷 불러오기 실패:', e);
-    }
-  });
+  // 계약 미리보기 + 출력 계약 오버라이드.
+  // 예전에 여기 있던 `GET /api/simulation/default-output-format` 부팅 fetch 는 제거했다 —
+  // 그 엔드포인트는 이제 항상 빈 문자열을 돌려주고(계약 프리즈 중단), 기본 계약은
+  // 엔진이 실행 시점에 만든다. 사용자가 볼 것은 "그때 무엇이 만들어지는가"(미리보기)다.
+  initContractPreview();
 }

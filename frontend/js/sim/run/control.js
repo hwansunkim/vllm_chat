@@ -5,7 +5,7 @@ import { sim, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE, normalizeW
          normalizeTemperature, normalizeTargetDuration, buildInfectionModel } from '../state.js';
 import { readConfigFromUI } from '../settings/page.js';
 import { renderAgentCards } from './cards.js';
-import { removeTypingIndicator } from './feed.js';
+import { removeTypingIndicator, resetWaveCardBuffer, flushPendingWaveCards } from './feed.js';
 import { initD3Graph } from '../graph/d3.js';
 import { initLocationMap } from '../map/d3.js';
 import { connectSSE, disconnectSSE } from './sse.js';
@@ -43,6 +43,8 @@ export async function startSimulation() {
 
   document.getElementById('sim-feed').innerHTML =
     '<div id="sim-feed-empty">시뮬레이션 시작 중...</div>';
+  // 피드를 비웠으니 wave 정렬 버퍼(디렉터 카드 보류분)도 함께 버린다.
+  resetWaveCardBuffer();
   document.getElementById('sim-turn-text').textContent = '대기 중';
   document.getElementById('sim-progress-fill').style.width = '0%';
   renderAgentCards();
@@ -65,7 +67,7 @@ export async function startSimulation() {
       llm_max_tokens:         sim.llm_max_tokens,
       extra_fields:           sim.extra_fields,
       events:                 sim.events,
-      output_format_template: sim.output_format_template || '',
+      output_format_override: sim.output_format_override || '',
       summary_interval:       sim.summary_interval || 0,
       sim_start_time:         sim.sim_start_time    || '09:00',
       sim_start_weekday:      normalizeWeekday(sim.sim_start_weekday),
@@ -99,6 +101,8 @@ export async function startSimulation() {
 export async function stopSimulation() {
   await fetch('/api/simulation/stop', { method: 'POST' });
   setStatus('stopped');
+  // 시작되지 않을 wave 의 보류 카드를 삼키지 않는다 (sse.js 의 simulation_end 와 같은 이유).
+  flushPendingWaveCards(null);
   removeTypingIndicator();
   disconnectSSE();
 }

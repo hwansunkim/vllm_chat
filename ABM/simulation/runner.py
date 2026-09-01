@@ -74,6 +74,26 @@ class _RunnerMixin:
                     end_reason = "no_agents"
                 break
 
+            # ── system 에이전트 (디렉터) — wave **시작** 시점 ────────────────────
+            # 예전엔 루프 **끝**에서 돌며 다음 wave의 current_wave에 개입을 꽂았다.
+            # 그 배치의 문제: emit의 `wave` 값은 방금 끝난 wave인데 개입은 다음
+            # wave에서 소비되고, 디렉터가 참조하는 시각도 한 wave 어긋났다
+            # ("6:45인데 벽시계가 8시를 친다"류 환각의 직접 원인).
+            # 이제 이번 wave의 current_wave에 바로 주입하므로 emit의 wave, 반응
+            # wave, 표시 시각이 셋 다 일치한다.
+            # 배치는 `if not current_wave` 가드 **뒤**다 — 앞이면 디렉터의 개입이
+            # 빈 wave를 되살려 침묵 조기종료(early_stop)를 무력화한다.
+            # 판정식도 `(wave_num+1) % interval` → `wave_num % interval`로 바뀌지만
+            # 실제로 개입이 꽂히는 wave 번호는 예전과 동일하다(wave 0만 스킵).
+            if self._sys_enabled and wave_num > 0 and not self._stop_event.is_set():
+                if wave_num % self._sys_interval == 0:
+                    logger.info(f"[W{wave_num}] system 에이전트 호출 시작, current_wave={list(current_wave.keys())}")
+                    try:
+                        current_wave = self._run_system_agent(wave_num, current_wave)
+                        logger.info(f"[W{wave_num}] system 에이전트 완료, current_wave={list(current_wave.keys())}")
+                    except Exception as e:
+                        logger.error(f"[W{wave_num}] system 에이전트 예외: {e}", exc_info=True)
+
             self._emit("wave_start", {
                 "wave":   wave_num,
                 "agents": list(current_wave.keys()),
@@ -175,16 +195,21 @@ class _RunnerMixin:
                         "action_note": "",
                     })
 
-            for speaker_key, result in results.items():
-                if not result.get("success"):
-                    continue
-                move_to_raw = result.get("move_to")
-                if move_to_raw and isinstance(move_to_raw, str):
-                    dest = move_to_raw.strip()
-                    if dest:
-                        current_loc = self._agent_location.get(speaker_key, "")
-                        if dest != current_loc:
-                            self._agent_path[speaker_key] = self._find_path(current_loc, dest)
+            # ── 이동 의도 해석 (이동 적용 *전* 위치 스냅샷 기준) ────────────────
+            # 1) 이번 wave의 move_to를 장소 이동 / "사람을 만나러 간다"로 분류
+            # 2) 살아 있는 만남 의도를 실제 경로로 환산 (추격 / 랑데부 / 집결)
+            # 두 단계 모두 아래 이동 루프가 돌기 **전**, 즉 발화 라우팅·외모 처리와
+            # 같은 스냅샷 위에서 계산돼야 한다 — 이동 후 위치로 목표를 잡으면 이번
+            # wave에 이미 한 칸 움직인 결과를 근거로 다음 목표를 정하게 되어, 서로
+            # 다가가는 두 사람의 랑데부 지점이 매 wave 흔들린다.
+            # 스냅샷은 두 단계 **앞**에서 뜬다. _apply_move_intents가 새 lock을
+            # 세우고(start) 어떤 lock은 그 자리에서 취소하므로(new_move_to/staying),
+            # _update_meeting_paths 직전에 뜨면 그 변화들이 이미 스냅샷에 녹아
+            # meeting_update가 영영 안 나간다. diff 기준은 "지난 wave 종료 시점"이다.
+            meeting_before = dict(self._meeting_intent)
+            self._apply_move_intents(results)
+            self._update_meeting_paths(scene_injections)
+            self._emit_meeting_updates(wave_num, meeting_before)
 
             for agent_key in list(self.active_agents):
                 path = self._agent_path.get(agent_key)
@@ -328,15 +353,6 @@ class _RunnerMixin:
                         logger.info(f"[W{wave_num}] 요약 에이전트 완료")
                     except Exception as e:
                         logger.error(f"[W{wave_num}] 요약 에이전트 예외: {e}", exc_info=True)
-
-            if self._sys_enabled and not self._stop_event.is_set():
-                if (wave_num + 1) % self._sys_interval == 0:
-                    logger.info(f"[W{wave_num}] system 에이전트 호출 시작, current_wave={list(current_wave.keys())}")
-                    try:
-                        current_wave = self._run_system_agent(wave_num, current_wave)
-                        logger.info(f"[W{wave_num}] system 에이전트 완료, current_wave={list(current_wave.keys())}")
-                    except Exception as e:
-                        logger.error(f"[W{wave_num}] system 에이전트 예외: {e}", exc_info=True)
 
             # ── 목표 기간 도달 체크 ───────────────────────────────────────────
             # 침묵 조기종료(early_stop_enabled/max_silence_waves)와 독립적으로,

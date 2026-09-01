@@ -5,10 +5,10 @@ import { sim, esc, emotionClass, agentLabel } from '../state.js';
 import { fmtTime, statusIcon } from '../utils/time.js';
 import { applyScenario } from '../scenarios.js';
 import { setStatus } from '../run/control.js';
-import { renderAgentCards, updateAgentInfection } from '../run/cards.js';
+import { renderAgentCards, updateAgentInfection, updateAgentMeetingBadge } from '../run/cards.js';
 import { renderHistoricalFeed } from '../run/feed.js';
 import { initD3Graph, refreshInfectionStyles } from '../graph/d3.js';
-import { initLocationMap, updateAgentInfectionOnMap } from '../map/d3.js';
+import { initLocationMap, updateAgentInfectionOnMap, setMeetingIntentOnMap } from '../map/d3.js';
 import { updateScenarioLabel } from '../views.js';
 import { connectSSE } from '../run/sse.js';
 import { exportRunMarkdown } from '../export/markdown.js';
@@ -45,6 +45,30 @@ async function restoreInfectionBadges(runId, snapshot) {
     refreshInfectionStyles();
   } catch (e) {
     console.warn('[replay] 감염 상태 복원 실패:', e);
+  }
+}
+
+/**
+ * 진행 중이던 만남(추격선 + 카드 뱃지)을 복원한다.
+ * 만남 lock에는 감염(`/load`의 infection)과 달리 서버 스냅샷이 없으므로, 저장된
+ * `meeting_update` 이벤트를 시간순으로 재적용해 "마지막까지 해소되지 않은 lock"만 남긴다
+ * (start → 추가, arrived/cancelled → 제거 — 라이브 SSE와 같은 상태 기계).
+ * 이 이벤트를 모르는 구버전 실행은 배열이 비어 있어 아무 일도 일어나지 않는다.
+ * 실패해도 불러오기 자체에는 영향을 주지 않는다.
+ */
+async function restoreMeetingIntents(runId) {
+  try {
+    const res = await fetch(
+      `/api/simulation/runs/${encodeURIComponent(runId)}/events?types=meeting_update`);
+    if (!res.ok) return;
+    const events = await res.json();
+    for (const evt of events) {
+      if (evt.event_type !== 'meeting_update' || !evt.data) continue;
+      setMeetingIntentOnMap(evt.data);
+      updateAgentMeetingBadge(evt.data);
+    }
+  } catch (e) {
+    console.warn('[replay] 만남 상태 복원 실패:', e);
   }
 }
 
@@ -187,6 +211,10 @@ export async function openRunReplay(runId, runNum) {
       // 재개 시나리오의 location_graph로 지도를 다시 세운다 (아바타는 설정상의 초기 위치에서
       // 시작하고, 이후 agent_move 이벤트로 실제 위치를 따라간다 — 에이전트 카드와 동일한 기준).
       initLocationMap();
+      // 저장된 만남 lock 복원 — 엔진은 `meeting_target`을 이어받지만 meeting_update는
+      // "이전 웨이브 대비 변화"만 보내므로, 재개 직후에는 살아있는 lock이 다시 오지
+      // 않을 수 있다. SSE를 붙이기 전에 채워두면 이후 해소 이벤트와도 맞물린다.
+      await restoreMeetingIntents(runId);
       closeReplay();
       setStatus('running');
       connectSSE();
@@ -224,6 +252,9 @@ export async function openRunReplay(runId, runNum) {
       // 감염 뱃지 복원 — /load 응답의 infection 스냅샷을 우선 쓰고, 구버전 서버라
       // 그 필드가 없으면 저장된 infection_update 이벤트 재생으로 폴백한다.
       await restoreInfectionBadges(runId, data.infection);
+
+      // 진행 중이던 만남(추격선 + "→ 목표" 뱃지) 복원 — 저장된 meeting_update 재생.
+      await restoreMeetingIntents(runId);
 
       // 시뮬레이션 뷰 표시 (설정창 닫기)
       document.getElementById('sim-settings-view').classList.add('sim-hidden');

@@ -29,6 +29,7 @@ DEFAULT_SYSTEM_AGENT_PROMPT = """\
 _USER_TEMPLATE = """\
 [현재 Wave: {wave}]
 
+{current_time_section}\
 {director_note_section}\
 {director_memo_section}\
 [최근 요약]
@@ -61,7 +62,14 @@ _USER_TEMPLATE = """\
 - world_event가 없으면 null (객체가 아닌 null)
 - agent는 반드시 활성 에이전트 ID 중 하나 (표시 이름 사용 금지)
 - world_event.targets: "all" / "group:그룹명" / 특정 에이전트 ID 목록
-- 모든 텍스트는 한국어로 작성\
+- 모든 텍스트는 한국어로 작성
+- **시각·시계·시간을 임의로 지어내지 말 것.** 위 [현재 시각]만을 참조하십시오.
+  [현재 시각] 섹션이 없다면 이 세계에는 시간 개념이 없는 것이므로 시각을 아예 언급하지 마십시오.
+  "벽시계가 N시를 알린다" 같은 표현은 [현재 시각]과 정확히 일치할 때만 쓸 수 있습니다.
+- **world_event는 물리적 사실을 새로 만들지 않습니다.** 환경의 분위기·외부 자극만 묘사하십시오.
+  사물의 존재(예: 없던 음식이 놓여 있다), 특정 인물의 완료된 행동(예: 누가 요리를 마쳤다),
+  물리적 상태 변화를 world_event로 만들어내지 마십시오 — 그건 에이전트가 행동으로 만드는 것입니다.
+  디렉터가 주는 것은 '무엇이 일어났다'가 아니라 '무엇이 느껴진다 / 보인다 / 들린다'입니다.\
 """
 
 
@@ -79,11 +87,18 @@ def run_system_agent(
     key_to_alias: dict[str, str] | None,
     llm: LLMCall,
     llm_max_tokens: int = 16384,
+    current_time_str: str = "",
 ) -> dict | None:
     """Run the system agent LLM call.
 
     Returns a dict with ``interventions``, ``world_event``, ``director_memo``,
     and ``reason``, or None on failure.
+
+    ``current_time_str`` 은 에이전트들이 보는 것과 **같은** 시각 문자열
+    (`Simulation._format_time_str(...)`, 요일 포함)이다. 비어 있으면 [현재 시각]
+    섹션 자체를 생략한다 — 시간 개념이 꺼진 시뮬레이션에서 없는 시계를 만들지
+    않기 위해서다. 이 인자가 없던 시절 디렉터는 시각을 전혀 못 받아 world_event에
+    엉뚱한 시각("벽시계가 8시를 친다")을 지어냈다.
     """
     alias = key_to_alias or {}
 
@@ -124,8 +139,14 @@ def run_system_agent(
         if director_memo.strip() else ""
     )
 
+    current_time_section = (
+        f"[현재 시각]\n{current_time_str.strip()}\n\n"
+        if (current_time_str or "").strip() else ""
+    )
+
     user_msg = _USER_TEMPLATE.format(
         wave                  = wave,
+        current_time_section  = current_time_section,
         director_note_section = director_note_section,
         director_memo_section = director_memo_section,
         summary               = summary_str,

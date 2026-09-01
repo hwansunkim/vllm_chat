@@ -8,9 +8,13 @@ class _SystemMixin:
         """system 에이전트를 실행해 개입/월드이벤트를 주입. 수정된 current_wave 반환."""
         from ..system_agent import run_system_agent
 
+        # 디렉터는 wave_num **시작** 시점에 돈다 → `_last_spoke_wave`는 wave_num-1까지만
+        # 반영돼 있다(turn.py가 발화 후에 갱신). "지금까지 몇 wave 연속 침묵인가"는
+        # (wave_num - 1) 기준으로 세야, 디렉터가 wave 끝에서 돌던 이전 배치와 임계값
+        # 의미가 같다. wave_num을 그대로 쓰면 실효 임계값이 1 줄어든다.
         silent = [
             key for key in self.active_agents
-            if wave_num - self._last_spoke_wave.get(key, -1) >= self._sys_threshold
+            if (wave_num - 1) - self._last_spoke_wave.get(key, -1) >= self._sys_threshold
         ]
 
         repetition_info: dict[str, float] = {}
@@ -24,9 +28,20 @@ class _SystemMixin:
             if score >= _REPEAT_THRESHOLD:
                 repetition_info[key] = round(score, 2)
 
+        # 디렉터에게 보여줄 현재 시각. 에이전트 프롬프트
+        # (`_assemble_agent_prompt`)와 **정확히 같은 식**을 쓴다 — 둘이 갈라지면
+        # 디렉터의 world_event 시각과 에이전트가 보는 시계가 어긋난다.
+        # 시간 개념이 꺼져 있으면 빈 문자열 → [현재 시각] 섹션 자체가 생략된다.
+        current_time_str = ""
+        if self._time_mode == "variable" or self._time_per_wave > 0:
+            current_time_str = self._format_time_str(
+                self._sim_start_minutes + self._current_elapsed_minutes(wave_num)
+            )
+
         result = run_system_agent(
             system_prompt     = self._sys_prompt,
             wave              = wave_num,
+            current_time_str  = current_time_str,
             summary           = self._last_summary,
             active_agents     = {k: self._key_to_alias.get(k, k) for k in self.active_agents},
             silent_agents     = silent,

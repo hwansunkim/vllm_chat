@@ -71,7 +71,9 @@ def load_simulation(run_id: str):
                 a.name, a.system_prompt, LOG_DIR,
                 token_limit=cfg.token_limit,
                 extra_fields=[f.model_dump() for f in cfg.extra_fields],
-                output_format_template=cfg.output_format_template or None,
+                # 오버라이드가 설정된 실행만 전달. 옛 실행의 프리즈 스냅샷은
+                # 무시되고 엔진이 최신 계약을 다시 만든다.
+                output_format_template=cfg.effective_output_format_override(),
             )
             if a.name in snapshots:
                 agent.memory = list(snapshots[a.name])

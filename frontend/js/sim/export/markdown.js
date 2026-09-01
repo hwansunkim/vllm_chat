@@ -3,7 +3,7 @@
 
 import { sim, agentLabel, getAgentIcon, simTimeLabel, normalizeWeekday,
          normalizeTargetDuration, buildInfectionModel, infectionBadge,
-         formatDayHour } from '../state.js';
+         meetingNarration, formatDayHour } from '../state.js';
 import { stripCodeFence } from '../utils/json.js';
 import { downloadFile, safeFilename, nowTag } from '../utils/download.js';
 
@@ -50,6 +50,7 @@ function readChecks() {
     world:        document.getElementById('exp-chk-world')?.checked        ?? true,
     intervention: document.getElementById('exp-chk-intervention')?.checked ?? true,
     infection:    document.getElementById('exp-chk-infection')?.checked    ?? true,
+    meeting:      document.getElementById('exp-chk-meeting')?.checked      ?? true,
     summary:      document.getElementById('exp-chk-summary')?.checked      ?? false,
   };
 }
@@ -96,6 +97,7 @@ function buildStream(log, events, checks) {
   if (checks.intervention) wantTypes.add('system_intervention');
   if (checks.world)        wantTypes.add('world_event');
   if (checks.infection)    wantTypes.add('infection_update');
+  if (checks.meeting)      wantTypes.add('meeting_update');
   if (checks.summary)      wantTypes.add('wave_summary');
 
   // Normalise events: { wave, sort_key, kind, payload }
@@ -173,6 +175,16 @@ function fmtInfection(data) {
       ? `${name}이(가) ${what} 감염됐다. (최초 감염자)`
       : `${name}이(가) ${what} 감염됐다. (접촉 전파)`;
   return `\n> **[${badge.icon} 감염]** *${text}*\n`;
+}
+
+/**
+ * 만남 lock 한 줄. 문구는 피드 카드와 같은 meetingNarration을 쓴다.
+ * 모르는 status(구버전/미래 값)면 빈 문자열이라 아무것도 안 실린다.
+ */
+function fmtMeeting(data) {
+  const info = meetingNarration(data);
+  if (!info) return '';
+  return `\n> **[${info.icon} 씬]** *${info.text}*\n`;
 }
 
 function fmtSummary(data) {
@@ -276,6 +288,7 @@ function _buildMarkdown(log, events, statusStr, checks) {
         case 'system_intervention': md += fmtIntervention(item.payload); break;
         case 'world_event':         md += fmtWorldEvent(item.payload); break;
         case 'infection_update':    md += fmtInfection(item.payload); break;
+        case 'meeting_update':      md += fmtMeeting(item.payload); break;
         case 'wave_summary':        md += fmtSummary(item.payload); break;
       }
     }
@@ -322,7 +335,7 @@ export async function exportRunMarkdown(runId, run, preloadedLog) {
   // 마찬가지로 없으면 "꺼진 모델"로 폴백 — 이 실행의 감염 설정을 문서 머리에 싣는다.
   sim.infection_model         = buildInfectionModel(parsedConfig.infection_model);
 
-  const defaultChecks = { time: true, action: true, move: true, appearance: true, world: true, intervention: true, infection: true, summary: false };
+  const defaultChecks = { time: true, action: true, move: true, appearance: true, world: true, intervention: true, infection: true, meeting: true, summary: false };
 
   try {
     const evtRes = await fetch(`/api/simulation/runs/${encodeURIComponent(runId)}/events`);

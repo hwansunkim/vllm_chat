@@ -21,6 +21,7 @@ import { renderInfectionConfig, readInfectionModel, addSymptomStage } from './in
 import { renderTemperatureSlider } from './temperature.js';
 import { renderServerSelect } from './server-select.js';
 import { renderLocationGraph, readLocationGraph, addLocationNode } from './location-graph.js';
+import { renderContractPreview, readOutputFormatOverride } from './contract-preview.js';
 
 // 기존 사용처(index.js 등)가 계속 './settings/page.js' 하나만 import 하도록 재수출한다.
 export { initEarlyStopToggle, initTargetDurationUI, initTimeModeToggle,
@@ -37,7 +38,6 @@ export function renderSettingsPage() {
   document.getElementById('sim-step-delay').value     = sim.step_delay;
   document.getElementById('sim-token-limit').value    = sim.token_limit;
   document.getElementById('sim-llm-max-tokens').value = sim.llm_max_tokens;
-  document.getElementById('sim-output-format').value    = sim.output_format_template || '';
   document.getElementById('sim-summary-interval').value = sim.summary_interval ?? 0;
   const startTimeEl = document.getElementById('sim-start-time');
   if (startTimeEl) startTimeEl.value = sim.sim_start_time ?? '09:00';
@@ -82,6 +82,9 @@ export function renderSettingsPage() {
   renderLocationGraph();
   renderServerSelect();        // 비동기 — 드롭다운 별도 렌더링
   renderSystemAgentConfig();   // system 에이전트 설정 동기 렌더링
+  // 계약 미리보기는 위치 그래프·감염·시간 설정이 모두 DOM에 반영된 뒤여야 한다
+  // (요청 페이로드를 그 입력들에서 직접 읽는다).
+  renderContractPreview();
 
   // 레이아웃 마무리 — 내용이 모두 채워진 뒤여야 뱃지/높이가 맞는다.
   // (섹션이 접혀 있어도 readConfigFromUI()가 읽는 input/textarea는 DOM에 그대로 있다.
@@ -99,7 +102,8 @@ export function readConfigFromUI() {
   sim.step_delay             = parseFloat(document.getElementById('sim-step-delay').value) || 1.0;
   sim.token_limit            = parseInt(document.getElementById('sim-token-limit').value)     || 8192;
   sim.llm_max_tokens         = parseInt(document.getElementById('sim-llm-max-tokens').value) || 16384;
-  sim.output_format_template = document.getElementById('sim-output-format').value;
+  // 출력 계약 오버라이드 — 체크박스가 꺼져 있으면 언제나 ''(= 엔진 생성분 사용).
+  sim.output_format_override = readOutputFormatOverride();
   sim.summary_interval       = parseInt(document.getElementById('sim-summary-interval').value) || 0;
   sim.sim_start_time    = document.getElementById('sim-start-time')?.value || '09:00';
   sim.sim_start_weekday = normalizeWeekday(document.getElementById('sim-start-weekday')?.value);

@@ -1,15 +1,61 @@
 // frontend/js/sim/run/feed.js
 // Live feed: typing indicator, agent messages, scene events, wave indicator.
 
-import { sim, esc, emotionClass, agentLabel, getAgentIcon, simTimeLabel, infectionBadge } from '../state.js';
+import { sim, esc, emotionClass, agentLabel, getAgentIcon, simTimeLabel, infectionBadge,
+         meetingNarration } from '../state.js';
 
 // 증상 서사 카드 접두사 — 서버(_build_symptom_context)가 항상 이 머리말로 시작한다.
 // 같은 턴에 위치 안내 카드와 증상 카드가 각각 올 수 있어 이걸로 구분해 다르게 꾸민다.
 const SYMPTOM_PREFIX = '[몸 상태]';
 
+// ── 디렉터 카드의 wave 정렬 ──────────────────────────────────────────────────
+// system_intervention / world_event 의 `wave` 는 "그 개입이 실제로 소비되는 wave"다.
+// 엔진이 디렉터를 wave 루프 **상단**(wave_start emit 앞)에서 돌리므로, 이 이벤트는
+// 해당 wave 의 wave_start 보다 **먼저** 도착한다. 도착 순서대로 붙이면 카드가
+// 직전 wave 구분선 아래에 놓이면서 라벨(W N)과 위치가 어긋난다.
+// 그래서 아직 시작되지 않은 wave 의 카드는 잠시 들고 있다가, 그 wave 의 구분선을
+// 그린 직후에 흘려보낸다. 결과 순서: 구분선(W N) → 디렉터 카드(W N) → W N 의 턴들.
+let _currentWave  = null;   // updateWaveIndicator() 가 마지막으로 처리한 wave
+let _pendingCards = [];     // [{ wave, el }] — 아직 시작 안 된 wave 의 카드
+
+/** 새 실행(또는 이력 복원)로 피드를 비울 때 wave 버퍼도 함께 비운다. */
+export function resetWaveCardBuffer() {
+  _currentWave  = null;
+  _pendingCards = [];
+}
+
+function _appendWaveCard(wave, el) {
+  // wave 를 모르는 구버전 페이로드는 판단할 근거가 없으니 그대로 붙인다.
+  if (wave != null && _currentWave != null && wave > _currentWave) {
+    _pendingCards.push({ wave, el });
+    return;
+  }
+  document.getElementById('sim-feed').appendChild(el);
+  el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
+/** 이 wave 까지의 보류 카드를 순서대로 흘려보낸다. simulation_end 에서는 전부. */
+export function flushPendingWaveCards(uptoWave) {
+  if (!_pendingCards.length) return;
+  const feed = document.getElementById('sim-feed');
+  const stay = [];
+  let last = null;
+  for (const item of _pendingCards) {
+    if (uptoWave == null || item.wave <= uptoWave) {
+      feed.appendChild(item.el);
+      last = item.el;
+    } else {
+      stay.push(item);
+    }
+  }
+  _pendingCards = stay;
+  last?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
 export function renderHistoricalFeed(entries) {
   const feed = document.getElementById('sim-feed');
   feed.innerHTML = '';
+  resetWaveCardBuffer();
 
   if (!entries || !entries.length) {
     feed.innerHTML = '<div id="sim-feed-empty">저장된 대화 기록이 없습니다.</div>';
@@ -147,8 +193,7 @@ export function addInterventionCard(d) {
     </div>
     <div class="sim-intervention-msg">${esc(d.message || '')}</div>
     ${d.reason ? `<div class="sim-intervention-reason">${esc(d.reason)}</div>` : ''}`;
-  document.getElementById('sim-feed').appendChild(el);
-  el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  _appendWaveCard(d.wave, el);
 }
 
 export function addSummaryCard(d) {
@@ -185,8 +230,7 @@ export function addWorldEventCard(d) {
     </div>
     <div class="sim-world-event-content">${esc(d.content || '')}</div>
     ${d.reason ? `<div class="sim-world-event-reason">${esc(d.reason)}</div>` : ''}`;
-  document.getElementById('sim-feed').appendChild(el);
-  el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  _appendWaveCard(d.wave, el);
 }
 
 export function addSceneEventToFeed(d) {
@@ -250,6 +294,28 @@ export function addMovementCard(d) {
       <span class="sim-movement-arrow">이동</span>
       <span class="sim-movement-route">${fromStr} → ${toStr}</span>
       <span class="sim-movement-wave">W${d.wave}</span>
+    </div>`;
+  document.getElementById('sim-feed').appendChild(el);
+  el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
+/**
+ * meeting_update SSE — 만남 lock의 생성/해소 한 줄.
+ * 문구는 state.js의 meetingNarration 한 곳에서만 만든다(마크다운 내보내기와 공유).
+ * 모르는 status면 null이 와서 카드를 만들지 않는다 — 만남을 안 쓰는 시나리오는 이벤트
+ * 자체가 0건이므로 피드에 아무 변화가 없다.
+ */
+export function addMeetingCard(d) {
+  const info = meetingNarration(d);
+  if (!info) return;
+  removeFeedEmpty();
+  const el     = document.createElement('div');
+  el.className = `sim-meeting-card meet-${info.cls}`;
+  el.innerHTML = `
+    <div class="sim-meeting-header">
+      <span class="sim-meeting-icon">${info.icon}</span>
+      <span class="sim-meeting-text">${esc(info.text)}</span>
+      ${d.wave != null ? `<span class="sim-meeting-wave">W${esc(String(d.wave))}</span>` : ''}
     </div>`;
   document.getElementById('sim-feed').appendChild(el);
   el.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -328,6 +394,11 @@ export function updateWaveIndicator(waveNum, agents) {
   if (fallbackLabel || sim.time_mode === 'variable') {
     addWaveDivider(waveNum, fallbackLabel);
   }
+
+  // 구분선을 그린 **뒤에** 이 wave 의 디렉터 카드를 흘려보낸다 — 카드의 W 라벨과
+  // 실제로 놓이는 자리가 일치하도록. (엔진이 wave_start 앞에서 디렉터를 돌린다.)
+  _currentWave = waveNum;
+  flushPendingWaveCards(waveNum);
 }
 
 function addWaveDivider(waveNum, timeLabel) {

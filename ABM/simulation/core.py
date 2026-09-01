@@ -7,8 +7,10 @@ import logging
 from ..agent import Agent
 from ..config import LOG_DIR
 from ..llm import LLMCall
+from ..prompt_contract import build_world_contract, verify_contract
 from .location import _LocationMixin
 from .infection import _InfectionMixin
+from .meeting import _MeetingMixin
 from .targets import _TargetsMixin
 from .events import _EventsMixin
 from .turn import _TurnMixin
@@ -23,6 +25,7 @@ _PERSIST_EVENTS: frozenset[str] = frozenset({
     "appearance_update",
     "system_intervention",
     "world_event",
+    "meeting_update",
     "scene_event",
     "wave_summary",
     "infection_update",
@@ -40,7 +43,7 @@ _DEFAULT_TIME_CATEGORIES: list[dict] = [
 ]
 
 
-class Simulation(_LocationMixin, _InfectionMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepMixin, _SystemMixin, _RunnerMixin):
+class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepMixin, _SystemMixin, _RunnerMixin):
     def __init__(
         self,
         agents:           dict[str, Agent],
@@ -161,37 +164,11 @@ class Simulation(_LocationMixin, _InfectionMixin, _TargetsMixin, _EventsMixin, _
                     if zone:
                         self._location_zone[name] = zone
 
-        # 지도를 각 에이전트 시스템 프롬프트에 정적으로 주입 (에이전트가 처음부터 지도 인식)
-        if self._location_graph:
-            map_lines = ["\n\n[위치 그래프 — 이동 가능한 경로]"]
-            for loc, conns in self._location_graph.items():
-                conn_str = ", ".join(conns) if conns else "(연결 없음)"
-                exterior_mark = " [외부 공간]" if loc in self._exterior_locations else ""
-                zone_name  = self._location_zone.get(loc, "")
-                zone_mark  = f" [구역: {zone_name}]" if zone_name else ""
-                map_lines.append(f"  {loc}{exterior_mark}{zone_mark}: {conn_str}")
-            map_lines.append("※ move_to 필드에는 반드시 위 그래프에 있는 장소명만 사용할 것. 그 외 장소로의 이동은 무시됩니다.")
-            if self._exterior_locations:
-                map_lines.append("※ [외부 공간]으로 표시된 장소는 시뮬레이션 경계 밖입니다. 그곳에서는 다른 누구도 볼 수 없고, 누구도 당신을 볼 수 없습니다.")
-            if self._location_zone:
-                map_lines.append("※ [구역: ...]은 같은 생활권을 뜻합니다. 같은 구역 안의 다른 장소에 있는 사람은 서로 존재를 인지하지만, 대화는 같은 장소에 있어야만 할 수 있습니다. 말을 걸고 싶다면 move_to로 그 장소까지 이동하세요.")
-            map_section = "\n".join(map_lines)
-            for agent in self.agents.values():
-                agent.system_prompt += map_section
-
-        # 시간 인식 안내를 에이전트 시스템 프롬프트에 정적 주입
-        if self._time_mode == "variable" or self._time_per_wave > 0:
-            time_section = (
-                "\n\n[시간 인식]\n"
-                "매 대화 맥락에 [현재 시각: 요일 + 오전/오후 시각] 정보가 제공됩니다. "
-                "이를 자연스럽게 인지하고 시간대에 맞는 행동을 하세요. "
-                "예) 점심 시간엔 식사를 제안하거나, 퇴근 시간이 다가오면 마무리 행동을 취하는 등.\n"
-                "요일도 함께 고려하세요. 평일(월~금)과 주말(토·일)의 일상은 다릅니다. "
-                "예) 평일 아침엔 출근·등교를 준비하고, 주말엔 늦잠을 자거나 여가·약속 위주로 움직이는 등. "
-                "자정을 넘기면 요일이 자동으로 다음 날로 바뀝니다."
-            )
-            for agent in self.agents.values():
-                agent.system_prompt += time_section
+        # 위치/시간 계약 블록의 주입은 감염 모델 설정을 읽은 **뒤**에 한 번에 한다
+        # (`_apply_engine_contract()`). 예전엔 여기서 map_section/time_section을
+        # 각각 `agent.system_prompt +=` 로 이어붙였는데, 그 방식은 (1) 사용자 소유
+        # 프롬프트를 오염시키고 (2) 새 계약 블록이 생길 때마다 주입 지점이 흩어져
+        # "코드엔 기능이 있는데 지시어가 없어 조용히 죽는" 버그를 만들었다.
 
         # 감염병 모델 설정. enabled=False(기본)면 _agent_infection은 전원 "S"로
         # 초기화만 되고 상태 전이도, 프롬프트 주입도 일어나지 않는다(완전한 하위 호환).
@@ -223,7 +200,23 @@ class Simulation(_LocationMixin, _InfectionMixin, _TargetsMixin, _EventsMixin, _
                 "symptom_text": s.get("symptom_text", ""),
             })
 
+        # ── 엔진 계약 층 주입 ────────────────────────────────────────────────
+        # 위치 그래프/시간/감염 설정이 전부 파싱된 뒤에 한 번에 조립한다.
+        # 저장하지 않고 매 실행마다 config에서 새로 만들기 때문에, 엔진을
+        # 업그레이드하면 기존 시나리오도 DB 마이그레이션 없이 새 계약을 받는다.
+        self._apply_engine_contract()
+
         self._agent_path: dict[str, list[str]] = {}
+
+        # 만남 lock: {추격자 key: 목표 key}. `move_to`에 장소가 아니라 **사람**을
+        # 지목했을 때 세워지고, 동석/다른 move_to/목표 이탈에서 풀린다. 상세는
+        # meeting.py 참고. (기본은 빈 dict — 사람 지목이 없으면 전혀 관여하지 않는다.)
+        self._meeting_intent: dict[str, str] = {}
+        # lock이 풀린 사유를 한 wave 동안만 들고 있는 임시 버퍼 {추격자: 사유}.
+        # runner가 meeting_update 이벤트를 만들 때 소비하고 비운다. **직렬화하지
+        # 않는다** — 재개 시점에 복원할 의미가 없는 파생 정보다(상태는 여전히
+        # _meeting_intent 하나뿐).
+        self._meeting_break_log: dict[str, str] = {}
 
         # {agent_key: {"status": "S"|"I"|"R",
         #              "infected_at_minutes": int|None,   # 감염 시점의 경과분 앵커
@@ -282,6 +275,66 @@ class Simulation(_LocationMixin, _InfectionMixin, _TargetsMixin, _EventsMixin, _
 
         os.makedirs(log_dir, exist_ok=True)
         self._save_shared_log()
+
+        self._verify_engine_contract()
+
+    # ── 엔진 계약 층 ──────────────────────────────────────────────────────────
+
+    def _time_enabled(self) -> bool:
+        """시간 개념이 켜져 있는가 (fixed + time_per_wave>0, 또는 variable 모드)."""
+        return self._time_mode == "variable" or self._time_per_wave > 0
+
+    def contract_flags(self) -> dict:
+        """계약 빌더/검증기에 넘길 현재 실행 설정의 feature 플래그."""
+        return {
+            "has_location_graph": bool(self._location_graph),
+            "has_zone":           bool(self._location_zone),
+            "time_enabled":       self._time_enabled(),
+            "infection_enabled":  bool(self._infection_enabled),
+        }
+
+    def build_engine_world_contract(self) -> str:
+        """이 실행의 정적 계약 블록(지도 + 시간 + 감염)."""
+        return build_world_contract(
+            location_graph     = self._location_graph,
+            exterior_locations = self._exterior_locations,
+            location_zone      = self._location_zone,
+            time_enabled       = self._time_enabled(),
+            infection_enabled  = self._infection_enabled,
+            disease_name       = self._infection_disease_name,
+        )
+
+    def _apply_engine_contract(self) -> None:
+        """모든 에이전트에 정적 계약 블록과 feature 플래그를 건다."""
+        world = self.build_engine_world_contract()
+        flags = self.contract_flags()
+        for agent in self.agents.values():
+            agent.set_engine_contract(
+                world,
+                has_location_graph = flags["has_location_graph"],
+                has_zone           = flags["has_zone"],
+            )
+
+    def _verify_engine_contract(self) -> list[str]:
+        """활성 feature마다 필요한 지시어가 실제로 주입됐는지 확인해 경고를 남긴다.
+
+        raise 하지 않는다 — 시뮬레이션은 계속 돌아야 한다. 이 어서션이 잡아내려는
+        버그 클래스는 "코드엔 기능이 있는데 프롬프트에 지시어가 없어 조용히 죽는"
+        경우다(예: 옛 프리즈 템플릿을 오버라이드로 들고 있어 move_to 스키마가
+        빠진 시나리오). 반환값은 테스트용.
+        """
+        flags = self.contract_flags()
+        seen: set[str] = set()
+        problems: list[str] = []
+        for key, agent in self.agents.items():
+            assembled = agent.get_system_message([], self._key_to_alias)["content"]
+            for problem in verify_contract(assembled, **flags):
+                if problem in seen:
+                    continue  # 같은 누락을 에이전트 수만큼 반복해서 찍지 않는다
+                seen.add(problem)
+                problems.append(problem)
+                logger.warning(f"[계약 검증] {key}: {problem}")
+        return problems
 
     # ── LLM ──────────────────────────────────────────────────────────────────
 
@@ -342,6 +395,9 @@ class Simulation(_LocationMixin, _InfectionMixin, _TargetsMixin, _EventsMixin, _
                 "knowledge":    sorted(self._agent_knowledge.get(key, set())),
                 "stranger_map": dict(self._stranger_map.get(key, {})),
                 "path":         list(self._agent_path.get(key, [])),
+                # 만남 lock. 빼먹으면 resume 직후 "누굴 만나러 가던 중"이라는 사실만
+                # 사라지고 경로는 남아, 상대가 움직여도 더 이상 따라가지 않는다.
+                "meeting_target": self._meeting_intent.get(key),
                 # 감염 상태를 빼먹으면 resume/load 때 전원이 "S"로 되돌아가 유행이
                 # 통째로 초기화된다 — 위치/외모와 정확히 같은 버그 클래스.
                 "infection":    self._export_infection(key),
@@ -392,6 +448,9 @@ class Simulation(_LocationMixin, _InfectionMixin, _TargetsMixin, _EventsMixin, _
             path = st.get("path")
             if path is not None:
                 self._agent_path[key] = list(path)
+            meeting = st.get("meeting_target")
+            if meeting and meeting in self.agents:
+                self._meeting_intent[key] = meeting
             infection = st.get("infection")
             if isinstance(infection, dict) and infection.get("status") in ("S", "I", "R"):
                 status     = infection["status"]
