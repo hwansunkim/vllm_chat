@@ -20,7 +20,7 @@ function setupResize(handle, panel, growDir) {
 
     const onMove = ev => {
       const dx   = growDir === 'right' ? ev.clientX - startX : startX - ev.clientX;
-      const newW = Math.max(160, Math.min(700, startW + dx));
+      const newW = Math.max(160, Math.min(1000, startW + dx));
       panel.style.width    = `${newW}px`;
       panel.style.minWidth = `${newW}px`;
     };
