@@ -106,7 +106,7 @@ const clamp = (v, lo, hi) => (lo > hi ? (lo + hi) / 2 : Math.min(hi, Math.max(lo
 function graphSignature() {
   return JSON.stringify((sim.location_graph || []).map(n => [
     n?.name ?? '', [...(n?.connects_to || [])].sort(), !!n?.is_exterior,
-    (n?.zone ?? '').trim(),
+    (n?.zone ?? '').trim(), !!n?.is_zone_entry,
   ]));
 }
 
@@ -145,10 +145,20 @@ function buildData(graph) {
     const node = {
       id: name, name, exterior: !!loc.is_exterior, w, h, count: 0,
       zone: (loc.zone || '').trim(),   // '' = zone 없음 → 어떤 배경 영역에도 안 들어간다
+      zoneEntry: false,                // 아래에서 zone→입구 매핑 확정 후 표시
     };
     nodes.push(node);
     nodeMap[name] = node;
   });
+
+  // zone → 입구 노드명. 엔진 계약과 동일하게 is_zone_entry 노드가 있는 zone만 취하고,
+  // 같은 zone에 둘 이상이면 첫 번째만 채택한다.
+  const zoneEntry = {};
+  graph.forEach(loc => {
+    const z = (loc?.zone || '').trim();
+    if (z && loc?.is_zone_entry && nodeMap[loc.name] && !(z in zoneEntry)) zoneEntry[z] = loc.name;
+  });
+  for (const name of Object.values(zoneEntry)) nodeMap[name].zoneEntry = true;
 
   // connects_to는 양방향이라 A→B / B→A가 둘 다 들어온다 — 정렬 키로 중복 제거.
   const links = [], seen = new Set();
@@ -161,6 +171,24 @@ function buildData(graph) {
       if (seen.has(key)) return;
       seen.add(key);
       links.push({ source: from, target: to });
+    });
+  });
+
+  // connects_to의 원소가 노드가 아니고 "입구 있는 zone명"이면 그 zone 입구 노드로
+  // 향하는 링크를 만든다(zoneEdge). 엔진은 진입/탈출로 비대칭 전개하지만 지도에는
+  // 방향 없는 dashed 선 하나로 표시한다. 미해결 참조는 종전처럼 조용히 드롭.
+  graph.forEach(loc => {
+    const from = loc?.name;
+    if (!from || !nodeMap[from]) return;
+    (loc.connects_to || []).forEach(to => {
+      if (!to || nodeMap[to]) return;               // 노드 참조는 위에서 처리됨
+      const entry = zoneEntry[to];
+      if (!entry || entry === from) return;         // 입구 없는 zone / 자기 참조 → 드롭
+      if ((nodeMap[from]?.zone || '') === to) return;  // 자기 구역 참조 → 엔진이 무시하므로 지도도 드롭
+      const key = [from, entry].sort().join(' ');
+      if (seen.has(key)) return;                    // 이미 실선으로 이어져 있으면 생략
+      seen.add(key);
+      links.push({ source: from, target: entry, zoneEdge: true });
     });
   });
 
@@ -583,14 +611,16 @@ function renderMap() {
 
   // ── 복도 (박스 아래 레이어) ──
   const outer = _layers.corridorOuter.selectAll('.lm-corridor')
-    .data(_mapData.links).enter().append('path').attr('class', 'lm-corridor');
+    .data(_mapData.links).enter().append('path')
+    .attr('class', d => `lm-corridor${d.zoneEdge ? ' lm-corridor-zone' : ''}`);
   outer.append('title').text(d => {
     const s = typeof d.source === 'object' ? d.source.id : d.source;
     const t = typeof d.target === 'object' ? d.target.id : d.target;
-    return `${s} ↔ ${t}`;
+    return d.zoneEdge ? `${s} → ${t} (구역 입구 연결)` : `${s} ↔ ${t}`;
   });
   _layers.corridorInner.selectAll('.lm-corridor-in')
-    .data(_mapData.links).enter().append('path').attr('class', 'lm-corridor-in');
+    .data(_mapData.links).enter().append('path')
+    .attr('class', d => `lm-corridor-in${d.zoneEdge ? ' lm-corridor-in-zone' : ''}`);
 
   // ── 장소 박스 ──
   const box = _layers.boxes.selectAll('.lm-box')
@@ -619,13 +649,13 @@ function renderMap() {
     .attr('x', d => -d.w / 2 + PAD + 1)
     .attr('y', d => -d.h / 2 + TITLE_FS + 3)
     .attr('font-size', `${TITLE_FS}px`)
-    .text(d => `${d.exterior ? '🌐' : '📍'} ${shortLabel(d.name, Math.floor((d.w - 30) / TITLE_FS))}`);
+    .text(d => `${d.exterior ? '🌐' : d.zoneEntry ? '🚪' : '📍'} ${shortLabel(d.name, Math.floor((d.w - 30) / TITLE_FS))}`);
   box.append('text')
     .attr('class', 'lm-box-count')
     .attr('text-anchor', 'end')
     .attr('x', d => d.w / 2 - PAD)
     .attr('y', d => -d.h / 2 + TITLE_FS + 3);
-  box.append('title').text(d => `${d.name}${d.exterior ? ' (외부 공간)' : ''}`);
+  box.append('title').text(d => `${d.name}${d.exterior ? ' (외부 공간)' : d.zoneEntry ? ' (구역 입구)' : ''}`);
 
   _mapSim.on('tick', () => {
     updateZones();

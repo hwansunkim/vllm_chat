@@ -1452,6 +1452,12 @@
    양방향 연결이므로 화살표/테이퍼 없이 단순한 선이다. */
 .lm-corridor    { fill: none; stroke: #cbd5e1; stroke-width: 10; stroke-linecap: round; }
 .lm-corridor-in { fill: none; stroke: #f8fafc; stroke-width: 6;  stroke-linecap: round; }
+/* 구역 입구 연결 — connects_to에 zone명이 들어간 단방향 참조. 엔진이 진입/탈출
+   엣지로 전개하지만 지도에는 방향 없는 얇은 dashed 선으로만 표시한다(바닥선 생략). */
+.lm-corridor.lm-corridor-zone {
+  stroke: #f59e0b; stroke-width: 3.5; stroke-dasharray: 6 5; stroke-linecap: butt;
+}
+.lm-corridor-in.lm-corridor-in-zone { display: none; }
 
 /* 장소 박스 */
 .lm-box       { cursor: grab; }
@@ -1865,6 +1871,15 @@
   line-height: 1;
 }
 .sim-loc-conn-del:hover { color: #ef4444; }
+/* 구역 연결 — 노드-노드 연결과 달리 단방향이며 엔진이 진입/탈출로 전개한다.
+   앰버 계열 + 🏠 프리픽스로 일반 연결과 구분한다. */
+.sim-loc-conn-badge.sim-loc-conn-zone {
+  background: rgba(245,158,11,0.15);
+  border-color: rgba(245,158,11,0.4);
+  color: #fcd34d;
+}
+.sim-loc-conn-badge.sim-loc-conn-zone .sim-loc-conn-del { color: #fcd34d; }
+.sim-loc-conn-badge.sim-loc-conn-zone .sim-loc-conn-del:hover { color: #ef4444; }
 .sim-loc-add-conn {
   background: var(--surface-1, #0f172a);
   border: 1px dashed var(--border, #334155);
@@ -1892,6 +1907,29 @@
   white-space: nowrap;
 }
 .sim-loc-exterior-toggle input { cursor: pointer; }
+
+/* 구역 입구 토글 — zone당 하나. zone이 지정돼야 활성화된다(그 전엔 흐리게). */
+.sim-loc-entry-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #fcd34d;
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(245,158,11,0.4);
+  white-space: nowrap;
+}
+.sim-loc-entry-toggle input { cursor: pointer; }
+.sim-loc-entry-toggle.sim-loc-entry-disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  color: var(--text-muted, #94a3b8);
+  border-color: var(--border, #334155);
+}
+.sim-loc-entry-toggle.sim-loc-entry-disabled input { cursor: not-allowed; }
 
 /* ── 외부 공간 피드 메시지 ──────────────────────────────────────────── */
 .sim-feed-msg-exterior {

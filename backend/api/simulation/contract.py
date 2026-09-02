@@ -38,7 +38,14 @@ def preview_engine_contract(body: ContractPreviewRequest):
     # LocationNode 리스트 → 빌더가 받는 인접 리스트/집합/맵 (abm_done §6-C3)
     graph    = {n.name: list(n.connects_to) for n in body.location_graph}
     exterior = {n.name for n in body.location_graph if n.is_exterior}
-    zones    = {n.name: n.zone for n in body.location_graph if n.zone}
+    zones    = {n.name: n.zone.strip() for n in body.location_graph if n.zone.strip()}
+    # zone -> 첫 입구 노드. 전개(탈출 엣지)는 엔진 런타임 소유라 프리뷰 그래프에는
+    # 반영하지 않고, 입구 표기 + 탈출 규칙 문구만 계약에 나타나게 한다.
+    # zone truthy 판정은 core.py 와 동일하게 .strip() 후로 맞춘다.
+    zone_entry: dict[str, str] = {}
+    for n in body.location_graph:
+        if n.is_zone_entry and n.zone.strip():
+            zone_entry.setdefault(n.zone.strip(), n.name)
 
     targets = list(body.available_targets) or [_PLACEHOLDER_TARGET]
     aliases = dict(body.key_to_alias) or {_PLACEHOLDER_TARGET: _PLACEHOLDER_ALIAS}
@@ -51,6 +58,7 @@ def preview_engine_contract(body: ContractPreviewRequest):
         location_graph         = graph or None,
         exterior_locations     = exterior or None,
         location_zone          = zones or None,
+        zone_entry             = zone_entry or None,
         time_enabled           = body.time_enabled(),
         infection_enabled      = bool(body.infection_model.enabled),
         disease_name           = body.infection_model.disease_name,
@@ -62,6 +70,7 @@ def preview_engine_contract(body: ContractPreviewRequest):
             location_graph     = kwargs["location_graph"],
             exterior_locations = kwargs["exterior_locations"],
             location_zone      = kwargs["location_zone"],
+            zone_entry         = kwargs["zone_entry"],
             time_enabled       = kwargs["time_enabled"],
             infection_enabled  = kwargs["infection_enabled"],
             disease_name       = kwargs["disease_name"],

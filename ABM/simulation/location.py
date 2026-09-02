@@ -1,8 +1,69 @@
-from collections import deque
+import logging
+from collections import defaultdict, deque
+
+logger = logging.getLogger(__name__)
 
 
 class _LocationMixin:
     """위치 그래프, BFS 경로 탐색, 상황 컨텍스트 관련 메서드."""
+
+    def _expand_zone_edges(self, raw_nodes: list[dict]) -> None:
+        """connects_to 의 zone 참조를 노드 레벨 엣지로 전개.
+
+        외부 노드 X 의 raw connects_to 에 zone Z(입구 E, 내부 노드 집합 N)가 있으면:
+        - 진입: X -> E 엣지 추가 (바깥에서 들어오면 입구를 거침)
+        - 탈출: N 의 **모든** 내부 노드 -> X 엣지 추가 (구역 안 어디서든 1홉 탈출)
+        E -> X 는 탈출 루프가 자동 추가(E 도 내부 노드) → X <-> E 대칭 + 나머지
+        내부 노드는 X 로 단방향 탈출, 복귀는 X -> E -> ... -> 내부.
+
+        전개 후 self._location_graph 는 여전히 순수 노드 인접 리스트라
+        _find_path/_get_adjacent/_build_situation_context/인지 로직 전부 무변경.
+        zone 이 하나도 없으면 완전한 no-op — flat 그래프는 바이트 단위로 동일하다.
+        """
+        if not self._location_zone:
+            return
+
+        zone_names = set(self._location_zone.values())
+        zone_nodes: dict[str, list[str]] = defaultdict(list)
+        for loc, z in self._location_zone.items():
+            zone_nodes[z].append(loc)
+
+        known_node_names = {n.get("name", "") for n in raw_nodes}
+
+        def _add(a: str, b: str) -> None:
+            if a == b or a not in self._location_graph:
+                return
+            if b not in self._location_graph[a]:
+                self._location_graph[a].append(b)
+
+        for node in raw_nodes:
+            x = node.get("name", "")
+            if not x or x not in self._location_graph:
+                continue
+            for target in list(node.get("connects_to", [])):
+                if target in self._location_graph:
+                    continue  # 실존 노드 엣지 — 노드 우선(_is_location_name 선례)
+                if target not in zone_names:
+                    # zone 도 노드도 아닌 미해결 참조는 건드리지 않는다(기존 동작 유지).
+                    if target not in known_node_names:
+                        logger.warning(f"[zone 전개] connects_to 미해결: '{x}' -> '{target}'")
+                    continue
+                # 여기부터 target 은 zone 이름 — 노드 인접 리스트에서 걷어낸다.
+                if target in self._location_graph[x]:
+                    self._location_graph[x].remove(target)
+                if self._location_zone.get(x) == target:
+                    logger.warning(f"[zone 전개] 자기 구역 참조 무시: '{x}' -> '{target}'")
+                    continue
+                entry = self._zone_entry.get(target)
+                if entry is None:
+                    logger.warning(
+                        f"[zone 전개] '{x}' -> '{target}': 해당 zone 에 입구 노드가 "
+                        f"없어 무시(is_zone_entry 지정 필요)"
+                    )
+                    continue
+                _add(x, entry)  # 진입
+                for interior in zone_nodes.get(target, []):
+                    _add(interior, x)  # 탈출 (E 포함)
 
     def _find_path(self, start: str, goal: str) -> list[str]:
         """BFS 최단 경로. 시작 제외, 목표 포함.
@@ -172,7 +233,13 @@ class _LocationMixin:
 
         adjacent = self._get_adjacent(my_loc)
         if adjacent:
-            lines.append(f"이동 가능한 장소: {', '.join(adjacent)}")
+            my_zone_here = self._location_zone.get(my_loc, "")
+            def _adj_label(loc: str) -> str:
+                if my_zone_here and self._location_zone.get(loc, "") != my_zone_here:
+                    return f"{loc} (구역 밖)"
+                return loc
+            shown = [_adj_label(loc) for loc in adjacent] if my_zone_here else adjacent
+            lines.append(f"이동 가능한 장소: {', '.join(shown)}")
 
         path = self._agent_path.get(agent_key, [])
         if path:

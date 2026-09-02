@@ -47,11 +47,18 @@ class ScenarioEvent(BaseModel):
 
 class LocationNode(BaseModel):
     name:        str
+    # 노드명 또는 zone명(그 zone에 입구 노드가 있을 때). zone 참조는 파싱 직후
+    # 엔진 컴파일 단계에서 노드 레벨 엣지로 전개된다(ABM/simulation/core._expand_zone_edges).
+    # 스키마는 zone 참조를 reject 하지 않는다 — import/구버전 시나리오 하위 호환.
     connects_to: list[str] = []
     is_exterior: bool      = False
     # 인지 구역. 같은 zone의 다른 장소에 있는 사람은 서로 존재를 인지하지만 대화는 불가.
     # 빈 문자열 = zone 없음(독립 노드). 위치 개념이며 AgentConfig.groups(캐릭터 관계 그룹)와 무관.
     zone:        str       = ""
+    # 이 노드를 zone의 기본 입구로 지정. zone당 1개(중복 시 첫 번째만 채택 + warning).
+    # 외부 노드가 connects_to에 zone명을 넣으면: 진입은 이 입구를 거치고, 탈출은
+    # zone 내부 어느 노드에서든 1홉. zone 없는 노드에 붙으면 엔진이 무시(로그).
+    is_zone_entry: bool    = False
 
 
 class ExtraField(BaseModel):

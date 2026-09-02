@@ -94,7 +94,7 @@ function _buildPayload(overrideOverride) {
 function _signature() {
   const p = _buildPayload();
   return JSON.stringify([
-    p.location_graph.map(n => [n.name, n.is_exterior, n.zone]),
+    p.location_graph.map(n => [n.name, n.is_exterior, n.zone, n.is_zone_entry]),
     p.time_mode, p.time_per_wave,
     p.infection_model.enabled, p.infection_model.disease_name,
     p.extra_fields,

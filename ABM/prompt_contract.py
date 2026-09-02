@@ -126,6 +126,10 @@ _MAP_RULE_ZONE = (
     "서로 존재를 인지하지만, 대화는 같은 장소에 있어야만 할 수 있습니다. "
     "말을 걸고 싶다면 move_to에 그 사람의 ID(또는 그 장소명)를 넣으세요."
 )
+_MAP_RULE_ZONE_EXIT = (
+    "※ 구역(집·회사 등) 안에서는 어느 장소에서든 바깥으로 바로 나갈 수 있습니다"
+    "(현관까지 걸어갈 필요 없음). 바깥에서 구역으로 들어올 때는 입구를 거칩니다."
+)
 
 
 def build_map_contract(
@@ -133,19 +137,30 @@ def build_map_contract(
     location_graph:     dict[str, list[str]] | None = None,
     exterior_locations: set[str] | None             = None,
     location_zone:      dict[str, str] | None       = None,
+    zone_entry:         dict[str, str] | None       = None,
 ) -> str:
-    """[위치 그래프] 블록 + 이동/외부공간/구역 규칙. 그래프가 없으면 빈 문자열."""
+    """[위치 그래프] 블록 + 이동/외부공간/구역 규칙. 그래프가 없으면 빈 문자열.
+
+    `zone_entry` (zone -> 입구 노드명)가 주어지면 입구 노드에 ", 입구" 표기를 붙이고
+    구역 밖으로 바로 나갈 수 있다는 규칙 한 줄을 추가한다. 탈출 엣지 자체는 이미
+    전개된 `location_graph` 에 들어 있어 [위치 그래프] 블록에 자동 노출된다.
+    """
     if not location_graph:
         return ""
     exterior = exterior_locations or set()
     zones    = location_zone or {}
+    entries  = zone_entry or {}
 
     lines = ["\n\n[위치 그래프 — 이동 가능한 경로]"]
     for loc, conns in location_graph.items():
         conn_str      = ", ".join(conns) if conns else "(연결 없음)"
         exterior_mark = " [외부 공간]" if loc in exterior else ""
         zone_name     = zones.get(loc, "")
-        zone_mark     = f" [구역: {zone_name}]" if zone_name else ""
+        if zone_name:
+            is_entry  = entries.get(zone_name) == loc
+            zone_mark = f" [구역: {zone_name}{', 입구' if is_entry else ''}]"
+        else:
+            zone_mark = ""
         lines.append(f"  {loc}{exterior_mark}{zone_mark}: {conn_str}")
     lines.append(_MAP_RULE_GRAPH_ONLY)
     lines.append(_MAP_RULE_PERSON)
@@ -153,6 +168,8 @@ def build_map_contract(
         lines.append(_MAP_RULE_EXTERIOR)
     if zones:
         lines.append(_MAP_RULE_ZONE)
+    if entries:
+        lines.append(_MAP_RULE_ZONE_EXIT)
     return "\n".join(lines)
 
 
@@ -211,6 +228,7 @@ def build_world_contract(
     location_graph:     dict[str, list[str]] | None = None,
     exterior_locations: set[str] | None             = None,
     location_zone:      dict[str, str] | None       = None,
+    zone_entry:         dict[str, str] | None       = None,
     time_enabled:       bool                        = False,
     infection_enabled:  bool                        = False,
     disease_name:       str                         = "",
@@ -225,6 +243,7 @@ def build_world_contract(
             location_graph     = location_graph,
             exterior_locations = exterior_locations,
             location_zone      = location_zone,
+            zone_entry         = zone_entry,
         )
         + build_time_contract(time_enabled=time_enabled)
         + build_infection_contract(
@@ -348,6 +367,7 @@ def build_engine_contract(
     location_graph:     dict[str, list[str]] | None        = None,
     exterior_locations: set[str] | None                    = None,
     location_zone:      dict[str, str] | None              = None,
+    zone_entry:         dict[str, str] | None              = None,
     time_enabled:       bool                               = False,
     infection_enabled:  bool                               = False,
     disease_name:       str                                = "",
@@ -367,6 +387,7 @@ def build_engine_contract(
         location_graph     = location_graph,
         exterior_locations = exterior_locations,
         location_zone      = location_zone,
+        zone_entry         = zone_entry,
         time_enabled       = time_enabled,
         infection_enabled  = infection_enabled,
         disease_name       = disease_name,

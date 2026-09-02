@@ -218,7 +218,7 @@ export function applyScenario(s) {
   }
   sim.events                 = cfg.events                 || [];
   // zone은 구버전 시나리오에 없다 — undefined가 남지 않도록 ''로 정규화한다.
-  sim.location_graph = (cfg.location_graph || []).map(n => ({ ...n, connects_to: [...(n.connects_to || [])], is_exterior: !!n.is_exterior, zone: (n.zone || '').trim() }));
+  sim.location_graph = (cfg.location_graph || []).map(n => ({ ...n, connects_to: [...(n.connects_to || [])], is_exterior: !!n.is_exterior, zone: (n.zone || '').trim(), is_zone_entry: !!n.is_zone_entry }));
   sim.lang_fix_enabled       = cfg.lang_fix_enabled       ?? true;
   sim.lang_fix_retries       = cfg.lang_fix_retries       ?? 2;
   // 구 시나리오의 `output_format_template`(엔진 계약을 통째로 얼려 저장하던 필드)은

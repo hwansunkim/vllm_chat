@@ -120,7 +120,7 @@ def resume_simulation(run_id: str):
                 agent_locations=agent_locations,
                 agent_visuals=agent_visuals,
                 agent_llm=agent_llm,
-                location_graph=[{"name": n.name, "connects_to": n.connects_to, "is_exterior": n.is_exterior, "zone": n.zone} for n in cfg.location_graph],
+                location_graph=[{"name": n.name, "connects_to": n.connects_to, "is_exterior": n.is_exterior, "zone": n.zone, "is_zone_entry": n.is_zone_entry} for n in cfg.location_graph],
                 lang_fix_enabled=cfg.lang_fix_enabled,
                 lang_fix_retries=cfg.lang_fix_retries,
                 llm_max_tokens=cfg.llm_max_tokens,

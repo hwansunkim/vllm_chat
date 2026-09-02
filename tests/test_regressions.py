@@ -781,6 +781,169 @@ class ZoneAwarenessTests(unittest.TestCase):
             self.assertNotIn("b", ctx["visible_agents"])
 
 
+class ZoneExitTests(unittest.TestCase):
+    """Zone 입구 노드 + 구역 밖으로 1홉 탈출 (SPEC PART 1).
+
+    핵심 불변식: 그래프 파싱 직후 컴파일 단계에서 zone 엣지를 노드 엣지로 전개한다.
+    전개 후 _location_graph 는 여전히 순수 노드 인접 리스트라 _find_path/_get_adjacent/
+    인지 로직 전부 무변경. zone 참조가 없으면 전개는 no-op(하위 호환 100%).
+    """
+
+    # 집 = {현관(입구), 거실, 침실} 선형. 길거리는 집 밖, connects_to 에 zone명 "집".
+    GRAPH = [
+        {"name": "침실", "connects_to": ["거실"],        "zone": "집"},
+        {"name": "거실", "connects_to": ["침실", "현관"], "zone": "집"},
+        {"name": "현관", "connects_to": ["거실"], "zone": "집", "is_zone_entry": True},
+        {"name": "길거리", "connects_to": ["집", "회사"]},
+        {"name": "회사", "connects_to": ["길거리"]},
+    ]
+
+    def _make_sim(self, tmp, graph=None):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        agents = {"a": Agent("a", "너는 a다.", tmp, token_limit=4096)}
+        return Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=_ScriptedLLM({}),
+            location_graph=self.GRAPH if graph is None else graph,
+        )
+
+    def test_zone_edges_expand_to_node_edges(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(tmp)
+            g = sim._location_graph
+
+            self.assertEqual(sim._zone_entry, {"집": "현관"})
+            # 진입: 길거리 -> 현관 (입구). zone명 "집"은 사라진다.
+            self.assertIn("현관", g["길거리"])
+            self.assertNotIn("집", g["길거리"])
+            # 탈출: 내부 모든 노드 -> 길거리
+            self.assertIn("길거리", g["현관"])
+            self.assertIn("길거리", g["거실"])
+            self.assertIn("길거리", g["침실"])
+            # X -> 비입구 내부 노드는 만들지 않는다
+            self.assertNotIn("거실", g["길거리"])
+            self.assertNotIn("침실", g["길거리"])
+
+    def test_exit_is_one_hop_entry_is_multi_hop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(tmp)
+            # 탈출: 침실에서 길거리로 1홉
+            self.assertEqual(sim._find_path("침실", "길거리"), ["길거리"])
+            # 진입: 길거리 -> 침실 은 현관 경유 다홉
+            path = sim._find_path("길거리", "침실")
+            self.assertEqual(path[0], "현관")
+            self.assertIn("침실", path)
+            self.assertGreater(len(path), 1)
+
+    def test_cross_zone_commute_keeps_travel_time(self):
+        # 길거리가 집·회사 두 zone 입구를 모두 참조 → 침실에서 회의실까지 순간이동이
+        # 아니라 길거리를 거치는 다홉이어야 한다(통근 시간 유지).
+        graph = [
+            {"name": "침실", "connects_to": ["현관"], "zone": "집"},
+            {"name": "현관", "connects_to": ["침실"], "zone": "집", "is_zone_entry": True},
+            {"name": "길거리", "connects_to": ["집", "회사"]},
+            {"name": "로비", "connects_to": ["회의실"], "zone": "회사", "is_zone_entry": True},
+            {"name": "회의실", "connects_to": ["로비"], "zone": "회사"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(tmp, graph=graph)
+            self.assertEqual(sim._zone_entry, {"집": "현관", "회사": "로비"})
+            # 탈출 1홉: 침실 -> 길거리
+            self.assertEqual(sim._find_path("침실", "길거리"), ["길거리"])
+            # 진입: 길거리 -> 로비 -> 회의실
+            self.assertEqual(sim._find_path("길거리", "회의실"), ["로비", "회의실"])
+            # 통근 전체는 3홉(침실->길거리->로비->회의실), 순간이동 아님
+            self.assertEqual(sim._find_path("침실", "회의실"),
+                             ["길거리", "로비", "회의실"])
+
+    def test_zone_without_entry_reference_is_ignored(self):
+        # zone "집"에 is_zone_entry 노드가 없다 → 길거리 -> 집 참조 무시, 크래시 없음.
+        graph = [
+            {"name": "침실", "connects_to": ["거실"], "zone": "집"},
+            {"name": "거실", "connects_to": ["침실"], "zone": "집"},
+            {"name": "길거리", "connects_to": ["집"]},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(tmp, graph=graph)
+            self.assertEqual(sim._zone_entry, {})
+            self.assertNotIn("집", sim._location_graph["길거리"])
+            # 탈출 엣지도 없어야 한다
+            self.assertNotIn("길거리", sim._location_graph["침실"])
+
+    def test_self_zone_reference_is_ignored(self):
+        # 거실(zone=집)이 connects_to 에 "집"을 넣으면 자기 구역 참조 → 무시.
+        graph = [
+            {"name": "현관", "connects_to": ["거실"], "zone": "집", "is_zone_entry": True},
+            {"name": "거실", "connects_to": ["현관", "집"], "zone": "집"},
+            {"name": "길거리", "connects_to": ["집"]},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(tmp, graph=graph)
+            # "집"은 거실의 인접 목록에서 사라져야 하고, self-edge(거실->거실)도 없다
+            self.assertNotIn("집", sim._location_graph["거실"])
+            self.assertNotIn("거실", sim._location_graph["거실"])
+
+    def test_backward_compat_no_zone_reference_is_noop(self):
+        # zone 참조가 없는 기존 그래프는 전개 전후 _location_graph 가 동일해야 한다.
+        graph = [
+            {"name": "입구", "connects_to": ["매장"]},
+            {"name": "매장", "connects_to": ["입구", "창고"], "zone": "가게"},
+            {"name": "창고", "connects_to": ["매장"], "zone": "가게"},
+        ]
+        expected = {"입구": ["매장"], "매장": ["입구", "창고"], "창고": ["매장"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(tmp, graph=graph)
+            self.assertEqual(sim._zone_entry, {})
+            self.assertEqual(sim._location_graph, expected)
+            # 재실행해도 변화 없음
+            sim._expand_zone_edges(graph)
+            self.assertEqual(sim._location_graph, expected)
+
+    def test_duplicate_zone_entry_keeps_first(self):
+        graph = [
+            {"name": "현관", "connects_to": ["거실"], "zone": "집", "is_zone_entry": True},
+            {"name": "뒷문", "connects_to": ["거실"], "zone": "집", "is_zone_entry": True},
+            {"name": "거실", "connects_to": ["현관", "뒷문"], "zone": "집"},
+            {"name": "길거리", "connects_to": ["집"]},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(tmp, graph=graph)
+            self.assertEqual(sim._zone_entry, {"집": "현관"})
+            self.assertIn("현관", sim._location_graph["길거리"])
+            self.assertNotIn("뒷문", sim._location_graph["길거리"])
+
+    def test_map_contract_marks_entry_and_adds_exit_rule(self):
+        from ABM.prompt_contract import build_map_contract
+
+        graph = {"침실": ["거실", "길거리"], "거실": ["침실", "현관", "길거리"],
+                 "현관": ["거실", "길거리"], "길거리": ["현관"]}
+        zones = {"침실": "집", "거실": "집", "현관": "집"}
+
+        without = build_map_contract(location_graph=graph, location_zone=zones)
+        self.assertNotIn("바깥으로 바로 나갈 수 있습니다", without)
+        self.assertIn("현관 [구역: 집]", without)
+
+        withe = build_map_contract(
+            location_graph=graph, location_zone=zones, zone_entry={"집": "현관"},
+        )
+        self.assertIn("현관 [구역: 집, 입구]", withe)
+        self.assertIn("거실 [구역: 집]", withe)  # 비입구는 그대로
+        self.assertIn("바깥으로 바로 나갈 수 있습니다", withe)
+
+    def test_world_contract_threads_zone_entry(self):
+        from ABM.prompt_contract import build_world_contract
+
+        graph = {"현관": ["거실", "길거리"], "거실": ["현관"], "길거리": ["현관"]}
+        text = build_world_contract(
+            location_graph=graph, location_zone={"현관": "집", "거실": "집"},
+            zone_entry={"집": "현관"},
+        )
+        self.assertIn("현관 [구역: 집, 입구]", text)
+        self.assertIn("바깥으로 바로 나갈 수 있습니다", text)
+
+
 class AppearanceUpdateTests(unittest.TestCase):
     """update_appearance(외모 변경) 처리의 순서·익명화·격리 회귀.
 

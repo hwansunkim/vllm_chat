@@ -161,6 +161,9 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         self._location_graph:    dict[str, list[str]] = {}
         self._exterior_locations: set[str]            = set()
         self._location_zone:     dict[str, str]       = {}
+        # zone -> 기본 입구 노드명. 외부 노드의 connects_to 에 zone 참조가 있을 때
+        # 진입 엣지(X -> 입구)를 세울 대상. zone당 첫 is_zone_entry 노드만 채택.
+        self._zone_entry:        dict[str, str]       = {}
         if location_graph:
             for node in location_graph:
                 name     = node.get("name", "")
@@ -172,6 +175,19 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
                     zone = (node.get("zone") or "").strip()
                     if zone:
                         self._location_zone[name] = zone
+                        if node.get("is_zone_entry"):
+                            if zone in self._zone_entry:
+                                logger.warning(
+                                    f"[zone 입구] '{zone}' 에 입구가 2개 이상 — "
+                                    f"'{self._zone_entry[zone]}' 유지, '{name}' 무시"
+                                )
+                            else:
+                                self._zone_entry[zone] = name
+                    elif node.get("is_zone_entry"):
+                        logger.warning(f"[zone 입구] '{name}' 은 zone 이 없어 is_zone_entry 무시")
+            # zone 참조 엣지를 노드 레벨 엣지로 전개. 전개 후 _location_graph 는
+            # 여전히 순수 노드 인접 리스트라 BFS/adjacency/인지 로직 전부 무변경.
+            self._expand_zone_edges(location_graph)
 
         # 위치/시간 계약 블록의 주입은 감염 모델 설정을 읽은 **뒤**에 한 번에 한다
         # (`_apply_engine_contract()`). 예전엔 여기서 map_section/time_section을
@@ -317,6 +333,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
             location_graph     = self._location_graph,
             exterior_locations = self._exterior_locations,
             location_zone      = self._location_zone,
+            zone_entry         = self._zone_entry,
             time_enabled       = self._time_enabled(),
             infection_enabled  = self._infection_enabled,
             disease_name       = self._infection_disease_name,
