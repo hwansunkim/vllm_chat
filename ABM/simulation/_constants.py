@@ -17,6 +17,24 @@ _REPEAT_WINDOW    = 4      # 최근 N발언 비교
 _REPEAT_THRESHOLD = 0.65   # 유사도 이 이상이면 반복으로 판단
 _MEMO_MAX_LINES   = 12     # director_memo 최대 보존 줄 수
 
+# 순수 말줄임/공백/대시만으로 이뤄진 문자열 — 발화가 아니라 "말 안 함"의 표기다.
+# 과묵한 캐릭터는 매 턴 content="..."를 내는데, 이걸 그대로 비교하면 유사도 100%로
+# 반복 에이전트로 오탐돼 디렉터가 끊임없이 개입한다.
+_FILLER_RE = re.compile(r'^[\s.．。…·ㆍ\-–—]*$')
+
+
+def _normalize_utterance(content: str, action_note: str = "") -> str | None:
+    """반복 비교용 정규화 — 이 턴에 에이전트가 '표현한 것'.
+
+    content가 실제 대사면 그것, 순수 필러("...")면 action_note(행동 묘사)로 폴백.
+    둘 다 비어 있거나 필러면 None(= 비교 대상 아님)을 돌려준다. 그러면
+    `_repetition_score`가 유효 항목 2개 미만일 때 0.0을 반환해 오탐이 사라진다.
+    """
+    for t in ((content or "").strip(), (action_note or "").strip()):
+        if t and not _FILLER_RE.match(t):
+            return t
+    return None
+
 
 def _repetition_score(texts: list[str]) -> float:
     """최근 발언 목록에서 최대 쌍별 유사도(0–1) 반환."""

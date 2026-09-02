@@ -4105,6 +4105,73 @@ class SystemAgentTimeAndOrderTests(unittest.TestCase):
             self.assertFalse([t for t, _ in emitted if t == "system_intervention"])
 
 
+class DirectorRepetitionDetectionTests(unittest.TestCase):
+    """디렉터의 반복 에이전트 판정 — content="..."(말 안 함)를 반복으로 오탐하지 않는다.
+
+    과묵한 캐릭터는 매 턴 content="..."에 행동 묘사만 담는다. 예전엔 content만
+    비교해 유사도 100%로 매 interval 반복 플래그가 떠, 디렉터가 그 한 명만
+    "반복되는 생각에서 벗어나라"고 계속 붙잡았다. 이제 대사가 없으면 action_note로
+    폴백해 "표현된 행동"이 실제로 도는지를 본다.
+    """
+
+    def _repetition_block(self, tmp, shared_log):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        llm    = _DirectorLLM()
+        agents = {k: Agent(k, k, tmp, token_limit=8192) for k in ("a", "b")}
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp, llm=llm,
+            system_agent={"enabled": True, "intervention_interval": 1,
+                          "silence_threshold": 99, "display_name": "내레이터"},
+        )
+        sim._emit = lambda *a, **k: None
+        # _last_spoke_wave 를 최근으로 맞춰 침묵 목록이 비게 한다 (반복만 보려고).
+        sim._last_spoke_wave = {k: 9 for k in agents}
+        sim.shared_log = shared_log
+        sim._run_system_agent(10, {k: [] for k in agents})
+        prompt = llm.director_calls[-1]
+        return prompt.split("[반복 중인 에이전트")[1].split("[")[0]
+
+    def _log(self, speaker, content, action_note, n=4):
+        return [{"speaker": speaker, "content": content, "action_note": action_note}
+                for _ in range(n)]
+
+    def test_normalize_utterance_drops_pure_filler(self):
+        from ABM.simulation._constants import _normalize_utterance
+        for filler in ("...", "…", "", "   ", ". . .", "—", "ㆍㆍ"):
+            self.assertIsNone(_normalize_utterance(filler, ""))
+        # 필러 content + 실제 행동 → 행동으로 폴백
+        self.assertEqual(_normalize_utterance("...", "천장을 본다"), "천장을 본다")
+        # 최소한의 발성도 발화로 친다(필러 아님)
+        self.assertEqual(_normalize_utterance("으으...", ""), "으으...")
+        # 둘 다 비면 None
+        self.assertIsNone(_normalize_utterance("", "   "))
+
+    def test_silent_character_with_varied_actions_is_not_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = (
+                [{"speaker": "a", "content": "...", "action_note": act}
+                 for act in ("천장을 본다", "세수를 한다", "드레스룸으로 간다", "휴대폰을 본다")]
+                + self._log("b", "빨리 준비해", "재촉한다")   # b 는 같은 대사 반복
+            )
+            block = self._repetition_block(tmp, log)
+            self.assertNotIn('"a"', block)   # 회귀: 과묵 캐릭터는 안 잡힌다
+            self.assertIn('"b"', block)      # 실제 대사 반복은 여전히 잡힌다
+
+    def test_silent_character_repeating_one_action_is_still_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = self._log("a", "...", "소파에 앉아 휴대폰을 본다")
+            block = self._repetition_block(tmp, log)
+            self.assertIn('"a"', block)   # 행동까지 똑같이 반복하면 진짜 정체 — 잡아야 한다
+
+    def test_all_filler_history_scores_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = self._log("a", "...", "")   # 대사도 행동도 없음
+            block = self._repetition_block(tmp, log)
+            self.assertNotIn('"a"', block)
+
+
 # ── 계약 프리즈 중단 / 프리뷰 (backend/api/simulation) ─────────────────────────
 
 _BACKGROUND = [{"role": "user", "content": "[배경] 테스트"}]

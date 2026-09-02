@@ -1,4 +1,7 @@
-from ._constants import _REPEAT_WINDOW, _REPEAT_THRESHOLD, _MEMO_MAX_LINES, _repetition_score
+from ._constants import (
+    _REPEAT_WINDOW, _REPEAT_THRESHOLD, _MEMO_MAX_LINES,
+    _repetition_score, _normalize_utterance,
+)
 
 
 class _SystemMixin:
@@ -24,14 +27,21 @@ class _SystemMixin:
             if (wave_num - 1) - self._last_spoke_wave.get(key, -1) >= self._sys_threshold
         ]
 
+        # 반복 판정은 이 에이전트가 최근 턴에 **표현한 것**(대사 우선, 없으면 행동
+        # 묘사) 기준이다. content="..."(말 안 함)만 뽑아 비교하면 과묵한 캐릭터가
+        # 매 interval 반복으로 오탐돼 디렉터가 그 한 명만 계속 붙잡는다.
         repetition_info: dict[str, float] = {}
         for key in self.active_agents:
             agent_name = self.agents[key].name
-            recent = [
-                e["content"] for e in self.shared_log[-30:]
+            recent_entries = [
+                e for e in self.shared_log[-30:]
                 if e.get("speaker") == agent_name
             ][-_REPEAT_WINDOW:]
-            score = _repetition_score(recent)
+            recent = [
+                u for e in recent_entries
+                if (u := _normalize_utterance(e.get("content", ""), e.get("action_note", ""))) is not None
+            ]
+            score = _repetition_score(recent)   # 유효 항목 2개 미만이면 0.0
             if score >= _REPEAT_THRESHOLD:
                 repetition_info[key] = round(score, 2)
 
