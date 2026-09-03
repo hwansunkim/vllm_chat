@@ -22,6 +22,22 @@ from .llm_config import _make_agent_llm_map, _make_llm
 router = APIRouter()
 
 
+def _lookup_scenario_name(scenario_id: str | None) -> str | None:
+    """채팅 DB에서 시나리오 표시 이름을 찾는다. 없거나 조회 실패면 None."""
+    if not scenario_id:
+        return None
+    try:
+        chat_conn = get_db()
+        row = chat_conn.execute(
+            "SELECT name FROM simulation_scenarios WHERE id=?",
+            (scenario_id,),
+        ).fetchone()
+        chat_conn.close()
+        return row["name"] if row else None
+    except Exception:
+        return None
+
+
 # ── /start ────────────────────────────────────────────────────────────────────
 
 @router.post("/start")
@@ -47,8 +63,7 @@ def start_simulation(cfg: SimStartConfig):
         run_sim_id = None
         sim = None
         try:
-            from ABM.agent import Agent
-            from ABM.simulation import Simulation
+            from ABM.simulation.headless import run_config
             from ABM.db import SimDB
             from ABM.config import LOG_DIR
 
@@ -57,84 +72,32 @@ def start_simulation(cfg: SimStartConfig):
 
             run_sim_id    = str(uuid.uuid4())
             db            = SimDB(os.path.join(LOG_DIR, "simulation.db"))
-            scenario_name = None
-            if cfg.scenario_id:
-                try:
-                    chat_conn = get_db()
-                    row = chat_conn.execute(
-                        "SELECT name FROM simulation_scenarios WHERE id=?",
-                        (cfg.scenario_id,),
-                    ).fetchone()
-                    chat_conn.close()
-                    if row:
-                        scenario_name = row["name"]
-                except Exception:
-                    pass
-            db.create_run(run_sim_id, cfg.scenario_id, scenario_name, cfg.model_dump_json())
+            scenario_name = _lookup_scenario_name(cfg.scenario_id)
+            config_json   = cfg.model_dump_json()
+            db.create_run(run_sim_id, cfg.scenario_id, scenario_name, config_json)
 
-            agents = {
-                a.name: Agent(a.name, a.system_prompt, LOG_DIR,
-                              token_limit=cfg.token_limit,
-                              extra_fields=[f.model_dump() for f in cfg.extra_fields],
-                              # 오버라이드가 실제로 설정됐을 때만 전달. 비어 있으면
-                              # 엔진이 현재 설정으로 출력 계약을 생성한다.
-                              output_format_template=cfg.effective_output_format_override())
-                for a in cfg.agents
-            }
-            background_log = [{"role": "user", "content": f"[배경] {cfg.background}"}]
+            def _on_sim_ready(sim_obj):
+                # 조립 직후 · run() 시작 전에 전역을 채운다. 예전 인라인 코드와 같은
+                # 자리라 /status·/logs·컨텍스트 조회가 실행 중에 그대로 동작한다.
+                nonlocal sim
+                sim = sim_obj
+                _sim["agents"]         = sim_obj.agents
+                _sim["background_log"] = sim_obj.background_log
+                _sim["sim_obj"]        = sim_obj
+                _sim["scenario_id"]    = cfg.scenario_id
+                _sim["scenario_name"]  = scenario_name
+                _sim["config_json"]    = config_json
 
-            # initial_active 설정 — False인 에이전트는 비활성으로 시작
-            initial_agents = [a.name for a in cfg.agents if a.initial_active]
-            init_param = None if len(initial_agents) == len(cfg.agents) else initial_agents
-
-            # display_name → key 매핑 (한국어 이름을 target으로 사용해도 올바른 키로 resolve)
-            alias_map = {a.display_name: a.name for a in cfg.agents if a.display_name.strip()}
-            # 그룹 가시성 맵 — groups 빈 에이전트는 전체 노출 (하위 호환)
-            agent_groups    = {a.name: a.groups            for a in cfg.agents}
-            agent_locations = {a.name: a.location          for a in cfg.agents}
-            agent_visuals   = {a.name: a.visual_description for a in cfg.agents}
-
-            sim = Simulation(
-                agents, background_log, LOG_DIR,
+            run_config(
+                cfg,
                 llm=llm,
+                agent_llm=agent_llm,
+                log_dir=LOG_DIR,
+                db=db,
+                sim_id=run_sim_id,
                 event_queue=eq,
                 stop_event=stop_ev,
-                initial_agents=init_param,
-                name_aliases=alias_map,
-                sim_id=run_sim_id,
-                db=db,
-                agent_groups=agent_groups,
-                summary_interval=cfg.summary_interval,
-                system_agent=cfg.system_agent.model_dump(),
-                agent_locations=agent_locations,
-                agent_visuals=agent_visuals,
-                agent_llm=agent_llm,
-                location_graph=[{"name": n.name, "connects_to": n.connects_to, "is_exterior": n.is_exterior, "zone": n.zone, "is_zone_entry": n.is_zone_entry} for n in cfg.location_graph],
-                lang_fix_enabled=cfg.lang_fix_enabled,
-                lang_fix_retries=cfg.lang_fix_retries,
-                llm_max_tokens=cfg.llm_max_tokens,
-                sim_start_time=cfg.sim_start_time,
-                sim_start_weekday=cfg.sim_start_weekday,
-                time_per_wave=cfg.time_per_wave,
-                time_mode=cfg.time_mode,
-                time_categories=[c.model_dump() for c in cfg.time_categories],
-                idle_minutes_schedule=cfg.idle_minutes_schedule,
-                infection_model=cfg.infection_model.model_dump(),
-            )
-            _sim["agents"]         = sim.agents
-            _sim["background_log"] = sim.background_log
-            _sim["sim_obj"]        = sim
-            _sim["scenario_id"]    = cfg.scenario_id
-            _sim["scenario_name"]  = scenario_name
-            _sim["config_json"]    = cfg.model_dump_json()
-            sim.run(
-                cfg.start_agent,
-                max_waves=cfg.max_waves,
-                step_delay=cfg.step_delay,
-                events=[e.model_dump() for e in cfg.events],
-                max_silence_waves=cfg.max_silence_waves,
-                early_stop_enabled=cfg.early_stop_enabled,
-                target_duration_minutes=cfg.target_duration_minutes,
+                on_sim_ready=_on_sim_ready,
             )
             finalize_run(db, run_sim_id, stop_ev, sim, eq)
         except Exception as e:

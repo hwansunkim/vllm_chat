@@ -1,0 +1,70 @@
+{
+  "name": "골든 시나리오",
+  "description": "CLI/마크다운 골든 테스트용. 5 wave 안에서 이벤트 타입이 최소 1건씩 나오도록 짜여 있고, 매 wave 발화자가 정확히 1명이라 스레드 순서에 흔들리지 않는다. 스크립트 LLM(tests/test_regressions.py::_GoldenLLM)과 짝으로만 의미가 있다.",
+  "config": {
+    "agents": [
+      {
+        "name": "a",
+        "display_name": "가온",
+        "system_prompt": "너는 a다. 너는 30대 남자이고 이름은 가온이다.",
+        "icon": "🤖",
+        "location": "거실",
+        "visual_description": "회색 후드티를 입은 사람"
+      },
+      {
+        "name": "b",
+        "display_name": "나린",
+        "system_prompt": "너는 b다. 너는 20대 여자이고 이름은 나린이다.",
+        "icon": "👩",
+        "location": "거실",
+        "visual_description": "노란 가디건을 걸친 사람"
+      }
+    ],
+    "background": "좁은 아파트에 두 사람이 산다. 월요일 아침이다.",
+    "start_agent": "a",
+    "max_waves": 5,
+    "step_delay": 0.0,
+    "token_limit": 8192,
+    "llm_max_tokens": 2048,
+    "location_graph": [
+      { "name": "거실", "connects_to": ["부엌", "현관"] },
+      { "name": "부엌", "connects_to": ["거실", "창고", "현관"] },
+      { "name": "창고", "connects_to": ["부엌"] },
+      { "name": "현관", "connects_to": ["거실", "부엌"], "is_exterior": true }
+    ],
+    "events": [
+      { "wave": 0, "type": "infect_agent", "agent": "a", "message": "가온이 감염되었다." }
+    ],
+    "summary_interval": 2,
+    "sim_start_time": "09:00",
+    "sim_start_weekday": "mon",
+    "time_per_wave": 30,
+    "time_mode": "fixed",
+    "max_silence_waves": 3,
+    "early_stop_enabled": true,
+    "system_agent": {
+      "enabled": true,
+      "icon": "🎬",
+      "display_name": "내레이터",
+      "intervention_interval": 3,
+      "silence_threshold": 3
+    },
+    "infection_model": {
+      "enabled": true,
+      "disease_name": "감기",
+      "transmission_probability": 1.0,
+      "symptom_stages": [
+        {
+          "id": "incubation",
+          "label": "잠복기",
+          "min_minutes": 0,
+          "max_minutes": 60,
+          "symptom_text": "목이 칼칼하다."
+        }
+      ],
+      "recovery_min_minutes": 60,
+      "recovery_max_minutes": 60,
+      "immune_after_recovery": true
+    }
+  }
+}

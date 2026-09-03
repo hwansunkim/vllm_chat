@@ -1,6 +1,12 @@
 import re
 from difflib import SequenceMatcher
 
+# 시작 요일 키(프론트/스키마와 동일) → 표시 라벨. 인덱스 = 월요일 기준 0~6.
+# core.py 의 `_format_time_str` 과 마크다운 내보내기(ABM/export/labels.py)가 같은
+# 라벨을 써야 해서 엔진 import 없이 읽을 수 있는 이 모듈에 둔다.
+_WEEKDAY_KEYS: tuple[str, ...] = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_WEEKDAY_LABELS: tuple[str, ...] = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
+
 # CJK Unified (U+4E00-U+9FFF) / Extension-A (U+3400-U+4DBF) / Compatibility Ideographs (U+F900-U+FAFF).
 # 코드포인트 이스케이프로 명시: 리터럴 한자를 쓰면 육안으로 구별 안 되는 호환 문자(예:
 # U+F900 대 정준 형태 U+8C48)가 복붙 과정에서 섞여 들어가 범위가 어긋나기 쉽다 —

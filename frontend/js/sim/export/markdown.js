@@ -1,5 +1,11 @@
 // frontend/js/sim/export/markdown.js
 // Markdown export: screenplay-style with selectable event types.
+//
+// 다른 언어 구현 위치: ABM/export/markdown.py (+ 헬퍼는 ABM/export/labels.py).
+// 브라우저 다운로드 버튼은 이 파일을, `python -m ABM.cli` 는 파이썬 쪽을 쓴다.
+// 두 출력은 글자 단위로 같아야 하며 tests/fixtures/*.md 골든 테스트가 파이썬 쪽을
+// 고정한다 — 포맷(헤더·등장인물표·wave 헤딩·fmt* 문구)을 바꿀 때는 반드시 양쪽을
+// 함께 고칠 것. 아래 _buildMarkdown / buildStream / fmt* 가 1:1 대응 지점이다.
 
 import { sim, agentLabel, getAgentIcon, simTimeLabel, normalizeWeekday,
          normalizeTargetDuration, buildInfectionModel, infectionBadge,

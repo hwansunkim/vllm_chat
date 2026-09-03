@@ -4623,5 +4623,660 @@ class ContractPreviewEndpointTests(unittest.TestCase):
             self.assertEqual(os.listdir(tmp), [])
 
 
+
+
+# ── 헤드리스 러너 + 마크다운 내보내기 (ABM/simulation/headless.py, ABM/export) ──
+#
+# 골든 시나리오(tests/fixtures/golden_scenario.json)는 5 wave 안에서 씬 이벤트
+# 타입이 최소 1건씩 나오도록 짜여 있고, **매 wave 발화자가 정확히 1명**이라
+# 스레드 완료 순서에 흔들리지 않는다(2명이 같은 wave에 발화하면 shared_log 삽입
+# 순서가 경쟁 상태가 되어 골든 파일이 간헐적으로 깨진다). 시나리오를 손보려면
+# 이 불변식을 먼저 확인할 것.
+
+_FIXTURES = Path(__file__).parent / "fixtures"
+
+
+class _GoldenLLM:
+    """골든 시나리오용 스텁 LLM — 에이전트 턴 · 디렉터 · 요약을 모두 처리한다.
+
+    `_ScriptedLLM`과 달리 emotion/action 까지 스크립트로 고정해 마크다운의
+    meta 라인(`😊 happy · move`)과 자동 아이콘 합성까지 골든에 걸린다.
+    """
+
+    SCRIPT = {
+        "a": [
+            {"content": "나린아, 일어났어?", "action_note": "부엌 쪽을 바라보며",
+             "target": "b", "emotion": "neutral", "action": "speak"},
+            {"content": "따라가 볼까.", "action_note": "슬리퍼를 끌며",
+             "target": "self", "emotion": "happy", "action": "move",
+             "move_to": "b", "update_appearance": "회색 후드티 위에 남색 담요를 둘렀다"},
+            {"content": "나 잠깐 나갔다 올게.", "action_note": "현관문을 열며",
+             "target": "self", "emotion": "fear", "action": "leave", "move_to": "현관"},
+        ],
+        "b": [
+            {"content": "응, 지금 일어나. 부엌에 뭐 좀 가지러 갈게.", "action_note": "이불을 개며",
+             "target": "a", "emotion": "sad", "action": "move", "move_to": "부엌"},
+            {"content": "왜 따라와.", "action_note": "냄비를 내려놓으며",
+             "target": "a", "emotion": "angry", "action": "speak"},
+        ],
+    }
+
+    def __init__(self):
+        self.calls: dict[str, int] = {}
+        self.director_calls = 0
+        self.summary_calls  = 0
+
+    def __call__(self, messages, max_tokens=None, **kw):
+        sys_text  = messages[0].get("content", "") if messages else ""
+        user_text = "\n".join(m.get("content", "") for m in messages[1:])
+        if "시간 관찰자" in sys_text:                       # time_classifier
+            return json.dumps({"category": "normal_scene", "reason": "t"}), "", {}
+        if "관찰자" in sys_text:                            # summarizer
+            self.summary_calls += 1
+            n = self.summary_calls
+            return json.dumps({
+                "summary":    f"{n}번째 구간 요약: 두 사람이 아침에 짧게 말을 주고받았다.",
+                "key_events": [f"사건{n}-1", f"사건{n}-2"],
+                "mood":       "조용함",
+            }), "", {}
+        if "[현재 Wave:" in user_text:                      # system agent (디렉터)
+            self.director_calls += 1
+            return json.dumps({
+                "interventions": [{"agent": "b", "message": "창밖에서 자동차 경적이 길게 울린다."}],
+                # targets 를 b 로 좁혀야 a 가 이 wave 에 끌려 들어오지 않는다
+                # (= wave 당 발화자 1명 불변식 유지).
+                "world_event":   {"content": "복도에서 이삿짐 나르는 소리가 크게 들려온다.",
+                                  "targets": ["b"]},
+                "director_memo": "",
+                "reason":        "정적을 깨기 위해",
+            }), "", {}
+        key = next(k for k in self.SCRIPT if f"너는 {k}다." in sys_text)
+        idx = self.calls.get(key, 0)
+        self.calls[key] = idx + 1
+        turns = self.SCRIPT[key]
+        turn  = turns[idx] if idx < len(turns) else turns[-1]
+        return json.dumps({
+            "content":           turn.get("content", "..."),
+            "action_note":       turn.get("action_note", ""),
+            "emotion":           turn.get("emotion", "neutral"),
+            "action":            turn.get("action", "speak"),
+            "target":            turn.get("target", "self"),
+            "move_to":           turn.get("move_to"),
+            "update_appearance": turn.get("update_appearance"),
+        }), "", {}
+
+
+def _golden_config():
+    raw = json.loads((_FIXTURES / "golden_scenario.json").read_text(encoding="utf-8"))
+    return SimStartConfig(**raw["config"]), raw["name"]
+
+
+def _run_golden(db=None, sim_id=None):
+    from ABM.simulation.headless import run_config
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg, name = _golden_config()
+        result = run_config(cfg, llm=_GoldenLLM(), log_dir=tmp, db=db, sim_id=sim_id)
+    return cfg, name, result
+
+
+# 골든 마크다운의 헤더에 박히는 고정 시각(현지 시각으로 포매팅된다).
+_GOLDEN_STARTED = 1_700_000_000.0
+_GOLDEN_ENDED   = 1_700_003_600.0
+_GOLDEN_NOW     = 1_700_007_200.0
+_ALL_TOGGLES = {"time", "action", "move", "appearance", "world", "intervention",
+                "infection", "meeting", "summary"}
+
+
+def _render_golden(cfg, name, result, include=None):
+    from ABM.export.markdown import render_markdown
+    return render_markdown(
+        config=cfg.model_dump(),
+        shared_log=result.shared_log,
+        events=result.events,
+        scenario_name=name,
+        started_at=_GOLDEN_STARTED,
+        ended_at=_GOLDEN_ENDED,
+        status="done",
+        include=include,
+        now=_GOLDEN_NOW,
+    )
+
+
+class HeadlessRunnerTests(unittest.TestCase):
+    """`run_config` 가 GUI /start 와 같은 조립을 하는지 (ABM/simulation/headless.py)."""
+
+    def test_golden_scenario_runs_to_max_waves(self):
+        cfg, _, result = _run_golden()
+        self.assertEqual(result.end_reason, "max_waves")
+        self.assertEqual(result.completed_waves, cfg.max_waves)
+        self.assertEqual(result.total_turns, 5)
+        # background_log 항목 1개 + 발화 5개
+        self.assertEqual(len(result.shared_log), 6)
+
+    def test_collected_events_cover_every_markdown_type(self):
+        _, _, result = _run_golden()
+        kinds = {e["event_type"] for e in result.events}
+        for expected in ("agent_move", "appearance_update", "system_intervention",
+                         "world_event", "infection_update", "meeting_update",
+                         "wave_summary"):
+            self.assertIn(expected, kinds)
+
+    def test_collected_events_match_what_the_db_persists(self):
+        """수집 리스트는 DB에 남는 행과 같은 집합·같은 순서여야 한다.
+
+        마크다운을 실행 직후(메모리)와 나중에(DB)에서 뽑았을 때 결과가 갈리면
+        `export --run-id` 가 GUI 내보내기와 달라진다.
+        """
+        from ABM.db import SimDB
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SimDB(os.path.join(tmp, "sim.db"))
+            db.create_run("run-1", None, "골든", "{}")
+            _, _, result = _run_golden(db=db, sim_id="run-1")
+            rows = db.get_run_events("run-1")
+        self.assertEqual([e["event_type"] for e in result.events],
+                         [r["event_type"] for r in rows])
+        self.assertEqual([e["wave"] for e in result.events],
+                         [r["wave"] for r in rows])
+
+    def test_emit_wrapper_is_removed_after_the_run(self):
+        """`_emit` 래퍼가 남으면 /continue 가 끝난 run 의 리스트에 계속 append 한다."""
+        _, _, result = _run_golden()
+        self.assertNotIn("_emit", result.sim.__dict__)
+
+    def test_config_reaches_the_engine_intact(self):
+        """최근 추가된 인자(zone entry · 감염 모델 · 시간 카테고리)가 빠지지 않았는지."""
+        _, _, result = _run_golden()
+        sim = result.sim
+        self.assertTrue(sim._infection_enabled)
+        self.assertEqual(sim._infection_disease_name, "감기")
+        self.assertEqual(sim._time_per_wave, 30)
+        self.assertEqual(sim._time_mode, "fixed")
+        self.assertIn("현관", sim._exterior_locations)
+        self.assertEqual(sim._key_to_alias, {"a": "가온", "b": "나린"})
+
+    def test_run_is_deterministic(self):
+        a = _render_golden(*_run_golden(), include=_ALL_TOGGLES)
+        b = _render_golden(*_run_golden(), include=_ALL_TOGGLES)
+        self.assertEqual(a, b)
+
+
+class MarkdownGoldenTests(unittest.TestCase):
+    """`ABM/export/markdown.py` 출력 고정 (JS 쌍둥이와의 동등성 앵커).
+
+    골든 파일을 갱신해야 할 때는 `frontend/js/sim/export/markdown.js` 도 같은
+    변경을 받았는지 먼저 확인할 것 — 두 구현이 갈리면 브라우저 다운로드와 CLI
+    출력이 달라진다.
+    """
+
+    def _assert_golden(self, filename, include):
+        cfg, name, result = _run_golden()
+        actual = _render_golden(cfg, name, result, include=include)
+        path = _FIXTURES / filename
+        if os.environ.get("UPDATE_GOLDEN"):
+            path.write_text(actual, encoding="utf-8")
+        expected = path.read_text(encoding="utf-8")
+        self.assertEqual(actual, expected)
+
+    def test_all_toggles_on(self):
+        self._assert_golden("golden_full.md", _ALL_TOGGLES)
+
+    def test_default_toggles(self):
+        # GUI 체크박스 기본값 = summary 만 꺼짐
+        self._assert_golden("golden_default.md", None)
+
+    def test_toggles_actually_drop_sections(self):
+        cfg, name, result = _run_golden()
+        full = _render_golden(cfg, name, result, include=_ALL_TOGGLES)
+        bare = _render_golden(cfg, name, result, include={"time"})
+        for marker in ("[씬]", "[🌍 세계 사건]", "[🎬 내레이터]", "[🦠 감염]",
+                       "[🏃 씬]", "요약"):
+            self.assertIn(marker, full)
+            self.assertNotIn(marker, bare)
+        # action 토글이 꺼지면 action_note 줄이 사라진다
+        self.assertIn("*(부엌 쪽을 바라보며)*", full)
+        self.assertNotIn("*(부엌 쪽을 바라보며)*", bare)
+        # time 토글은 켜져 있으므로 wave 헤딩은 시각 형식 그대로
+        self.assertIn("### 🕐 월요일 오전 9시 00분  ·  Wave 0", bare)
+
+    def test_time_toggle_off_falls_back_to_plain_wave_heading(self):
+        cfg, name, result = _run_golden()
+        md = _render_golden(cfg, name, result, include={"action"})
+        self.assertIn("### 🌊 Wave 0", md)
+        self.assertNotIn("🕐", md)
+
+    def test_empty_log_still_renders_a_document(self):
+        from ABM.export.markdown import render_markdown
+        cfg, name = _golden_config()
+        md = render_markdown(config=cfg.model_dump(), shared_log=[], events=[],
+                             scenario_name=name, now=_GOLDEN_NOW)
+        self.assertIn("*대화 기록이 없습니다.*", md)
+        self.assertIn("## 등장인물", md)
+
+    def test_background_log_entries_are_filtered_out(self):
+        """`speaker` 없는 background 항목은 문서에 실리지 않는다 (/logs 와 같은 규칙)."""
+        cfg, name, result = _run_golden()
+        md = _render_golden(cfg, name, result, include=_ALL_TOGGLES)
+        self.assertNotIn("[배경] 좁은 아파트에", md)
+        self.assertEqual(md.count("**Wave** 4 · **총 턴** 5"), 1)
+
+
+class MarkdownLabelPortTests(unittest.TestCase):
+    """state.js 포팅분(ABM/export/labels.py)의 JS 의미 재현."""
+
+    def test_build_infection_model_fills_defaults_for_legacy_config(self):
+        from ABM.export.labels import build_infection_model
+        m = build_infection_model(None)
+        self.assertFalse(m["enabled"])
+        self.assertEqual(len(m["symptom_stages"]), 3)   # 설정 없던 시나리오는 기본 3단계
+        self.assertTrue(m["immune_after_recovery"])
+        # 명시적 빈 배열은 존중한다
+        self.assertEqual(build_infection_model({"symptom_stages": []})["symptom_stages"], [])
+        # 명시적 false 는 살아남는다
+        self.assertFalse(build_infection_model({"immune_after_recovery": False})["immune_after_recovery"])
+
+    def test_recovery_min_is_lowered_to_max_except_for_chronic(self):
+        from ABM.export.labels import build_infection_model
+        m = build_infection_model({"recovery_min_minutes": 500, "recovery_max_minutes": 100})
+        self.assertEqual((m["recovery_min_minutes"], m["recovery_max_minutes"]), (100, 100))
+        # max == 0 은 "자연 회복 없음(만성)" 이라 min 을 건드리지 않는다
+        m = build_infection_model({"recovery_min_minutes": 500, "recovery_max_minutes": 0})
+        self.assertEqual((m["recovery_min_minutes"], m["recovery_max_minutes"]), (500, 0))
+
+    def test_format_day_hour(self):
+        from ABM.export.labels import format_day_hour
+        self.assertEqual(format_day_hour(0), "0시간")
+        self.assertEqual(format_day_hour(60), "1시간")
+        self.assertEqual(format_day_hour(1440), "1일")
+        self.assertEqual(format_day_hour(3600), "2일 12시간")
+
+    def test_sim_time_label_matches_the_engine_formatter(self):
+        """구버전 로그 폴백이 엔진의 `_format_time_str` 과 글자 단위로 같아야 한다."""
+        from ABM.export.labels import sim_time_label
+        from ABM.simulation import Simulation
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = Simulation({}, [], tmp, sim_start_time="22:30",
+                             sim_start_weekday="sat", time_per_wave=45)
+            for wave in (0, 1, 5, 33, 100):
+                self.assertEqual(
+                    sim_time_label(wave, time_mode="fixed", time_per_wave=45,
+                                   sim_start_time="22:30", sim_start_weekday="sat"),
+                    sim._format_time_str(sim._sim_start_minutes + wave * 45),
+                )
+
+    def test_sim_time_label_is_none_when_time_is_off(self):
+        from ABM.export.labels import sim_time_label
+        self.assertIsNone(sim_time_label(3, time_mode="variable"))
+        self.assertIsNone(sim_time_label(3, time_mode="fixed", time_per_wave=0))
+
+    def test_js_string_and_truthiness_semantics(self):
+        """LLM 이 emotion 에 배열을 뱉은 실제 로그가 있다 — JS 와 같이 다뤄야 한다."""
+        from ABM.export.labels import js_str, js_truthy
+        self.assertEqual(js_str(["a", "b"]), "a,b")     # 파이썬 str() 이면 "['a', 'b']"
+        self.assertEqual(js_str(1.0), "1")
+        self.assertEqual(js_str(None), "")
+        self.assertTrue(js_truthy([]))                  # JS 에서 빈 배열은 참
+        self.assertFalse(js_truthy(""))
+        self.assertFalse(js_truthy(0))
+
+    def test_meeting_narration_covers_every_status(self):
+        from ABM.export.labels import AgentIndex, meeting_narration
+        idx = AgentIndex([{"name": "a", "display_name": "가온"},
+                          {"name": "b", "display_name": "나린"}])
+        base = {"chaser": "a", "target": "b"}
+        self.assertIn("만나러 이동 중", meeting_narration({**base, "status": "start"}, idx)["text"])
+        self.assertIn("만났다", meeting_narration({**base, "status": "arrived"}, idx)["text"])
+        self.assertIn("자리를 뜬 뒤였다",
+                      meeting_narration({**base, "status": "cancelled", "reason": "gone"}, idx)["text"])
+        self.assertIn("그만뒀다",
+                      meeting_narration({**base, "status": "cancelled", "reason": "x"}, idx)["text"])
+        self.assertIsNone(meeting_narration({**base, "status": "미래값"}, idx))
+        self.assertIsNone(meeting_narration({}, idx))
+
+    def test_agent_icon_auto_derivation(self):
+        from ABM.export.labels import get_agent_icon
+        self.assertEqual(get_agent_icon({"icon": "🐱"}, "happy"), "🐱")  # 명시 아이콘 우선
+        self.assertEqual(get_agent_icon({"icon": "🤖", "system_prompt": "너는 남자다."}), "👨")
+        self.assertEqual(
+            get_agent_icon({"icon": "🤖", "system_prompt": "너는 여자다."}, "happy"), "👩😊")
+
+
+class CliTests(unittest.TestCase):
+    """`python -m ABM.cli` (ABM/cli.py) — LLM 서버가 필요 없는 경로만."""
+
+    def _args(self, argv):
+        from ABM.cli import build_parser
+        return build_parser().parse_args(argv)
+
+    def test_dry_run_prints_the_engine_contract(self):
+        from ABM.cli import EXIT_OK, cmd_run
+        import io
+        from contextlib import redirect_stdout
+        args = self._args(["run", str(_FIXTURES / "golden_scenario.json"), "--dry-run"])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = cmd_run(args)
+        out = buf.getvalue()
+        self.assertEqual(code, EXIT_OK)
+        self.assertIn("골든 시나리오", out)
+        self.assertIn("[위치 그래프", out)      # 위치 그래프 계약
+        self.assertIn("[몸 상태", out)          # 감염 계약
+        self.assertIn('"move_to"', out)         # 출력 계약
+
+    def test_dry_run_overrides_reach_the_config(self):
+        from ABM.cli import _build_config
+        args = self._args(["run", str(_FIXTURES / "golden_scenario.json"),
+                           "--max-waves", "77", "--temperature", "1.5",
+                           "--server-id", "srv-1", "--target-minutes", "480"])
+        cfg, name = _build_config(args)
+        self.assertEqual((cfg.max_waves, cfg.temperature, cfg.server_id,
+                          cfg.target_duration_minutes), (77, 1.5, "srv-1", 480))
+        self.assertEqual(name, "골든 시나리오")
+
+    def test_scenario_file_shapes(self):
+        from ABM.cli import ConfigError, _unwrap_scenario
+        cfg = {"agents": [], "background": "", "start_agent": "a"}
+        self.assertEqual(_unwrap_scenario(cfg), (cfg, ""))
+        self.assertEqual(_unwrap_scenario({"name": "N", "config": cfg}), (cfg, "N"))
+        self.assertEqual(_unwrap_scenario({"name": "N", "config_json": json.dumps(cfg)}),
+                         (cfg, "N"))
+        with self.assertRaises(ConfigError):
+            _unwrap_scenario({"nope": 1})
+
+    def test_invalid_scenario_exits_with_config_code(self):
+        from ABM.cli import EXIT_CONFIG, main
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = os.path.join(tmp, "bad.json")
+            Path(bad).write_text('{"agents": []}', encoding="utf-8")   # background/start_agent 없음
+            self.assertEqual(main(["run", bad, "--dry-run"]), EXIT_CONFIG)
+            missing = os.path.join(tmp, "nope.json")
+            self.assertEqual(main(["run", missing, "--dry-run"]), EXIT_CONFIG)
+
+    def test_include_exclude_parsing(self):
+        from ABM.cli import ConfigError, _parse_include
+        from ABM.export.markdown import DEFAULT_INCLUDE
+        self.assertEqual(_parse_include(self._args(["export", "--run-id", "x"])),
+                         DEFAULT_INCLUDE)
+        self.assertEqual(
+            _parse_include(self._args(["export", "--run-id", "x", "--include", "time,move"])),
+            frozenset({"time", "move"}))
+        self.assertNotIn(
+            "move",
+            _parse_include(self._args(["export", "--run-id", "x", "--exclude", "move"])))
+        with self.assertRaises(ConfigError):
+            _parse_include(self._args(["export", "--run-id", "x", "--include", "없는토글"]))
+
+    def test_filename_helpers_match_the_browser(self):
+        from ABM.cli import now_tag, safe_filename
+        self.assertEqual(safe_filename('a/b:c*d?"e<f>g|h'), "a_b_c_d__e_f_g_h")
+        self.assertEqual(len(safe_filename("가" * 200)), 80)
+        # frontend/js/sim/utils/download.js 의 nowTag() 와 같은 모양 (UTC)
+        self.assertRegex(now_tag(), r"^\d{4}-\d{2}-\d{2}_\d{4}$")
+
+    def test_export_from_db_matches_direct_render(self):
+        """`export --run-id` 가 실행 직후 렌더와 같은 문서를 만드는지."""
+        from ABM.db import SimDB
+        from ABM.export.markdown import render_markdown
+        import ABM.cli as cli
+        import io
+        from contextlib import redirect_stdout
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SimDB(os.path.join(tmp, "simulation.db"))
+            cfg, name = _golden_config()
+            db.create_run("run-x", None, name, cfg.model_dump_json())
+            _, _, result = _run_golden(db=db, sim_id="run-x")
+            db.finish_run("run-x", "done", result.completed_waves, len(result.shared_log))
+
+            direct = render_markdown(
+                config=cfg.model_dump(), shared_log=result.shared_log,
+                events=result.events, scenario_name=name, status="done",
+                now=_GOLDEN_NOW)
+
+            orig_log_dir = os.environ.get("ABM_LOG_DIR")
+            os.environ["ABM_LOG_DIR"] = tmp
+            try:
+                import importlib
+                import ABM.config
+                importlib.reload(ABM.config)
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    code = cli.cmd_export(self._args(["export", "--run-id", "run-x"]))
+            finally:
+                if orig_log_dir is None:
+                    os.environ.pop("ABM_LOG_DIR", None)
+                else:
+                    os.environ["ABM_LOG_DIR"] = orig_log_dir
+                import importlib
+                import ABM.config
+                importlib.reload(ABM.config)
+
+        self.assertEqual(code, cli.EXIT_OK)
+        # 추출 일시 한 줄만 다르다 (렌더 시각이 다르므로)
+        strip = lambda s: [ln for ln in s.split("\n") if not ln.startswith("> **추출 일시**")]
+        self.assertEqual(strip(buf.getvalue()), strip(direct))
+
+
+
+
+class StartEndpointDelegationTests(unittest.TestCase):
+    """`/start` 가 `run_config` 로 위임한 뒤에도 GUI 계약이 그대로인지.
+
+    lifecycle 리팩터의 회귀 방어선이다. 조립 자체는 `run_config` 가 하지만
+    **SSE 큐 · stop_event · run row · `_sim` 전역 채우기 · finalize_run** 은
+    여전히 lifecycle 의 책임이고, 하나라도 빠지면 브라우저에서 실행이 조용히
+    죽거나(피드 없음) 이력이 안 남는다.
+    """
+
+    def test_start_wires_queue_db_globals_and_finalize(self):
+        from backend.api.simulation.runtime import lifecycle
+        from backend.api.simulation.state import _sim
+        import ABM.db
+        import ABM.simulation.headless as headless
+
+        cfg = _sim_cfg(max_waves=1)
+        captured = {}
+        created_runs = []
+        finalized = []
+
+        class _FakeDB:
+            def __init__(self, path):
+                created_runs.append(("db", path))
+
+            def create_run(self, run_id, scenario_id, scenario_name, config_json,
+                           start_wave=0):
+                created_runs.append((run_id, scenario_id, scenario_name, config_json))
+
+        class _FakeSim:
+            agents = {"a": object()}
+            background_log = [{"role": "user", "content": "[배경] 테스트 배경"}]
+            shared_log = []
+            edges = []
+
+        def _fake_run_config(config, **kw):
+            captured.update(kw)
+            captured["cfg"] = config
+            kw["on_sim_ready"](_FakeSim())
+            return headless.RunResult(
+                run_id="r", shared_log=[], events=[], edges=[],
+                end_reason="max_waves", completed_waves=1, total_turns=0,
+            )
+
+        patches = {
+            (lifecycle, "_make_llm"):           lambda *a, **k: "LLM",
+            (lifecycle, "_make_agent_llm_map"): lambda c: {"a": "LLM2"},
+            (lifecycle, "finalize_run"):        lambda *a, **k: finalized.append((a, k)),
+            (ABM.db, "SimDB"):                  _FakeDB,
+            (headless, "run_config"):           _fake_run_config,
+        }
+        originals = {k: getattr(k[0], k[1]) for k in patches}
+        prev_status = _sim["status"]
+        _sim["status"] = "idle"
+        try:
+            for (mod, name), value in patches.items():
+                setattr(mod, name, value)
+            lifecycle.start_simulation(cfg)
+            _sim["thread"].join(timeout=10)
+        finally:
+            for (mod, name), value in originals.items():
+                setattr(mod, name, value)
+            _sim["status"] = prev_status
+
+        # 1) SSE 큐와 stop_event 가 엔진까지 전달됐다 (없으면 피드가 죽는다)
+        self.assertIs(captured["event_queue"], _sim["event_queue"])
+        self.assertIs(captured["stop_event"], _sim["stop_event"])
+        # 2) DB/run id/로그 디렉토리
+        from ABM.config import LOG_DIR
+        self.assertEqual(captured["log_dir"], LOG_DIR)
+        self.assertIsInstance(captured["db"], _FakeDB)
+        self.assertTrue(captured["sim_id"])
+        # 3) run row 가 config 스냅샷과 함께 만들어졌다
+        run_rows = [r for r in created_runs if r[0] != "db"]
+        self.assertEqual(len(run_rows), 1)
+        self.assertEqual(run_rows[0][0], captured["sim_id"])
+        self.assertEqual(json.loads(run_rows[0][3])["start_agent"], "a")
+        # 4) LLM 오버라이드 맵이 전달됐다
+        self.assertEqual(captured["agent_llm"], {"a": "LLM2"})
+        # 5) `_sim` 전역이 run() 시작 전에 채워졌다 (/status·/logs·컨텍스트 조회용)
+        self.assertIsInstance(_sim["sim_obj"], _FakeSim)
+        self.assertEqual(_sim["scenario_id"], cfg.scenario_id)
+        self.assertEqual(json.loads(_sim["config_json"])["start_agent"], "a")
+        # 6) finalize_run 이 정확히 한 번, 오류 없이 불렸다
+        self.assertEqual(len(finalized), 1)
+        self.assertNotIn("error", finalized[0][1])
+
+    def test_start_reports_assembly_failure_through_finalize_run(self):
+        """조립 단계에서 터져도 finalize_run(error=) 로 UI 에 전달돼야 한다."""
+        from backend.api.simulation.runtime import lifecycle
+        from backend.api.simulation.state import _sim
+        import ABM.simulation.headless as headless
+
+        finalized = []
+        boom = RuntimeError("서버 없음")
+
+        def _explode(config, **kw):
+            raise boom
+
+        originals = {
+            "_make_llm":           lifecycle._make_llm,
+            "_make_agent_llm_map": lifecycle._make_agent_llm_map,
+            "finalize_run":        lifecycle.finalize_run,
+        }
+        import ABM.db
+        orig_run_config = headless.run_config
+        orig_db = ABM.db.SimDB
+        prev_status = _sim["status"]
+        _sim["status"] = "idle"
+        try:
+            lifecycle._make_llm           = lambda *a, **k: "LLM"
+            lifecycle._make_agent_llm_map = lambda c: {}
+            lifecycle.finalize_run        = lambda *a, **k: finalized.append((a, k))
+            ABM.db.SimDB                  = lambda path: type(
+                "D", (), {"create_run": lambda *a, **k: None})()
+            headless.run_config           = _explode
+            lifecycle.start_simulation(_sim_cfg(max_waves=1))
+            _sim["thread"].join(timeout=10)
+        finally:
+            for name, value in originals.items():
+                setattr(lifecycle, name, value)
+            headless.run_config = orig_run_config
+            ABM.db.SimDB = orig_db
+            _sim["status"] = prev_status
+
+        self.assertEqual(len(finalized), 1)
+        self.assertIs(finalized[0][1].get("error"), boom)
+
+
+class HeadlessSimulationArgumentTests(unittest.TestCase):
+    """`run_config` 가 Simulation 에 넘기는 인자 목록 고정.
+
+    lifecycle 인라인 코드에서 옮겨오며 하나라도 빠지면 GUI 가 조용히 회귀한다
+    (감염 모델이 꺼지거나, zone 입구가 사라지거나, 시계가 안 흐르거나…).
+    """
+
+    def _capture(self, cfg):
+        import ABM.simulation as sim_pkg
+        from ABM.simulation.headless import run_config
+
+        captured = {}
+
+        class _Recorder:
+            def __init__(self, agents, background_log, log_dir, **kw):
+                captured["positional"] = (agents, background_log, log_dir)
+                captured.update(kw)
+                self.agents = agents
+                self.background_log = background_log
+                self.shared_log = []
+                self.edges = []
+                self.completed_waves = 0
+
+            def _emit(self, t, d):
+                pass
+
+            def run(self, start_agent, **kw):
+                captured["run_kwargs"] = kw
+                captured["run_start_agent"] = start_agent
+
+        orig = sim_pkg.Simulation
+        try:
+            sim_pkg.Simulation = _Recorder
+            with tempfile.TemporaryDirectory() as tmp:
+                run_config(cfg, llm="LLM", agent_llm={"a": "L2"}, log_dir=tmp,
+                           sim_id="sid")
+        finally:
+            sim_pkg.Simulation = orig
+        return captured
+
+    def test_every_engine_knob_is_forwarded(self):
+        cfg, _ = _golden_config()
+        cap = self._capture(cfg)
+
+        self.assertEqual(cap["sim_id"], "sid")
+        self.assertEqual(cap["agent_llm"], {"a": "L2"})
+        self.assertEqual(cap["name_aliases"], {"가온": "a", "나린": "b"})
+        self.assertEqual(cap["agent_locations"], {"a": "거실", "b": "거실"})
+        self.assertEqual(cap["agent_visuals"]["a"], "회색 후드티를 입은 사람")
+        self.assertEqual(cap["summary_interval"], 2)
+        self.assertTrue(cap["system_agent"]["enabled"])
+        self.assertEqual(cap["sim_start_time"], "09:00")
+        self.assertEqual(cap["sim_start_weekday"], "mon")
+        self.assertEqual(cap["time_per_wave"], 30)
+        self.assertEqual(cap["time_mode"], "fixed")
+        self.assertEqual(len(cap["time_categories"]), 4)
+        self.assertEqual(cap["idle_minutes_schedule"], [60, 120, 180])
+        self.assertTrue(cap["infection_model"]["enabled"])
+        self.assertEqual(cap["infection_model"]["disease_name"], "감기")
+        self.assertEqual(cap["llm_max_tokens"], 2048)
+        self.assertTrue(cap["lang_fix_enabled"])
+        self.assertEqual(cap["lang_fix_retries"], 2)
+        # 위치 그래프는 dict 로 평탄화되며 zone/입구 플래그까지 실려야 한다
+        node = {n["name"]: n for n in cap["location_graph"]}
+        self.assertEqual(set(node["거실"]), {"name", "connects_to", "is_exterior",
+                                             "zone", "is_zone_entry"})
+        self.assertTrue(node["현관"]["is_exterior"])
+        # sim.run 인자
+        self.assertEqual(cap["run_start_agent"], "a")
+        self.assertEqual(cap["run_kwargs"]["max_waves"], 5)
+        self.assertEqual(cap["run_kwargs"]["max_silence_waves"], 3)
+        self.assertTrue(cap["run_kwargs"]["early_stop_enabled"])
+        self.assertIsNone(cap["run_kwargs"]["target_duration_minutes"])
+        self.assertEqual(len(cap["run_kwargs"]["events"]), 1)
+        self.assertEqual(cap["run_kwargs"]["events"][0]["type"], "infect_agent")
+
+    def test_initial_active_and_zone_entry_survive(self):
+        cfg, _ = _golden_config()
+        data = cfg.model_dump()
+        data["agents"][1]["initial_active"] = False
+        data["location_graph"][2].update({"zone": "창고구역", "is_zone_entry": True})
+        cap = self._capture(SimStartConfig(**data))
+        self.assertEqual(cap["initial_agents"], ["a"])
+        node = {n["name"]: n for n in cap["location_graph"]}
+        self.assertEqual(node["창고"]["zone"], "창고구역")
+        self.assertTrue(node["창고"]["is_zone_entry"])
+
+    def test_all_active_agents_pass_none_so_the_engine_defaults(self):
+        cfg, _ = _golden_config()
+        self.assertIsNone(self._capture(cfg)["initial_agents"])
+
+
 if __name__ == "__main__":
     unittest.main()

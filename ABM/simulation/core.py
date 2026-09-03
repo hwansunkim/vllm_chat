@@ -32,8 +32,9 @@ _PERSIST_EVENTS: frozenset[str] = frozenset({
 })
 
 # 시작 요일 키(프론트/스키마와 동일) → 표시 라벨. 인덱스 = 월요일 기준 0~6.
-_WEEKDAY_KEYS: tuple[str, ...] = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
-_WEEKDAY_LABELS: tuple[str, ...] = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
+# 정의는 `_constants.py` 에 있다 — 마크다운 내보내기(ABM/export/labels.py)가 엔진
+# 전체를 import 하지 않고도 같은 라벨을 쓰기 위함. 이름은 여기서도 그대로 노출한다.
+from ._constants import _WEEKDAY_KEYS, _WEEKDAY_LABELS  # noqa: F401
 
 _DEFAULT_TIME_CATEGORIES: list[dict] = [
     {"id": "meal_or_brief",     "label": "식사·짧은 용무 등 스킵되듯 지나가는 장면", "min_minutes": 5,   "max_minutes": 10},

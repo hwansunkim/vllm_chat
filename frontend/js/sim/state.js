@@ -1,5 +1,14 @@
 // frontend/js/sim/state.js
 // Shared simulation state and pure helpers (no module imports — avoid cycles).
+//
+// 이 파일의 **순수 헬퍼 일부**는 ABM/export/labels.py 에 파이썬으로도 구현돼 있다
+// (마크다운 내보내기가 브라우저와 CLI 양쪽에서 돌기 때문). 포팅된 것:
+//   normalizeWeekday · normalizeDurationMinutes · normalizeProbability ·
+//   normalizeSymptomStages · buildInfectionModel · formatDayHour ·
+//   infectionBadge · meetingNarration · detectGender · getAgentIcon ·
+//   agentLabel · simTimeLabel
+// 이 중 하나라도 문구/규칙을 바꾸면 파이썬 쪽도 같이 고칠 것 —
+// tests/fixtures/*.md 골든 테스트가 어긋난 쪽을 잡아낸다.
 
 // ── 가변 시간 모드 기본값 (백엔드 SimStartConfig 기본값과 동일하게 유지) ──────────
 export const DEFAULT_TIME_CATEGORIES = [
