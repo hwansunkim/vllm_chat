@@ -99,6 +99,7 @@ def init_tables(conn: sqlite3.Connection) -> None:
             visual_description TEXT,
             display_name       TEXT,
             initial_active     BOOLEAN DEFAULT 1,
+            relationships      TEXT,     -- JSON 객체 문자열 (예: '{"채민경": "아내"}')
             created_at    TEXT NOT NULL,
             updated_at    TEXT NOT NULL
         );
@@ -151,6 +152,7 @@ def migrate_db(conn: sqlite3.Connection) -> None:
         ("visual_description", 'ALTER TABLE agents ADD COLUMN visual_description TEXT'),
         ("display_name",       'ALTER TABLE agents ADD COLUMN display_name TEXT'),
         ("initial_active",     'ALTER TABLE agents ADD COLUMN initial_active BOOLEAN DEFAULT 1'),
+        ("relationships",      'ALTER TABLE agents ADD COLUMN relationships TEXT'),
     ]:
         if col not in agent_cols:
             conn.execute(ddl)

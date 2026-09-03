@@ -2,12 +2,14 @@
 // Accordion editor for the agents list (settings view).
 
 import { sim, esc, _expandedAgents, getAllGroups, detectGender, getAgentIcon,
-         normalizeTemperature, normalizeAgentTemperature } from '../state.js';
+         normalizeTemperature, normalizeAgentTemperature,
+         normalizeRelationships, isDanglingRelationshipKey } from '../state.js';
 import { renderScenarioEvents } from './events.js';
 import { renderPatientZeroPicker } from './infection-config.js';
 import { getServerList, peekServerList } from './server-list.js';
 import { updateSectionBadges } from './sections.js';
 import { autoGrowAll } from './textareas.js';
+import { refreshContractAgentSelect } from './contract-preview.js';
 
 export function renderStartAgentSelect() {
   const sel  = document.getElementById('sim-start-agent');
@@ -103,6 +105,10 @@ export function renderAgentListInConfig() {
           </datalist>
         </div>
       </div>
+      <div class="agent-rels-row">
+        <label>관계<span class="sim-acrd-label-hint"> (내 시점)</span></label>
+        <div class="agent-rels-body" data-agent-idx="${idx}"></div>
+      </div>
       <div class="sim-acrd-field-row">
         <div class="sim-acrd-field" style="flex:1">
           <label>위치</label>
@@ -145,6 +151,10 @@ export function renderAgentListInConfig() {
     row.appendChild(header);
     row.appendChild(body);
     list.appendChild(row);
+
+    // 관계 편집기는 <select> 옵션이 다른 카드의 상태(이름·표시이름)에 따라 달라지므로
+    // 문자열 템플릿이 아니라 DOM API 로 그린다.
+    renderAgentRelationships(idx, body.querySelector('.agent-rels-body'));
 
     // 확대 오버레이 제목 — 따옴표가 섞인 이름도 안전하도록 속성이 아니라 프로퍼티로 넣는다.
     const promptWrap = body.querySelector('.sim-acrd-prompt-wrap');
@@ -238,6 +248,10 @@ export function renderAgentListInConfig() {
             _expandedAgents.add(el.value);
           }
           header.querySelector('.sim-acrd-id').textContent = el.value;
+          // 관계 지도는 상대를 name(key)으로 가리키므로 rename을 따라가야 한다. 안 따라가면
+          // 다른 카드의 관계가 dangling으로 남고, 엔진은 그걸 경고만 남기고 조용히 버린다
+          // (= 사용자는 관계가 사라진 걸 모른다).
+          _followRelationshipRename(oldName, el.value);
           // 감염 시드는 이름으로 에이전트를 가리키므로 rename을 따라가야 한다.
           // 먼저 고치지 않으면 renderScenarioEvents()의 _syncAgentSelection()이
           // "없는 에이전트"로 보고 첫 에이전트에게 조용히 환자 0번을 옮겨 붙인다.
@@ -247,6 +261,10 @@ export function renderAgentListInConfig() {
           renderStartAgentSelect();
           renderScenarioEvents();
           renderPatientZeroPicker();
+          // 카드 전체를 다시 그리면 타이핑 중인 ID 입력의 포커스를 잃는다 —
+          // 이름에 의존하는 관계 드롭다운·계약 기준 셀렉트만 따로 갱신한다.
+          refreshRelationshipEditors();
+          refreshContractAgentSelect();
 
         } else if (el.dataset.field === 'icon') {
           // icon override: if empty, revert to '🤖' (triggers auto)
@@ -267,6 +285,9 @@ export function renderAgentListInConfig() {
             displayEl?.remove();
           }
           _updateIconPreview(i, body, header);
+          // 관계 드롭다운·계약 기준 셀렉트는 `display_name || name` 을 보여준다.
+          refreshRelationshipEditors();
+          refreshContractAgentSelect();
 
         } else if (el.dataset.field === 'system_prompt') {
           _updateIconPreview(i, body, header);
@@ -294,7 +315,176 @@ export function renderAgentListInConfig() {
 
   // 카드 추가/삭제로 개수가 바뀌면 섹션 헤더의 요약 뱃지도 따라와야 한다.
   updateSectionBadges(sim);
+  // 계약 미리보기는 per-agent 라 "누구 기준" 셀렉트가 명부를 따라가야 한다.
+  refreshContractAgentSelect();
   autoGrowAll(list);
+}
+
+// ── 관계 지도 편집기 ─────────────────────────────────────────────────────────
+// 저장 형식은 `{상대 name(key): 관계 문자열}` 이고 각자 **자기 시점**이다. 드롭다운은
+// `display_name || name` 을 보여주지만 저장하는 값은 언제나 `name` 이다 — 엔진이 그
+// key 로 상대를 찾는다(display_name 을 저장하면 실행 시 조용히 버려진다).
+
+/** 이 행의 드롭다운에 넣을 후보 = 자기 자신 제외 + 이미 쓰인 상대 제외(현재 값은 유지). */
+function _relCandidates(agent, rels, currentKey) {
+  return sim.agents.filter(a =>
+    a.name &&
+    a.name !== agent.name &&
+    (a.name === currentKey || !Object.prototype.hasOwnProperty.call(rels, a.name)),
+  );
+}
+
+/** key 를 제자리에서 갈아끼운다 — 관계 블록의 렌더 순서 = 삽입 순서라 순서를 보존한다. */
+function _renameRelKey(rels, oldKey, newKey) {
+  const out = {};
+  for (const [k, v] of Object.entries(rels)) {
+    const key = k === oldKey ? newKey : k;
+    // 이름 충돌(= 같은 ID 를 쓰는 에이전트가 둘)이면 관계 항목도 하나로 합쳐질 수밖에
+    // 없다. 먼저 나온 자리를 지키되, 비어 있던 관계어는 뒤에 온 값으로 채운다.
+    out[key] = (out[key] ?? '') || v;
+  }
+  return out;
+}
+
+/**
+ * 에이전트 ID 변경을 모든 관계 지도에 전파한다.
+ * 새 이름이 비어 있는 중간 상태(사용자가 ID 를 다 지운 순간)에서는 옮기지 않는다 —
+ * 빈 key 는 엔진이 조회할 수 없기 때문이다. 그 경우 관계는 옛 key 로 남고 dangling
+ * 배지가 뜬다(조용히 사라지지 않는다).
+ */
+function _followRelationshipRename(oldName, newName) {
+  if (!oldName || !String(newName).trim() || oldName === newName) return;
+  sim.agents.forEach(other => {
+    const rels = other.relationships;
+    if (!rels || !Object.prototype.hasOwnProperty.call(rels, oldName)) return;
+    other.relationships = _renameRelKey(rels, oldName, newName);
+  });
+}
+
+/** 한 카드의 관계 편집기를 다시 그린다(상태 → DOM). */
+export function renderAgentRelationships(idx, container) {
+  const agent = sim.agents[idx];
+  if (!agent || !container) return;
+
+  // 구버전 시나리오/가져온 파일에는 필드가 없을 수 있다 — 여기서 한 번 정규화해 두면
+  // 이후 핸들러들이 undefined 를 만지지 않는다.
+  const rels = normalizeRelationships(agent.relationships);
+  agent.relationships = rels;
+
+  container.textContent = '';
+  const entries = Object.entries(rels);
+  entries.forEach(([key, label]) => {
+    container.appendChild(_buildRelRow(idx, container, key, label));
+  });
+
+  const addBtn = document.createElement('button');
+  addBtn.type      = 'button';
+  addBtn.className = 'agent-rel-add';
+  addBtn.textContent = '+ 관계 추가';
+  const candidates = _relCandidates(agent, rels, null);
+  if (!candidates.length) {
+    addBtn.disabled = true;
+    addBtn.title = sim.agents.length < 2
+      ? '관계를 맺을 다른 에이전트가 없습니다.'
+      : '이미 모든 에이전트와 관계가 설정돼 있습니다.';
+  }
+  addBtn.addEventListener('click', () => {
+    // 빈 key 는 객체에 담을 수 없으므로(중복 불가) 남은 후보 중 첫 사람을 바로 채운다.
+    // 관계어는 비운 채로 두고 포커스를 옮겨 사용자가 바로 타이핑하게 한다.
+    const pick = _relCandidates(agent, agent.relationships, null)[0];
+    if (!pick) return;
+    agent.relationships[pick.name] = '';
+    renderAgentRelationships(idx, container);
+    const rows = container.querySelectorAll('.agent-rel-item');
+    rows[rows.length - 1]?.querySelector('.agent-rel-label')?.focus();
+  });
+  container.appendChild(addBtn);
+
+  if (!entries.length) {
+    const hint = document.createElement('span');
+    hint.className = 'agent-rels-empty';
+    hint.textContent = '비워두면 프롬프트는 관계 기능 도입 전과 똑같이 만들어집니다.';
+    container.appendChild(hint);
+  }
+}
+
+function _buildRelRow(idx, container, key, label) {
+  const agent    = sim.agents[idx];
+  const selfRef  = key === agent.name;
+  const dangling = isDanglingRelationshipKey(key, agent.name);
+
+  const row = document.createElement('div');
+  row.className = 'agent-rel-item';
+  row.dataset.relKey = key;
+
+  const sel = document.createElement('select');
+  sel.className = 'agent-rel-target';
+  sel.title = '상대 에이전트 — 저장되는 값은 표시 이름이 아니라 ID 입니다.';
+  // dangling key 는 목록에 없으므로 값을 조용히 버리지 않고 경고 옵션으로 남긴다
+  // (서버 드롭다운의 "⚠ 알 수 없는 서버" 와 같은 처리).
+  if (dangling) {
+    const opt = document.createElement('option');
+    opt.value = key;
+    opt.textContent = selfRef ? `⚠ ${key} (자기 자신)` : `⚠ ${key} (없는 에이전트)`;
+    sel.appendChild(opt);
+  }
+  _relCandidates(agent, agent.relationships, key).forEach(a => {
+    const opt = document.createElement('option');
+    opt.value = a.name;
+    opt.textContent = `${getAgentIcon(a, 'neutral')} ${a.display_name || a.name}`;
+    sel.appendChild(opt);
+  });
+  sel.value = key;
+  sel.addEventListener('change', () => {
+    const newKey = sel.value;
+    if (!newKey || newKey === key) return;
+    agent.relationships = _renameRelKey(agent.relationships, key, newKey);
+    renderAgentRelationships(idx, container);
+  });
+  row.appendChild(sel);
+
+  const inp = document.createElement('input');
+  inp.className   = 'agent-rel-label';
+  inp.type        = 'text';
+  inp.value       = label;
+  inp.placeholder = '관계 (예: 아내, 큰딸, 직장 상사)';
+  inp.title       = '이 사람을 내가 뭐라고 부르는지. 상대 시점의 관계는 상대 카드에서 따로 씁니다.';
+  // 타이핑 중에는 다시 그리지 않는다 — 포커스와 캐럿을 잃는다.
+  inp.addEventListener('input', () => { agent.relationships[key] = inp.value; });
+  row.appendChild(inp);
+
+  if (dangling) {
+    const badge = document.createElement('span');
+    badge.className = 'agent-rel-dangling';
+    badge.textContent = selfRef ? '자기 자신' : '없는 대상';
+    badge.title = selfRef
+      ? '자기 자신과의 관계는 실행 시 무시됩니다.'
+      : `"${key}" 라는 ID 의 에이전트가 지금 목록에 없습니다. 실행하면 이 관계는 경고만 남기고 버려집니다.`;
+    row.appendChild(badge);
+  }
+
+  const del = document.createElement('button');
+  del.type      = 'button';
+  del.className = 'agent-rel-del';
+  del.title     = '관계 삭제';
+  del.textContent = '×';
+  del.addEventListener('click', () => {
+    delete agent.relationships[key];
+    renderAgentRelationships(idx, container);
+  });
+  row.appendChild(del);
+
+  return row;
+}
+
+/**
+ * 카드를 통째로 다시 그리지 않는 경로(ID·표시이름 타이핑)에서 관계 편집기만 갱신한다.
+ * 어떤 카드의 이름이 바뀌면 **다른 모든 카드**의 드롭다운 라벨과 dangling 판정이 달라진다.
+ */
+export function refreshRelationshipEditors() {
+  document.getElementById('sim-agent-list')
+    ?.querySelectorAll('.agent-rels-body')
+    .forEach(el => renderAgentRelationships(+el.dataset.agentIdx, el));
 }
 
 // 에이전트 온도 입력이 비었을 때 보여줄 안내문 — 상속하는 시뮬레이션 기본값을 노출한다.

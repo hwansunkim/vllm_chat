@@ -220,6 +220,60 @@ def build_infection_contract(
     )
 
 
+# ── 관계 지도 계약 ────────────────────────────────────────────────────────────
+#
+# `relationships` 는 **에이전트마다 다른** 유일한 계약 블록이다. 나머지 세계 계약
+# (지도/시간/감염)은 시뮬레이션 전체가 공유하지만, "채민경은 나의 아내"는 김봉남의
+# 시점에서만 참이다. 그래서 `build_world_contract` 안에 넣지 않고 별도 빌더로 두고
+# `core._apply_engine_contract` 가 에이전트별로 이어붙인다.
+#
+# 왜 프로즈가 아니라 구조 데이터인가: 페르소나가 "당신은 아빠다. 딸이 하나 있다"
+# 라고만 쓰면 LLM 은 그 "딸"이 `target` 에 넣어야 할 어떤 ID 인지 모른다. 이름(key)과
+# 관계어를 한 줄에 바인딩해야 지목이 성립한다.
+
+# 헤더가 `[아는 사람]` 이 아닌 이유: `build_targets_block` 의 섹션 라벨도 `[아는 사람]`
+# 이라(step.py 가 만든다) 위치 미사용 시나리오에서는 한 프롬프트에 같은 헤더가 두 번
+# 나온다 — 하나는 "내 관계 로스터", 하나는 "이번 턴에 지목 가능한 목록"으로 뜻이 다르다.
+# 섹션 라벨 쪽을 고치면 관계를 안 쓰는 기존 시나리오의 프롬프트까지 바뀌므로(회귀),
+# 관계를 쓸 때만 붙는 이쪽 헤더를 구체화했다.
+_RELATIONSHIP_HEADER = (
+    "\n\n[아는 사람 (나와의 관계)]\n"
+    "당신이 아는 사람들입니다. 이들에게 말을 걸 때 target 필드에 아래 ID를 씁니다."
+)
+
+
+def build_relationship_contract(
+    relationships: dict[str, str],
+    key_to_alias:  dict[str, str] | None = None,
+) -> str:
+    """[아는 사람] 블록. `relationships` 가 비면 빈 문자열.
+
+    Parameters
+    ----------
+    relationships
+        ``{상대 agent key: 내가 그를 부르는 관계}``. **화자 한 명의 시점**이다
+        (김봉남의 `{"채민경": "아내"}` 와 채민경의 `{"김봉남": "남편"}` 은 별개).
+        dict 삽입 순서를 그대로 렌더 순서로 쓴다.
+    key_to_alias
+        agent key → 표시 이름. 없으면 key 를 그대로 표시명으로 쓴다.
+
+    실존하지 않는 key(dangling)를 거르는 것은 **호출자 책임**이다 — 이 모듈은
+    에이전트 명부를 모른다(순수 문자열 빌더). 엔진 경로에서는
+    `Simulation._sanitize_relationships()` 가 초기화 시 한 번 걸러낸다.
+    """
+    if not relationships:
+        return ""
+    alias = key_to_alias or {}
+    lines = [_RELATIONSHIP_HEADER]
+    for key, relation in relationships.items():
+        name = alias.get(key) or key
+        rel  = (relation or "").strip()
+        # 관계어가 비어도 "이 사람을 안다"는 사실 자체는 유효하므로 줄은 남긴다.
+        suffix = f" — 당신의 {rel}" if rel else ""
+        lines.append(f'  - {name} (ID: "{key}"){suffix}')
+    return "\n".join(lines)
+
+
 # ── 정적(세계) 계약 조립 ──────────────────────────────────────────────────────
 
 
@@ -273,13 +327,38 @@ def _field_hint(f: dict) -> str:
     return f'- {f["name"]}: 적절한 값 (기본값 예시: "{f["default"]}")'
 
 
+def _target_label(
+    key:           str,
+    key_to_alias:  dict[str, str] | None,
+    relationships: dict[str, str] | None,
+) -> str:
+    """`- ID: "<key>"` 뒤에 붙는 괄호 라벨. 없으면 빈 문자열.
+
+    - 관계 있음: ``  (채민경 · 아내)``  — 표시명이 없으면 key 를 표시명 자리에 쓴다
+    - 관계 없음: ``  (표시명)``          — 기존 동작 그대로
+    """
+    alias = (key_to_alias or {}).get(key, "")
+    rel   = ((relationships or {}).get(key) or "").strip()
+    if rel:
+        return f'  ({alias or key} · {rel})'
+    return f'  ({alias})' if alias else ""
+
+
 def build_targets_block(
     available_targets: list[str],
     key_to_alias:      dict[str, str] | None                = None,
     target_sections:   list[tuple[str, list[str]]] | None   = None,
     situation_targets: bool                                 = False,
+    *,
+    speaker_relationships: dict[str, str] | None            = None,
 ) -> tuple[str, str]:
-    """(targets_block, targets_footer) — `<TARGETS>` / `<TARGETS_FOOTER>` 치환값."""
+    """(targets_block, targets_footer) — `<TARGETS>` / `<TARGETS_FOOTER>` 치환값.
+
+    `speaker_relationships` 는 **이 블록을 읽는 화자 시점**의 관계 지도다. 목록에
+    있는 ID 가 거기 있으면 표시명 옆에 관계어를 붙여, 모델이 `[아는 사람]` 블록과
+    `<TARGETS>` 를 같은 사람으로 묶을 수 있게 한다(낯선 이 `stranger_N` ID 는
+    관계 지도에 없으므로 자동으로 라벨이 붙지 않는다).
+    """
     if situation_targets:
         # 위치 기반 모드: 대화 상대는 상황 컨텍스트에서 ID 포함하여 제공됨
         targets_block = "  ([현재 상황] 컨텍스트에서 대화 상대와 ID를 확인하세요)\n"
@@ -288,14 +367,12 @@ def build_targets_block(
         for section_label, members in target_sections:
             parts.append(f"[{section_label}]")
             for t in members:
-                alias = (key_to_alias or {}).get(t, "")
-                parts.append(f'  - ID: "{t}"' + (f'  ({alias})' if alias else ""))
+                parts.append(f'  - ID: "{t}"' + _target_label(t, key_to_alias, speaker_relationships))
         targets_block = ("\n".join(parts) + "\n") if parts else "  (없음)\n"
     else:
         lines: list[str] = []
         for t in available_targets:
-            alias = (key_to_alias or {}).get(t, "")
-            lines.append(f'  - ID: "{t}"' + (f'  ({alias})' if alias else ""))
+            lines.append(f'  - ID: "{t}"' + _target_label(t, key_to_alias, speaker_relationships))
         targets_block = ("\n".join(lines) + "\n") if lines else "  (없음)\n"
 
     # 그룹이 2개 이상일 때 그룹별 단축 표기 추가 (브릿지 에이전트용)
@@ -325,15 +402,18 @@ def build_output_contract(
     *,
     has_location_graph: bool = False,
     has_zone:           bool = False,
+    speaker_relationships: dict[str, str] | None = None,
 ) -> str:
     """출력 JSON 스키마 + move_to 의미 + target ID 규칙을 담은 계약 블록.
 
     `template`이 **명시적으로** 주어졌을 때만 사용자 오버라이드로 취급하고, 그렇지
     않으면 항상 엔진 기본 템플릿을 쓴다(= 엔진 업그레이드가 자동 반영된다).
     `location_name`은 시그니처 호환을 위해 남겨둔 미사용 인자다.
+    `speaker_relationships`는 `<TARGETS>` 목록에 관계어를 붙이는 화자 시점 관계 지도.
     """
     targets_block, targets_footer = build_targets_block(
         available_targets, key_to_alias, target_sections, situation_targets,
+        speaker_relationships=speaker_relationships,
     )
 
     tmpl = template if template is not None else DEFAULT_OUTPUT_FORMAT_TEMPLATE
@@ -373,12 +453,18 @@ def build_engine_contract(
     disease_name:       str                                = "",
     include_output_schema: bool                            = True,
     output_format_override: str | None                     = None,
+    relationships:      dict[str, str] | None              = None,
 ) -> str:
-    """계약 층 전체(세계 계약 + 출력 계약)를 한 번에 만든다.
+    """계약 층 전체(세계 계약 + 관계 지도 + 출력 계약)를 한 번에 만든다.
 
     실행 경로는 두 조각을 따로 쓰지만(정적 블록은 Agent에 한 번, 출력 계약은 매 턴),
     **계약 프리뷰 엔드포인트**나 테스트처럼 "지금 설정이면 무엇이 주입되는가"를
     통째로 보고 싶은 호출자를 위한 단일 진입점이다.
+
+    `relationships` 는 **한 명의 화자 시점** 관계 지도다. 주어지면 [아는 사람]
+    블록으로 렌더되고, 동시에 `<TARGETS>` 목록의 관계어 라벨로도 쓰인다 — 실행
+    경로(`core._apply_engine_contract` + `Agent.get_system_message`)가 같은 dict 를
+    두 자리에 쓰는 것과 정확히 같다.
 
     `include_output_schema=False`면 출력 스키마를 뺀다 — 인터뷰 모드처럼 자연어
     산문 답변을 받아야 하는 경로용 carve-out이다.
@@ -391,7 +477,7 @@ def build_engine_contract(
         time_enabled       = time_enabled,
         infection_enabled  = infection_enabled,
         disease_name       = disease_name,
-    )
+    ) + build_relationship_contract(relationships or {}, key_to_alias)
     if not include_output_schema:
         return world
     return world + build_output_contract(
@@ -403,6 +489,7 @@ def build_engine_contract(
         situation_targets  = situation_targets,
         has_location_graph = bool(location_graph),
         has_zone           = bool(location_zone),
+        speaker_relationships = relationships or None,
     )
 
 

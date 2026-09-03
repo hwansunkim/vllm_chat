@@ -32,7 +32,8 @@ _PLACEHOLDER_ALIAS  = "표시 이름"
 def preview_engine_contract(body: ContractPreviewRequest):
     """현재 설정으로 엔진이 만들 계약 블록을 그대로 돌려준다(읽기 전용)."""
     from ABM.prompt_contract import (
-        build_engine_contract, build_world_contract, verify_contract,
+        build_engine_contract, build_relationship_contract, build_world_contract,
+        verify_contract,
     )
 
     # LocationNode 리스트 → 빌더가 받는 인접 리스트/집합/맵 (abm_done §6-C3)
@@ -63,9 +64,13 @@ def preview_engine_contract(body: ContractPreviewRequest):
         infection_enabled      = bool(body.infection_model.enabled),
         disease_name           = body.infection_model.disease_name,
         output_format_override = body.output_format_override or None,
+        relationships          = dict(body.relationships) or None,
     )
 
     try:
+        # `world_contract` 는 실행 시점의 `Agent.engine_contract` 와 글자 단위로 같아야
+        # 한다. 엔진은 거기에 [아는 사람] 블록까지 이어붙여 per-agent 로 걸므로
+        # (core._apply_engine_contract), 프리뷰의 world 조각도 같은 순서로 붙인다.
         world = build_world_contract(
             location_graph     = kwargs["location_graph"],
             exterior_locations = kwargs["exterior_locations"],
@@ -74,7 +79,7 @@ def preview_engine_contract(body: ContractPreviewRequest):
             time_enabled       = kwargs["time_enabled"],
             infection_enabled  = kwargs["infection_enabled"],
             disease_name       = kwargs["disease_name"],
-        )
+        ) + build_relationship_contract(body.relationships, aliases)
         contract = build_engine_contract(
             include_output_schema=body.include_output_schema, **kwargs,
         )

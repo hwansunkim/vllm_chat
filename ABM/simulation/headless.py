@@ -117,6 +117,9 @@ def run_config(
     agent_groups    = {a.name: a.groups             for a in cfg.agents}
     agent_locations = {a.name: a.location           for a in cfg.agents}
     agent_visuals   = {a.name: a.visual_description for a in cfg.agents}
+    # 관계 지도 — 에이전트별 [아는 사람] 계약 블록과 <TARGETS> 관계 라벨의 원본.
+    # 비어 있는 시나리오는 엔진이 블록을 아예 만들지 않는다(기존 동작 불변).
+    agent_relationships = {a.name: dict(a.relationships) for a in cfg.agents}
 
     sim = Simulation(
         agents, background_log, log_dir,
@@ -128,6 +131,7 @@ def run_config(
         sim_id=run_sim_id,
         db=db,
         agent_groups=agent_groups,
+        agent_relationships=agent_relationships,
         summary_interval=cfg.summary_interval,
         system_agent=cfg.system_agent.model_dump(),
         agent_locations=agent_locations,

@@ -7,7 +7,11 @@ import logging
 from ..agent import Agent
 from ..config import LOG_DIR
 from ..llm import LLMCall
-from ..prompt_contract import build_world_contract, verify_contract
+from ..prompt_contract import (
+    build_relationship_contract,
+    build_world_contract,
+    verify_contract,
+)
 from .location import _LocationMixin
 from .infection import _InfectionMixin
 from .meeting import _MeetingMixin
@@ -59,6 +63,10 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         sim_id:           str | None             = None,
         db=None,
         agent_groups:     dict[str, list[str]] | None = None,
+        # {에이전트 key: {상대 key: 그 상대를 부르는 관계}}. 각 항목은 **그 에이전트
+        # 시점**이다(김봉남→채민경="아내", 채민경→김봉남="남편"). 비었거나 생략되면
+        # 관계 계약 블록이 아예 붙지 않는다 = 기능 미사용.
+        agent_relationships: dict[str, dict[str, str]] | None = None,
         summary_interval: int                         = 0,
         system_agent:     dict | None                 = None,
         agent_locations:  dict[str, str] | None       = None,
@@ -113,6 +121,14 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         self._agent_groups: dict[str, list[str]] = agent_groups or {}
         self._visible_targets: dict[str, list[str]] = self._build_visible_targets(
             self._agent_groups
+        )
+        # 관계 지도. 실존하지 않는 상대 key(시나리오 편집 중 이름이 바뀌면 생긴다)와
+        # 자기 자신 참조는 여기서 걸러내고, 사유는 _verify_engine_contract()가 경고로
+        # 낸다. 이후 모든 소비 지점(계약 블록·<TARGETS>·[이 자리의 사람들]·knowledge
+        # 시드)은 이 정제된 맵 하나만 본다.
+        self._dangling_relationships: list[str] = []
+        self._agent_relationships: dict[str, dict[str, str]] = self._sanitize_relationships(
+            agent_relationships
         )
 
         self._summary_interval:    int        = max(0, summary_interval)
@@ -298,11 +314,65 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
                 for other_key in all_keys:
                     if other_key != key:
                         self._agent_knowledge[key].add(other_key)
+            # 관계를 명시한 상대는 groups 와 무관하게 **무조건 아는 사이**다.
+            # 안 그러면 "아내"라고 계약에 써 놓고 정작 같은 방에서 만나면
+            # stranger_1 로 보이는 모순이 생긴다. (관계는 그룹보다 강한 신호다.)
+            self._agent_knowledge[key].update(self._agent_relationships.get(key, {}))
 
         os.makedirs(log_dir, exist_ok=True)
         self._save_shared_log()
 
         self._verify_engine_contract()
+
+    # ── 관계 지도 ─────────────────────────────────────────────────────────────
+
+    def _sanitize_relationships(
+        self, raw: dict[str, dict[str, str]] | None
+    ) -> dict[str, dict[str, str]]:
+        """관계 지도에서 렌더 불가능한 항목을 걸러내고 사유를 기록한다.
+
+        거르는 것 두 가지:
+        - **dangling** — 상대 key 가 이 시뮬레이션의 에이전트가 아닌 경우. 시나리오
+          편집기에서 에이전트 이름(key)을 바꾸면 다른 에이전트의 relationships 에
+          옛 이름이 남는다. 그대로 렌더하면 모델에게 존재하지 않는 ID 를 지목하라고
+          가르치는 셈이라, 계약에서도 knowledge 시드에서도 뺀다.
+        - **자기 참조** — 자기 자신을 관계에 넣은 경우(무의미).
+
+        raise 하지 않는다. 사유는 `_dangling_relationships` 에 모아두고
+        `_verify_engine_contract()` 가 다른 계약 경고와 같은 자리에서 로그로 낸다.
+        """
+        cleaned: dict[str, dict[str, str]] = {}
+        for key, rels in (raw or {}).items():
+            if key not in self.agents or not rels:
+                continue
+            kept: dict[str, str] = {}
+            for other, relation in rels.items():
+                if other == key:
+                    self._dangling_relationships.append(
+                        f"{key}의 relationships 에 자기 자신이 들어 있습니다 — 무시합니다"
+                    )
+                    continue
+                if other not in self.agents:
+                    self._dangling_relationships.append(
+                        f"{key}의 relationships 에 존재하지 않는 에이전트 "
+                        f"{other!r}(관계: {relation!r})가 있습니다 — 계약에서 제외합니다"
+                    )
+                    continue
+                kept[other] = relation
+            if kept:
+                cleaned[key] = kept
+
+        # 단방향 관계 — a 는 b 를 관계로 적었는데 b 는 a 를 안 적은 경우.
+        # "각자 자기 시점"이라 오류는 아니지만, b 는 a 를 낯선 이(stranger_N)로 보게
+        # 되므로(관계 knowledge 시드가 화자 방향뿐) 대부분 config 실수다. 경고만.
+        for key, kept in cleaned.items():
+            for other in kept:
+                if key not in cleaned.get(other, {}):
+                    self._dangling_relationships.append(
+                        f"{key}→{other} 관계는 있는데 {other}→{key} 가 없습니다 — "
+                        f"{other}는 {key}를 낯선 이로 봅니다"
+                    )
+        return cleaned
 
     # ── 엔진 계약 층 ──────────────────────────────────────────────────────────
 
@@ -341,14 +411,23 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         )
 
     def _apply_engine_contract(self) -> None:
-        """모든 에이전트에 정적 계약 블록과 feature 플래그를 건다."""
+        """에이전트마다 정적 계약 블록과 feature 플래그를 건다.
+
+        지도/시간/감염(`world`)은 시뮬레이션 전체가 공유하지만 관계 지도는 **화자
+        시점**이라 에이전트마다 다르다. 그래서 공유 문자열 하나를 전원에게 거는
+        대신 여기서 per-agent 로 조립한다. relationships 가 하나도 없는 시나리오는
+        `build_relationship_contract` 가 `""` 를 돌려주므로 전원이 예전과 **글자
+        단위로 같은** 계약을 받는다.
+        """
         world = self.build_engine_world_contract()
         flags = self.contract_flags()
-        for agent in self.agents.values():
+        for key, agent in self.agents.items():
+            rels = self._agent_relationships.get(key, {})
             agent.set_engine_contract(
-                world,
+                world + build_relationship_contract(rels, self._key_to_alias),
                 has_location_graph = flags["has_location_graph"],
                 has_zone           = flags["has_zone"],
+                relationships      = rels,
             )
 
     def _verify_engine_contract(self) -> list[str]:
@@ -362,6 +441,14 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         flags = self.contract_flags()
         seen: set[str] = set()
         problems: list[str] = []
+        # 관계 지도의 dangling/자기참조는 계약 문자열에서는 이미 사라져 있어
+        # verify_contract 로는 잡히지 않는다 — 초기화 때 기록해 둔 사유를 낸다.
+        for problem in self._dangling_relationships:
+            if problem in seen:
+                continue
+            seen.add(problem)
+            problems.append(problem)
+            logger.warning(f"[계약 검증] 관계 지도: {problem}")
         for key, agent in self.agents.items():
             assembled = agent.get_system_message([], self._key_to_alias)["content"]
             for problem in verify_contract(assembled, **flags):
@@ -471,7 +558,16 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
                 self._agent_visual[key] = st["visual"] or ""
             knowledge = st.get("knowledge")
             if knowledge is not None:
-                self._agent_knowledge[key] = {k for k in knowledge if k in self.agents}
+                # 관계 지도는 **config 사실**이라 항상 knowledge 시드에 포함돼야 한다
+                # (__init__ 의 시드와 같은 불변식). /load·/resume 은 얼려진 config_json
+                # 에서 cfg 를 만들므로 관계를 쓰는 run 은 스냅샷 knowledge 에 이미 그
+                # 시드가 들어 있어 이 합집합이 no-op 이지만, 손편집 스냅샷이나 관계
+                # 시드보다 오래된 knowledge 가 들어와도 계약("아내")과 knowledge 가
+                # 어긋나(stranger_N) 보이지 않도록 방어적으로 다시 넣는다.
+                self._agent_knowledge[key] = (
+                    {k for k in knowledge if k in self.agents}
+                    | set(self._agent_relationships.get(key, {}))
+                )
             stranger_map = st.get("stranger_map")
             if stranger_map is not None:
                 valid = {

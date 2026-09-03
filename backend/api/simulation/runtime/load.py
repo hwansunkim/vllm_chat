@@ -87,6 +87,9 @@ def load_simulation(run_id: str):
         agent_groups    = {a.name: a.groups            for a in cfg.agents}
         agent_locations = {a.name: a.location          for a in cfg.agents}
         agent_visuals   = {a.name: a.visual_description for a in cfg.agents}
+        # 관계 지도도 config 에서 매번 새로 만든다 — 계약 층과 같은 원칙이다.
+        # 여기서 빠뜨리면 /start 로는 관계가 붙고 /load 로는 조용히 사라진다.
+        agent_relationships = {a.name: dict(a.relationships) for a in cfg.agents}
 
         sim_obj = Simulation(
             agents, background_log, LOG_DIR,
@@ -95,6 +98,7 @@ def load_simulation(run_id: str):
             name_aliases=alias_map,
             db=SimDB(os.path.join(LOG_DIR, "simulation.db")),
             agent_groups=agent_groups,
+            agent_relationships=agent_relationships,
             summary_interval=cfg.summary_interval,
             system_agent=cfg.system_agent.model_dump(),
             agent_locations=agent_locations,

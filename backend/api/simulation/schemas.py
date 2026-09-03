@@ -14,6 +14,13 @@ class AgentConfig(BaseModel):
     initial_active:     bool      = True
     display_name:       str       = ""
     groups:             list[str] = []   # 소속 그룹 ID 목록. 빈 배열 = 전체 에이전트 노출 (하위 호환)
+    # 관계 지도 {상대 agent key(= AgentConfig.name): 내가 그를 부르는 관계}.
+    # 예) 김봉남: {"채민경": "아내", "김미경": "큰딸"} / 채민경: {"김봉남": "남편"}.
+    # **각자 자기 시점**이라 서로 대칭일 필요가 없다. location/groups 처럼 ABM 엔진이
+    # 해석하는 필드로, 엔진은 이 값으로 (1) [아는 사람] 계약 블록을 에이전트별로 만들고
+    # (2) <TARGETS>·[이 자리의 사람들]에 관계어 라벨을 붙이고 (3) 서로를 known 으로 시드한다.
+    # 빈 dict = 관계 기능 미사용(계약 블록이 붙지 않고 나머지 동작은 완전히 동일).
+    relationships:      dict[str, str] = {}
     location:           str       = ""  # 초기 위치 (빈값이면 위치 미설정 = 전체 노출)
     visual_description: str       = ""  # 모르는 사람에게 보이는 외모 묘사
     server_id:          str | None = None  # 이 에이전트만 사용할 LLM 서버. None/빈값 = 시뮬레이션 기본 서버(SimStartConfig.server_id)
@@ -300,6 +307,12 @@ class ContractPreviewRequest(BaseModel):
     # 매 턴 같은 자리에 있는 사람들로 채워진다.
     available_targets:      list[str]           = []
     key_to_alias:           dict[str, str]      = {}
+    # 프리뷰는 "에이전트 한 명이 보는 계약"을 그린다. relationships 는 per-agent 라서
+    # 프론트가 **지금 편집 중인 에이전트의** AgentConfig.relationships 를 그대로 보낸다
+    # (비우면 [아는 사람] 블록도, <TARGETS> 관계 라벨도 렌더되지 않는다 = 미사용 상태).
+    # 여기 실린 key 는 실존 검증을 하지 않는다 — 프리뷰는 편집 중 상태를 보여주는 거울이고,
+    # dangling 필터링은 실행 시점(Simulation._sanitize_relationships)의 책임이다.
+    relationships:          dict[str, str]      = {}
 
     def time_enabled(self) -> bool:
         return self.time_mode == "variable" or self.time_per_wave > 0

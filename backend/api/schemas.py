@@ -67,6 +67,8 @@ class AgentCreate(BaseModel):
     visual_description: str = ""
     display_name: str = ""
     initial_active: bool = True
+    # { 상대 agent name: "그를 부르는 관계" }. 시뮬레이션 안에서만 의미가 있다.
+    relationships: dict[str, str] = {}
 
 
 class AgentUpdate(BaseModel):
@@ -87,6 +89,7 @@ class AgentUpdate(BaseModel):
     visual_description: str | None = None
     display_name: str | None = None
     initial_active: bool | None = None
+    relationships: dict[str, str] | None = None
 
 
 class ServerCreate(BaseModel):

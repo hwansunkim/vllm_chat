@@ -90,7 +90,7 @@ export function initSimulationEvents() {
 
   document.getElementById('sim-add-agent-btn').addEventListener('click', () => {
     const newName = `agent${sim.agents.length + 1}`;
-    sim.agents.push({ name: newName, display_name: '', icon: '🤖', system_prompt: '', initial_active: true, groups: [], server_id: null, temperature: null });
+    sim.agents.push({ name: newName, display_name: '', icon: '🤖', system_prompt: '', initial_active: true, groups: [], server_id: null, temperature: null, relationships: {} });
     _expandedAgents.add(newName);
     renderAgentListInConfig();
     renderStartAgentSelect();

@@ -497,3 +497,58 @@ export function getAllGroups() {
   }
   return [...groups].sort();
 }
+
+// ── Relationship helpers (관계 지도) ───────────────────────────────────────────
+// AgentConfig.relationships = { 상대 agent의 name(key): "내가 그를 부르는 관계" }.
+// 각자 **자기 시점**이라 대칭일 필요가 없다(김봉남→채민경 "아내", 채민경→김봉남 "남편").
+// key 는 언제나 시스템 ID(name)이고 display_name 이 아니다 — 엔진이 name 으로 조회한다.
+// 빈 객체 = 기능 미사용이며, 그때 프롬프트는 관계 도입 전과 글자 단위로 같다.
+
+/** 어떤 값이 와도 평범한 { key: string } 객체로 만든다 (구버전 시나리오/손으로 쓴 JSON 대비). */
+export function normalizeRelationships(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+  const out = {};
+  for (const [k, label] of Object.entries(v)) {
+    const key = String(k).trim();
+    if (!key) continue;                       // 빈 key 는 엔진에서 조회 불가 — 버린다
+    out[key] = label == null ? '' : String(label);
+  }
+  return out;
+}
+
+/**
+ * 관계 key 가 dangling 인가 = 엔진(Simulation._sanitize_relationships)이 조용히 버릴 key 인가.
+ * 판정 규칙은 엔진과 동일: "현재 에이전트 목록에 없다" 또는 "자기 자신".
+ */
+export function isDanglingRelationshipKey(key, selfName) {
+  if (!key) return true;
+  if (key === selfName) return true;
+  return !sim.agents.some(a => a.name === key);
+}
+
+/** dangling 을 걷어낸 관계 지도 — 실행 시점에 실제로 계약에 실리는 것과 같다. */
+export function liveRelationships(agent) {
+  if (!agent) return {};
+  const out = {};
+  for (const [k, v] of Object.entries(normalizeRelationships(agent.relationships))) {
+    if (!isDanglingRelationshipKey(k, agent.name)) out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * 엔진의 `_key_to_alias` 와 **같은 2단계**로 만든 표시명 맵 { name: display_name }.
+ * headless.py 등은 `{a.display_name: a.name}` 정방향 맵을 먼저 만들고 뒤집는다 —
+ * display_name 이 겹치면 정방향에서 충돌해 한 명만 살아남는 것까지 재현해야
+ * "미리보기 = 실제 주입본" 약속이 유지된다.
+ */
+export function buildKeyToAlias() {
+  const fwd = {};
+  for (const a of sim.agents) {
+    const d = (a.display_name || '').trim();
+    if (d) fwd[d] = a.name;
+  }
+  const map = {};
+  for (const [d, n] of Object.entries(fwd)) map[n] = d;
+  return map;
+}

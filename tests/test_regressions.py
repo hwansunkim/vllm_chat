@@ -13,8 +13,11 @@ from tenacity import wait_none
 from backend import config, state
 from backend.api import conversations
 from backend.api import _conv_helpers
+from backend.api import agents as agents_api
 from backend.api import servers as servers_api
-from backend.api.schemas import ChatMessage, ServerCreate, ServerUpdate
+from backend.api.schemas import (
+    AgentCreate, AgentUpdate, ChatMessage, ServerCreate, ServerUpdate,
+)
 from backend.db.database import (
     get_db, init_tables, migrate_db, seed_default_servers,
 )
@@ -2207,6 +2210,17 @@ class ResumeContinueWaveBaseTests(unittest.TestCase):
         self.assertIs(calls["run"]["kwargs"].get("early_stop_enabled"), False)
         self.assertEqual(calls["run"]["kwargs"].get("max_silence_waves"), 9)
 
+    def test_resume_forwards_the_relationship_map(self):
+        # /start 에선 관계 계약이 붙고 /resume 에선 조용히 사라지는 비일관을 막는다.
+        cfg = self._cfg(agents=[
+            AgentConfig(name="a", system_prompt="너는 a다.",
+                        relationships={"b": "아내"}),
+            AgentConfig(name="b", system_prompt="너는 b다."),
+        ])
+        _, calls = self._run_resume(self._run_row(cfg))
+        self.assertEqual(calls["sim_kwargs"].get("agent_relationships"),
+                         {"a": {"b": "아내"}, "b": {}})
+
 
 class ConversationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -4066,6 +4080,422 @@ class EngineContractVerificationTests(unittest.TestCase):
         self.assertIn("[시간 인식]", problems[0])
 
 
+# ── 관계 지도 (AgentConfig.relationships) ──────────────────────────────────────
+#
+# 문제: 에이전트는 자기 정체("나는 아빠")는 알아도 **다른 에이전트가 자기에게
+# 누구인지**를 모른다. 페르소나가 "딸"·"아내" 같은 역할어로만 쓰면 그 역할어가
+# `target` 에 넣어야 할 어떤 ID 인지 바인딩되지 않는다. 그래서 관계를 프로즈가
+# 아니라 **구조 데이터**로 받아(key = 그 사람 이름, 값 = 화자 시점의 관계어)
+# 엔진이 계약 블록 · <TARGETS> 라벨 · 상황 컨텍스트 · knowledge 시드에 주입한다.
+#
+# 최상위 불변식: relationships 를 **쓰지 않는 시나리오는 한 글자도 달라지지
+# 않는다** (`RelationshipOptOutTests`).
+
+_REL_FAMILY = {
+    "김봉남": {"채민경": "아내", "김미경": "큰딸"},
+    "채민경": {"김봉남": "남편", "김미경": "큰딸"},
+    "김미경": {"김봉남": "아빠", "채민경": "엄마"},
+}
+
+
+class RelationshipContractBuilderTests(unittest.TestCase):
+    """`build_relationship_contract` 순수 함수."""
+
+    def test_empty_map_renders_nothing(self):
+        from ABM.prompt_contract import build_relationship_contract
+
+        self.assertEqual(build_relationship_contract({}), "")
+        self.assertEqual(build_relationship_contract({}, {"a": "에이"}), "")
+
+    def test_renders_id_bound_lines_in_insertion_order(self):
+        from ABM.prompt_contract import build_relationship_contract
+
+        text = build_relationship_contract(_REL_FAMILY["김봉남"])
+        self.assertIn("[아는 사람 (나와의 관계)]", text)
+        self.assertIn("target 필드에 아래 ID를 씁니다", text)
+        self.assertIn('  - 채민경 (ID: "채민경") — 당신의 아내', text)
+        self.assertIn('  - 김미경 (ID: "김미경") — 당신의 큰딸', text)
+        self.assertLess(text.index("채민경"), text.index("김미경"))
+
+    def test_alias_supplies_the_display_name_key_stays_the_id(self):
+        # key 는 언제나 시스템 ID 자리에, 표시 이름은 alias 가 있으면 그쪽을 쓴다.
+        from ABM.prompt_contract import build_relationship_contract
+
+        text = build_relationship_contract({"a": "아내"}, {"a": "채민경"})
+        self.assertIn('  - 채민경 (ID: "a") — 당신의 아내', text)
+        # alias 가 없으면 key 를 표시명 자리에 폴백
+        self.assertIn('  - a (ID: "a") — 당신의 아내',
+                      build_relationship_contract({"a": "아내"}, {}))
+        self.assertIn('  - a (ID: "a") — 당신의 아내',
+                      build_relationship_contract({"a": "아내"}, {"b": "비"}))
+
+    def test_blank_relation_keeps_the_person_but_drops_the_suffix(self):
+        # 관계어가 비어도 "이 사람을 안다"는 사실은 유효하다.
+        from ABM.prompt_contract import build_relationship_contract
+
+        text = build_relationship_contract({"a": "  "}, {"a": "에이"})
+        self.assertIn('  - 에이 (ID: "a")', text)
+        self.assertNotIn("당신의", text)
+
+    def test_engine_contract_places_the_block_between_world_and_output(self):
+        from ABM.prompt_contract import build_engine_contract
+
+        text = build_engine_contract(
+            extra_fields=_FIELDS, available_targets=["채민경"],
+            location_graph=_GRAPH_ZONED, location_zone=_ZONES, time_enabled=True,
+            relationships={"채민경": "아내"},
+        )
+        order = [
+            text.index("[위치 그래프"),
+            text.index("[시간 인식]"),
+            text.index("[아는 사람 (나와의 관계)]"),
+            text.index("[Important Output Format]"),
+        ]
+        self.assertEqual(order, sorted(order))
+        # 같은 dict 가 <TARGETS> 라벨에도 쓰인다 — 한 번만 넘기면 두 자리에 반영.
+        self.assertIn('- ID: "채민경"  (채민경 · 아내)', text)
+
+    def test_interview_carve_out_still_drops_only_the_output_schema(self):
+        from ABM.prompt_contract import build_engine_contract
+
+        text = build_engine_contract(
+            extra_fields=_FIELDS, time_enabled=True,
+            relationships={"채민경": "아내"}, include_output_schema=False,
+        )
+        self.assertIn("[아는 사람 (나와의 관계)]", text)
+        self.assertNotIn("[Important Output Format]", text)
+
+
+class RelationshipTargetLabelTests(unittest.TestCase):
+    """`<TARGETS>` 목록의 관계어 라벨 — `- ID: "채민경"  (채민경 · 아내)`."""
+
+    def test_flat_targets_get_relationship_labels(self):
+        from ABM.prompt_contract import build_output_contract
+
+        text = build_output_contract(
+            ["채민경", "김미경"], _FIELDS, {"채민경": "엄마"},
+            speaker_relationships={"채민경": "아내", "김미경": "큰딸"},
+        )
+        # alias 가 있으면 표시명 자리에 alias, 없으면 key
+        self.assertIn('- ID: "채민경"  (엄마 · 아내)', text)
+        self.assertIn('- ID: "김미경"  (김미경 · 큰딸)', text)
+
+    def test_sectioned_targets_get_relationship_labels(self):
+        from ABM.prompt_contract import build_output_contract
+
+        text = build_output_contract(
+            [], _FIELDS, {"채민경": "엄마"},
+            target_sections=[("아는 사람", ["채민경"]),
+                             ("처음 보는 사람", ["stranger_1"])],
+            speaker_relationships={"채민경": "아내"},
+        )
+        self.assertIn('- ID: "채민경"  (엄마 · 아내)', text)
+        # 낯선 이 ID 는 관계 지도에 없으므로 라벨이 붙지 않는다.
+        self.assertIn('- ID: "stranger_1"\n', text)
+
+    def test_unrelated_targets_keep_the_plain_alias_label(self):
+        from ABM.prompt_contract import build_output_contract
+
+        text = build_output_contract(
+            ["a", "b"], _FIELDS, {"a": "에이", "b": "비"},
+            speaker_relationships={"a": "아내"},
+        )
+        self.assertIn('- ID: "a"  (에이 · 아내)', text)
+        self.assertIn('- ID: "b"  (비)', text)      # 관계 없음 → 기존 포맷 그대로
+
+    def test_no_relationships_is_byte_identical_to_the_old_render(self):
+        from ABM.prompt_contract import build_output_contract
+
+        base = build_output_contract(["a"], _FIELDS, {"a": "에이"})
+        for empty in (None, {}):
+            self.assertEqual(
+                build_output_contract(["a"], _FIELDS, {"a": "에이"},
+                                      speaker_relationships=empty),
+                base,
+            )
+
+
+class RelationshipEngineWiringTests(unittest.TestCase):
+    """Simulation 이 관계 지도를 소비하는 방식 (per-agent 계약 · knowledge · 상황)."""
+
+    def _sim(self, tmp, *, keys=("김봉남", "채민경", "김미경"), rels=None, **kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in keys}
+        sim = Simulation(
+            agents, _BACKGROUND, tmp,
+            agent_relationships=_REL_FAMILY if rels is None else rels, **kw,
+        )
+        return sim, agents
+
+    def test_each_agent_gets_its_own_contract_block(self):
+        # 관계는 화자 시점이라 공유 문자열 하나로는 표현할 수 없다.
+        with tempfile.TemporaryDirectory() as tmp:
+            _, agents = self._sim(tmp, time_per_wave=30)
+            dad, mom = agents["김봉남"], agents["채민경"]
+            self.assertNotEqual(dad.engine_contract, mom.engine_contract)
+            self.assertIn('- 채민경 (ID: "채민경") — 당신의 아내', dad.engine_contract)
+            self.assertIn('- 김봉남 (ID: "김봉남") — 당신의 남편', mom.engine_contract)
+            # 공유분(세계 계약)은 그대로 양쪽에 동일하게 들어 있다.
+            self.assertIn("[시간 인식]", dad.engine_contract)
+            self.assertIn("[시간 인식]", mom.engine_contract)
+            # 사용자 프롬프트는 여전히 오염되지 않는다.
+            self.assertEqual(dad.system_prompt, "너는 김봉남다.")
+
+    def test_display_names_come_from_name_aliases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, agents = self._sim(
+                tmp, keys=("dad", "mom"),
+                rels={"dad": {"mom": "아내"}},
+                name_aliases={"채민경": "mom"},   # {표시 이름: key}
+            )
+            self.assertIn('- 채민경 (ID: "mom") — 당신의 아내',
+                          agents["dad"].engine_contract)
+
+    def test_contract_is_replaced_not_accumulated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            from ABM.simulation import Simulation
+            _, agents = self._sim(tmp)
+            first = agents["김봉남"].engine_contract
+            Simulation(agents, _BACKGROUND, tmp, agent_relationships=_REL_FAMILY)
+            self.assertEqual(agents["김봉남"].engine_contract, first)
+            self.assertEqual(first.count("[아는 사람 (나와의 관계)]"), 1)
+
+    def test_targets_block_uses_the_speaker_relationships(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, agents = self._sim(tmp)
+            dad = agents["김봉남"].get_system_message(["채민경"])["content"]
+            mom = agents["채민경"].get_system_message(["김봉남"])["content"]
+            self.assertIn('- ID: "채민경"  (채민경 · 아내)', dad)
+            self.assertIn('- ID: "김봉남"  (김봉남 · 남편)', mom)
+
+    def test_relationships_seed_mutual_knowledge_over_groups(self):
+        # groups 로는 서로 모르는 사이인데 관계가 명시돼 있으면 아는 사이여야 한다.
+        # (안 그러면 계약엔 "아내"라 써 놓고 같은 방에서 stranger_1 로 보인다.)
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _ = self._sim(
+                tmp,
+                agent_groups={"김봉남": ["집"], "채민경": ["직장"], "김미경": ["학교"]},
+            )
+            self.assertEqual(sim._agent_knowledge["김봉남"], {"채민경", "김미경"})
+            self.assertEqual(sim._agent_knowledge["채민경"], {"김봉남", "김미경"})
+
+    def test_groups_fallback_survives_when_relationships_are_absent(self):
+        # relationships 없는 에이전트는 groups 규칙("groups 없으면 전원 known")대로.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _ = self._sim(tmp, rels={"김봉남": {"채민경": "아내"}})
+            self.assertEqual(sim._agent_knowledge["김미경"], {"김봉남", "채민경"})
+            self.assertEqual(sim._agent_knowledge["김봉남"], {"채민경", "김미경"})
+
+    def test_situation_context_labels_known_people(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _ = self._sim(
+                tmp,
+                agent_locations={"김봉남": "거실", "채민경": "거실", "김미경": "안방"},
+                location_graph=[dict(n) for n in _ZONED_NODES],
+            )
+            known, strangers = sim._compute_wave_targets("김봉남")
+            text = sim._build_situation_context("김봉남", known, strangers)
+            self.assertIn('아는 사람: 채민경 (ID: "채민경", 아내)', text)
+
+    def test_situation_context_is_unchanged_without_relationships(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _ = self._sim(
+                tmp, rels={},
+                agent_locations={"김봉남": "거실", "채민경": "거실", "김미경": "안방"},
+                location_graph=[dict(n) for n in _ZONED_NODES],
+            )
+            known, strangers = sim._compute_wave_targets("김봉남")
+            text = sim._build_situation_context("김봉남", known, strangers)
+            self.assertIn('아는 사람: 채민경 (ID: "채민경")', text)
+
+    def test_dangling_and_self_keys_are_dropped_with_a_warning(self):
+        # 시나리오 편집기에서 에이전트 이름(key)을 바꾸면 남의 relationships 에
+        # 옛 이름이 남는다. 존재하지 않는 ID 를 지목하라고 가르치면 안 되므로
+        # 계약·knowledge 양쪽에서 빼되, raise 하지 않고 경고만 남긴다.
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertLogs("ABM.simulation.core", level="WARNING") as cm:
+                sim, agents = self._sim(tmp, rels={
+                    "김봉남": {"채민경": "아내", "없는사람": "유령", "김봉남": "나"},
+                })
+            joined = "\n".join(cm.output)
+            self.assertIn("없는사람", joined)
+            self.assertIn("자기 자신", joined)
+
+            contract = agents["김봉남"].engine_contract
+            self.assertIn('- 채민경 (ID: "채민경") — 당신의 아내', contract)
+            self.assertNotIn("없는사람", contract)
+            self.assertNotIn("유령", contract)
+            self.assertEqual(sim._agent_relationships["김봉남"], {"채민경": "아내"})
+            self.assertNotIn("없는사람", sim._agent_knowledge["김봉남"])
+            problems = sim._verify_engine_contract()
+            self.assertTrue(any("없는사람" in p for p in problems))
+
+    def test_one_directional_relationship_warns_but_does_not_drop(self):
+        # a→b 는 있는데 b→a 가 없으면 b 는 a 를 낯선 이로 본다. "각자 자기 시점"
+        # 이라 오류는 아니지만 대개 config 실수라 경고만 낸다 (계약에서 빼지 않는다).
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertLogs("ABM.simulation.core", level="WARNING") as cm:
+                sim, agents = self._sim(tmp, rels={"김봉남": {"채민경": "아내"}})
+            joined = "\n".join(cm.output)
+            self.assertIn("김봉남→채민경", joined)
+            self.assertIn("낯선 이", joined)
+            # 관계는 그대로 살아 있다 — 경고일 뿐 제거 아님
+            self.assertIn("당신의 아내", agents["김봉남"].engine_contract)
+            self.assertEqual(sim._agent_relationships["김봉남"], {"채민경": "아내"})
+
+    def test_symmetric_relationships_do_not_warn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _ = self._sim(tmp, rels={
+                "김봉남": {"채민경": "아내"}, "채민경": {"김봉남": "남편"},
+            })
+            self.assertFalse([d for d in sim._dangling_relationships if "낯선 이" in d])
+
+    def test_restored_knowledge_never_drops_the_relationship_seed(self):
+        # /resume·/load 는 스냅샷의 knowledge 로 덮어쓴다. 저장된 run 의 시나리오에
+        # 관계를 새로 추가한 뒤 재개하면, 계약엔 "아내"라고 쓰여 있는데 knowledge 엔
+        # 없어 같은 방에서 stranger_N 으로 보이는 모순이 생긴다 — 관계는 config 사실
+        # 이므로 복원 후에도 항상 known 이어야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _ = self._sim(tmp, rels={"김봉남": {"채민경": "아내"}})
+            sim.restore_agent_state({"김봉남": {"knowledge": ["김미경"]}})
+            self.assertEqual(sim._agent_knowledge["김봉남"], {"김미경", "채민경"})
+
+    def test_agent_config_schema_defaults_to_an_empty_map(self):
+        from backend.api.simulation.schemas import AgentConfig
+
+        self.assertEqual(AgentConfig(name="x", system_prompt="y").relationships, {})
+        self.assertEqual(
+            AgentConfig(name="x", system_prompt="y",
+                        relationships={"b": "아내"}).relationships,
+            {"b": "아내"},
+        )
+
+
+class RelationshipRestorePathTests(unittest.TestCase):
+    """`/load` 도 관계 지도를 엔진에 넘긴다 (`/resume` 은 ResumeContinueWaveBaseTests).
+
+    관계 계약은 저장되지 않고 실행 시점에 config 로부터 매번 새로 만들어진다 —
+    지도/시간/감염 계약과 정확히 같은 원칙이다. 복원 경로가 이 인자를 빠뜨리면
+    `/start` 로 시작한 시뮬레이션에만 관계가 붙고 `/load` 로 되살린 같은 시나리오는
+    관계 없이 돌아간다(사용자는 알 방법이 없다).
+    """
+
+    def _load(self, cfg):
+        from unittest import mock
+        import ABM.agent as abm_agent
+        import ABM.simulation as abm_simulation
+        import ABM.db as abm_db
+        import ABM.memory_compressor as abm_mc
+        from backend.api.simulation.runtime import load as load_mod
+
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, *a, **k):
+                self.memory = []
+                self._memory_block = None
+
+        class FakeSim:
+            def __init__(self, *a, **k):
+                captured.update(k)
+                self.agents            = {}
+                self.background_log    = []
+                self.shared_log        = []
+                self._pending_wave     = None
+                self._agent_infection  = {}
+            def restore_agent_state(self, s): pass
+
+        class FakeDB:
+            def get_run(self, rid):
+                return {"config_json": cfg.model_dump_json(), "start_wave": 0,
+                        "total_waves": 0, "scenario_id": "scn",
+                        "scenario_name": "시나리오", "active_agents_json": None,
+                        "pending_wave_json": None, "elapsed_minutes": 0}
+            def get_agent_snapshots(self, rid): return {}
+            def get_agent_states(self, rid):    return {}
+            def get_run_log(self, rid):         return []
+
+        sim_runtime._sim["status"] = "idle"
+        with mock.patch.object(load_mod, "get_sim_db", lambda: FakeDB()), \
+             mock.patch.object(load_mod, "_make_llm", lambda *a, **k: None), \
+             mock.patch.object(load_mod, "_make_agent_llm_map", lambda *a, **k: {}), \
+             mock.patch.object(abm_agent, "Agent", FakeAgent), \
+             mock.patch.object(abm_simulation, "Simulation", FakeSim), \
+             mock.patch.object(abm_db, "SimDB", lambda *a, **k: None), \
+             mock.patch.object(abm_mc, "build_memory_block", lambda *a, **k: None):
+            resp = load_mod.load_simulation("prev-run")
+        return resp, captured
+
+    def test_load_forwards_the_relationship_map(self):
+        cfg = SimStartConfig(
+            agents=[AgentConfig(name="a", system_prompt="너는 a다.",
+                                relationships={"b": "아내"}),
+                    AgentConfig(name="b", system_prompt="너는 b다.")],
+            background="테스트", start_agent="a",
+        )
+        resp, cap = self._load(cfg)
+        self.assertEqual(resp["status"], "loaded")
+        self.assertEqual(cap.get("agent_relationships"), {"a": {"b": "아내"}, "b": {}})
+
+    def test_load_without_relationships_forwards_empty_maps(self):
+        cfg = SimStartConfig(
+            agents=[AgentConfig(name="a", system_prompt="너는 a다.")],
+            background="테스트", start_agent="a",
+        )
+        _, cap = self._load(cfg)
+        self.assertEqual(cap.get("agent_relationships"), {"a": {}})
+
+
+class RelationshipOptOutTests(unittest.TestCase):
+    """**relationships 를 쓰지 않는 시나리오는 완전히 불변**이어야 한다.
+
+    관계 기능은 opt-in 이다. 필드를 비워 둔 시나리오에서 계약 문자열이 한 글자라도
+    달라지면 프리즈 템플릿 비교·골든 파일·기존 프롬프트 튜닝이 전부 흔들린다.
+    """
+
+    def _contracts(self, tmp, **kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192,
+                           extra_fields=_FIELDS) for k in ("a", "b")}
+        Simulation(agents, _BACKGROUND, tmp, **kw)
+        return {k: (ag.engine_contract,
+                    ag.get_system_message(["b"], {"b": "비"})["content"])
+                for k, ag in agents.items()}
+
+    def test_omitted_and_empty_relationships_render_identically(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            omitted = self._contracts(tmp, location_graph=[dict(n) for n in _ZONED_NODES],
+                                      time_per_wave=30)
+            empty   = self._contracts(tmp, location_graph=[dict(n) for n in _ZONED_NODES],
+                                      time_per_wave=30, agent_relationships={})
+            per_agent_empty = self._contracts(
+                tmp, location_graph=[dict(n) for n in _ZONED_NODES],
+                time_per_wave=30, agent_relationships={"a": {}, "b": {}},
+            )
+        self.assertEqual(omitted, empty)
+        self.assertEqual(omitted, per_agent_empty)
+
+    def test_no_relationship_block_appears_anywhere(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self._contracts(tmp, time_per_wave=30)
+        for contract, assembled in out.values():
+            self.assertNotIn("[아는 사람 (나와의 관계)]", contract)
+            self.assertNotIn("[아는 사람 (나와의 관계)]", assembled)
+            self.assertNotIn(" · ", assembled.split("[Important Output Format]")[-1])
+        # 모든 에이전트가 같은 공유 계약을 받는다(= 예전 동작).
+        self.assertEqual(out["a"][0], out["b"][0])
+
+    def test_agent_relationships_defaults_to_empty(self):
+        from ABM.agent import Agent
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(Agent("a", "너는 a다.", tmp).relationships, {})
+
+
 class ZoneMeetHintTests(_MeetingSimHarness, unittest.TestCase):
     """[같은 구역의 다른 곳] 각 줄의 인라인 `→ 만나려면 move_to: "<ID>"` 힌트.
 
@@ -4672,6 +5102,39 @@ class ContractPreviewEndpointTests(unittest.TestCase):
         self.assertNotIn("[Important Output Format]", res.contract)
         self.assertEqual(res.warnings, [])
 
+    def test_preview_renders_relationships_and_matches_the_injected_contract(self):
+        # 관계 지도는 per-agent 라 프리뷰도 "지금 편집 중인 에이전트 한 명"의 시점을
+        # 그린다. world_contract 조각은 그 에이전트의 engine_contract 와 같아야 한다.
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        rels = {"b": "아내"}
+        res = self._preview(time_per_wave=30, relationships=rels,
+                            available_targets=["b"], key_to_alias={"b": "비"})
+        self.assertIn('- 비 (ID: "b") — 당신의 아내', res.world_contract)
+        self.assertIn('- ID: "b"  (비 · 아내)', res.output_contract)
+        self.assertEqual(res.contract, res.world_contract + res.output_contract)
+        self.assertEqual(res.warnings, [])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {k: Agent(k, "너는 a다.", tmp, token_limit=8192,
+                               extra_fields=_FIELDS) for k in ("a", "b")}
+            Simulation(agents, _BACKGROUND, tmp, time_per_wave=30,
+                       name_aliases={"비": "b"},
+                       agent_relationships={"a": rels})
+            injected = agents["a"].get_system_message(["b"], {"b": "비"})["content"]
+            self.assertEqual(agents["a"].engine_contract, res.world_contract)
+
+        self.assertEqual(injected, "너는 a다." + res.contract)
+
+    def test_preview_without_relationships_is_unchanged(self):
+        base = self._preview(time_per_wave=30, available_targets=["b"],
+                             key_to_alias={"b": "비"})
+        empty = self._preview(time_per_wave=30, relationships={},
+                              available_targets=["b"], key_to_alias={"b": "비"})
+        self.assertEqual(base.contract, empty.contract)
+        self.assertNotIn("[아는 사람 (나와의 관계)]", base.contract)
+
     def test_preview_has_no_side_effects_on_disk(self):
         # Simulation/Agent 를 만들지 않으므로 로그 파일도 DB 도 건드리지 않는다.
         with tempfile.TemporaryDirectory() as tmp:
@@ -5022,6 +5485,35 @@ class CliTests(unittest.TestCase):
         self.assertIn("[위치 그래프", out)      # 위치 그래프 계약
         self.assertIn("[몸 상태", out)          # 감염 계약
         self.assertIn('"move_to"', out)         # 출력 계약
+        self.assertIn("관계 지도     미사용", out)
+        self.assertNotIn("[아는 사람 (나와의 관계)]", out)
+
+    def test_dry_run_prints_the_relationship_map_per_agent(self):
+        # 관계 지도만 에이전트마다 다르므로 공통 계약과 분리해서 보여준다.
+        from ABM.cli import EXIT_OK, cmd_run
+        import io
+        from contextlib import redirect_stdout, redirect_stderr
+
+        raw = json.loads((_FIXTURES / "golden_scenario.json").read_text(encoding="utf-8"))
+        cfg = json.loads(raw["config_json"]) if "config_json" in raw else raw["config"]
+        cfg["agents"][0]["relationships"] = {"b": "아내", "없는사람": "유령"}
+        cfg["agents"][1]["relationships"] = {"a": "남편"}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "rel.json")
+            Path(path).write_text(json.dumps({"name": "관계", "config": cfg}),
+                                  encoding="utf-8")
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                code = cmd_run(self._args(["run", path, "--dry-run"]))
+
+        text = out.getvalue()
+        self.assertEqual(code, EXIT_OK)
+        self.assertIn("관계 지도     2명 설정", text)
+        self.assertIn("## a", text)
+        self.assertIn('- 나린 (ID: "b") — 당신의 아내', text)   # display_name 사용
+        self.assertIn('- 가온 (ID: "a") — 당신의 남편', text)
+        self.assertNotIn("유령", text)                          # dangling 은 렌더 제외
+        self.assertIn("없는사람", err.getvalue())                # 대신 경고
 
     def test_dry_run_overrides_reach_the_config(self):
         from ABM.cli import _build_config
@@ -5337,6 +5829,123 @@ class HeadlessSimulationArgumentTests(unittest.TestCase):
     def test_all_active_agents_pass_none_so_the_engine_defaults(self):
         cfg, _ = _golden_config()
         self.assertIsNone(self._capture(cfg)["initial_agents"])
+
+    def test_relationships_are_forwarded_per_agent(self):
+        # 관계 지도는 location/groups/visuals 와 같은 방식으로 key 별로 뽑혀 전달된다.
+        # 여기서 빠지면 GUI /start 만 관계 블록 없이 조용히 돌아간다(CLI 는 정상).
+        cfg, _ = _golden_config()
+        self.assertEqual(self._capture(cfg)["agent_relationships"], {"a": {}, "b": {}})
+
+        data = cfg.model_dump()
+        data["agents"][0]["relationships"] = {"b": "아내"}
+        cap = self._capture(SimStartConfig(**data))
+        self.assertEqual(cap["agent_relationships"], {"a": {"b": "아내"}, "b": {}})
+
+
+class ChatAgentRelationshipsTests(unittest.TestCase):
+    """관계 지도가 채팅 에이전트 테이블에서 왕복 보존되는가.
+
+    시뮬레이션 -> 채팅 -> 시뮬레이션 왕복에서 groups 는 살아 돌아오는데
+    relationships 만 경고 없이 {} 로 유실되던 회귀를 막는다.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.old_db_path = config.DB_PATH
+        config.DB_PATH = Path(self.tmpdir.name) / "memory.db"
+        conn = get_db()
+        init_tables(conn)
+        migrate_db(conn)
+        conn.close()
+
+    def tearDown(self):
+        config.DB_PATH = self.old_db_path
+        self.tmpdir.cleanup()
+
+    def _create(self, **kwargs):
+        return agents_api.create_agent(AgentCreate(name="김봉남", **kwargs))
+
+    def test_relationships_survive_create_and_get(self):
+        created = self._create(relationships={"채민경": "아내", "김미경": "딸"})
+        self.assertEqual(created["relationships"], {"채민경": "아내", "김미경": "딸"})
+        # 새 커넥션으로 다시 읽어도(= DB 에 실제로 저장됐는가) 같아야 한다.
+        self.assertEqual(agents_api.get_agent(created["id"])["relationships"],
+                         {"채민경": "아내", "김미경": "딸"})
+
+    def test_relationships_default_to_empty_map(self):
+        created = self._create()
+        self.assertEqual(created["relationships"], {})
+        self.assertEqual(agents_api.list_agents()[0]["relationships"], {})
+
+    def test_partial_update_preserves_relationships(self):
+        created = self._create(relationships={"채민경": "아내"})
+        # 이름만 고치는 부분 업데이트가 관계 지도를 지우면 안 된다.
+        updated = agents_api.update_agent(created["id"], AgentUpdate(name="김봉남2"))
+        self.assertEqual(updated["relationships"], {"채민경": "아내"})
+
+    def test_explicit_null_does_not_reset_relationships(self):
+        # groups 등 다른 보존 전용 필드와 동일하게, 명시적 null 은 "건드리지 않음"이다.
+        created = self._create(relationships={"채민경": "아내"})
+        updated = agents_api.update_agent(
+            created["id"], AgentUpdate(**{"relationships": None, "name": "김봉남2"}))
+        self.assertEqual(updated["relationships"], {"채민경": "아내"})
+
+    def test_update_can_replace_and_clear_relationships(self):
+        created = self._create(relationships={"채민경": "아내"})
+        updated = agents_api.update_agent(
+            created["id"], AgentUpdate(relationships={"김미경": "딸"}))
+        self.assertEqual(updated["relationships"], {"김미경": "딸"})
+        cleared = agents_api.update_agent(created["id"], AgentUpdate(relationships={}))
+        self.assertEqual(cleared["relationships"], {})
+
+    def test_legacy_row_without_relationships_reads_as_empty_map(self):
+        # 마이그레이션으로 컬럼만 생긴 구 row 는 값이 NULL 이다 — json.loads(None) 방어.
+        created = self._create(relationships={"채민경": "아내"})
+        conn = get_db()
+        conn.execute("UPDATE agents SET relationships=NULL WHERE id=?", (created["id"],))
+        conn.commit()
+        conn.close()
+        self.assertEqual(agents_api.get_agent(created["id"])["relationships"], {})
+
+    def test_corrupt_relationships_value_reads_as_empty_map(self):
+        created = self._create()
+        conn = get_db()
+        for bad in ("not json", '["배열은 관계지도가 아니다"]'):
+            conn.execute("UPDATE agents SET relationships=? WHERE id=?", (bad, created["id"]))
+            conn.commit()
+            self.assertEqual(agents_api.get_agent(created["id"])["relationships"], {})
+        conn.close()
+
+    def test_migration_adds_relationships_column_to_legacy_agents_table(self):
+        conn = get_db()
+        conn.execute("DROP TABLE agents")
+        # relationships 컬럼이 없던 구 스키마 재현.
+        conn.execute("""
+            CREATE TABLE agents (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                system_prompt TEXT NOT NULL DEFAULT '',
+                icon TEXT NOT NULL DEFAULT '🤖',
+                model TEXT, temperature REAL NOT NULL DEFAULT 0.7,
+                max_tokens INTEGER NOT NULL DEFAULT 1024,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute(
+            "INSERT INTO agents (id, name, created_at, updated_at) VALUES (?,?,?,?)",
+            ("old-1", "구버전", "2026-01-01T00:00:00", "2026-01-01T00:00:00"),
+        )
+        conn.commit()
+
+        migrate_db(conn)
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(agents)").fetchall()]
+        conn.close()
+
+        self.assertIn("relationships", cols)
+        self.assertEqual(agents_api.get_agent("old-1")["relationships"], {})
+        # 마이그레이션 후에도 새 에이전트 생성(INSERT 컬럼 목록)이 동작해야 한다.
+        self.assertEqual(self._create(relationships={"a": "친구"})["relationships"],
+                         {"a": "친구"})
 
 
 if __name__ == "__main__":

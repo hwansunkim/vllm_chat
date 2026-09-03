@@ -59,6 +59,11 @@ class Agent:
         self.engine_contract: str = ""
         self._has_location_graph: bool = False
         self._has_zone: bool = False
+        # 이 에이전트 시점의 관계 지도 {상대 key: 관계}. `engine_contract` 안의
+        # [아는 사람] 블록과 **같은 데이터**이며, 매 턴 새로 만들어지는 출력 계약의
+        # <TARGETS> 목록에 관계어 라벨을 붙이는 데 쓰인다. 관계는 시뮬레이션 수명
+        # 동안 불변이라 턴마다 넘기지 않고 계약과 함께 한 번 걸어둔다.
+        self.relationships: dict[str, str] = {}
         self._trimmed_count: int  = 0
         self._total_added:   int  = 0
         self._last_prompt_tokens: int | None = None
@@ -94,16 +99,23 @@ class Agent:
         *,
         has_location_graph: bool = False,
         has_zone: bool = False,
+        relationships: dict[str, str] | None = None,
     ) -> None:
-        """시뮬레이션이 소유한 정적 계약 블록(지도/시간/감염)을 이 에이전트에 건다.
+        """시뮬레이션이 소유한 정적 계약 블록(지도/시간/감염/관계)을 이 에이전트에 건다.
 
         `+=`가 아니라 **대입**이다 — 같은 Agent를 두 번 초기화해도 계약이 두 번
         붙지 않는다. `has_*` 플래그는 출력 계약의 `move_to` 문구를 조건부로
         만드는 데 쓰인다(그래프 없는 시나리오에 rendezvous 안내가 새지 않도록).
+
+        `world_contract` 는 이미 [아는 사람] 블록까지 조립된 **이 에이전트 전용**
+        문자열이다(`core._apply_engine_contract`). `relationships` 는 그 블록을
+        만든 원본 dict 로, 출력 계약의 `<TARGETS>` 라벨에 재사용된다 — 계약 문자열을
+        다시 파싱하지 않도록 구조 데이터를 그대로 들고 있는다.
         """
         self.engine_contract = world_contract or ""
         self._has_location_graph = bool(has_location_graph)
         self._has_zone = bool(has_zone)
+        self.relationships = dict(relationships or {})
 
     def get_system_message(
         self,
@@ -129,6 +141,7 @@ class Agent:
                 situation_targets=situation_targets,
                 has_location_graph=self._has_location_graph,
                 has_zone=self._has_zone,
+                speaker_relationships=self.relationships or None,
             ),
         }
 

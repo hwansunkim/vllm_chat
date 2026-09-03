@@ -321,6 +321,8 @@ def _dry_run(cfg, scenario_name: str) -> int:
     print(f"위치 그래프   {len(cfg.location_graph)}개 노드")
     print(f"감염 모델     {'ON — ' + (cfg.infection_model.disease_name or '(이름 없음)') if cfg.infection_model.enabled else 'OFF'}")
     print(f"디렉터       {'ON' if cfg.system_agent.enabled else 'OFF'}")
+    _rel_agents = [a for a in cfg.agents if a.relationships]
+    print(f"관계 지도     {f'{len(_rel_agents)}명 설정' if _rel_agents else '미사용'}")
     print(f"서버         {cfg.server_id or '(기본)'} · temperature {cfg.temperature}")
     print(f"시나리오 이벤트 {len(cfg.events)}건")
 
@@ -340,8 +342,31 @@ def _dry_run(cfg, scenario_name: str) -> int:
     except Exception as e:
         print(f"\n계약을 생성할 수 없습니다: {e}", file=sys.stderr)
         return EXIT_CONFIG
-    print("\n" + "─" * 60 + "\n엔진 프롬프트 계약\n" + "─" * 60)
+    print("\n" + "─" * 60 + "\n엔진 프롬프트 계약 (공통)\n" + "─" * 60)
     print(preview.contract)
+
+    # 관계 지도만 에이전트마다 다르다 — 공통 계약을 N번 반복해 찍는 대신
+    # 각자에게 실제로 붙는 [아는 사람] 블록만 따로 보여준다. 실존하지 않는 상대
+    # key 는 실행 시 계약에서 빠지므로(Simulation._sanitize_relationships) 여기서도
+    # 같은 규칙으로 표시해 dry-run 이 실행과 어긋나지 않게 한다.
+    if _rel_agents:
+        from ABM.prompt_contract import build_relationship_contract
+
+        known_keys = {a.name for a in cfg.agents}
+        # 엔진과 같은 2단계 역맵: {display_name: name} 을 먼저 만들고 뒤집는다.
+        # display_name 이 겹치면 정방향에서 충돌해 한 명만 살아남는 것까지 실행과 일치.
+        _fwd    = {a.display_name: a.name for a in cfg.agents if a.display_name.strip()}
+        aliases = {v: k for k, v in _fwd.items()}
+        print("\n" + "─" * 60 + "\n에이전트별 관계 지도\n" + "─" * 60)
+        for a in _rel_agents:
+            valid   = {k: v for k, v in a.relationships.items()
+                       if k in known_keys and k != a.name}
+            dangled = [k for k in a.relationships if k not in valid]
+            print(f"\n## {a.name}")
+            print(build_relationship_contract(valid, aliases).strip() or "  (렌더할 관계 없음)")
+            for k in dangled:
+                why = "자기 자신" if k == a.name else "실존하지 않는 에이전트"
+                print(f"  ⚠ {k!r} — {why} (실행 시 제외됨)", file=sys.stderr)
     if preview.warnings:
         print("\n⚠ 계약 경고:", file=sys.stderr)
         for w in preview.warnings:

@@ -41,10 +41,32 @@ def _load_groups(raw) -> list[str]:
     return parsed if isinstance(parsed, list) else []
 
 
+def _dump_relationships(relationships: dict[str, str] | None) -> str:
+    """relationships 지도 -> DB 저장용 JSON 객체 문자열."""
+    return json.dumps(relationships or {}, ensure_ascii=False)
+
+
+def _load_relationships(raw) -> dict[str, str]:
+    """DB 의 JSON 문자열 -> 지도. 구버전 NULL/손상값은 빈 지도.
+
+    groups 와 달리 컨테이너가 dict 라서 판정 타입만 다르고 흐름은 동일하다.
+    """
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _to_agent(row: sqlite3.Row | dict) -> dict:
-    """DB row -> API 응답 dict. groups 역직렬화 + 시뮬레이션 필드 정규화."""
+    """DB row -> API 응답 dict. groups/relationships 역직렬화 + 시뮬레이션 필드 정규화."""
     agent = dict(row)
     agent["groups"] = _load_groups(agent.get("groups"))
+    agent["relationships"] = _load_relationships(agent.get("relationships"))
     for key, default in _SIM_DEFAULTS.items():
         if agent.get(key) is None:
             agent[key] = default
@@ -72,13 +94,15 @@ def create_agent(body: AgentCreate):
            (id, name, description, system_prompt, icon, model, temperature, max_tokens,
             role, goal, backstory,
             gender, "groups", location, visual_description, display_name, initial_active,
+            relationships,
             created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (aid, body.name, body.description, body.system_prompt,
          body.icon, model, body.temperature, body.max_tokens,
          body.role, body.goal, body.backstory,
          body.gender, _dump_groups(body.groups), body.location,
          body.visual_description, body.display_name, int(body.initial_active),
+         _dump_relationships(body.relationships),
          now, now),
     )
     conn.commit()
@@ -114,7 +138,7 @@ def update_agent(agent_id: str, body: AgentUpdate):
     # 정의된 필드는 그대로 둔다.
     _PRESERVE_ONLY_FIELDS = {
         "gender", "groups", "location", "visual_description",
-        "display_name", "initial_active",
+        "display_name", "initial_active", "relationships",
     }
     for key in _PRESERVE_ONLY_FIELDS:
         if fields.get(key) is None:
@@ -123,6 +147,8 @@ def update_agent(agent_id: str, body: AgentUpdate):
         fields["model"] = fields["model"].strip() if fields["model"] else None
     if "groups" in fields:
         fields["groups"] = _dump_groups(fields["groups"])
+    if "relationships" in fields:
+        fields["relationships"] = _dump_relationships(fields["relationships"])
     if "initial_active" in fields and fields["initial_active"] is not None:
         fields["initial_active"] = int(fields["initial_active"])
     if not fields:

@@ -3,7 +3,7 @@
 
 import { sim, _expandedAgents, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE, DEFAULT_START_WEEKDAY, normalizeWeekday,
          DEFAULT_TEMPERATURE, normalizeTemperature, normalizeAgentTemperature,
-         normalizeTargetDuration, buildInfectionModel } from './state.js';
+         normalizeTargetDuration, buildInfectionModel, normalizeRelationships } from './state.js';
 import { renderSettingsPage, readConfigFromUI } from './settings/page.js';
 import { refreshRunHistory } from './runs/history.js';
 import { downloadFile, safeFilename, nowTag } from './utils/download.js';
@@ -49,7 +49,10 @@ export async function loadScenarios() {
 
 export function buildScenarioConfig() {
   return {
-    agents:                 sim.agents,
+    // 관계 지도만 정규화해서 내보낸다 — 카드 편집기가 만든 값은 이미 평범한 객체지만,
+    // 파일로 가져온 시나리오/구버전 데이터에는 필드가 아예 없을 수 있다. 나머지 필드는
+    // 스프레드로 그대로 보존한다(role/goal 같은 "왕복 보존 전용" 필드 포함).
+    agents:                 sim.agents.map(a => ({ ...a, relationships: normalizeRelationships(a.relationships) })),
     background:             sim.background,
     start_agent:            sim.start_agent,
     max_waves:              sim.max_waves,
@@ -196,6 +199,9 @@ export function applyScenario(s) {
     server_id:          a.server_id          ?? null,
     // 마찬가지로 없으면 null(= 시뮬레이션 기본 temperature 사용).
     temperature:        normalizeAgentTemperature(a.temperature),
+    // 구버전 시나리오에는 필드가 없다. 편집기가 undefined 를 만지지 않도록 빈 객체로 채운다
+    // (빈 객체 = 관계 기능 미사용 = 프롬프트가 관계 도입 전과 동일).
+    relationships:      normalizeRelationships(a.relationships),
   }));
   sim.background   = cfg.background   || '';
   sim.start_agent  = cfg.start_agent  || (cfg.agents?.[0]?.name ?? '');

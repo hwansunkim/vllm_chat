@@ -328,7 +328,7 @@ export async function exportRunMarkdown(runId, run, preloadedLog) {
     infection_model:     sim.infection_model,
   };
   sim.agents              = (parsedConfig.agents || []).map(a => ({
-    icon: '🤖', groups: [], initial_active: true, ...a,
+    icon: '🤖', groups: [], initial_active: true, relationships: {}, ...a,
   }));
   sim.background          = parsedConfig.background          || '';
   sim.currentScenarioName = run.scenario_name                || '시나리오';

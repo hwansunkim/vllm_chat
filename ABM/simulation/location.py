@@ -266,7 +266,17 @@ class _LocationMixin:
             lines.append("")
             lines.append("[이 자리의 사람들]")
             if known:
-                labels = [f'{self._key_to_alias.get(k, k)} (ID: "{k}")' for k in known]
+                # 관계 지도가 있으면 이름·ID 옆에 화자 시점의 관계어를 붙인다
+                # (`채민경 (ID: "채민경", 아내)`). 계약의 [아는 사람] 블록과 같은
+                # 사람이라는 걸 매 턴 상황 컨텍스트에서도 다시 못박아 준다.
+                my_rels = self._agent_relationships.get(agent_key, {})
+                labels = []
+                for k in known:
+                    rel = (my_rels.get(k) or "").strip()
+                    name = self._key_to_alias.get(k, k)
+                    labels.append(
+                        f'{name} (ID: "{k}", {rel})' if rel else f'{name} (ID: "{k}")'
+                    )
                 lines.append(f"아는 사람: {', '.join(labels)}")
             if strangers:
                 lines.append("처음 보는 사람:")

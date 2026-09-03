@@ -422,6 +422,20 @@
    실행 시점에 엔진이 만들어 주입하는 문자열을 그대로 보여준다. 계약은 길어질 수
    있으므로 <pre> 안에서만 스크롤시키고 섹션 본문은 가로로 넘치지 않게 둔다. */
 .sim-contract-flags { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+/* "누구 기준" — 관계 지도 때문에 계약이 per-agent 가 됐다 */
+.sim-contract-agent-pick {
+  display: flex; align-items: center; gap: 5px; flex-shrink: 0;
+  font-size: 10px; font-weight: 600; color: #94a3b8;
+  text-transform: none; letter-spacing: 0;
+}
+#sim-contract-agent {
+  max-width: 160px;
+  padding: 2px 5px; font-size: 11px;
+  border: 1px solid #e2e8f0; border-radius: 6px;
+  background: white; color: #334155; outline: none;
+}
+#sim-contract-agent:focus { border-color: #6366f1; }
+#sim-contract-agent:disabled { background: #f8fafc; color: #94a3b8; }
 .sim-contract-flag {
   font-size: 10px; font-weight: 600; letter-spacing: 0;
   text-transform: none; white-space: nowrap;
@@ -1627,6 +1641,101 @@
   background: #f5f3ff;
 }
 .group-chip-input::placeholder { color: #a78bfa; }
+
+/* ── Agent relationships (관계 지도) ──────────────────────────────────────────
+   저장 형식은 {상대 ID: 관계 문자열}이고 각자 자기 시점이다. 그룹 칩과 같은 줄 구조를
+   쓰되, 여기서는 한 행이 [상대 드롭다운][관계어][배지][삭제] 로 넓으므로 세로로 쌓는다. */
+.agent-rels-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 0 4px;
+}
+.agent-rels-row > label {
+  min-width: 40px;
+  font-size: 12px;
+  color: #6b7280;
+  padding-top: 5px;
+  flex-shrink: 0;
+}
+.agent-rels-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+}
+.agent-rel-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  flex-wrap: wrap;
+}
+.agent-rel-target {
+  flex: 0 1 190px;
+  min-width: 120px;
+  padding: 4px 6px;
+  border: 1px solid #ddd6fe;
+  border-radius: 6px;
+  background: #faf5ff;
+  color: #5b21b6;
+  font-size: 12px;
+  outline: none;
+}
+.agent-rel-target:focus { border-color: #7c3aed; }
+.agent-rel-label {
+  flex: 1 1 140px;
+  min-width: 100px;
+  padding: 4px 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #334155;
+  outline: none;
+}
+.agent-rel-label:focus { border-color: #6366f1; }
+.agent-rel-label::placeholder { color: #cbd5e1; font-style: italic; }
+/* dangling = 실행 시 엔진이 조용히 버릴 관계 (없는 ID / 자기 자신) */
+.agent-rel-dangling {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  color: #b45309;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 9px;
+  padding: 1px 7px;
+  white-space: nowrap;
+  cursor: help;
+}
+.agent-rel-del {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #94a3b8;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 3px;
+  transition: color .15s;
+}
+.agent-rel-del:hover { color: #ef4444; }
+.agent-rel-add {
+  border: 1px dashed #c4b5fd;
+  border-radius: 12px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: #5b21b6;
+  background: transparent;
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+.agent-rel-add:hover:not(:disabled) { border-color: #7c3aed; background: #f5f3ff; }
+.agent-rel-add:disabled { color: #cbd5e1; border-color: #e2e8f0; cursor: not-allowed; }
+.agent-rels-empty { font-size: 11px; color: #94a3b8; line-height: 1.5; }
 
 /* ── World Event Card ─────────────────────────────────────────────────────── */
 .sim-world-event-card {

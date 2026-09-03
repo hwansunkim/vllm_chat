@@ -16,7 +16,8 @@
 // 가져오기는 전부 스냅샷 복사다 — 가져온 시점의 값만 옮겨지고 이후 한쪽을 고쳐도
 // 다른 쪽에는 반영되지 않는다.
 
-import { normalizeAgentTemperature, normalizeTemperature } from './sim/state.js';
+import { normalizeAgentTemperature, normalizeTemperature,
+         normalizeRelationships } from './sim/state.js';
 
 // 채팅 에이전트 폼 기본값 (backend AgentCreate 기본값과 동일하게 유지).
 const CHAT_DEFAULT_MAX_TOKENS = 1024;
@@ -59,6 +60,10 @@ export function chatAgentToSimAgent(chat, { takenNames = [] } = {}) {
     groups:             Array.isArray(chat.groups) ? [...chat.groups] : [],
     location:           chat.location || '',
     visual_description: chat.visual_description || '',
+    // 관계 지도는 채팅 UI 에 입력란이 없지만 왕복 보존을 위해 채팅 스키마에도 컬럼이
+    // 있다(groups 와 동일). 시뮬레이션에서 내보낸 값이 있으면 그대로 되살리고,
+    // 없으면 빈 객체로 시작해 사용자가 카드의 "관계" 섹션에서 채운다.
+    relationships:      normalizeRelationships(chat.relationships),
     server_id:          null,   // 항상 기본 서버로 시작 — 필요하면 사용자가 직접 지정
     temperature:        normalizeAgentTemperature(chat.temperature),
     // ── ABM 엔진이 해석하지 않는, 왕복 보존 전용 필드 ──
@@ -127,6 +132,7 @@ export function simAgentToChatBody(simAgent, { servers = [], fallbackTemperature
     visual_description: simAgent.visual_description || '',
     display_name:       simAgent.display_name || '',
     initial_active:     simAgent.initial_active !== false,
+    relationships:      { ...(simAgent.relationships || {}) },
   };
 
   return { body, server, modelSource };
