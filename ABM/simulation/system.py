@@ -1,6 +1,6 @@
 from ._constants import (
     _REPEAT_WINDOW, _REPEAT_THRESHOLD, _MEMO_MAX_LINES,
-    _repetition_score, _normalize_utterance,
+    _repetition_score, _normalize_utterance, _recent_activity_digest,
 )
 
 
@@ -56,20 +56,27 @@ class _SystemMixin:
                 + self._current_elapsed_minutes(self.completed_waves)
             )
 
+        # 어휘 유사도(repetition_info)는 축자 반복만 잡는다. 표현을 바꿔가며 같은
+        # 화제를 맴도는 주제 반복은 디렉터가 이 다이제스트를 직접 읽고 판단한다 —
+        # 요약이 꺼져 있어도(summary_interval=0) 작동한다.
+        recent_activity = _recent_activity_digest(self.shared_log, self._key_to_alias)
+
         result = run_system_agent(
-            system_prompt     = self._sys_prompt,
-            wave              = wave_num,
-            current_time_str  = current_time_str,
-            summary           = self._last_summary,
-            active_agents     = {k: self._key_to_alias.get(k, k) for k in self.active_agents},
-            silent_agents     = silent,
-            silence_threshold = self._sys_threshold,
-            repetition_info   = repetition_info,
-            director_note     = self._director_note,
-            director_memo     = self._director_memo,
-            key_to_alias      = self._key_to_alias,
-            llm               = self._llm,
-            llm_max_tokens    = self.llm_max_tokens,
+            system_prompt        = self._sys_prompt,
+            wave                 = wave_num,
+            current_time_str     = current_time_str,
+            summary              = self._last_summary,
+            recent_activity      = recent_activity,
+            active_agents        = {k: self._key_to_alias.get(k, k) for k in self.active_agents},
+            silent_agents        = silent,
+            silence_threshold    = self._sys_threshold,
+            repetition_info      = repetition_info,
+            repeat_threshold_pct = int(_REPEAT_THRESHOLD * 100),
+            director_note        = self._director_note,
+            director_memo        = self._director_memo,
+            key_to_alias         = self._key_to_alias,
+            llm                  = self._llm,
+            llm_max_tokens       = self.llm_max_tokens,
         )
         if not result:
             return current_wave

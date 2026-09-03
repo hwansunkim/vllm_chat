@@ -211,7 +211,10 @@ class SimStartConfig(BaseModel):
     #   **런타임에서 무조건 무시**되며(= 엔진이 항상 재생성), 저장 시에도
     #   기록하지 않는다. 새 코드는 output_format_override 만 볼 것.
     output_format_template: str              = ""
-    summary_interval:       int              = 0   # 0 = 비활성, N = N웨이브마다 LLM 요약
+    # 0 = 비활성, N = N웨이브마다 LLM 요약. 요약은 디렉터(system_agent)의 유일한
+    # 장거리 서사 신호다 — 0이면 디렉터가 "이 장면이 몇 wave째 맴돌고 있나"를
+    # (최근 활동 다이제스트로만) 알 수 있어 주제 반복을 놓치기 쉽다. 기본값 5.
+    summary_interval:       int              = 5
     sim_start_time:         str              = "09:00"  # HH:MM, 시뮬레이션 내 시작 시각
     sim_start_weekday:      Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"] = "mon"  # 시뮬레이션 내 시작 요일. 자정 롤오버마다 자동 증가
     time_per_wave:          int              = DEFAULT_TIME_PER_WAVE  # wave당 경과 시간(분). 0 = 시간 개념 비활성

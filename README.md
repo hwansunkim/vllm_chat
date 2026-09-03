@@ -126,3 +126,4 @@ sqlite3 logs_graph/simulation.db \
 - [메모리 시스템](docs/memory-system.md) — RAG 메모리 동작 원리
 - [API 레퍼런스](docs/api.md) — REST API 명세
 - [Vector DB 전환 검토](docs/vectordb.md) — SQLite → Vector DB 마이그레이션 고려사항
+- [디렉터 반복 감지](docs/director-repetition-detection.md) — 시뮬레이션 디렉터가 주제 반복을 잡는 방법 (D1 + D2)

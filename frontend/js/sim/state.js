@@ -335,7 +335,7 @@ export const sim = {
   // 오버라이드와 무관하게 계속 엔진이 자동 최신화한다.
   // (구 `output_format_template` 은 폐기 — 백엔드가 읽지 않고 저장 시 비운다.)
   output_format_override: '',
-  summary_interval: 0,
+  summary_interval: 5,   // 디렉터의 장거리 서사 신호. 0 = 비활성 (schemas.py와 동일 기본값)
   sim_start_time:    '09:00',  // 시뮬레이션 시작 시각 (HH:MM)
   sim_start_weekday: 'mon',    // 시뮬레이션 시작 요일 ('mon'~'sun'). 자정 롤오버 시 서버가 자동 증가
   time_per_wave:     30,       // wave당 경과 시간(분). 0 = 시간 개념 비활성 (time_mode='fixed'일 때만 사용)

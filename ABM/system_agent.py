@@ -35,6 +35,7 @@ _USER_TEMPLATE = """\
 [최근 요약]
 {summary}
 
+{recent_activity_section}\
 [활성 에이전트]
 {agents}
 
@@ -63,6 +64,11 @@ _USER_TEMPLATE = """\
 - agent는 반드시 활성 에이전트 ID 중 하나 (표시 이름 사용 금지)
 - world_event.targets: "all" / "group:그룹명" / 특정 에이전트 ID 목록
 - 모든 텍스트는 한국어로 작성
+- **[반복 중인 에이전트]는 거의 똑같은 문장만 잡아냅니다.** [최근 활동]을 직접
+  읽고, 특정 에이전트가 여러 wave에 걸쳐 같은 화제·같은 욕구·같은 자리에서
+  맴돌고 있으면(문구가 조금씩 달라도) 반복으로 간주하십시오. 이때는 상황을
+  바꾸는 개입이나 world_event로 장면을 전진시키십시오 — 같은 비트가 3wave
+  이상 이어지는 것은 서사 정체입니다.
 - **시각·시계·시간을 임의로 지어내지 말 것.** 위 [현재 시각]만을 참조하십시오.
   [현재 시각] 섹션이 없다면 이 세계에는 시간 개념이 없는 것이므로 시각을 아예 언급하지 마십시오.
   "벽시계가 N시를 알린다" 같은 표현은 [현재 시각]과 정확히 일치할 때만 쓸 수 있습니다.
@@ -88,6 +94,8 @@ def run_system_agent(
     llm: LLMCall,
     llm_max_tokens: int = 16384,
     current_time_str: str = "",
+    recent_activity: str = "",
+    repeat_threshold_pct: int = 65,
 ) -> dict | None:
     """Run the system agent LLM call.
 
@@ -99,6 +107,11 @@ def run_system_agent(
     섹션 자체를 생략한다 — 시간 개념이 꺼진 시뮬레이션에서 없는 시계를 만들지
     않기 위해서다. 이 인자가 없던 시절 디렉터는 시각을 전혀 못 받아 world_event에
     엉뚱한 시각("벽시계가 8시를 친다")을 지어냈다.
+
+    ``recent_activity`` 는 `_recent_activity_digest(...)` 결과 — 마지막 몇 wave의
+    발화를 wave별로 나열한 문자열이다. 어휘 유사도(`repetition_info`)로는 못 잡는
+    "표현만 바꿔 같은 화제를 맴도는" 주제 반복을 디렉터가 직접 읽고 판단하게 한다.
+    비어 있으면 섹션을 생략한다.
     """
     alias = key_to_alias or {}
 
@@ -143,18 +156,23 @@ def run_system_agent(
         f"[현재 시각]\n{current_time_str.strip()}\n\n"
         if (current_time_str or "").strip() else ""
     )
+    recent_activity_section = (
+        f"[최근 활동 — 마지막 몇 wave의 발화]\n{recent_activity.strip()}\n\n"
+        if (recent_activity or "").strip() else ""
+    )
 
     user_msg = _USER_TEMPLATE.format(
-        wave                  = wave,
-        current_time_section  = current_time_section,
-        director_note_section = director_note_section,
-        director_memo_section = director_memo_section,
-        summary               = summary_str,
-        agents                = agent_lines,
-        silent                = silent_lines,
-        threshold             = silence_threshold,
-        repetition            = repetition_lines,
-        repeat_threshold      = int(_REPEAT_THRESHOLD_PCT),
+        wave                    = wave,
+        current_time_section    = current_time_section,
+        recent_activity_section = recent_activity_section,
+        director_note_section   = director_note_section,
+        director_memo_section   = director_memo_section,
+        summary                 = summary_str,
+        agents                  = agent_lines,
+        silent                  = silent_lines,
+        threshold               = silence_threshold,
+        repetition              = repetition_lines,
+        repeat_threshold        = repeat_threshold_pct,
     )
 
     messages = [
@@ -171,6 +189,3 @@ def run_system_agent(
     except Exception as exc:
         logger.warning(f"[system_agent] LLM 호출 실패 (W{wave}): {exc}")
         return None
-
-
-_REPEAT_THRESHOLD_PCT = 65  # simulation.py의 _REPEAT_THRESHOLD * 100

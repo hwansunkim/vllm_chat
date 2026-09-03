@@ -4335,6 +4335,67 @@ class DirectorRepetitionDetectionTests(unittest.TestCase):
             self.assertNotIn('"a"', block)
 
 
+class DirectorRecentActivityTests(unittest.TestCase):
+    """디렉터가 요약 없이도 최근 활동을 직접 읽는다 (D1).
+
+    어휘 유사도(`_repetition_score`)는 축자 반복만 잡는다. 표현을 바꿔가며 같은
+    화제를 맴도는 주제 반복은 디렉터가 `[최근 활동]` 다이제스트를 보고 판단한다.
+    """
+
+    def test_digest_groups_by_wave_and_falls_back_to_action(self):
+        from ABM.simulation._constants import _recent_activity_digest
+        log = [
+            {"wave": 1, "speaker": "a", "content": "옛날 발화", "action_note": ""},
+            {"wave": 5, "speaker": "a", "content": "...", "action_note": "천장을 본다"},
+            {"wave": 5, "speaker": "b", "content": "일어나", "action_note": ""},
+            {"wave": 6, "speaker": "b", "content": "밥 먹어", "action_note": ""},
+        ]
+        out = _recent_activity_digest(log, {"a": "김", "b": "이"}, waves=2)
+        self.assertIn("— Wave 5 —", out)
+        self.assertIn("— Wave 6 —", out)
+        self.assertNotIn("옛날 발화", out)          # window 밖
+        self.assertIn("김: (천장을 본다)", out)      # 필러 → 행동 폴백
+        self.assertIn("이: 일어나", out)
+        self.assertEqual(_recent_activity_digest([], {}), "")
+
+    def test_director_prompt_includes_recent_activity_and_threshold(self):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        from ABM.simulation._constants import _REPEAT_THRESHOLD
+
+        with tempfile.TemporaryDirectory() as tmp:
+            llm    = _DirectorLLM()
+            agents = {k: Agent(k, k, tmp, token_limit=8192) for k in ("a", "b")}
+            sim = Simulation(
+                agents, [{"role": "user", "content": "[배경] 테스트"}], tmp, llm=llm,
+                system_agent={"enabled": True, "intervention_interval": 1,
+                              "silence_threshold": 99, "display_name": "내레이터"},
+            )
+            sim._emit = lambda *a, **k: None
+            sim._last_spoke_wave = {k: 9 for k in agents}
+            # 주제 반복: 매 wave 표현을 바꿔 같은 욕구(배고픔·점심)를 맴돈다.
+            # 어휘 유사도는 낮아 [반복 중인 에이전트]에는 안 잡힌다.
+            sim.shared_log = [
+                {"wave": w, "speaker": "a", "content": c, "action_note": ""}
+                for w, c in [
+                    (7, "언제 점심시간이야? 배고파 죽겠어, 오늘 급식 뭐지?"),
+                    (8, "이제 조금만 있으면 점심이다! 배고파서 쓰러질 것 같아"),
+                    (9, "10분 남았다! 급식 메뉴 진짜 궁금해, 빨리 종 쳐라"),
+                ]
+            ]
+            sim._run_system_agent(10, {k: [] for k in agents})
+            prompt = llm.director_calls[-1]
+
+            self.assertIn("[최근 활동", prompt)
+            self.assertIn("— Wave 9 —", prompt)
+            self.assertIn("10분 남았다", prompt)
+            # 어휘 반복은 안 잡혔다 — 디렉터는 [최근 활동]으로만 알 수 있다
+            rep = prompt.split("[반복 중인 에이전트")[1].split("[최근 활동")[0]
+            self.assertIn("없음", rep)
+            # 반복 임계값 % 는 상수에서 온다 (하드코딩 제거)
+            self.assertIn(f"{int(_REPEAT_THRESHOLD * 100)}%", prompt)
+
+
 # ── 계약 프리즈 중단 / 프리뷰 (backend/api/simulation) ─────────────────────────
 
 _BACKGROUND = [{"role": "user", "content": "[배경] 테스트"}]

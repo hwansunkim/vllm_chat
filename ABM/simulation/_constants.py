@@ -43,7 +43,15 @@ def _normalize_utterance(content: str, action_note: str = "") -> str | None:
 
 
 def _repetition_score(texts: list[str]) -> float:
-    """최근 발언 목록에서 최대 쌍별 유사도(0–1) 반환."""
+    """최근 발언 목록에서 최대 쌍별 유사도(0–1) 반환.
+
+    `SequenceMatcher` 로 원문을 글자 단위 비교한다 — **거의 똑같은 문장을 다시
+    내뱉는** 축자 반복만 잡힌다. 표현을 조금씩 바꿔가며 같은 화제·같은 욕구를
+    맴도는 "주제 반복"은 어휘 일치율이 0.5 언저리라 이 지표로는 안 잡힌다
+    (여러 지표로 캘리브레이션했으나 이 시나리오의 정상 대화와 분리 불가).
+    주제 반복은 디렉터가 `[최근 활동]`(`_recent_activity_digest`)을 직접 읽고
+    판단하게 한다 — 어휘로 못 하는 의미 판정을, 그걸 할 수 있는 LLM 이 한다.
+    """
     if len(texts) < 2:
         return 0.0
     best = 0.0
@@ -53,6 +61,47 @@ def _repetition_score(texts: list[str]) -> float:
             if s > best:
                 best = s
     return best
+
+
+_DIRECTOR_DIGEST_WAVES = 6    # 디렉터에게 보여줄 최근 활동 wave 수
+_DIGEST_TURN_MAXLEN    = 70   # 다이제스트 한 줄당 발화 자르는 길이
+
+
+def _recent_activity_digest(
+    shared_log: list[dict],
+    key_to_alias: dict | None = None,
+    *,
+    waves: int = _DIRECTOR_DIGEST_WAVES,
+) -> str:
+    """디렉터용 최근 활동 다이제스트 — 마지막 `waves` wave의 발화를 wave별로 나열.
+
+    요약(`summary_interval`)이 없거나 부족해도 디렉터가 "이 장면이 몇 wave째
+    같은 화제·같은 자리에서 맴돌고 있나"를 스스로 읽고 판단할 수 있게 한다.
+    `_repetition_score`(축자 반복)로는 못 잡는 주제 반복을 잡는 유일한 경로다.
+    """
+    alias = key_to_alias or {}
+    entries = [e for e in shared_log if isinstance(e.get("wave"), int)]
+    if not entries:
+        return ""
+    cutoff = max(e["wave"] for e in entries) - waves + 1
+    lines: list[str] = []
+    cur: int | None = None
+    for e in entries:
+        w = e["wave"]
+        if w < cutoff:
+            continue
+        if w != cur:
+            lines.append(f"— Wave {w} —")
+            cur = w
+        spk = alias.get(e.get("speaker"), e.get("speaker") or "?")
+        text = (e.get("content") or "").strip()
+        if not text or _FILLER_RE.match(text):
+            act = (e.get("action_note") or "말없이 행동").strip()
+            text = f"({act[:_DIGEST_TURN_MAXLEN]})"
+        else:
+            text = text[:_DIGEST_TURN_MAXLEN]
+        lines.append(f"  {spk}: {text}")
+    return "\n".join(lines)
 
 
 _COMPRESSION_THRESHOLD = 0.70   # trigger compression at this fraction of token_limit

@@ -38,7 +38,7 @@ export function renderSettingsPage() {
   document.getElementById('sim-step-delay').value     = sim.step_delay;
   document.getElementById('sim-token-limit').value    = sim.token_limit;
   document.getElementById('sim-llm-max-tokens').value = sim.llm_max_tokens;
-  document.getElementById('sim-summary-interval').value = sim.summary_interval ?? 0;
+  document.getElementById('sim-summary-interval').value = sim.summary_interval ?? 5;
   const startTimeEl = document.getElementById('sim-start-time');
   if (startTimeEl) startTimeEl.value = sim.sim_start_time ?? '09:00';
   const startWeekdayEl = document.getElementById('sim-start-weekday');

@@ -64,7 +64,7 @@ export function buildScenarioConfig() {
     lang_fix_enabled:       sim.lang_fix_enabled ?? true,
     lang_fix_retries:       sim.lang_fix_retries ?? 2,
     output_format_override: sim.output_format_override || '',
-    summary_interval:       sim.summary_interval  ?? 0,
+    summary_interval:       sim.summary_interval  ?? 5,
     sim_start_time:         sim.sim_start_time    ?? '09:00',
     sim_start_weekday:      normalizeWeekday(sim.sim_start_weekday),
     time_per_wave:          sim.time_per_wave     ?? 30,
@@ -158,7 +158,7 @@ export function newScenario() {
   sim.lang_fix_enabled       = true;
   sim.lang_fix_retries       = 2;
   sim.output_format_override = '';
-  sim.summary_interval       = 0;
+  sim.summary_interval       = 5;
   sim.sim_start_time         = '09:00';
   sim.sim_start_weekday      = DEFAULT_START_WEEKDAY;
   sim.time_per_wave          = 30;
@@ -226,7 +226,7 @@ export function applyScenario(s) {
   // 그대로 오버라이드로 승격하면 옛 이동 규칙·출력 스키마가 되살아나 새 엔진 계약과
   // 충돌한다. 오버라이드는 사용자가 D3 체크박스로 명시적으로 켤 때만 생긴다.
   sim.output_format_override = cfg.output_format_override || '';
-  sim.summary_interval       = cfg.summary_interval       ?? 0;
+  sim.summary_interval       = cfg.summary_interval       ?? 5;
   sim.sim_start_time         = cfg.sim_start_time         ?? '09:00';
   // 구버전 시나리오에는 필드가 없다 — normalizeWeekday()가 'mon'으로 폴백한다.
   sim.sim_start_weekday      = normalizeWeekday(cfg.sim_start_weekday);
