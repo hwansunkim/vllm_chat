@@ -342,6 +342,10 @@ export const sim = {
   time_mode: 'fixed',          // 'fixed' = wave당 고정 시간, 'variable' = wave 내용을 LLM이 분류해 가변 경과
   time_categories: DEFAULT_TIME_CATEGORIES.map(c => ({ ...c })),      // time_mode='variable'일 때 분류 카테고리
   idle_minutes_schedule: [...DEFAULT_IDLE_MINUTES_SCHEDULE],          // 강제 침묵 재투입 시 경과 시간(분) 스케줄
+  // 가변 시간 점프 상한 — LLM 분류기가 고른 카테고리의 랜덤 경과분을 엔진이 벽시계·
+  // 동석 상황 기준으로 캡한다(schemas.py SimStartConfig와 동일 기본값). 0 = 캡 비활성.
+  max_scene_jump_minutes:   45,   // 실내 한 곳에 2명+ 동석 발화 중일 때
+  max_daytime_jump_minutes: 180,  // 밤(22~06시)이 아니고 집에 남은 사람이 있을 때
   max_silence_waves:  3,        // 연속 침묵 허용 wave 수 (early_stop_enabled + time_per_wave > 0일 때 활성)
   early_stop_enabled: true,    // false = 조기 종료 비활성 (max_waves까지 항상 실행)
   server_id:        null,   // null = 기본 서버, string = 특정 서버 ID

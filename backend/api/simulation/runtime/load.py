@@ -114,6 +114,8 @@ def load_simulation(run_id: str):
             time_mode=cfg.time_mode,
             time_categories=[c.model_dump() for c in cfg.time_categories],
             idle_minutes_schedule=cfg.idle_minutes_schedule,
+            max_scene_jump_minutes=cfg.max_scene_jump_minutes,
+            max_daytime_jump_minutes=cfg.max_daytime_jump_minutes,
             infection_model=cfg.infection_model.model_dump(),
             elapsed_minutes_init=run.get("elapsed_minutes") or 0,
             # /load 는 실행하지 않지만, 이후 /continue 로 이어갈 때

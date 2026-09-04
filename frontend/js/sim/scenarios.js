@@ -74,6 +74,8 @@ export function buildScenarioConfig() {
     time_mode:              sim.time_mode ?? 'fixed',
     time_categories:        (sim.time_categories?.length ? sim.time_categories : DEFAULT_TIME_CATEGORIES),
     idle_minutes_schedule:  (sim.idle_minutes_schedule?.length ? sim.idle_minutes_schedule : DEFAULT_IDLE_MINUTES_SCHEDULE),
+    max_scene_jump_minutes:   sim.max_scene_jump_minutes   ?? 45,
+    max_daytime_jump_minutes: sim.max_daytime_jump_minutes ?? 180,
     max_silence_waves:      sim.max_silence_waves  ?? 3,
     early_stop_enabled:     sim.early_stop_enabled ?? true,
     server_id:              sim.server_id         ?? null,
@@ -168,6 +170,8 @@ export function newScenario() {
   sim.time_mode              = 'fixed';
   sim.time_categories        = DEFAULT_TIME_CATEGORIES.map(c => ({ ...c }));
   sim.idle_minutes_schedule  = [...DEFAULT_IDLE_MINUTES_SCHEDULE];
+  sim.max_scene_jump_minutes   = 45;
+  sim.max_daytime_jump_minutes = 180;
   sim.max_silence_waves      = 3;
   sim.early_stop_enabled     = true;
   sim.server_id              = null;
@@ -240,6 +244,9 @@ export function applyScenario(s) {
   sim.time_mode              = cfg.time_mode === 'variable' ? 'variable' : 'fixed';
   sim.time_categories        = cfg.time_categories?.length ? cfg.time_categories : DEFAULT_TIME_CATEGORIES.map(c => ({ ...c }));
   sim.idle_minutes_schedule  = cfg.idle_minutes_schedule?.length ? cfg.idle_minutes_schedule : [...DEFAULT_IDLE_MINUTES_SCHEDULE];
+  // 구버전 시나리오에는 필드가 없다 — 엔진/스키마 기본값과 같은 45/180으로 폴백.
+  sim.max_scene_jump_minutes   = cfg.max_scene_jump_minutes   ?? 45;
+  sim.max_daytime_jump_minutes = cfg.max_daytime_jump_minutes ?? 180;
   sim.max_silence_waves      = cfg.max_silence_waves      ?? 3;
   sim.early_stop_enabled     = cfg.early_stop_enabled     ?? true;
   sim.server_id              = cfg.server_id              ?? null;

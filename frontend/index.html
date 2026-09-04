@@ -369,6 +369,15 @@
               <label>강제 재투입 시간(분)<span class="sim-help" aria-hidden="true" data-tooltip="연속 침묵으로 강제 재투입될 때 경과시킬 시간(분), 쉼표로 구분. 침묵 회차가 늘수록 다음 값을 사용하고 끝에서 고정됩니다.">?</span></label>
               <input type="text" id="sim-idle-schedule" value="60,120,180" placeholder="예: 60,120,180"/>
             </div>
+            <div class="sim-fields-hint" style="margin-top:8px">LLM이 고른 카테고리의 랜덤 경과분을 엔진이 벽시계·동석 상황 기준으로 캡합니다 — 약한 모델이 오후 한복판에서 큰 점프를 골라 학원·저녁 같은 재집결 장면을 통째로 건너뛰는 것을 막습니다. 0 = 해당 캡 끔.</div>
+            <div class="sim-option-row" style="margin-top:8px">
+              <label>동석 장면 점프 상한(분)<span class="sim-help" aria-hidden="true" data-tooltip="실내 한 곳에 2명 이상이 함께 발화 중인 wave의 점프 상한. 진행 중인 대화 장면이 시간 점프로 잘리는 것을 막습니다.">?</span></label>
+              <input type="number" id="sim-max-scene-jump" value="45" min="0" step="5"/>
+            </div>
+            <div class="sim-option-row" style="margin-top:8px">
+              <label>주간 점프 상한(분)<span class="sim-help" aria-hidden="true" data-tooltip="밤(22~06시)이 아니고 집에 남아 있는 사람이 있을 때의 점프 상한. 집이 완전히 비면(모두 외출) 적용하지 않습니다.">?</span></label>
+              <input type="number" id="sim-max-daytime-jump" value="180" min="0" step="10"/>
+            </div>
           </div>
         </div>
       </div>

@@ -16,12 +16,16 @@ _SYSTEM_PROMPT = (
 
 _USER_TEMPLATE = """\
 아래는 이번 Wave의 대화 장면입니다.
-
+{current_time_block}
 [대화 장면]
 {log_text}
 
 [카테고리]
 {category_list}
+
+큰 시간 경과를 고르면 이 시각 이후 다른 구성원이 귀가·등장하거나 함께 모이는
+장면(식사·귀가·마중 등)을 통째로 건너뛸 수 있습니다. 확실히 아무 일도 일어나지
+않는 한적한 장면이거나 밤(모두 취침)일 때만 큰 카테고리를 고르세요.
 
 다음 JSON 형식으로 응답하세요:
 {{
@@ -36,6 +40,7 @@ def classify_wave_time(
     llm: LLMCall,
     key_to_alias: dict[str, str] | None = None,
     llm_max_tokens: int = 256,
+    current_time: str = "",
 ) -> str | None:
     """Call LLM to classify the elapsed-time category of a single wave's scene.
 
@@ -57,9 +62,12 @@ def classify_wave_time(
 
     category_list = "\n".join(f"- {c['id']}: {c.get('label', '')}" for c in categories)
 
+    current_time_block = f"\n[현재 시각]\n{current_time}\n" if current_time else ""
+
     user_msg = _USER_TEMPLATE.format(
-        log_text      = "\n".join(lines),
-        category_list = category_list,
+        current_time_block = current_time_block,
+        log_text           = "\n".join(lines),
+        category_list      = category_list,
     )
 
     messages = [

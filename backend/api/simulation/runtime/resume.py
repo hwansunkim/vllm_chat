@@ -134,6 +134,8 @@ def resume_simulation(run_id: str):
                 time_mode=cfg.time_mode,
                 time_categories=[c.model_dump() for c in cfg.time_categories],
                 idle_minutes_schedule=cfg.idle_minutes_schedule,
+                max_scene_jump_minutes=cfg.max_scene_jump_minutes,
+                max_daytime_jump_minutes=cfg.max_daytime_jump_minutes,
                 infection_model=cfg.infection_model.model_dump(),
                 elapsed_minutes_init=run.get("elapsed_minutes") or 0,
                 # 재개 run 의 wave 라벨이 직전 run 에 이어지도록 누적 base 주입.

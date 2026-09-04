@@ -57,6 +57,10 @@ export function renderSettingsPage() {
     const sched = sim.idle_minutes_schedule?.length ? sim.idle_minutes_schedule : DEFAULT_IDLE_MINUTES_SCHEDULE;
     idleScheduleEl.value = sched.join(',');
   }
+  const maxSceneJumpEl = document.getElementById('sim-max-scene-jump');
+  if (maxSceneJumpEl) maxSceneJumpEl.value = sim.max_scene_jump_minutes ?? 45;
+  const maxDaytimeJumpEl = document.getElementById('sim-max-daytime-jump');
+  if (maxDaytimeJumpEl) maxDaytimeJumpEl.value = sim.max_daytime_jump_minutes ?? 180;
   const maxSilenceEl = document.getElementById('sim-max-silence-waves');
   if (maxSilenceEl) maxSilenceEl.value = sim.max_silence_waves ?? 3;
   const earlyStopEl = document.getElementById('sim-early-stop-enabled');
@@ -111,6 +115,13 @@ export function readConfigFromUI() {
   sim.time_mode         = document.getElementById('sim-time-mode')?.value === 'variable' ? 'variable' : 'fixed';
   sim.time_categories   = readTimeCategories();
   sim.idle_minutes_schedule = readIdleSchedule();
+  // 점프 상한은 0이 유효값("캡 끔")이므로 `|| 기본값` 을 쓰면 안 된다 — 빈칸일 때만 기본값.
+  const _sceneJump = document.getElementById('sim-max-scene-jump')?.value;
+  sim.max_scene_jump_minutes = (_sceneJump == null || _sceneJump === '')
+    ? 45 : Math.max(0, parseInt(_sceneJump) || 0);
+  const _daytimeJump = document.getElementById('sim-max-daytime-jump')?.value;
+  sim.max_daytime_jump_minutes = (_daytimeJump == null || _daytimeJump === '')
+    ? 180 : Math.max(0, parseInt(_daytimeJump) || 0);
   sim.max_silence_waves  = parseInt(document.getElementById('sim-max-silence-waves')?.value)  || 3;
   sim.early_stop_enabled = document.getElementById('sim-early-stop-enabled')?.checked ?? true;
   const sel = document.getElementById('sim-server-select');

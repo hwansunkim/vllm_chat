@@ -147,6 +147,8 @@ def run_config(
         time_mode=cfg.time_mode,
         time_categories=[c.model_dump() for c in cfg.time_categories],
         idle_minutes_schedule=cfg.idle_minutes_schedule,
+        max_scene_jump_minutes=cfg.max_scene_jump_minutes,
+        max_daytime_jump_minutes=cfg.max_daytime_jump_minutes,
         infection_model=cfg.infection_model.model_dump(),
     )
 

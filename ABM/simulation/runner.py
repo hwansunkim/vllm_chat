@@ -342,7 +342,11 @@ class _RunnerMixin:
                     lo, hi = cat["min_minutes"], cat["max_minutes"]
                     if lo > hi:
                         lo, hi = hi, lo
-                    self._elapsed_minutes += random.randint(lo, hi)
+                    raw_jump = random.randint(lo, hi)
+                    jump, clamp_reason = self._clamp_time_jump(raw_jump, results)
+                    if clamp_reason:
+                        logger.info(f"[W{disp_wave}] 시간 점프 클램프({category_id}): {clamp_reason}")
+                    self._elapsed_minutes += jump
                 # else: 이번 wave에 성공한 발화가 전혀 없음 — 시간 미누적
 
             current_wave = next_wave
@@ -415,10 +419,15 @@ class _RunnerMixin:
                 for speaker_key, result in results.items()
                 if result.get("success")
             ]
+            # Layer 0 — 분류기에 현재 시각을 준다. "이 시각 이후 다른 구성원이
+            # 귀가·등장하거나 함께 모이는 장면을 건너뛸 수 있으니 큰 카테고리는
+            # 확실히 한적/야간일 때만" 이라는 판단을 LLM이 하도록.
+            now_str = self._format_time_str(self._sim_start_minutes + self._elapsed_minutes)
             category_id = classify_wave_time(
                 entries, self._time_categories, self._llm,
                 key_to_alias=self._key_to_alias,
                 llm_max_tokens=min(self.llm_max_tokens, 256),
+                current_time=now_str,
             )
             valid_ids = {c["id"] for c in self._time_categories}
             if category_id is None or category_id not in valid_ids:
@@ -428,6 +437,44 @@ class _RunnerMixin:
         except Exception as e:
             logger.warning(f"[W{wave_num}] 시간 분류 예외 — normal_scene으로 폴백: {e}")
             return "normal_scene"
+
+    def _clamp_time_jump(self, raw_jump: int, results: dict) -> tuple[int, str | None]:
+        """가변 시간 점프(분)를 벽시계·동석 상황 기준으로 결정론적으로 캡한다.
+
+        LLM 분류기는 '장면의 질감'만 정하고, 실제 경과 분의 상한은 여기서 엔진이
+        강제한다 — 약한 모델이 오후 한복판에서 최대 범위(예: 480분)를 골라 학원·
+        퇴근·저녁 식사 같은 재집결 장면을 통째로 건너뛰는 것을 막는다.
+
+        반환: ``(clamped_jump, 사유_문자열 or None)``. 사유가 None이면 캡 미적용.
+        """
+        # 이번 wave에 실제 내용 있는 발화를 한 에이전트들의 현재(이동 반영 후) 위치.
+        speaker_locs = [
+            self._agent_location.get(k, "")
+            for k, r in results.items()
+            if r.get("success") and (r.get("clean_content") or "").strip()
+        ]
+        interior_locs = [
+            loc for loc in speaker_locs
+            if loc and loc not in self._exterior_locations
+        ]
+
+        # (1) 실내 한 곳에 2명 이상이 함께 발화 중 = 진행 중인 장면. 강하게 캡.
+        scene_cap = self._max_scene_jump_minutes
+        if scene_cap > 0 and len(interior_locs) != len(set(interior_locs)):
+            if raw_jump > scene_cap:
+                return scene_cap, f"동석 장면(실내 2인+) {raw_jump}→{scene_cap}분"
+
+        # (2) 밤(22~06시)이 아니고 집에 남아 있는 사람이 있으면 주간 상한 적용.
+        #     모두 외부(회사·학교·학원)로 나가 집이 완전히 빈 낮은 캡하지 않는다
+        #     — 그때는 건너뛸 재집결 장면 자체가 없다.
+        daytime_cap = self._max_daytime_jump_minutes
+        now_hour = ((self._sim_start_minutes + self._elapsed_minutes) % 1440) // 60
+        is_night = now_hour >= 22 or now_hour < 6
+        if daytime_cap > 0 and not is_night and interior_locs:
+            if raw_jump > daytime_cap:
+                return daytime_cap, f"주간·재실자 있음 {raw_jump}→{daytime_cap}분"
+
+        return raw_jump, None
 
     def _run_wave_summary(self, wave_start: int, wave_end: int) -> None:
         """shared_log에서 해당 웨이브 구간 엔트리를 추출해 LLM 요약 후 이벤트를 emit."""

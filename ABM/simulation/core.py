@@ -82,6 +82,10 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         time_mode:        str                         = "fixed",
         time_categories:  list[dict] | None            = None,
         idle_minutes_schedule: list[int] | None        = None,
+        # 가변 시간 점프 상한 — LLM 분류기가 고른 카테고리의 랜덤 경과분을 엔진이
+        # 벽시계·동석 상황 기준으로 결정론적으로 캡한다. 0 = 해당 캡 비활성.
+        max_scene_jump_minutes:   int                  = 45,
+        max_daytime_jump_minutes: int                  = 180,
         elapsed_minutes_init: int                      = 0,
         wave_base_init:   int                           = 0,
         infection_model:  dict | None                  = None,
@@ -169,6 +173,9 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         self._time_mode: str = time_mode if time_mode in ("fixed", "variable") else "fixed"
         self._time_categories: list[dict] = time_categories if time_categories is not None else list(_DEFAULT_TIME_CATEGORIES)
         self._idle_minutes_schedule: list[int] = idle_minutes_schedule if idle_minutes_schedule is not None else [60, 120, 180]
+        # 가변 시간 점프 상한. _RunnerMixin._clamp_time_jump 가 소비한다.
+        self._max_scene_jump_minutes:   int = max(0, int(max_scene_jump_minutes))
+        self._max_daytime_jump_minutes: int = max(0, int(max_daytime_jump_minutes))
         self._elapsed_minutes: int = elapsed_minutes_init
 
         # 위치 그래프 (인접 리스트) + 외부 공간 집합 + 인지 구역(zone) 맵

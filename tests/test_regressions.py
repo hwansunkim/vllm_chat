@@ -510,6 +510,148 @@ class TargetDurationTests(unittest.TestCase):
             60,
         )
 
+    def test_jump_clamp_schema_defaults(self):
+        cfg = SimStartConfig(agents=[_agent("a")], background="", start_agent="a")
+        self.assertEqual(cfg.max_scene_jump_minutes, 45)
+        self.assertEqual(cfg.max_daytime_jump_minutes, 180)
+        cfg = SimStartConfig(agents=[_agent("a")], background="", start_agent="a",
+                             max_scene_jump_minutes=0, max_daytime_jump_minutes=90)
+        self.assertEqual(cfg.max_scene_jump_minutes, 0)
+        self.assertEqual(cfg.max_daytime_jump_minutes, 90)
+
+
+class VariableTimeJumpClampTests(unittest.TestCase):
+    """가변 시간 점프의 결정론적 상한 (_RunnerMixin._clamp_time_jump).
+
+    LLM 분류기는 '장면의 질감'만 정하고, 실제 경과 분의 상한은 엔진이 벽시계·
+    동석 상황 기준으로 강제한다 — 약한 모델이 오후 한복판에서 최대 범위(예:
+    480분)를 골라 학원·퇴근·저녁 식사 같은 재집결 장면을 통째로 건너뛰는 것을
+    막는다. 3개 실제 run(gemma/o4-mini/solar) 중 2개에서 화요일 저녁이 8시간
+    점프로 소실된 것이 계기.
+    """
+
+    def _sim(self, *, scene_cap=45, daytime_cap=180, start="14:00", elapsed=0):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        self._tmp = tempfile.TemporaryDirectory()
+        tmp = self._tmp.name
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096)
+                  for k in ("mom", "kid", "dad")}
+        graph = [
+            {"name": "livingroom", "connects_to": ["bedroom"],   "is_exterior": False, "zone": "home", "is_zone_entry": True},
+            {"name": "bedroom",    "connects_to": ["livingroom"], "is_exterior": False, "zone": "home", "is_zone_entry": False},
+            {"name": "office",     "connects_to": ["home"],       "is_exterior": True,  "zone": "",     "is_zone_entry": False},
+            {"name": "school",     "connects_to": ["home"],       "is_exterior": True,  "zone": "",     "is_zone_entry": False},
+        ]
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=lambda *a, **k: ("{}", "", {}),
+            time_mode="variable", location_graph=graph,
+            sim_start_time=start, elapsed_minutes_init=elapsed,
+            max_scene_jump_minutes=scene_cap, max_daytime_jump_minutes=daytime_cap,
+        )
+        return sim
+
+    def tearDown(self):
+        if getattr(self, "_tmp", None):
+            self._tmp.cleanup()
+
+    @staticmethod
+    def _spoke(*keys):
+        return {k: {"success": True, "clean_content": "여보 밥 먹어요."} for k in keys}
+
+    def test_co_located_interior_scene_is_hard_capped(self):
+        sim = self._sim()
+        sim._agent_location = {"mom": "livingroom", "kid": "livingroom", "dad": "office"}
+        jump, reason = sim._clamp_time_jump(400, self._spoke("mom", "kid"))
+        self.assertEqual(jump, 45)
+        self.assertIsNotNone(reason)
+
+    def test_lone_interior_speaker_daytime_is_capped(self):
+        # 채민경 혼자 발코니, 아이들·아빠는 학교·회사 — 5.6-sol Wave 69 상황.
+        sim = self._sim(start="14:46")
+        sim._agent_location = {"mom": "livingroom", "kid": "school", "dad": "office"}
+        jump, reason = sim._clamp_time_jump(470, self._spoke("mom"))
+        self.assertEqual(jump, 180)
+        self.assertIsNotNone(reason)
+
+    def test_night_is_not_capped(self):
+        sim = self._sim(start="23:10")
+        sim._agent_location = {"mom": "livingroom", "kid": "bedroom", "dad": "bedroom"}
+        jump, reason = sim._clamp_time_jump(400, self._spoke("mom"))
+        self.assertEqual(jump, 400)
+        self.assertIsNone(reason)
+
+    def test_early_morning_is_not_capped(self):
+        sim = self._sim(start="04:30")
+        sim._agent_location = {"mom": "livingroom", "kid": "bedroom", "dad": "bedroom"}
+        jump, reason = sim._clamp_time_jump(400, self._spoke("mom"))
+        self.assertEqual(jump, 400)
+
+    def test_fully_empty_house_daytime_is_not_capped(self):
+        # 모두 외출 — 건너뛸 재집결 장면 자체가 없다.
+        sim = self._sim(start="10:00")
+        sim._agent_location = {"mom": "office", "kid": "school", "dad": "office"}
+        jump, reason = sim._clamp_time_jump(400, self._spoke("mom", "dad"))
+        self.assertEqual(jump, 400)
+        self.assertIsNone(reason)
+
+    def test_small_jump_is_never_touched(self):
+        sim = self._sim()
+        sim._agent_location = {"mom": "livingroom", "kid": "livingroom", "dad": "livingroom"}
+        jump, reason = sim._clamp_time_jump(25, self._spoke("mom", "kid", "dad"))
+        self.assertEqual(jump, 25)
+        self.assertIsNone(reason)
+
+    def test_scene_cap_zero_falls_through_to_daytime_cap(self):
+        sim = self._sim(scene_cap=0, start="14:00")
+        sim._agent_location = {"mom": "livingroom", "kid": "livingroom", "dad": "office"}
+        jump, _ = sim._clamp_time_jump(400, self._spoke("mom", "kid"))
+        self.assertEqual(jump, 180)  # 동석 캡은 꺼졌지만 주간 캡은 여전히 적용
+
+    def test_both_caps_zero_disables_clamping(self):
+        sim = self._sim(scene_cap=0, daytime_cap=0, start="14:00")
+        sim._agent_location = {"mom": "livingroom", "kid": "livingroom", "dad": "office"}
+        jump, reason = sim._clamp_time_jump(400, self._spoke("mom", "kid"))
+        self.assertEqual(jump, 400)
+        self.assertIsNone(reason)
+
+    def test_silent_agents_do_not_count_as_a_scene(self):
+        # kid가 같은 방에 있어도 이번 wave에 발화가 없으면 '진행 중 장면'이 아니다.
+        sim = self._sim(start="14:00")
+        sim._agent_location = {"mom": "livingroom", "kid": "livingroom", "dad": "office"}
+        results = {
+            "mom": {"success": True, "clean_content": "혼자 청소나 하자."},
+            "kid": {"success": True, "clean_content": "   "},  # 내용 없음
+        }
+        jump, reason = sim._clamp_time_jump(400, results)
+        self.assertEqual(jump, 180)  # 동석 아님 → 주간 캡만
+
+
+class TimeClassifierCurrentTimeTests(unittest.TestCase):
+    """Layer 0 — 시간 분류기 프롬프트에 현재 시각 주입 (ABM/time_classifier.py)."""
+
+    def _run(self, current_time):
+        from ABM.time_classifier import classify_wave_time
+        captured = {}
+        def llm(messages, max_tokens=None, **kw):
+            captured["user"] = messages[-1]["content"]
+            return json.dumps({"category": "normal_scene", "reason": "t"}), "", {}
+        classify_wave_time(
+            [{"speaker": "a", "content": "안녕", "action_note": ""}],
+            [{"id": "normal_scene", "label": "일반"}],
+            llm, current_time=current_time,
+        )
+        return captured["user"]
+
+    def test_current_time_block_is_present_when_given(self):
+        user = self._run("화요일 오후 2시 46분")
+        self.assertIn("[현재 시각]", user)
+        self.assertIn("화요일 오후 2시 46분", user)
+
+    def test_block_is_omitted_when_empty(self):
+        self.assertNotIn("[현재 시각]", self._run(""))
+
 
 class _ScriptedLLM:
     """에이전트별·호출순서별 응답을 미리 정해두는 스텁 LLM.

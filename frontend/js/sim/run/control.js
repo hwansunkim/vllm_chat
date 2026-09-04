@@ -75,6 +75,8 @@ export async function startSimulation() {
       time_mode:              sim.time_mode ?? 'fixed',
       time_categories:        (sim.time_categories?.length ? sim.time_categories : DEFAULT_TIME_CATEGORIES),
       idle_minutes_schedule:  (sim.idle_minutes_schedule?.length ? sim.idle_minutes_schedule : DEFAULT_IDLE_MINUTES_SCHEDULE),
+      max_scene_jump_minutes:   sim.max_scene_jump_minutes   ?? 45,
+      max_daytime_jump_minutes: sim.max_daytime_jump_minutes ?? 180,
       max_silence_waves:      sim.max_silence_waves  ?? 3,
       early_stop_enabled:     sim.early_stop_enabled ?? true,
       server_id:              sim.server_id || null,

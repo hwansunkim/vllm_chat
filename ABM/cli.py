@@ -318,6 +318,9 @@ def _dry_run(cfg, scenario_name: str) -> int:
     print(f"목표 기간     {cfg.target_duration_minutes or '미사용'}")
     print(f"시간         {cfg.time_mode} · wave당 {cfg.time_per_wave}분 · "
           f"시작 {cfg.sim_start_weekday} {cfg.sim_start_time}")
+    if cfg.time_mode == "variable":
+        print(f"점프 상한     동석 {cfg.max_scene_jump_minutes or '없음'}분 · "
+              f"주간 {cfg.max_daytime_jump_minutes or '없음'}분")
     print(f"위치 그래프   {len(cfg.location_graph)}개 노드")
     print(f"감염 모델     {'ON — ' + (cfg.infection_model.disease_name or '(이름 없음)') if cfg.infection_model.enabled else 'OFF'}")
     print(f"디렉터       {'ON' if cfg.system_agent.enabled else 'OFF'}")

@@ -233,6 +233,13 @@ class SimStartConfig(BaseModel):
         TimeCategory(id="night_sleep",        label="취침/장시간 경과",     min_minutes=240, max_minutes=420),
     ]  # time_mode="variable"일 때 LLM이 wave 내용을 분류하는 카테고리 목록
     idle_minutes_schedule:  list[int]        = [60, 120, 180]  # 강제 침묵 재투입 시 경과 시간(분) 스케줄 — 침묵 회차가 늘수록 다음 값 사용, 끝에서 캡
+    # ── 가변 시간 점프 상한 (time_mode="variable" 전용) ────────────────────────
+    # LLM 분류기는 "이 장면의 질감"만 정하고, 실제 경과 분의 **상한은 엔진이
+    # 결정론적으로 강제**한다. 약한 모델이 오후 한복판에서 최대 범위 카테고리를
+    # 골라 학원·퇴근·저녁 같은 재집결 장면을 통째로 건너뛰는 것을 막는다.
+    # 두 캡 모두 0 = 해당 캡 비활성(순수 카테고리 랜덤값 사용).
+    max_scene_jump_minutes:   int            = 45   # 실내 한 곳에 2명+ 동석 발화 중일 때의 점프 상한
+    max_daytime_jump_minutes: int            = 180  # 밤(22~06시)이 아니고 집에 남은 사람이 있을 때의 점프 상한
     max_silence_waves:      int              = 3         # 연속 침묵 허용 wave 수 (early_stop_enabled + time_per_wave > 0일 때 활성)
     early_stop_enabled:     bool             = True      # False = 조기 종료 비활성 (max_waves까지 항상 실행)
     # 목표 기간(분). None = 미사용(기존 동작: max_waves + 침묵 조기종료만).
