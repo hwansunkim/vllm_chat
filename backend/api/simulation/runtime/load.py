@@ -112,6 +112,10 @@ def load_simulation(run_id: str):
             time_per_wave=cfg.time_per_wave,
             time_mode=cfg.time_mode,
             time_categories=[c.model_dump() for c in cfg.time_categories],
+            # 빠뜨리면 /start 로는 AI 시간 추론이 걸리고 /load 로 되살린 실행에서는
+            # 조용히 category 로 되돌아간다(엔진 기본값). 구버전 config_json 에는
+            # 필드가 없지만 SimStartConfig 기본값이 "category" 라 그대로 안전하다.
+            time_estimation_mode=cfg.time_estimation_mode,
             idle_minutes_schedule=cfg.idle_minutes_schedule,
             max_scene_jump_minutes=cfg.max_scene_jump_minutes,
             max_daytime_jump_minutes=cfg.max_daytime_jump_minutes,

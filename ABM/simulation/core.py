@@ -33,6 +33,7 @@ _PERSIST_EVENTS: frozenset[str] = frozenset({
     "scene_event",
     "director_call",
     "infection_update",
+    "time_jump",
 })
 
 # 시작 요일 키(프론트/스키마와 동일) → 표시 라벨. 인덱스 = 월요일 기준 0~6.
@@ -80,6 +81,11 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         time_per_wave:    int                         = 30,
         time_mode:        str                         = "fixed",
         time_categories:  list[dict] | None            = None,
+        # 가변 시간 모드에서 "이번 wave에 몇 분이 흘렀는가"를 정하는 방식.
+        #   "category" (기본) — LLM이 time_categories 중 하나를 고르고 그 범위에서 랜덤.
+        #   "ai"             — LLM이 경과분(정수)을 직접 추론. 실패 시 category로 폴백.
+        # time_mode == "fixed" 일 때는 아무 영향도 없다.
+        time_estimation_mode: str                      = "category",
         idle_minutes_schedule: list[int] | None        = None,
         # 가변 시간 점프 상한 — LLM 분류기가 고른 카테고리의 랜덤 경과분을 엔진이
         # 벽시계·동석 상황 기준으로 결정론적으로 캡한다. 0 = 해당 캡 비활성.
@@ -171,6 +177,10 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         # 가변 시간 모드 설정
         self._time_mode: str = time_mode if time_mode in ("fixed", "variable") else "fixed"
         self._time_categories: list[dict] = time_categories if time_categories is not None else list(_DEFAULT_TIME_CATEGORIES)
+        # 경과분 산출 방식. 알 수 없는 값이면 기존 동작인 "category"로 폴백한다.
+        self._time_estimation_mode: str = (
+            time_estimation_mode if time_estimation_mode in ("category", "ai") else "category"
+        )
         self._idle_minutes_schedule: list[int] = idle_minutes_schedule if idle_minutes_schedule is not None else [60, 120, 180]
         # 가변 시간 점프 상한. _RunnerMixin._clamp_time_jump 가 소비한다.
         self._max_scene_jump_minutes:   int = max(0, int(max_scene_jump_minutes))

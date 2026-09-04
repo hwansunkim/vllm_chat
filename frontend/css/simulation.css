@@ -502,7 +502,8 @@
   border: 1px solid #e2e8f0; border-radius: 5px; text-align: right; outline: none;
 }
 .sim-option-row input[type=number]:focus { border-color: #6366f1; }
-#sim-start-agent, #sim-server-select, #sim-time-mode, #sim-start-weekday {
+#sim-start-agent, #sim-server-select, #sim-time-mode, #sim-start-weekday,
+#sim-time-estimation-mode {
   font-size: 12px; padding: 5px 7px;
   border: 1px solid #e2e8f0; border-radius: 5px; background: white; outline: none;
   max-width: 150px;
@@ -1222,6 +1223,17 @@
   border-left: 2px solid #e2e8f0;
 }
 .sim-director-call-line.failed { color: #dc2626; border-left-color: #fca5a5; }
+
+/* ── Time-jump line (가변 시간 모드의 wave 경과분 판정 결과) ─────────────────────
+   디렉터 판단 줄과 같은 톤의 텔레메트리 한 줄. AI 추론이 실패해 카테고리로 떨어진
+   경우(fallback)만 살짝 눈에 띄게 해 설정을 손볼 지점을 알 수 있게 한다. */
+.sim-time-jump-line {
+  margin: 6px 0; padding: 3px 10px;
+  font-size: 10.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #94a3b8; letter-spacing: 0.2px;
+  border-left: 2px solid #e2e8f0;
+}
+.sim-time-jump-line.fallback { color: #b45309; border-left-color: #fcd34d; }
 
 /* ── Resize handle ────────────────────────────────────────────────────────────── */
 .sim-resize-handle {

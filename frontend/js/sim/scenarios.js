@@ -72,6 +72,7 @@ export function buildScenarioConfig() {
     time_per_wave:          sim.time_per_wave     ?? 30,
     time_mode:              sim.time_mode ?? 'fixed',
     time_categories:        (sim.time_categories?.length ? sim.time_categories : DEFAULT_TIME_CATEGORIES),
+    time_estimation_mode:   sim.time_estimation_mode === 'ai' ? 'ai' : 'category',
     idle_minutes_schedule:  (sim.idle_minutes_schedule?.length ? sim.idle_minutes_schedule : DEFAULT_IDLE_MINUTES_SCHEDULE),
     max_scene_jump_minutes:   sim.max_scene_jump_minutes   ?? 45,
     max_daytime_jump_minutes: sim.max_daytime_jump_minutes ?? 180,
@@ -167,6 +168,7 @@ export function newScenario() {
   sim.time_per_wave          = 30;
   sim.time_mode              = 'fixed';
   sim.time_categories        = DEFAULT_TIME_CATEGORIES.map(c => ({ ...c }));
+  sim.time_estimation_mode   = 'category';
   sim.idle_minutes_schedule  = [...DEFAULT_IDLE_MINUTES_SCHEDULE];
   sim.max_scene_jump_minutes   = 45;
   sim.max_daytime_jump_minutes = 180;
@@ -240,6 +242,8 @@ export function applyScenario(s) {
   sim.time_per_wave          = cfg.time_per_wave          ?? 30;
   sim.time_mode              = cfg.time_mode === 'variable' ? 'variable' : 'fixed';
   sim.time_categories        = cfg.time_categories?.length ? cfg.time_categories : DEFAULT_TIME_CATEGORIES.map(c => ({ ...c }));
+  // 구버전 시나리오에는 필드가 없다 — 'category'(기존 동작)로 폴백.
+  sim.time_estimation_mode   = cfg.time_estimation_mode === 'ai' ? 'ai' : 'category';
   sim.idle_minutes_schedule  = cfg.idle_minutes_schedule?.length ? cfg.idle_minutes_schedule : [...DEFAULT_IDLE_MINUTES_SCHEDULE];
   // 구버전 시나리오에는 필드가 없다 — 엔진/스키마 기본값과 같은 45/180으로 폴백.
   sim.max_scene_jump_minutes   = cfg.max_scene_jump_minutes   ?? 45;

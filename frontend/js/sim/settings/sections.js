@@ -141,7 +141,10 @@ function _badgeText(id, sim) {
       return parts.join(' · ');
     }
     case 'time':
-      if (sim.time_mode === 'variable') return '가변';
+      // 추론 방식은 가변 모드에서만 의미가 있으므로 그때만 덧붙인다.
+      if (sim.time_mode === 'variable') {
+        return sim.time_estimation_mode === 'ai' ? '가변 · AI 추론' : '가변';
+      }
       return (sim.time_per_wave ?? 0) > 0 ? `${sim.time_per_wave}분/wave` : '시간 없음';
     case 'tuning':
       return '';

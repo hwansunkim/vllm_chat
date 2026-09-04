@@ -145,6 +145,8 @@ def run_config(
         time_per_wave=cfg.time_per_wave,
         time_mode=cfg.time_mode,
         time_categories=[c.model_dump() for c in cfg.time_categories],
+        # 백엔드 스키마가 아직 이 필드를 갖고 있지 않을 수 있으므로 getattr로 안전하게.
+        time_estimation_mode=getattr(cfg, "time_estimation_mode", "category"),
         idle_minutes_schedule=cfg.idle_minutes_schedule,
         max_scene_jump_minutes=cfg.max_scene_jump_minutes,
         max_daytime_jump_minutes=cfg.max_daytime_jump_minutes,

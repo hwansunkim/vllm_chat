@@ -7,7 +7,7 @@ import {
   addTypingIndicator, removeTypingIndicator,
   updateWaveIndicator, addDirectorCallCard, addInterventionCard, addWorldEventCard,
   addMovementCard, addAppearanceCard, addSituationCard, applyWaveTimeStr,
-  addInfectionCard, addMeetingCard, flushPendingWaveCards,
+  addInfectionCard, addMeetingCard, addTimeJumpCard, flushPendingWaveCards,
 } from './feed.js';
 import { updateAgentCard, updateAgentLocation, updateAgentInfection,
          updateAgentMeetingBadge, getCardEl } from './cards.js';
@@ -94,6 +94,15 @@ export function connectSSE() {
   es.addEventListener('director_call', e => {
     const d = JSON.parse(e.data);
     addDirectorCallCard(d);
+  });
+
+  // 가변 시간 모드에서 이 wave 의 경과 분을 어떻게 정했는지(카테고리 / AI 추론 + 이유,
+  // 최종 분, 클램프 여부). 카테고리 라벨·범위를 미세조정하려면 판정 결과가 보여야 한다.
+  // fixed 모드와 침묵 강제 재투입 wave 에서는 엔진이 emit 하지 않는다.
+  // director_call 과 마찬가지로 다음 wave_start 보다 먼저 도착할 수 있어 피드가 버퍼링한다.
+  es.addEventListener('time_jump', e => {
+    const d = JSON.parse(e.data);
+    addTimeJumpCard(d);
   });
 
   // 디렉터 개입 / 세계 사건. 페이로드의 `wave` 는 "이 개입이 실제로 소비되는 wave"이고,

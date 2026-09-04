@@ -340,6 +340,9 @@ export const sim = {
   time_per_wave:     30,       // wave당 경과 시간(분). 0 = 시간 개념 비활성 (time_mode='fixed'일 때만 사용)
   time_mode: 'fixed',          // 'fixed' = wave당 고정 시간, 'variable' = wave 내용을 LLM이 분류해 가변 경과
   time_categories: DEFAULT_TIME_CATEGORIES.map(c => ({ ...c })),      // time_mode='variable'일 때 분류 카테고리
+  // 'category'(기본) = LLM이 위 카테고리 중 하나를 골라 그 범위에서 무작위 경과분,
+  // 'ai' = LLM이 경과분을 직접 추론(카테고리 전체 min~max로 clamp). time_mode='variable'일 때만 의미 있음.
+  time_estimation_mode: 'category',
   idle_minutes_schedule: [...DEFAULT_IDLE_MINUTES_SCHEDULE],          // 강제 침묵 재투입 시 경과 시간(분) 스케줄
   // 가변 시간 점프 상한 — LLM 분류기가 고른 카테고리의 랜덤 경과분을 엔진이 벽시계·
   // 동석 상황 기준으로 캡한다(schemas.py SimStartConfig와 동일 기본값). 0 = 캡 비활성.

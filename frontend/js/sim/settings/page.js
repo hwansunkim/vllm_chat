@@ -15,7 +15,9 @@ import { autoGrowAll } from './textareas.js';
 import { updateEarlyStopUI, initEarlyStopToggle } from './early-stop.js';
 import { renderTargetDuration, readTargetDuration, initTargetDurationUI } from './target-duration.js';
 import { updateVariableTimeUI, renderTimeCategories, readTimeCategories,
-         readIdleSchedule, addTimeCategory, initTimeModeToggle } from './time-categories.js';
+         readIdleSchedule, addTimeCategory, initTimeModeToggle,
+         normalizeTimeEstimationMode, updateTimeEstimationModeUI,
+         readTimeEstimationMode, initTimeEstimationModeToggle } from './time-categories.js';
 import { renderSystemAgentConfig } from './system-agent.js';
 import { renderInfectionConfig, readInfectionModel, addSymptomStage } from './infection-config.js';
 import { renderTemperatureSlider } from './temperature.js';
@@ -25,6 +27,7 @@ import { renderContractPreview, readOutputFormatOverride } from './contract-prev
 
 // 기존 사용처(index.js 등)가 계속 './settings/page.js' 하나만 import 하도록 재수출한다.
 export { initEarlyStopToggle, initTargetDurationUI, initTimeModeToggle,
+         initTimeEstimationModeToggle,
          addTimeCategory, addSymptomStage, addLocationNode };
 
 export function renderSettingsPage() {
@@ -50,6 +53,11 @@ export function renderSettingsPage() {
     updateVariableTimeUI(timeModeEl.value);
   }
   renderTargetDuration();
+  const timeEstEl = document.getElementById('sim-time-estimation-mode');
+  if (timeEstEl) {
+    timeEstEl.value = normalizeTimeEstimationMode(sim.time_estimation_mode);
+    updateTimeEstimationModeUI(timeEstEl.value);
+  }
   renderTimeCategories();
   const idleScheduleEl = document.getElementById('sim-idle-schedule');
   if (idleScheduleEl) {
@@ -112,6 +120,9 @@ export function readConfigFromUI() {
   sim.time_per_wave     = parseInt(document.getElementById('sim-time-per-wave')?.value)     || 0;
   sim.time_mode         = document.getElementById('sim-time-mode')?.value === 'variable' ? 'variable' : 'fixed';
   sim.time_categories   = readTimeCategories();
+  // time_mode='fixed'여도 값은 그대로 보존한다 — 엔진이 fixed에서 무시하므로 무해하고,
+  // 모드를 오갈 때 사용자가 고른 추론 방식이 초기화되지 않는다.
+  sim.time_estimation_mode  = readTimeEstimationMode();
   sim.idle_minutes_schedule = readIdleSchedule();
   // 점프 상한은 0이 유효값("캡 끔")이므로 `|| 기본값` 을 쓰면 안 된다 — 빈칸일 때만 기본값.
   const _sceneJump = document.getElementById('sim-max-scene-jump')?.value;

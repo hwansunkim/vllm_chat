@@ -211,6 +211,54 @@ export function addDirectorCallCard(d) {
   _appendWaveCard(d.wave, el);
 }
 
+// 카테고리 라벨은 설정에서 문장급으로 길어질 수 있다("식사·짧은 용무 등 스킵되듯
+// 지나가는 장면"). 한 줄 텔레메트리이므로 앞부분만 보여주고 전문은 title 로 남긴다.
+const TIME_JUMP_LABEL_MAX = 24;
+function _shortLabel(s) {
+  const t = String(s);
+  return t.length > TIME_JUMP_LABEL_MAX ? `${t.slice(0, TIME_JUMP_LABEL_MAX)}…` : t;
+}
+
+/**
+ * time_jump SSE — 가변 시간 모드에서 이 wave 의 경과 분을 **어떻게** 정했는지 한 줄.
+ * 카테고리 라벨/범위를 미세조정하려면 "방금 wave 가 어디로 판정됐는지"가 보여야 한다.
+ * director_call 과 같은 성격의 관전용 텔레메트리(대사 아님, 메모리에 안 들어감,
+ * 마크다운 내보내기 제외)이고, 엔진이 wave 루프 하단에서 emit 하므로 다음 wave_start
+ * 보다 먼저 도착할 수 있다 → _appendWaveCard 로 구분선 뒤에 순서를 맞춘다.
+ * fixed 모드와 침묵 강제 재투입 wave 에서는 이벤트 자체가 오지 않는다.
+ */
+export function addTimeJumpCard(d) {
+  removeFeedEmpty();
+  const isAi     = d.mode === 'ai';
+  const catLabel = d.category_label || d.category_id || '';
+  let verdict;
+  if (d.used_fallback) {
+    verdict = catLabel ? `AI 추론 실패 → 카테고리 "${_shortLabel(catLabel)}"(폴백)`
+                       : 'AI 추론 실패 → 카테고리 폴백';
+  } else if (isAi) {
+    verdict = 'AI 추론';
+  } else {
+    verdict = catLabel ? `카테고리 "${_shortLabel(catLabel)}"` : '카테고리';
+  }
+
+  const bits = ['시간 판정', verdict, d.minutes != null ? `${d.minutes}분` : ''].filter(Boolean);
+  let text = `⏱ ${bits.join(' · ')}`;
+  // reason 은 ai 성공 경로에서만 채워진다(폴백이면 null).
+  if (isAi && !d.used_fallback && d.reason) text += ` — "${d.reason}"`;
+  // clamp_reason 은 엔진이 이미 사람이 읽을 수 있는 한국어로 준다("동석 장면(실내 2인+) 400→45분").
+  if (d.clamp_reason) text += ` · 클램프: ${d.clamp_reason}`;
+
+  const el = document.createElement('div');
+  el.className = 'sim-time-jump-line' + (d.used_fallback ? ' fallback' : '');
+  el.textContent = text;
+  // 잘린 라벨 전문 + 클램프 전 원본 분을 호버로 확인할 수 있게 한다.
+  const tips = [];
+  if (catLabel) tips.push(catLabel);
+  if (d.raw_minutes != null && d.raw_minutes !== d.minutes) tips.push(`클램프 전 ${d.raw_minutes}분`);
+  if (tips.length) el.title = tips.join(' · ');
+  _appendWaveCard(d.wave, el);
+}
+
 export function addWorldEventCard(d) {
   removeFeedEmpty();
   const targetStr = (d.target_aliases || d.targets || []).join(', ') || '전체';

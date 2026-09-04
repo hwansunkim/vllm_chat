@@ -73,6 +73,8 @@ export async function startSimulation() {
       time_per_wave:          sim.time_per_wave    ?? 30,
       time_mode:              sim.time_mode ?? 'fixed',
       time_categories:        (sim.time_categories?.length ? sim.time_categories : DEFAULT_TIME_CATEGORIES),
+      // time_mode='variable'일 때만 의미 있음. 'ai' = LLM이 카테고리 대신 경과분을 직접 추론.
+      time_estimation_mode:   sim.time_estimation_mode === 'ai' ? 'ai' : 'category',
       idle_minutes_schedule:  (sim.idle_minutes_schedule?.length ? sim.idle_minutes_schedule : DEFAULT_IDLE_MINUTES_SCHEDULE),
       max_scene_jump_minutes:   sim.max_scene_jump_minutes   ?? 45,
       max_daytime_jump_minutes: sim.max_daytime_jump_minutes ?? 180,

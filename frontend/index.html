@@ -360,10 +360,18 @@
           <!-- 가변 시간 설정 — 시간 모드가 '가변'일 때만 표시 (page.js:_updateVariableTimeUI) -->
           <div class="sim-sec-sub sim-hidden" id="sim-variable-time-section">
             <div class="sim-sec-sub-title">
-              <span>⏱ 가변 시간 설정<span class="sim-help" aria-hidden="true" data-tooltip="시간 모드가 '가변'일 때만 사용합니다. wave가 끝날 때마다 LLM이 그 wave를 아래 카테고리 중 하나로 분류하고, 지정한 최소~최대 범위(분) 안에서 무작위로 시간을 경과시킵니다.">?</span></span>
+              <span>⏱ 가변 시간 설정<span class="sim-help" aria-hidden="true" data-tooltip="시간 모드가 '가변'일 때만 사용합니다. wave가 끝날 때마다 아래 '시간 추론 방식'에 따라 LLM이 경과 시간(분)을 정합니다 — 카테고리 기반 또는 AI 자동 추론 중 선택하세요.">?</span></span>
               <button id="sim-add-timecat-btn" class="sim-settings-add-btn">+ 카테고리 추가</button>
             </div>
-            <div class="sim-fields-hint">wave가 끝날 때마다 그 wave의 대화 내용을 LLM이 아래 카테고리 중 하나로 분류하고, 그 범위(분) 내에서 무작위로 시간을 경과시킵니다.</div>
+            <div class="sim-option-row">
+              <label>시간 추론 방식<span class="sim-help" aria-hidden="true" data-tooltip="카테고리 기반(기본) = LLM이 아래 카테고리 중 하나를 고르고 그 범위 안에서 무작위로 경과분을 뽑습니다. AI 자동 추론 = LLM이 카테고리를 고르는 대신 흘러간 시간(분)을 직접 추론하고, 그 값을 아래 카테고리 전체의 최소~최대 범위로 제한합니다. 두 방식 모두 아래 점프 상한(동석/주간)은 그대로 적용됩니다.">?</span></label>
+              <select id="sim-time-estimation-mode">
+                <option value="category">카테고리 기반</option>
+                <option value="ai">AI 자동 추론</option>
+              </select>
+            </div>
+            <div class="sim-fields-hint" id="sim-time-cat-hint">wave가 끝날 때마다 그 wave의 대화 내용을 LLM이 아래 카테고리 중 하나로 분류하고, 그 범위(분) 내에서 무작위로 시간을 경과시킵니다.</div>
+            <div class="sim-fields-hint sim-hidden" id="sim-time-ai-hint">wave가 끝날 때마다 LLM이 흘러간 시간(분)을 직접 추론합니다. <b>AI가 추론한 시간은 아래 카테고리 최소~최대 범위로 제한됩니다</b> — 카테고리 설정은 안전장치로 계속 쓰이니 그대로 두세요. 추론에 실패하면 카테고리 방식으로 자동 폴백합니다.</div>
             <div id="sim-time-cat-list"></div>
             <div class="sim-option-row" style="margin-top:8px">
               <label>강제 재투입 시간(분)<span class="sim-help" aria-hidden="true" data-tooltip="연속 침묵으로 강제 재투입될 때 경과시킬 시간(분), 쉼표로 구분. 침묵 회차가 늘수록 다음 값을 사용하고 끝에서 고정됩니다.">?</span></label>

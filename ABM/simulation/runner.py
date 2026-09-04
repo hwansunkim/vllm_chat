@@ -336,16 +336,57 @@ class _RunnerMixin:
                     idx = min(silence_count, len(self._idle_minutes_schedule)) - 1
                     self._elapsed_minutes += self._idle_minutes_schedule[idx]
                 elif organically_filled or has_content:
-                    category_id = self._classify_wave_time(disp_wave, results)
-                    cat = next((c for c in self._time_categories if c["id"] == category_id), None) \
-                          or next((c for c in self._time_categories if c["id"] == "normal_scene"), self._time_categories[0])
-                    lo, hi = cat["min_minutes"], cat["max_minutes"]
-                    if lo > hi:
-                        lo, hi = hi, lo
-                    raw_jump = random.randint(lo, hi)
+                    # raw_jump(이번 wave의 경과 분)를 정하는 방식만 모드별로 갈린다.
+                    # 이후의 _clamp_time_jump()는 모드 무관 공통 경로다 — 그 함수는
+                    # 카테고리가 아니라 최종 분 숫자만 보고 동작한다.
+                    # 아래 세 값이 곧 `time_jump` 이벤트의 판정 근거다. category
+                    # 경로(직접/폴백)를 탔을 때만 category_id 가 채워지고, ai 성공
+                    # 시에만 ai_reason 이 채워진다.
+                    category_id:   str | None = None
+                    ai_reason:     str | None = None
+                    used_fallback: bool       = False
+                    if self._time_estimation_mode == "ai":
+                        ai_result = self._estimate_wave_minutes(disp_wave, results)
+                        if ai_result is None:
+                            # AI 추론 실패 — 카테고리 모드(normal_scene)로 조용히 폴백.
+                            used_fallback = True
+                            category_id = "normal_scene"
+                            raw_jump    = self._random_minutes_for_category(category_id)
+                            jump_source = "ai→normal_scene 폴백"
+                            logger.info(
+                                f"[W{disp_wave}] 시간 추론 모드=ai 실패 — "
+                                f"normal_scene 카테고리로 폴백, {raw_jump}분"
+                            )
+                        else:
+                            raw_jump, ai_reason = ai_result
+                            jump_source = "ai"
+                            logger.info(f"[W{disp_wave}] 시간 추론 모드=ai — {raw_jump}분")
+                    else:
+                        category_id = self._classify_wave_time(disp_wave, results)
+                        raw_jump    = self._random_minutes_for_category(category_id)
+                        jump_source = category_id
                     jump, clamp_reason = self._clamp_time_jump(raw_jump, results)
                     if clamp_reason:
-                        logger.info(f"[W{disp_wave}] 시간 점프 클램프({category_id}): {clamp_reason}")
+                        logger.info(f"[W{disp_wave}] 시간 점프 클램프({jump_source}): {clamp_reason}")
+                    # 판정 결과를 관전용 텔레메트리로 노출한다(director_call 과 같은
+                    # 성격 — 대사가 아니고 어떤 에이전트 메모리에도 들어가지 않는다).
+                    # 사용자가 카테고리 라벨/범위를 미세조정하려면 "이번 wave 가 어느
+                    # 카테고리로 판정됐는지"를 화면에서 볼 수 있어야 한다.
+                    resolved_cat = (
+                        self._resolve_time_category(category_id)
+                        if category_id is not None else None
+                    ) or {}
+                    self._emit("time_jump", {
+                        "wave":           disp_wave,
+                        "mode":           self._time_estimation_mode,
+                        "used_fallback":  used_fallback,
+                        "category_id":    resolved_cat.get("id"),
+                        "category_label": resolved_cat.get("label") or None,
+                        "reason":         ai_reason or None,
+                        "raw_minutes":    raw_jump,
+                        "minutes":        jump,
+                        "clamp_reason":   clamp_reason,
+                    })
                     self._elapsed_minutes += jump
                 # else: 이번 wave에 성공한 발화가 전혀 없음 — 시간 미누적
 
@@ -426,6 +467,78 @@ class _RunnerMixin:
         except Exception as e:
             logger.warning(f"[W{wave_num}] 시간 분류 예외 — normal_scene으로 폴백: {e}")
             return "normal_scene"
+
+    def _resolve_time_category(self, category_id: str | None) -> dict | None:
+        """category id → 실제로 사용될 카테고리 dict.
+
+        알 수 없는 id면 ``normal_scene``, 그것도 없으면 첫 카테고리로 폴백한다
+        (``_random_minutes_for_category``의 원래 폴백 규칙 그대로). 카테고리가
+        하나도 설정되지 않았으면 ``None``.
+
+        `time_jump` 이벤트가 "실제로 쓰인" 카테고리의 id/label을 싣기 위해 분리했다
+        — 폴백이 걸렸을 때 요청된 id를 그대로 보여주면 사용자가 라벨/범위를
+        미세조정할 때 엉뚱한 카테고리를 고치게 된다.
+        """
+        cats = self._time_categories or []
+        if not cats:
+            return None
+        return (
+            next((c for c in cats if c["id"] == category_id), None)
+            or next((c for c in cats if c["id"] == "normal_scene"), cats[0])
+        )
+
+    def _random_minutes_for_category(self, category_id: str | None) -> int:
+        """카테고리 id의 min~max 범위에서 경과 분을 뽑는다 (카테고리 모드의 원래 로직).
+
+        알 수 없는 id면 ``normal_scene``, 그것도 없으면 첫 카테고리로 폴백한다.
+        """
+        cat = self._resolve_time_category(category_id)
+        if cat is None:
+            # 카테고리가 하나도 없는 설정. 시간을 정할 근거가 없으니 0분으로 본다
+            # (시뮬레이션 자체는 계속 돌아야 한다).
+            return 0
+        lo, hi = cat["min_minutes"], cat["max_minutes"]
+        if lo > hi:
+            lo, hi = hi, lo
+        return random.randint(lo, hi)
+
+    def _estimate_wave_minutes(self, wave_num: int, results: dict) -> tuple[int, str] | None:
+        """AI 모드 — LLM에게 이번 wave의 경과 분을 직접 추론시킨다.
+
+        sanity 범위는 두 모드가 같은 설정을 공유하도록 ``_time_categories`` 전체의
+        min(min_minutes) ~ max(max_minutes)를 쓴다.
+
+        반환: ``(minutes, reason)`` — reason은 LLM이 준 한 줄 이유(빈 문자열일 수
+        있음)로, 호출부가 `time_jump` 이벤트에 실어 사용자에게 보여준다.
+        절대 예외를 밖으로 던지지 않음 — 실패 시 ``None``(호출부가 카테고리 폴백).
+        """
+        try:
+            from ..time_classifier import estimate_wave_minutes
+
+            entries = [
+                {
+                    "speaker":     speaker_key,
+                    "content":     result.get("clean_content", ""),
+                    "action_note": result.get("action_note", ""),
+                }
+                for speaker_key, result in results.items()
+                if result.get("success")
+            ]
+            cats = self._time_categories or []
+            lo = min((int(c["min_minutes"]) for c in cats), default=1)
+            hi = max((int(c["max_minutes"]) for c in cats), default=480)
+            now_str = self._format_time_str(self._sim_start_minutes + self._elapsed_minutes)
+            return estimate_wave_minutes(
+                entries, self._llm,
+                key_to_alias=self._key_to_alias,
+                llm_max_tokens=min(self.llm_max_tokens, 256),
+                current_time=now_str,
+                lo=lo,
+                hi=hi,
+            )
+        except Exception as e:
+            logger.warning(f"[W{wave_num}] AI 시간 추론 예외 — 카테고리 폴백: {e}")
+            return None
 
     def _clamp_time_jump(self, raw_jump: int, results: dict) -> tuple[int, str | None]:
         """가변 시간 점프(분)를 벽시계·동석 상황 기준으로 결정론적으로 캡한다.

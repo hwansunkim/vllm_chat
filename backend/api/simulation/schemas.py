@@ -233,6 +233,15 @@ class SimStartConfig(BaseModel):
         TimeCategory(id="alone_or_offscreen", label="혼자 있음/외출",      min_minutes=60,  max_minutes=120),
         TimeCategory(id="night_sleep",        label="취침/장시간 경과",     min_minutes=240, max_minutes=420),
     ]  # time_mode="variable"일 때 LLM이 wave 내용을 분류하는 카테고리 목록
+    # 가변 시간의 경과분을 정하는 방식. time_mode="variable"일 때만 의미가 있고
+    # "fixed"에서는 완전히 무시된다(엔진 분기가 variable 안에만 있음).
+    #   "category" (기본) — LLM이 time_categories 중 하나를 고르고 그 범위에서 랜덤 추출.
+    #   "ai"             — LLM이 카테고리 대신 경과분을 직접 추론. 실패하면 조용히
+    #                      normal_scene 카테고리로 폴백하고, 추론된 분은 time_categories
+    #                      전체의 min(min_minutes)~max(max_minutes)로 clamp된다.
+    # 어느 모드든 최종 분은 max_scene_jump_minutes / max_daytime_jump_minutes 상한을
+    # 동일하게 통과한다. 알 수 없는 값은 엔진이 "category"로 폴백한다.
+    time_estimation_mode:   Literal["category", "ai"] = "category"
     idle_minutes_schedule:  list[int]        = [60, 120, 180]  # 강제 침묵 재투입 시 경과 시간(분) 스케줄 — 침묵 회차가 늘수록 다음 값 사용, 끝에서 캡
     # ── 가변 시간 점프 상한 (time_mode="variable" 전용) ────────────────────────
     # LLM 분류기는 "이 장면의 질감"만 정하고, 실제 경과 분의 **상한은 엔진이

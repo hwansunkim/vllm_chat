@@ -3,12 +3,46 @@
 
 import { sim, esc, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE } from '../state.js';
 import { updateTargetDurationUI } from './target-duration.js';
+import { updateSectionBadges } from './sections.js';
 
 // ── 가변 시간 모드 UI 연동 ────────────────────────────────────────────────────
 
 export function updateVariableTimeUI(mode) {
   const section = document.getElementById('sim-variable-time-section');
   if (section) section.classList.toggle('sim-hidden', mode !== 'variable');
+}
+
+// ── 시간 추론 방식 (time_estimation_mode) ─────────────────────────────────────
+// time_mode='variable'일 때만 의미 있는 하위 옵션이라 가변 시간 섹션 안에 산다.
+// 'category'(기본) = LLM이 카테고리를 고르고 그 범위에서 randint,
+// 'ai'            = LLM이 경과분을 직접 추론(값은 카테고리 전체 min~max로 clamp).
+// AI 모드에서도 카테고리 min/max 에디터는 숨기지 않는다 — 그 범위가 sanity clamp로
+// 재사용되기 때문이다(안내 문구만 바꿔 끼운다).
+
+export function normalizeTimeEstimationMode(v) {
+  return v === 'ai' ? 'ai' : 'category';
+}
+
+export function updateTimeEstimationModeUI(mode) {
+  const ai = normalizeTimeEstimationMode(mode) === 'ai';
+  document.getElementById('sim-time-cat-hint')?.classList.toggle('sim-hidden', ai);
+  document.getElementById('sim-time-ai-hint')?.classList.toggle('sim-hidden', !ai);
+}
+
+// 셀렉트가 DOM에 없는 경로(설정 패널 렌더 전 저장 등)에서는 기존 상태 → 기본값으로 폴백한다.
+export function readTimeEstimationMode() {
+  const sel = document.getElementById('sim-time-estimation-mode');
+  return normalizeTimeEstimationMode(sel ? sel.value : sim.time_estimation_mode);
+}
+
+export function initTimeEstimationModeToggle() {
+  const sel = document.getElementById('sim-time-estimation-mode');
+  if (!sel) return;
+  sel.onchange = () => {
+    sim.time_estimation_mode = normalizeTimeEstimationMode(sel.value);
+    updateTimeEstimationModeUI(sim.time_estimation_mode);
+    updateSectionBadges(sim);   // 접힌 섹션 헤더/네비 뱃지("가변 · AI 추론")를 즉시 갱신
+  };
 }
 
 // 카테고리 개수는 자유다 — 백엔드(TimeCategory/_non_empty_categories)는 "비어 있지만 않으면"
@@ -120,5 +154,6 @@ export function initTimeModeToggle() {
     updateVariableTimeUI(sim.time_mode);
     // 'fixed' + wave당 시간 0 조합에서만 목표 기간이 비활성이므로 모드 전환 시 함께 갱신한다.
     updateTargetDurationUI();
+    updateSectionBadges(sim);   // 접힌 섹션 헤더/네비 뱃지("가변"/"N분/wave")를 즉시 갱신
   };
 }
