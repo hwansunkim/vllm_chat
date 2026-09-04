@@ -1,3 +1,5 @@
+import time
+
 from ._constants import (
     _REPEAT_WINDOW, _REPEAT_THRESHOLD, _MEMO_MAX_LINES,
     _repetition_score, _normalize_utterance, _recent_activity_digest,
@@ -57,15 +59,18 @@ class _SystemMixin:
             )
 
         # 어휘 유사도(repetition_info)는 축자 반복만 잡는다. 표현을 바꿔가며 같은
-        # 화제를 맴도는 주제 반복은 디렉터가 이 다이제스트를 직접 읽고 판단한다 —
-        # 요약이 꺼져 있어도(summary_interval=0) 작동한다.
-        recent_activity = _recent_activity_digest(self.shared_log, self._key_to_alias)
+        # 화제를 맴도는 주제 반복은 디렉터가 이 다이제스트를 직접 읽고 판단한다.
+        # 창 크기(digest_waves)를 키우면 장기 흐름을 더 보지만 프롬프트가 커진다 —
+        # 아래 director_call 이벤트의 prompt_tokens/elapsed_ms 로 비용을 관측한다.
+        recent_activity = _recent_activity_digest(
+            self.shared_log, self._key_to_alias, waves=self._sys_digest_waves,
+        )
 
+        t0 = time.perf_counter()
         result = run_system_agent(
             system_prompt        = self._sys_prompt,
             wave                 = wave_num,
             current_time_str     = current_time_str,
-            summary              = self._last_summary,
             recent_activity      = recent_activity,
             active_agents        = {k: self._key_to_alias.get(k, k) for k in self.active_agents},
             silent_agents        = silent,
@@ -78,13 +83,33 @@ class _SystemMixin:
             llm                  = self._llm,
             llm_max_tokens       = self.llm_max_tokens,
         )
-        if not result:
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+
+        result_d = result if isinstance(result, dict) else {}
+        meta = result_d.pop("_meta", {})
+        n_iv = len(result_d.get("interventions") or [])
+        has_we = bool(result_d.get("world_event"))
+        self._emit("director_call", {
+            "wave":          wave_num,
+            "digest_waves":  self._sys_digest_waves,
+            "prompt_tokens": meta.get("prompt_tokens"),
+            "prompt_chars":  meta.get("prompt_chars"),
+            "elapsed_ms":    elapsed_ms,
+            "intervened":    n_iv > 0 or has_we,
+            "n_interventions": n_iv,
+            "world_event":   has_we,
+            "failed":        not isinstance(result, dict),
+            "icon":          self._sys_icon,
+            "display_name":  self._sys_name,
+        })
+
+        if not result_d:
             return current_wave
 
         wave_copy = {k: list(v) for k, v in current_wave.items()}
-        reason    = result.get("reason", "")
+        reason    = result_d.get("reason", "")
 
-        new_memo = (result.get("director_memo") or "").strip()
+        new_memo = (result_d.get("director_memo") or "").strip()
         if new_memo:
             entry = f"Wave {wave_num}: {new_memo}"
             lines = [l for l in self._director_memo.splitlines() if l.strip()]
@@ -92,7 +117,7 @@ class _SystemMixin:
                 lines = lines[-(_MEMO_MAX_LINES - 1):]
             self._director_memo = "\n".join(lines + [entry])
 
-        for iv in (result.get("interventions") or []):
+        for iv in (result_d.get("interventions") or []):
             agent_key = self._normalize_target(iv.get("agent", ""))
             message   = (iv.get("message") or "").strip()
             if not agent_key or agent_key not in self.active_agents or not message:
@@ -112,7 +137,7 @@ class _SystemMixin:
                 "display_name": self._sys_name,
             })
 
-        we = result.get("world_event")
+        we = result_d.get("world_event")
         if we and isinstance(we, dict):
             we_content = (we.get("content") or "").strip()
             we_targets = we.get("targets") or ["all"]

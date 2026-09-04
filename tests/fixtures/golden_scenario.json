@@ -35,7 +35,6 @@
     "events": [
       { "wave": 0, "type": "infect_agent", "agent": "a", "message": "가온이 감염되었다." }
     ],
-    "summary_interval": 2,
     "sim_start_time": "09:00",
     "sim_start_weekday": "mon",
     "time_per_wave": 30,

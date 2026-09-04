@@ -144,7 +144,7 @@ function _badgeText(id, sim) {
       if (sim.time_mode === 'variable') return '가변';
       return (sim.time_per_wave ?? 0) > 0 ? `${sim.time_per_wave}분/wave` : '시간 없음';
     case 'tuning':
-      return (sim.summary_interval ?? 0) > 0 ? `요약 ${sim.summary_interval}w` : '';
+      return '';
     case 'output': {
       const n = sim.extra_fields?.length ?? 0;
       // "오버라이드"는 출력 계약을 직접 편집 중일 때만 — 엔진 생성분은 기본이라 배지가 없다.
@@ -153,7 +153,9 @@ function _badgeText(id, sim) {
     case 'world':
       return sim.location_graph?.length ? `장소 ${sim.location_graph.length}` : '';
     case 'director':
-      return sim.system_agent?.enabled ? `${sim.system_agent.display_name || '내레이터'} · ON` : '';
+      return sim.system_agent?.enabled
+        ? `${sim.system_agent.display_name || '내레이터'} · 시야 ${sim.system_agent.digest_waves ?? 6}w`
+        : '';
     case 'infection':
       return sim.infection_model?.enabled
         ? `${sim.infection_model.disease_name?.trim() || '이름 없음'} · ON`

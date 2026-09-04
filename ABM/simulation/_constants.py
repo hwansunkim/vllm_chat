@@ -63,8 +63,9 @@ def _repetition_score(texts: list[str]) -> float:
     return best
 
 
-_DIRECTOR_DIGEST_WAVES = 6    # 디렉터에게 보여줄 최근 활동 wave 수
+_DIRECTOR_DIGEST_WAVES = 6    # 디렉터 최근 활동 창 기본값 (system_agent.digest_waves 로 조절)
 _DIGEST_TURN_MAXLEN    = 70   # 다이제스트 한 줄당 발화 자르는 길이
+_DIGEST_MAX_LINES      = 120  # 총 라인 하드캡 — digest_waves 를 크게 잡아도 프롬프트 폭주 방지
 
 
 def _recent_activity_digest(
@@ -72,12 +73,16 @@ def _recent_activity_digest(
     key_to_alias: dict | None = None,
     *,
     waves: int = _DIRECTOR_DIGEST_WAVES,
+    max_lines: int = _DIGEST_MAX_LINES,
 ) -> str:
     """디렉터용 최근 활동 다이제스트 — 마지막 `waves` wave의 발화를 wave별로 나열.
 
-    요약(`summary_interval`)이 없거나 부족해도 디렉터가 "이 장면이 몇 wave째
-    같은 화제·같은 자리에서 맴돌고 있나"를 스스로 읽고 판단할 수 있게 한다.
-    `_repetition_score`(축자 반복)로는 못 잡는 주제 반복을 잡는 유일한 경로다.
+    디렉터가 개입을 판단하는 **주된 근거**다. `_repetition_score`(축자 반복)로는
+    못 잡는 주제 반복("표현만 바꿔 같은 화제를 맴돎")을 디렉터가 직접 읽고
+    판단할 수 있게 한다.
+
+    digest는 압축이 아니라 원문이라 `waves`에 비례해 토큰이 늘어난다. `max_lines`
+    로 총 길이를 캡하고, 초과 시 **오래된 wave부터** 버린다(최근이 더 중요).
     """
     alias = key_to_alias or {}
     entries = [e for e in shared_log if isinstance(e.get("wave"), int)]
@@ -101,6 +106,13 @@ def _recent_activity_digest(
         else:
             text = text[:_DIGEST_TURN_MAXLEN]
         lines.append(f"  {spk}: {text}")
+    if len(lines) > max_lines:
+        # 뒤(최근)에서 max_lines 만큼 남기되, 잘린 첫 줄이 wave 헤더가 아니면
+        # 맥락용으로 헤더 한 줄을 앞에 붙인다.
+        kept = lines[-max_lines:]
+        if not kept[0].startswith("— Wave "):
+            kept.insert(0, "— (이전 wave 생략) —")
+        lines = kept
     return "\n".join(lines)
 
 

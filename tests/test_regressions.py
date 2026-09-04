@@ -2162,13 +2162,6 @@ class CumulativeWaveTests(unittest.TestCase):
                             if t == "infection_update" and d["agent"] == "b")
             self.assertEqual(b_update["wave"], 3)
 
-    # ── 4. _last_summarized_wave 초기값 = wave_base - 1 ────────────────────────
-
-    def test_last_summarized_wave_starts_at_base_minus_one(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(self._sim(tmp, wave_base_init=0)._last_summarized_wave, -1)
-            self.assertEqual(self._sim(tmp, wave_base_init=13)._last_summarized_wave, 12)
-
     # ── 5. DB: start_wave 컬럼 라운드트립 ─────────────────────────────────────
 
     def test_create_run_persists_start_wave(self):
@@ -4930,6 +4923,20 @@ class DirectorRecentActivityTests(unittest.TestCase):
         self.assertIn("이: 일어나", out)
         self.assertEqual(_recent_activity_digest([], {}), "")
 
+    def test_digest_is_line_capped_keeping_the_most_recent(self):
+        # digest_waves 를 크게 잡아도 총 라인은 max_lines 로 캡되고 최근이 남는다.
+        from ABM.simulation._constants import _recent_activity_digest
+        log = [
+            {"wave": w, "speaker": "a", "content": f"발화 w{w}", "action_note": ""}
+            for w in range(1, 41)
+        ]
+        out = _recent_activity_digest(log, {}, waves=40, max_lines=10)
+        lines = out.splitlines()
+        self.assertLessEqual(len(lines), 11)          # +1 = "(이전 wave 생략)" 헤더
+        self.assertIn("발화 w40", out)                # 최근은 남는다
+        self.assertNotIn("발화 w1", out)              # 오래된 건 잘린다
+        self.assertTrue(lines[0].startswith("— "))    # 첫 줄은 항상 헤더
+
     def test_director_prompt_includes_recent_activity_and_threshold(self):
         from ABM.agent import Agent
         from ABM.simulation import Simulation
@@ -4966,6 +4973,101 @@ class DirectorRecentActivityTests(unittest.TestCase):
             self.assertIn("없음", rep)
             # 반복 임계값 % 는 상수에서 온다 (하드코딩 제거)
             self.assertIn(f"{int(_REPEAT_THRESHOLD * 100)}%", prompt)
+
+
+class DirectorViewAndCostTests(unittest.TestCase):
+    """`system_agent.digest_waves` (디렉터 시야) + `director_call` 관측 이벤트.
+
+    요약(summary_interval)을 제거하고, 디렉터가 되짚는 창을 직접 조절 가능하게 한
+    변경. 창을 키우며 비용(prompt_tokens/elapsed_ms)을 보고 조절하라는 취지라
+    director_call 이벤트가 **개입 여부와 무관하게** 매 디렉터 호출에서 나와야 한다.
+    """
+
+    def _sim(self, tmp, *, digest_waves=None, director_result=None):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        res = director_result if director_result is not None else {
+            "interventions": [], "world_event": None, "director_memo": "", "reason": "x",
+        }
+
+        def llm(messages, max_tokens=None, **kw):
+            user = "\n".join(m.get("content", "") for m in messages[1:])
+            if "[현재 Wave:" in user:
+                return json.dumps(res), "", {"prompt_tokens": 1234}
+            return json.dumps({"content": "네.", "action_note": "", "target": "self",
+                               "move_to": None, "update_appearance": None}), "", {}
+
+        sa = {"enabled": True, "intervention_interval": 1, "silence_threshold": 3,
+              "display_name": "내레이터"}
+        if digest_waves is not None:
+            sa["digest_waves"] = digest_waves
+        agents = {"a": Agent("a", "너는 a다.", tmp, token_limit=8192)}
+        sim = Simulation(agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+                         llm=llm, system_agent=sa)
+        return sim
+
+    def test_digest_waves_is_clamped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self._sim(tmp, digest_waves=100)._sys_digest_waves, 20)
+            self.assertEqual(self._sim(tmp, digest_waves=0)._sys_digest_waves, 2)
+            self.assertEqual(self._sim(tmp, digest_waves=8)._sys_digest_waves, 8)
+
+    def test_digest_waves_defaults_to_six(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self._sim(tmp)._sys_digest_waves, 6)
+
+    def test_director_call_event_fires_even_without_intervention(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, digest_waves=9)          # 개입 없는 기본 result
+            emitted: list[tuple[str, dict]] = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            sim._run_system_agent(4, {"a": []})
+
+            calls = [d for t, d in emitted if t == "director_call"]
+            self.assertEqual(len(calls), 1)
+            c = calls[0]
+            self.assertEqual(c["wave"], 4)
+            self.assertEqual(c["digest_waves"], 9)
+            self.assertEqual(c["prompt_tokens"], 1234)
+            self.assertIsInstance(c["prompt_chars"], int)
+            self.assertIsInstance(c["elapsed_ms"], int)
+            self.assertFalse(c["intervened"])
+            self.assertFalse(c["failed"])
+            # 개입/세계사건 이벤트는 없어야 한다
+            self.assertNotIn("system_intervention", [t for t, _ in emitted])
+
+    def test_director_call_reports_intervention_and_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, director_result={
+                "interventions": [{"agent": "a", "message": "일어나"}],
+                "world_event": {"content": "종이 울린다", "targets": ["all"]},
+                "director_memo": "", "reason": "x",
+            })
+            emitted: list[tuple[str, dict]] = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            sim._run_system_agent(4, {"a": []})
+            c = next(d for t, d in emitted if t == "director_call")
+            self.assertTrue(c["intervened"])
+            self.assertEqual(c["n_interventions"], 1)
+            self.assertTrue(c["world_event"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp)
+            # 디렉터가 깨진 응답 → run_system_agent 가 None
+            sim._llm = lambda *a, **k: ("not json", "", {})
+            emitted = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            sim._run_system_agent(4, {"a": []})
+            c = next(d for t, d in emitted if t == "director_call")
+            self.assertTrue(c["failed"])
+            self.assertFalse(c["intervened"])
+
+    def test_summary_interval_in_old_config_is_ignored_not_rejected(self):
+        # 구 시나리오 JSON 은 summary_interval 을 들고 있다 — pydantic extra=ignore.
+        cfg = SimStartConfig(agents=[_agent("a")], background="", start_agent="a",
+                             summary_interval=5)
+        self.assertFalse(hasattr(cfg, "summary_interval"))
 
 
 # ── 계약 프리즈 중단 / 프리뷰 (backend/api/simulation) ─────────────────────────
@@ -5303,7 +5405,7 @@ _FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class _GoldenLLM:
-    """골든 시나리오용 스텁 LLM — 에이전트 턴 · 디렉터 · 요약을 모두 처리한다.
+    """골든 시나리오용 스텁 LLM — 에이전트 턴 · 디렉터 · 시간 분류를 처리한다.
 
     `_ScriptedLLM`과 달리 emotion/action 까지 스크립트로 고정해 마크다운의
     meta 라인(`😊 happy · move`)과 자동 아이콘 합성까지 골든에 걸린다.
@@ -5330,21 +5432,12 @@ class _GoldenLLM:
     def __init__(self):
         self.calls: dict[str, int] = {}
         self.director_calls = 0
-        self.summary_calls  = 0
 
     def __call__(self, messages, max_tokens=None, **kw):
         sys_text  = messages[0].get("content", "") if messages else ""
         user_text = "\n".join(m.get("content", "") for m in messages[1:])
         if "시간 관찰자" in sys_text:                       # time_classifier
             return json.dumps({"category": "normal_scene", "reason": "t"}), "", {}
-        if "관찰자" in sys_text:                            # summarizer
-            self.summary_calls += 1
-            n = self.summary_calls
-            return json.dumps({
-                "summary":    f"{n}번째 구간 요약: 두 사람이 아침에 짧게 말을 주고받았다.",
-                "key_events": [f"사건{n}-1", f"사건{n}-2"],
-                "mood":       "조용함",
-            }), "", {}
         if "[현재 Wave:" in user_text:                      # system agent (디렉터)
             self.director_calls += 1
             return json.dumps({
@@ -5390,7 +5483,7 @@ _GOLDEN_STARTED = 1_700_000_000.0
 _GOLDEN_ENDED   = 1_700_003_600.0
 _GOLDEN_NOW     = 1_700_007_200.0
 _ALL_TOGGLES = {"time", "action", "move", "appearance", "world", "intervention",
-                "infection", "meeting", "summary"}
+                "infection", "meeting"}
 
 
 def _render_golden(cfg, name, result, include=None):
@@ -5423,8 +5516,7 @@ class HeadlessRunnerTests(unittest.TestCase):
         _, _, result = _run_golden()
         kinds = {e["event_type"] for e in result.events}
         for expected in ("agent_move", "appearance_update", "system_intervention",
-                         "world_event", "infection_update", "meeting_update",
-                         "wave_summary"):
+                         "world_event", "infection_update", "meeting_update"):
             self.assertIn(expected, kinds)
 
     def test_collected_events_match_what_the_db_persists(self):
@@ -5487,7 +5579,7 @@ class MarkdownGoldenTests(unittest.TestCase):
         self._assert_golden("golden_full.md", _ALL_TOGGLES)
 
     def test_default_toggles(self):
-        # GUI 체크박스 기본값 = summary 만 꺼짐
+        # GUI 체크박스 기본값 = 전부 켜짐
         self._assert_golden("golden_default.md", None)
 
     def test_toggles_actually_drop_sections(self):
@@ -5495,7 +5587,7 @@ class MarkdownGoldenTests(unittest.TestCase):
         full = _render_golden(cfg, name, result, include=_ALL_TOGGLES)
         bare = _render_golden(cfg, name, result, include={"time"})
         for marker in ("[씬]", "[🌍 세계 사건]", "[🎬 내레이터]", "[🦠 감염]",
-                       "[🏃 씬]", "요약"):
+                       "[🏃 씬]"):
             self.assertIn(marker, full)
             self.assertNotIn(marker, bare)
         # action 토글이 꺼지면 action_note 줄이 사라진다
@@ -5930,7 +6022,6 @@ class HeadlessSimulationArgumentTests(unittest.TestCase):
         self.assertEqual(cap["name_aliases"], {"가온": "a", "나린": "b"})
         self.assertEqual(cap["agent_locations"], {"a": "거실", "b": "거실"})
         self.assertEqual(cap["agent_visuals"]["a"], "회색 후드티를 입은 사람")
-        self.assertEqual(cap["summary_interval"], 2)
         self.assertTrue(cap["system_agent"]["enabled"])
         self.assertEqual(cap["sim_start_time"], "09:00")
         self.assertEqual(cap["sim_start_weekday"], "mon")

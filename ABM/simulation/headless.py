@@ -132,7 +132,6 @@ def run_config(
         db=db,
         agent_groups=agent_groups,
         agent_relationships=agent_relationships,
-        summary_interval=cfg.summary_interval,
         system_agent=cfg.system_agent.model_dump(),
         agent_locations=agent_locations,
         agent_visuals=agent_visuals,
@@ -168,8 +167,8 @@ def run_config(
         orig_emit(event_type, data)
         if event_type in _PERSIST_EVENTS:
             collected.append({
-                # `_emit` 이 DB에 쓰는 wave 와 같은 규칙(없으면 0) — wave_summary 처럼
-                # `wave` 키가 없는 이벤트가 DB와 다른 값을 갖지 않도록.
+                # `_emit` 이 DB에 쓰는 wave 와 같은 규칙(없으면 0) — `wave` 키가 없는
+                # 이벤트가 DB와 다른 값을 갖지 않도록.
                 "wave":       data.get("wave", 0),
                 "event_type": event_type,
                 "data":       data,

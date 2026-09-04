@@ -196,24 +196,19 @@ export function addInterventionCard(d) {
   _appendWaveCard(d.wave, el);
 }
 
-export function addSummaryCard(d) {
+export function addDirectorCallCard(d) {
   removeFeedEmpty();
-  const range      = d.wave_start === d.wave_end ? `Wave ${d.wave_start}` : `Wave ${d.wave_start}–${d.wave_end}`;
-  const keyEvents  = (d.key_events || []).map(e => `<li>${esc(e)}</li>`).join('');
-  const el         = document.createElement('div');
-  el.className     = 'sim-summary-card';
-  el.innerHTML = `
-    <div class="sim-summary-header">
-      <span class="sim-summary-icon">📊</span>
-      <span class="sim-summary-range">${esc(range)} 요약</span>
-      ${d.mood ? `<span class="sim-summary-mood">${esc(d.mood)}</span>` : ''}
-    </div>
-    <div class="sim-summary-body">
-      <p class="sim-summary-text">${esc(d.summary || '')}</p>
-      ${keyEvents ? `<ul class="sim-summary-events">${keyEvents}</ul>` : ''}
-    </div>`;
-  document.getElementById('sim-feed').appendChild(el);
-  el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  const tok  = d.prompt_tokens != null ? `${(d.prompt_tokens / 1000).toFixed(1)}k tok`
+             : d.prompt_chars != null ? `${(d.prompt_chars / 1000).toFixed(1)}k자` : '';
+  const secs = d.elapsed_ms != null ? `${(d.elapsed_ms / 1000).toFixed(1)}s` : '';
+  const verdict = d.failed ? '호출 실패'
+                : d.intervened ? `개입 ${d.n_interventions || 0}${d.world_event ? ' + 세계사건' : ''}`
+                : '관망';
+  const bits = [`시야 ${d.digest_waves}w`, tok, secs, verdict].filter(Boolean);
+  const el = document.createElement('div');
+  el.className = 'sim-director-call-line' + (d.failed ? ' failed' : '');
+  el.textContent = `${d.icon || '🎬'} 디렉터 판단 · ${bits.join(' · ')}`;
+  _appendWaveCard(d.wave, el);
 }
 
 export function addWorldEventCard(d) {

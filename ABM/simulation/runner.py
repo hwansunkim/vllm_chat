@@ -352,17 +352,6 @@ class _RunnerMixin:
             current_wave = next_wave
             logger.info(f"[W{disp_wave}] next_wave: {list(current_wave.keys())}")
 
-            if self._summary_interval > 0 and not self._stop_event.is_set():
-                waves_since = disp_wave - self._last_summarized_wave
-                if waves_since >= self._summary_interval:
-                    logger.info(f"[W{disp_wave}] 요약 에이전트 호출 시작")
-                    try:
-                        self._run_wave_summary(self._last_summarized_wave + 1, disp_wave)
-                        self._last_summarized_wave = disp_wave
-                        logger.info(f"[W{disp_wave}] 요약 에이전트 완료")
-                    except Exception as e:
-                        logger.error(f"[W{disp_wave}] 요약 에이전트 예외: {e}", exc_info=True)
-
             # ── 목표 기간 도달 체크 ───────────────────────────────────────────
             # 침묵 조기종료(early_stop_enabled/max_silence_waves)와 독립적으로,
             # 이번 wave까지의 경과 시간이 목표에 도달하면 정상 종료한다.
@@ -475,38 +464,4 @@ class _RunnerMixin:
                 return daytime_cap, f"주간·재실자 있음 {raw_jump}→{daytime_cap}분"
 
         return raw_jump, None
-
-    def _run_wave_summary(self, wave_start: int, wave_end: int) -> None:
-        """shared_log에서 해당 웨이브 구간 엔트리를 추출해 LLM 요약 후 이벤트를 emit."""
-        if self._stop_event.is_set():
-            return
-        from ..summarizer import summarize_waves
-        entries = [
-            e for e in self.shared_log
-            if isinstance(e.get("wave"), int)
-            and wave_start <= e["wave"] <= wave_end
-        ]
-        bg_text = ""
-        if self.background_log:
-            first   = self.background_log[0].get("content", "")
-            bg_text = first.removeprefix("[배경]").strip()
-
-        result = summarize_waves(
-            entries        = entries,
-            background     = bg_text,
-            wave_start     = wave_start,
-            wave_end       = wave_end,
-            llm            = self._llm,
-            key_to_alias   = self._key_to_alias,
-            llm_max_tokens = self.llm_max_tokens,
-        )
-        if result:
-            self._last_summary = result
-            self._emit("wave_summary", {
-                "wave_start": wave_start,
-                "wave_end":   wave_end,
-                "summary":    result.get("summary", ""),
-                "key_events": result.get("key_events", []),
-                "mood":       result.get("mood", ""),
-            })
 

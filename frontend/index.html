@@ -405,10 +405,6 @@
             <input type="number" id="sim-llm-max-tokens" value="16384" min="512" step="512"/>
           </div>
           <div class="sim-option-row">
-            <label>요약 간격 (wave)<span class="sim-help" aria-hidden="true" data-tooltip="0 = 요약 비활성, N = N웨이브마다 LLM 요약">?</span></label>
-            <input type="number" id="sim-summary-interval" value="0" min="0" max="20" step="1"/>
-          </div>
-          <div class="sim-option-row">
             <label>언어 교잡 수정<span class="sim-help" aria-hidden="true" data-tooltip="응답에 지정 언어가 아닌 문장이 섞이면 감지해 다시 생성합니다. 재시도 = 외국어 감지 시 최대 재시도 횟수.">?</span></label>
             <div class="sim-lang-fix-row">
               <label class="sim-toggle-small">
@@ -538,6 +534,10 @@
             <div class="sim-option-row">
               <label>침묵 기준 (wave)<span class="sim-help" aria-hidden="true" data-tooltip="N웨이브 동안 발화 없으면 침묵으로 판단">?</span></label>
               <input type="number" id="sim-sys-silence" value="3" min="1" max="20"/>
+            </div>
+            <div class="sim-option-row">
+              <label>시야 (wave)<span class="sim-help" aria-hidden="true" data-tooltip="디렉터가 개입을 판단할 때 원문으로 되짚는 최근 wave 수. 크게 잡으면 장기 흐름을 보지만 디렉터 프롬프트가 커지고 호출이 느려집니다 — 실행 피드의 🎬 디렉터 판단 줄에서 토큰·소요시간을 보며 조절하세요. 엔진에서 2~20으로 제한.">?</span></label>
+              <input type="number" id="sim-sys-digest" value="6" min="2" max="20"/>
             </div>
             <div class="sim-settings-section-body">
               <div class="sim-ta-wrap" data-zoom-title="🎬 내레이터 페르소나">
@@ -1035,11 +1035,6 @@
           <input type="checkbox" id="exp-chk-meeting" checked>
           <span class="sim-export-check-label">🤝 만남 이동</span>
           <span class="sim-export-check-desc">누가 누구를 만나러 가는지 · 도착/취소</span>
-        </label>
-        <label class="sim-export-check-item">
-          <input type="checkbox" id="exp-chk-summary">
-          <span class="sim-export-check-label">📋 Wave 요약</span>
-          <span class="sim-export-check-desc">LLM이 생성한 구간 요약</span>
         </label>
       </div>
     </div>

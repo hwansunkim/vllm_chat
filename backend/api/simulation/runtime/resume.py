@@ -119,7 +119,6 @@ def resume_simulation(run_id: str):
                 sim_id=run_sim_id, db=new_db,
                 agent_groups=agent_groups,
                 agent_relationships=agent_relationships,
-                summary_interval=cfg.summary_interval,
                 system_agent=cfg.system_agent.model_dump(),
                 agent_locations=agent_locations,
                 agent_visuals=agent_visuals,

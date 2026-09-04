@@ -335,7 +335,6 @@ export const sim = {
   // 오버라이드와 무관하게 계속 엔진이 자동 최신화한다.
   // (구 `output_format_template` 은 폐기 — 백엔드가 읽지 않고 저장 시 비운다.)
   output_format_override: '',
-  summary_interval: 5,   // 디렉터의 장거리 서사 신호. 0 = 비활성 (schemas.py와 동일 기본값)
   sim_start_time:    '09:00',  // 시뮬레이션 시작 시각 (HH:MM)
   sim_start_weekday: 'mon',    // 시뮬레이션 시작 요일 ('mon'~'sun'). 자정 롤오버 시 서버가 자동 증가
   time_per_wave:     30,       // wave당 경과 시간(분). 0 = 시간 개념 비활성 (time_mode='fixed'일 때만 사용)
@@ -358,6 +357,7 @@ export const sim = {
     intervention_interval: 1,
     silence_threshold:     3,
     director_note:         '',   // 시뮬레이션 서사 목표
+    digest_waves:          6,    // 디렉터가 개입 판단 시 되짚는 최근 wave 수 (엔진 clamp [2,20])
   },
   // 결정론적 감염병 모델(SIR/SIS). enabled=false면 서버에서 상태 갱신도 프롬프트 주입도
   // 전혀 일어나지 않는다(infect_agent 이벤트도 조용히 무시된다).

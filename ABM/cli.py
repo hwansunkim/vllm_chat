@@ -34,7 +34,7 @@
 
 **토글** (``--include`` / ``--exclude``, 쉼표 구분):
 ``time`` ``action`` ``move`` ``appearance`` ``world`` ``intervention``
-``infection`` ``meeting`` ``summary``. 기본값은 GUI 체크박스와 같이 ``summary`` 만 꺼짐.
+``infection`` ``meeting``. 기본값은 전부 포함.
 
 **종료 코드**
   0  정상 (``end_reason`` 이 무엇이든)
@@ -323,7 +323,12 @@ def _dry_run(cfg, scenario_name: str) -> int:
               f"주간 {cfg.max_daytime_jump_minutes or '없음'}분")
     print(f"위치 그래프   {len(cfg.location_graph)}개 노드")
     print(f"감염 모델     {'ON — ' + (cfg.infection_model.disease_name or '(이름 없음)') if cfg.infection_model.enabled else 'OFF'}")
-    print(f"디렉터       {'ON' if cfg.system_agent.enabled else 'OFF'}")
+    if cfg.system_agent.enabled:
+        sa = cfg.system_agent
+        print(f"디렉터       ON · 개입주기 {sa.intervention_interval}w · 침묵기준 {sa.silence_threshold}w · "
+              f"시야 {sa.digest_waves}w")
+    else:
+        print("디렉터       OFF")
     _rel_agents = [a for a in cfg.agents if a.relationships]
     print(f"관계 지도     {f'{len(_rel_agents)}명 설정' if _rel_agents else '미사용'}")
     print(f"서버         {cfg.server_id or '(기본)'} · temperature {cfg.temperature}")
@@ -625,7 +630,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     def _add_toggles(sp):
         sp.add_argument("--include", metavar="a,b,c",
-                        help="포함할 항목 (기본: summary 제외 전부)")
+                        help="포함할 항목 (기본: 전부)")
         sp.add_argument("--exclude", metavar="a,b,c", help="제외할 항목")
 
     # run ---------------------------------------------------------------------

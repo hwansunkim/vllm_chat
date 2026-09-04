@@ -31,10 +31,10 @@ from .labels import (
 # 다른 표다 — markdown.js 상단의 EMOTION_EMOJI 를 그대로 옮긴 것.
 EMOTION_EMOJI = {"happy": "😊", "angry": "😤", "sad": "😢", "fear": "😨", "neutral": "😐"}
 
-# 내보내기 토글. GUI 체크박스 기본값과 같다(summary 만 꺼짐).
+# 내보내기 토글. GUI 체크박스 기본값과 같다(전부 켜짐).
 INCLUDE_KEYS = ("time", "action", "move", "appearance", "world",
-                "intervention", "infection", "meeting", "summary")
-DEFAULT_INCLUDE = frozenset(k for k in INCLUDE_KEYS if k != "summary")
+                "intervention", "infection", "meeting")
+DEFAULT_INCLUDE = frozenset(INCLUDE_KEYS)
 
 # 토글 → 스트림에 실을 이벤트 타입.
 _TOGGLE_EVENT_TYPE = {
@@ -44,7 +44,6 @@ _TOGGLE_EVENT_TYPE = {
     "world":        "world_event",
     "infection":    "infection_update",
     "meeting":      "meeting_update",
-    "summary":      "wave_summary",
 }
 
 _STATUS_LABEL = {
@@ -200,20 +199,6 @@ def _fmt_meeting(data: dict, index: AgentIndex) -> str:
     return f"\n> **[{info['icon']} 씬]** *{info['text']}*\n"
 
 
-def _fmt_summary(data: dict) -> str:
-    ws, we = data.get("wave_start"), data.get("wave_end")
-    rng = f"Wave {ws}" if ws == we else f"Wave {ws}–{we}"
-    s = f"\n<details>\n<summary>📋 {rng} 요약</summary>\n\n"
-    if data.get("summary"):
-        s += f"{data['summary']}\n\n"
-    if data.get("key_events"):
-        s += f"**주요 사건:** {' / '.join(data['key_events'])}\n\n"
-    if data.get("mood"):
-        s += f"**분위기:** {data['mood']}\n\n"
-    s += "</details>\n"
-    return s
-
-
 # ── 메인 ──────────────────────────────────────────────────────────────────────
 
 def render_markdown(
@@ -247,7 +232,7 @@ def render_markdown(
     status
         ``done`` / ``stopped`` / ``running`` / ``error``. 그 외 값은 그대로 표시된다.
     include
-        표시할 토글 집합. 생략하면 GUI 기본값(summary 제외 전부).
+        표시할 토글 집합. 생략하면 전부 포함.
     now
         "추출 일시" 로 찍을 시각. 생략하면 현재 시각(테스트 결정론용 훅).
     """
@@ -370,8 +355,6 @@ def render_markdown(
             md += _fmt_infection(payload, index, disease_fallback)
         elif kind == "meeting_update":
             md += _fmt_meeting(payload, index)
-        elif kind == "wave_summary":
-            md += _fmt_summary(payload)
     md += "\n"
     return md
 

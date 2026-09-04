@@ -79,11 +79,6 @@ def fold_elapsed_and_reset_waves(sim_obj) -> None:
     sim_obj._elapsed_minutes = before
     sim_obj._wave_base = getattr(sim_obj, "_wave_base", 0) + sim_obj.completed_waves
     sim_obj.completed_waves  = 0
-    # 요약 카덴스도 재개 지점 기준으로 맞춘다 — 안 그러면 `run()`의
-    # `waves_since = disp_wave - _last_summarized_wave`가 첫 wave에서 폭증해
-    # 이어서 실행하자마자 요약이 한 번 조기 발동한다. `/resume`은 새 Simulation을
-    # `wave_base_init`으로 만들며 `__init__`에서 이미 이 값을 세팅한다(대칭).
-    sim_obj._last_summarized_wave = sim_obj._wave_base - 1
     sim_obj.rebase_infection_anchors(now=before)
 
 

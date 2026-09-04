@@ -68,7 +68,6 @@ export async function startSimulation() {
       extra_fields:           sim.extra_fields,
       events:                 sim.events,
       output_format_override: sim.output_format_override || '',
-      summary_interval:       sim.summary_interval || 0,
       sim_start_time:         sim.sim_start_time    || '09:00',
       sim_start_weekday:      normalizeWeekday(sim.sim_start_weekday),
       time_per_wave:          sim.time_per_wave    ?? 30,

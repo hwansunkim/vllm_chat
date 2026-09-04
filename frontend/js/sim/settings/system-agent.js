@@ -18,6 +18,8 @@ export function renderSystemAgentConfig() {
   document.getElementById('sim-sys-prompt').value        = sa.system_prompt         || '';
   document.getElementById('sim-sys-interval').value      = sa.intervention_interval ?? 1;
   document.getElementById('sim-sys-silence').value       = sa.silence_threshold     ?? 3;
+  const digestEl = document.getElementById('sim-sys-digest');
+  if (digestEl) digestEl.value = sa.digest_waves ?? 6;
   document.getElementById('sim-sys-director-note').value = sa.director_note         || '';
 
   chk.onchange = () => {

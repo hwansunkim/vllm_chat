@@ -38,7 +38,6 @@ export function renderSettingsPage() {
   document.getElementById('sim-step-delay').value     = sim.step_delay;
   document.getElementById('sim-token-limit').value    = sim.token_limit;
   document.getElementById('sim-llm-max-tokens').value = sim.llm_max_tokens;
-  document.getElementById('sim-summary-interval').value = sim.summary_interval ?? 5;
   const startTimeEl = document.getElementById('sim-start-time');
   if (startTimeEl) startTimeEl.value = sim.sim_start_time ?? '09:00';
   const startWeekdayEl = document.getElementById('sim-start-weekday');
@@ -108,7 +107,6 @@ export function readConfigFromUI() {
   sim.llm_max_tokens         = parseInt(document.getElementById('sim-llm-max-tokens').value) || 16384;
   // 출력 계약 오버라이드 — 체크박스가 꺼져 있으면 언제나 ''(= 엔진 생성분 사용).
   sim.output_format_override = readOutputFormatOverride();
-  sim.summary_interval       = parseInt(document.getElementById('sim-summary-interval').value) || 0;
   sim.sim_start_time    = document.getElementById('sim-start-time')?.value || '09:00';
   sim.sim_start_weekday = normalizeWeekday(document.getElementById('sim-start-weekday')?.value);
   sim.time_per_wave     = parseInt(document.getElementById('sim-time-per-wave')?.value)     || 0;
@@ -141,6 +139,7 @@ export function readConfigFromUI() {
     system_prompt:         document.getElementById('sim-sys-prompt')?.value              || '',
     intervention_interval: parseInt(document.getElementById('sim-sys-interval')?.value)  || 1,
     silence_threshold:     parseInt(document.getElementById('sim-sys-silence')?.value)   || 3,
+    digest_waves:          parseInt(document.getElementById('sim-sys-digest')?.value)    || 6,
     director_note:         document.getElementById('sim-sys-director-note')?.value       || '',
   };
   sim.infection_model = readInfectionModel();

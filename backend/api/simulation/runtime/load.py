@@ -99,7 +99,6 @@ def load_simulation(run_id: str):
             db=SimDB(os.path.join(LOG_DIR, "simulation.db")),
             agent_groups=agent_groups,
             agent_relationships=agent_relationships,
-            summary_interval=cfg.summary_interval,
             system_agent=cfg.system_agent.model_dump(),
             agent_locations=agent_locations,
             agent_visuals=agent_visuals,

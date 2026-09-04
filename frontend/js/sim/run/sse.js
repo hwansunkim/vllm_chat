@@ -5,7 +5,7 @@ import { sim } from '../state.js';
 import {
   addFeedMessage, addSceneEventToFeed,
   addTypingIndicator, removeTypingIndicator,
-  updateWaveIndicator, addSummaryCard, addInterventionCard, addWorldEventCard,
+  updateWaveIndicator, addDirectorCallCard, addInterventionCard, addWorldEventCard,
   addMovementCard, addAppearanceCard, addSituationCard, applyWaveTimeStr,
   addInfectionCard, addMeetingCard, flushPendingWaveCards,
 } from './feed.js';
@@ -89,9 +89,11 @@ export function connectSSE() {
     }
   });
 
-  es.addEventListener('wave_summary', e => {
+  // 디렉터가 돈 사실 + 비용(프롬프트 토큰·소요 시간)을 개입 여부와 무관하게 표시.
+  // 시야(digest_waves)를 키우며 성능 영향을 관측하는 용도.
+  es.addEventListener('director_call', e => {
     const d = JSON.parse(e.data);
-    addSummaryCard(d);
+    addDirectorCallCard(d);
   });
 
   // 디렉터 개입 / 세계 사건. 페이로드의 `wave` 는 "이 개입이 실제로 소비되는 wave"이고,

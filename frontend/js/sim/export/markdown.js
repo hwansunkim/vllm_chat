@@ -57,7 +57,6 @@ function readChecks() {
     intervention: document.getElementById('exp-chk-intervention')?.checked ?? true,
     infection:    document.getElementById('exp-chk-infection')?.checked    ?? true,
     meeting:      document.getElementById('exp-chk-meeting')?.checked      ?? true,
-    summary:      document.getElementById('exp-chk-summary')?.checked      ?? false,
   };
 }
 
@@ -104,7 +103,6 @@ function buildStream(log, events, checks) {
   if (checks.world)        wantTypes.add('world_event');
   if (checks.infection)    wantTypes.add('infection_update');
   if (checks.meeting)      wantTypes.add('meeting_update');
-  if (checks.summary)      wantTypes.add('wave_summary');
 
   // Normalise events: { wave, sort_key, kind, payload }
   const items = [];
@@ -191,18 +189,6 @@ function fmtMeeting(data) {
   const info = meetingNarration(data);
   if (!info) return '';
   return `\n> **[${info.icon} 씬]** *${info.text}*\n`;
-}
-
-function fmtSummary(data) {
-  const range = data.wave_start === data.wave_end
-    ? `Wave ${data.wave_start}`
-    : `Wave ${data.wave_start}–${data.wave_end}`;
-  let s = `\n<details>\n<summary>📋 ${range} 요약</summary>\n\n`;
-  if (data.summary) s += `${data.summary}\n\n`;
-  if (data.key_events?.length) s += `**주요 사건:** ${data.key_events.join(' / ')}\n\n`;
-  if (data.mood) s += `**분위기:** ${data.mood}\n\n`;
-  s += `</details>\n`;
-  return s;
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
@@ -295,7 +281,6 @@ function _buildMarkdown(log, events, statusStr, checks) {
         case 'world_event':         md += fmtWorldEvent(item.payload); break;
         case 'infection_update':    md += fmtInfection(item.payload); break;
         case 'meeting_update':      md += fmtMeeting(item.payload); break;
-        case 'wave_summary':        md += fmtSummary(item.payload); break;
       }
     }
     md += '\n';
@@ -341,7 +326,7 @@ export async function exportRunMarkdown(runId, run, preloadedLog) {
   // 마찬가지로 없으면 "꺼진 모델"로 폴백 — 이 실행의 감염 설정을 문서 머리에 싣는다.
   sim.infection_model         = buildInfectionModel(parsedConfig.infection_model);
 
-  const defaultChecks = { time: true, action: true, move: true, appearance: true, world: true, intervention: true, infection: true, meeting: true, summary: false };
+  const defaultChecks = { time: true, action: true, move: true, appearance: true, world: true, intervention: true, infection: true, meeting: true };
 
   try {
     const evtRes = await fetch(`/api/simulation/runs/${encodeURIComponent(runId)}/events`);

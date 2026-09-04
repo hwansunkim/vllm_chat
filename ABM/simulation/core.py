@@ -31,14 +31,14 @@ _PERSIST_EVENTS: frozenset[str] = frozenset({
     "world_event",
     "meeting_update",
     "scene_event",
-    "wave_summary",
+    "director_call",
     "infection_update",
 })
 
 # 시작 요일 키(프론트/스키마와 동일) → 표시 라벨. 인덱스 = 월요일 기준 0~6.
 # 정의는 `_constants.py` 에 있다 — 마크다운 내보내기(ABM/export/labels.py)가 엔진
 # 전체를 import 하지 않고도 같은 라벨을 쓰기 위함. 이름은 여기서도 그대로 노출한다.
-from ._constants import _WEEKDAY_KEYS, _WEEKDAY_LABELS  # noqa: F401
+from ._constants import _WEEKDAY_KEYS, _WEEKDAY_LABELS, _DIRECTOR_DIGEST_WAVES  # noqa: F401
 
 _DEFAULT_TIME_CATEGORIES: list[dict] = [
     {"id": "meal_or_brief",     "label": "식사·짧은 용무 등 스킵되듯 지나가는 장면", "min_minutes": 5,   "max_minutes": 10},
@@ -67,7 +67,6 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         # 시점**이다(김봉남→채민경="아내", 채민경→김봉남="남편"). 비었거나 생략되면
         # 관계 계약 블록이 아예 붙지 않는다 = 기능 미사용.
         agent_relationships: dict[str, dict[str, str]] | None = None,
-        summary_interval: int                         = 0,
         system_agent:     dict | None                 = None,
         agent_locations:  dict[str, str] | None       = None,
         agent_visuals:    dict[str, str] | None       = None,
@@ -135,11 +134,6 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
             agent_relationships
         )
 
-        self._summary_interval:    int        = max(0, summary_interval)
-        # 재개 후 첫 요약 구간이 재개 지점(disp_wave 축)부터 측정되도록 base 기준으로 둔다.
-        self._last_summarized_wave: int       = self._wave_base - 1
-        self._last_summary:        dict | None = None
-
         sa = system_agent or {}
         self._sys_enabled:   bool = bool(sa.get("enabled", False))
         self._sys_prompt:    str  = sa.get("system_prompt", "")
@@ -147,6 +141,11 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         self._sys_name:      str  = sa.get("display_name", "내레이터")
         self._sys_interval:  int  = max(1, int(sa.get("intervention_interval", 1)))
         self._sys_threshold: int  = max(1, int(sa.get("silence_threshold", 3)))
+        # 디렉터가 개입 판단 시 원문으로 되짚는 최근 wave 수. 크게 잡을수록 장기
+        # 흐름을 보지만 디렉터 프롬프트가 커진다(_recent_activity_digest 는 압축이
+        # 아님). director_call 이벤트의 prompt_tokens/elapsed_ms 로 비용을 관측하며
+        # 조절하라. [2, 20] 로 clamp, 총 라인은 _DIGEST_MAX_LINES 로 별도 캡.
+        self._sys_digest_waves: int = max(2, min(20, int(sa.get("digest_waves", _DIRECTOR_DIGEST_WAVES))))
         self._director_note: str  = sa.get("director_note", "")
         self._director_memo: str  = ""
 

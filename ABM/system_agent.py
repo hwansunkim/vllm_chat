@@ -1,9 +1,12 @@
 """System agent — simulation narrator/director.
 
-Runs after each wave (configurable interval), receives the latest summary,
-silent agents, repetition info, director_note, and accumulated director_memo,
-then outputs interventions, an optional world_event broadcast, an updated
-director_memo, and a reason string.
+Runs at the start of a wave (configurable interval), receives the recent
+activity digest, silent agents, repetition info, director_note, and the
+accumulated director_memo, then outputs interventions, an optional world_event
+broadcast, an updated director_memo, and a reason string.
+
+The parsed result also carries a ``_meta`` dict (prompt_tokens / prompt_chars)
+so the engine can surface director-call cost via the ``director_call`` event.
 """
 from __future__ import annotations
 
@@ -32,9 +35,6 @@ _USER_TEMPLATE = """\
 {current_time_section}\
 {director_note_section}\
 {director_memo_section}\
-[최근 요약]
-{summary}
-
 {recent_activity_section}\
 [활성 에이전트]
 {agents}
@@ -83,7 +83,6 @@ def run_system_agent(
     *,
     system_prompt: str,
     wave: int,
-    summary: dict | None,
     active_agents: dict[str, str],       # key → display_name
     silent_agents: list[str],             # agent keys
     silence_threshold: int,
@@ -100,7 +99,8 @@ def run_system_agent(
     """Run the system agent LLM call.
 
     Returns a dict with ``interventions``, ``world_event``, ``director_memo``,
-    and ``reason``, or None on failure.
+    ``reason``, and ``_meta`` (``prompt_tokens`` / ``prompt_chars``), or None on
+    failure.
 
     ``current_time_str`` 은 에이전트들이 보는 것과 **같은** 시각 문자열
     (`Simulation._format_time_str(...)`, 요일 포함)이다. 비어 있으면 [현재 시각]
@@ -131,18 +131,6 @@ def run_system_agent(
     else:
         repetition_lines = "  없음"
 
-    if summary:
-        summary_text = summary.get("summary", "")
-        key_events   = summary.get("key_events", [])
-        mood         = summary.get("mood", "")
-        summary_str  = summary_text
-        if key_events:
-            summary_str += "\n주요 사건: " + ", ".join(key_events)
-        if mood:
-            summary_str += f"\n분위기: {mood}"
-    else:
-        summary_str = "아직 요약 없음"
-
     director_note_section = (
         f"[감독 노트 — 서사 목표]\n{director_note}\n\n"
         if director_note.strip() else ""
@@ -167,7 +155,6 @@ def run_system_agent(
         recent_activity_section = recent_activity_section,
         director_note_section   = director_note_section,
         director_memo_section   = director_memo_section,
-        summary                 = summary_str,
         agents                  = agent_lines,
         silent                  = silent_lines,
         threshold               = silence_threshold,
@@ -175,17 +162,24 @@ def run_system_agent(
         repeat_threshold        = repeat_threshold_pct,
     )
 
+    sys_msg  = system_prompt or DEFAULT_SYSTEM_AGENT_PROMPT
     messages = [
-        {"role": "system", "content": system_prompt or DEFAULT_SYSTEM_AGENT_PROMPT},
+        {"role": "system", "content": sys_msg},
         {"role": "user",   "content": user_msg},
     ]
 
     try:
-        content, _, _ = llm(messages, max_tokens=llm_max_tokens)
+        content, _, usage = llm(messages, max_tokens=llm_max_tokens)
         raw = content.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        return json.loads(raw)
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            parsed["_meta"] = {
+                "prompt_tokens": (usage or {}).get("prompt_tokens"),
+                "prompt_chars":  len(sys_msg) + len(user_msg),
+            }
+        return parsed
     except Exception as exc:
         logger.warning(f"[system_agent] LLM 호출 실패 (W{wave}): {exc}")
         return None
