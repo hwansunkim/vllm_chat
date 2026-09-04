@@ -214,15 +214,48 @@ class _MeetingMixin:
         추격이 수렴하는 핵심이다. 이동 중인 상대의 **현재** 위치를 쫓으면 매 웨이브
         stale 목표를 따라가며 엇갈리지만, 최종 목적지를 쫓으면 늦어도 상대가 멈추는
         시점에 반드시 만난다.
+
+        다만 목적지가 아래 둘 중 하나에 걸리면 "확정된 목표"로 인정하지 않고 그가
+        **지금 서 있는 노드**로 폴백한다. 두 조건은 서로 다른 이유로 존재하는 별개의
+        격리 메커니즘이므로 하나로 합치거나 한쪽만 두면 안 된다:
+
+        - `is_exterior` — "무한히 넓어 같이 있어도 서로 못 보는 공간"(예: 동네).
+          zone 안팎과 무관하다. 그 안에서는 동석해도 만남이 성립하지 않으므로
+          따라 들어갈 이유가 없다.
+        - zone 이탈 — 그가 **현재 있는 zone** 밖(또는 zone 없는 노드)으로 나가는 중.
+          zone은 인지 범위의 벽이고, 추격은 인지 가능한 상대에게만 성립한다
+          (`_resolve_meet_target`). 이 조건이 없으면 "zone 탈출 1홉 엣지" 덕에
+          대상이 한 웨이브 만에 구역 밖으로 나갈 때 추격자가 **같은 웨이브에** 그
+          목적지를 목표로 받아 함께 벽을 넘어버린다. 그 시점의 `_agent_location`은
+          아직 이동 적용 전이라 `_meeting_break_reason()`의 zone 체크가 이번 웨이브엔
+          걸리지 못하기 때문이다. 판단 기준을 `_meeting_break_reason()`과 대칭으로
+          맞춘다 — 다만 이 함수는 대상 한 명만 보고 계산하므로(추격자 정보 없음)
+          비교 대상은 chaser가 아니라 key 자신의 현재 위치 zone이다.
+
+        어느 쪽이든 실제로 나가는 순간 `_meeting_break_reason()`이 "가버렸다"로 lock을
+        푼다. 여기서는 아직 만남을 포기하지 않고 원래 있던 자리를 목표로 둘 뿐이다.
+        zone 미사용 시나리오(`_location_zone`이 빈 dict)에서는 zone 체크 자체가
+        무의미하므로 건너뛴다 — 기존 동작 그대로.
         """
         path = self._agent_path.get(key)
         if path:
             dest = path[-1]
-            # 외부 공간으로 나가는 중이면 따라 들어가지 않는다(그곳은 격리 공간).
-            # 실제로 나가는 순간 아래 해제 조건이 "가버렸다"로 lock을 푼다.
-            if dest not in self._exterior_locations:
+            if dest not in self._exterior_locations and not self._leaves_own_zone(key, dest):
                 return dest
         return self._agent_location.get(key, "")
+
+    def _leaves_own_zone(self, key: str, dest: str) -> bool:
+        """dest가 key의 **현재** zone을 벗어나는가(zone 없는 노드로 나가는 것 포함).
+
+        zone을 안 쓰는 시나리오, 그리고 key가 지금 zone 없는 노드에 서 있는 경우는
+        비교할 벽 자체가 없으므로 항상 False(기존 동작 유지).
+        """
+        if not self._location_zone:
+            return False
+        my_zone = self._location_zone.get(self._agent_location.get(key, ""), "")
+        if not my_zone:
+            return False
+        return self._location_zone.get(dest, "") != my_zone
 
     def _meeting_break_reason(self, chaser: str, target: str) -> str | None:
         """lock을 풀어야 하는 이유. 유지해야 하면 None.

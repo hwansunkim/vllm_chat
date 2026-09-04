@@ -3753,6 +3753,154 @@ class MeetingUpdateEventTests(_MeetingSimHarness, unittest.TestCase):
         self.assertIn("meeting_update", _PERSIST_EVENTS)
 
 
+class MeetingGoalNodeZoneTests(_MeetingSimHarness, unittest.TestCase):
+    """추격 목표 노드(`_meeting_goal_node`)의 zone 이탈 판정.
+
+    핵심 불변식: 추격자는 대상이 **자기 구역 밖으로** 나가는 길까지 따라나서면 안
+    된다. zone은 인지 범위의 벽이고 추격은 인지 가능한 상대에게만 성립하므로
+    (`_resolve_meet_target`), 대상이 구역을 벗어나는 순간 만남은 "가버렸다"로 끝나야
+    한다. 그런데 "zone 탈출 1홉 엣지"(구역 안 어디서든 바깥 노드로 직행) 때문에 그
+    이탈이 한 웨이브 만에 일어나고, 그 시점의 `_agent_location`은 아직 이동 적용
+    **전**이라 `_meeting_break_reason()`의 zone 체크가 걸리지 못한다. 목표 계산
+    쪽에서도 같은 기준으로 걸러야 추격자가 같은 웨이브에 함께 벽을 넘지 않는다.
+
+    `is_exterior`(무한히 넓어 동석해도 서로 못 보는 공간)와는 완전히 별개의 조건이다.
+    """
+
+    # 안방 — 거실 — 주방(전부 zone "우리집", 입구는 거실) + zone 밖의 초등학교.
+    # 초등학교는 exterior가 아니다 — 이 테스트가 겨누는 건 오직 zone 이탈이다.
+    # 동네는 같은 zone 안의 exterior 노드 — 두 조건이 독립임을 확인하는 대조군.
+    ZONED_GRAPH = [
+        {"name": "거실",    "connects_to": ["안방", "주방"], "zone": "우리집", "is_zone_entry": True},
+        {"name": "안방",    "connects_to": ["거실"],         "zone": "우리집"},
+        {"name": "주방",    "connects_to": ["거실"],         "zone": "우리집"},
+        {"name": "동네",    "connects_to": ["거실"],         "zone": "우리집", "is_exterior": True},
+        {"name": "초등학교", "connects_to": ["우리집"]},
+    ]
+
+    # zone을 전혀 쓰지 않는 기존 시나리오(하위 호환 대조군).
+    FLAT_GRAPH = [
+        {"name": "X", "connects_to": ["M"]},
+        {"name": "M", "connects_to": ["X", "N"]},
+        {"name": "N", "connects_to": ["M"]},
+    ]
+
+    def _build(self, locations, graph):
+        """실행하지 않고 상태만 세운 Simulation — 목표 노드 계산을 직접 본다."""
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096)
+                      for k in locations}
+            return Simulation(
+                agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+                llm=_ScriptedLLM({}), agent_locations=dict(locations),
+                location_graph=graph,
+            )
+
+    def test_zone_escape_edge_exists(self):
+        # 이 테스트들의 전제 — 구역 안 어디서든 바깥 노드로 1홉에 나갈 수 있다.
+        sim = self._build({"mom": "안방"}, self.ZONED_GRAPH)
+        self.assertEqual(sim._find_path("안방", "초등학교"), ["초등학교"])
+
+    # ── (a) 같은 구역 안에서는 기존대로 최종 목적지를 쫓는다 ─────────────────────
+
+    def test_goal_node_keeps_destination_inside_the_same_zone(self):
+        sim = self._build({"son": "거실"}, self.ZONED_GRAPH)
+        sim._agent_path["son"] = ["주방"]
+
+        self.assertEqual(sim._meeting_goal_node("son"), "주방")
+
+    def test_chase_inside_the_zone_still_targets_the_final_destination(self):
+        # mom@안방이 son을 지목한 웨이브에 son이 거실→주방으로 움직인다. 같은 구역
+        # 안이므로 mom은 stale 위치(거실)가 아니라 최종 목적지(주방)를 향해야 한다.
+        sim, _ = self._run(
+            {"mom": self._meet("son"),
+             "son": [{"content": "주방 간다.", "target": "self", "move_to": "주방"}] + self.IDLE},
+            {"mom": "안방", "son": "거실"}, max_waves=1, graph=self.ZONED_GRAPH,
+        )
+
+        self.assertEqual(sim._agent_location["son"], "주방")
+        self.assertEqual(sim._agent_location["mom"], "거실")
+        self.assertEqual(sim._agent_path["mom"], ["주방"])   # 거실이 아니라 주방까지
+        self.assertEqual(sim._meeting_intent, {"mom": "son"})
+
+    # ── (b) 구역 밖으로 나가는 목적지는 목표로 인정하지 않는다 (이번 회귀) ────────
+
+    def test_goal_node_falls_back_when_target_leaves_its_zone(self):
+        sim = self._build({"son": "거실"}, self.ZONED_GRAPH)
+        sim._agent_path["son"] = ["초등학교"]
+
+        # 초등학교는 exterior가 아니지만 zone 밖이다 → 아직 확정 목표로 보지 않는다.
+        self.assertNotIn("초등학교", sim._exterior_locations)
+        self.assertEqual(sim._meeting_goal_node("son"), "거실")
+
+    def test_chaser_does_not_follow_the_target_out_of_the_zone(self):
+        # 재현된 버그: mom@안방이 거실의 son을 만나러 가던 웨이브에 son이 zone 밖
+        # 초등학교로 1홉 이동하자, mom도 안방→초등학교로 직행해 벽을 함께 넘었다.
+        sim, _ = self._run(
+            {"mom": self._meet("son"),
+             "son": [{"content": "학교 간다.", "target": "self", "move_to": "초등학교"}] + self.IDLE},
+            {"mom": "안방", "son": "거실"}, max_waves=1, graph=self.ZONED_GRAPH,
+        )
+
+        self.assertEqual(sim._agent_location["son"], "초등학교")
+        self.assertEqual(sim._agent_location["mom"], "거실")   # son의 원래 자리까지만
+        self.assertNotIn("초등학교", sim._agent_path.get("mom", []))
+
+    def test_chase_out_of_the_zone_ends_as_gone_next_wave(self):
+        # 한 웨이브 늦게, 실제로 나간 것이 확인되면 lock은 "가버렸다"로 풀린다.
+        sim, emitted = self._run(
+            {"mom": self._meet("son"),
+             "son": [{"content": "학교 간다.", "target": "self", "move_to": "초등학교"}] + self.IDLE},
+            {"mom": "안방", "son": "거실"}, max_waves=2, graph=self.ZONED_GRAPH,
+        )
+
+        self.assertNotEqual(sim._agent_location["mom"], "초등학교")
+        self.assertEqual(sim._meeting_intent, {})
+        self.assertEqual(self._flow(emitted, "mom"),
+                         [("start", None), ("cancelled", "gone")])
+
+    def test_exterior_check_is_independent_of_the_zone_check(self):
+        # 동네는 같은 zone("우리집") 안이지만 exterior다 — zone 조건이 안 걸려도
+        # 격리 공간 조건이 따로 걸러야 한다(두 조건은 별개의 이유로 존재한다).
+        sim = self._build({"son": "거실"}, self.ZONED_GRAPH)
+        sim._agent_path["son"] = ["동네"]
+
+        self.assertEqual(sim._location_zone["동네"], sim._location_zone["거실"])
+        self.assertEqual(sim._meeting_goal_node("son"), "거실")
+
+    def test_target_already_outside_any_zone_keeps_its_destination(self):
+        # 비교할 벽이 없는 경우(현재 위치에 zone이 없음)는 기존 동작 그대로.
+        sim = self._build({"son": "초등학교"}, self.ZONED_GRAPH)
+        sim._agent_path["son"] = ["거실"]
+
+        self.assertEqual(sim._meeting_goal_node("son"), "거실")
+
+    # ── (c) zone 미사용 시나리오는 기존 동작 100% 유지 ──────────────────────────
+
+    def test_zoneless_scenario_is_untouched(self):
+        sim = self._build({"a": "X", "b": "N"}, self.FLAT_GRAPH)
+        self.assertEqual(sim._location_zone, {})   # zone 체크 자체가 무의미한 지도
+
+        sim._agent_path["b"] = ["M"]
+        self.assertEqual(sim._meeting_goal_node("b"), "M")
+        sim._agent_path.pop("b")
+        self.assertEqual(sim._meeting_goal_node("b"), "N")   # 이동 중이 아니면 현 위치
+
+    def test_zoneless_chase_still_targets_the_final_destination(self):
+        sim, _ = self._run(
+            {"a": self._meet("b"),
+             "b": [{"content": "저리 간다.", "target": "self", "move_to": "N"}] + self.IDLE},
+            {"a": "X", "b": "M"}, max_waves=1, graph=self.FLAT_GRAPH,
+        )
+
+        self.assertEqual(sim._agent_location["b"], "N")
+        self.assertEqual(sim._agent_location["a"], "M")
+        self.assertEqual(sim._agent_path["a"], ["N"])   # M이 아니라 N까지
+
+
 class MeetingBackCompatTests(unittest.TestCase):
     """사람 지목 move_to가 기존 시나리오의 동작을 건드리지 않는지 (하위 호환)."""
 
