@@ -119,25 +119,36 @@ class RunsMixin:
         meta: dict,
         targets: list,
         time_str: str | None = None,
+        location: str | None = None,
+        is_exterior: bool | None = None,
     ):
+        """`location`/`is_exterior` 는 그 턴 시점(=해당 wave 이동 적용 전)의 발화자 위치.
+
+        둘 다 기본값 None 이라 이 인자를 넘기지 않는 기존 호출부는 그대로 동작하고,
+        그 행은 NULL 로 저장된다.
+        """
         conn = self._conn()
         conn.execute(
             "INSERT INTO simulation_log "
-            "(run_id, wave, turn, speaker, content, action_note, meta_json, targets_json, timestamp, time_str) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "(run_id, wave, turn, speaker, content, action_note, meta_json, targets_json, timestamp, "
+            " time_str, location, is_exterior) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 run_id, wave, turn, speaker, content, action_note,
                 json.dumps(meta, ensure_ascii=False),
                 json.dumps(targets, ensure_ascii=False),
                 time.time(),
                 time_str,
+                location,
+                None if is_exterior is None else int(bool(is_exterior)),
             ),
         )
         conn.commit()
 
     def get_run_log(self, run_id: str) -> list[dict]:
         rows = self._conn().execute(
-            "SELECT wave, turn, speaker, content, action_note, meta_json, targets_json, timestamp, time_str "
+            "SELECT wave, turn, speaker, content, action_note, meta_json, targets_json, timestamp, "
+            "       time_str, location, is_exterior "
             "FROM simulation_log WHERE run_id=? ORDER BY id",
             (run_id,),
         ).fetchall()
@@ -146,6 +157,9 @@ class RunsMixin:
             d = dict(r)
             d["meta"]    = json.loads(d.pop("meta_json"))
             d["targets"] = json.loads(d.pop("targets_json"))
+            # SQLite 는 0/1 로 돌려주므로 bool 로 되돌린다(옛 행은 NULL → None 유지).
+            if d.get("is_exterior") is not None:
+                d["is_exterior"] = bool(d["is_exterior"])
             result.append(d)
         return result
 

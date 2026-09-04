@@ -142,6 +142,9 @@ def load_simulation(run_id: str):
                 "timestamp":   e.get("timestamp", 0),
                 "action_note": e.get("action_note", ""),
                 "wave":        e.get("wave", 0),
+                "time_str":    e.get("time_str"),
+                "location":    e.get("location"),
+                "is_exterior": e.get("is_exterior"),
             }
             for e in log_entries
         ]

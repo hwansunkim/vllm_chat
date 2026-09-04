@@ -36,6 +36,13 @@ class _TurnMixin:
 
         self._last_spoke_wave[agent.name] = wave
 
+        # 이 턴 시점의 위치 = 이 wave의 이동이 적용되기 **전** 값(이동은 wave 안
+        # 모든 턴이 끝난 뒤 runner에서 적용된다). 즉 이 에이전트가 이 wave 동안
+        # 실제로 있던 장소이고, 접촉 분석이 필요로 하는 바로 그 값이다.
+        # 아래 shared_log / turn_complete / DB 세 곳이 같은 스냅샷을 공유한다.
+        agent_loc   = self._agent_location.get(agent_key, "")
+        is_exterior = agent_loc in self._exterior_locations
+
         self.shared_log.append({
             "speaker":     agent.name,
             "content":     clean_content,
@@ -45,6 +52,8 @@ class _TurnMixin:
             "wave":        wave,
             "timestamp":   time.time(),
             "time_str":    time_str,
+            "location":    agent_loc,
+            "is_exterior": is_exterior,
         })
         self._save_shared_log()
 
@@ -62,9 +71,7 @@ class _TurnMixin:
             self.edges.append(edge)
             new_edges.append(edge)
 
-        emit_meta   = {k: v for k, v in meta.items() if k != "action_note"}
-        agent_loc   = self._agent_location.get(agent_key, "")
-        is_exterior = agent_loc in self._exterior_locations
+        emit_meta = {k: v for k, v in meta.items() if k != "action_note"}
         self._emit("turn_complete", {
             "turn":              turn,
             "wave":              wave,
@@ -89,6 +96,8 @@ class _TurnMixin:
                 meta.get("action_note", ""),
                 emit_meta, parsed_targets,
                 time_str=time_str,
+                location=agent_loc,
+                is_exterior=is_exterior,
             )
 
         return {

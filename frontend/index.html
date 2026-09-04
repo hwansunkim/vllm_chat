@@ -993,11 +993,11 @@
 <div id="sim-export-modal" class="sim-export-modal-overlay sim-hidden">
   <div class="sim-export-modal-box">
     <div class="sim-export-modal-header">
-      <span>📄 마크다운 내보내기</span>
+      <span>📄 내보내기</span>
       <button id="sim-export-modal-close" class="sim-export-modal-close">✕</button>
     </div>
     <div class="sim-export-modal-body">
-      <p class="sim-export-modal-hint">포함할 요소를 선택하세요</p>
+      <p class="sim-export-modal-hint">마크다운에 포함할 요소를 선택하세요</p>
       <div class="sim-export-checklist">
         <label class="sim-export-check-item sim-export-check-fixed">
           <input type="checkbox" checked disabled>
@@ -1045,10 +1045,17 @@
           <span class="sim-export-check-desc">누가 누구를 만나러 가는지 · 도착/취소</span>
         </label>
       </div>
+      <div class="sim-export-alt">
+        <div class="sim-export-alt-text">
+          <span class="sim-export-check-label">🗺 위치 이력 CSV</span>
+          <span class="sim-export-check-desc">wave별 에이전트 위치 — 접촉 분석용 (위 선택과 무관)</span>
+        </div>
+        <button id="sim-export-modal-csv" class="sim-export-modal-btn-alt">⬇ CSV</button>
+      </div>
     </div>
     <div class="sim-export-modal-footer">
       <button id="sim-export-modal-cancel" class="sim-export-modal-btn-cancel">취소</button>
-      <button id="sim-export-modal-download" class="sim-export-modal-btn-primary">⬇ 다운로드</button>
+      <button id="sim-export-modal-download" class="sim-export-modal-btn-primary">⬇ 마크다운</button>
     </div>
   </div>
 </div>

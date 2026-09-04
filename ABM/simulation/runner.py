@@ -376,6 +376,15 @@ class _RunnerMixin:
                         self._resolve_time_category(category_id)
                         if category_id is not None else None
                     ) or {}
+                    # 이 wave 의 **종료 시각**(delta 적용 후 절대 시각). 아래
+                    # `self._elapsed_minutes += jump` 가 emit *다음*에 실행되므로
+                    # 여기서는 아직 이번 wave 가 반영되지 않은 `_elapsed_minutes`
+                    # 에 `jump` 를 직접 더해야 한다. CSV 내보내기가 "다음 wave 의
+                    # 시작 시각 훔쳐보기" 대신 이 값을 쓰면 마지막 wave 도 종료
+                    # 시각이 채워진다(다음 wave 가 없어도 됨).
+                    end_time_str = self._format_time_str(
+                        self._sim_start_minutes + self._elapsed_minutes + jump
+                    )
                     self._emit("time_jump", {
                         "wave":           disp_wave,
                         "mode":           self._time_estimation_mode,
@@ -386,6 +395,7 @@ class _RunnerMixin:
                         "raw_minutes":    raw_jump,
                         "minutes":        jump,
                         "clamp_reason":   clamp_reason,
+                        "end_time_str":   end_time_str,
                     })
                     self._elapsed_minutes += jump
                 # else: 이번 wave에 성공한 발화가 전혀 없음 — 시간 미누적

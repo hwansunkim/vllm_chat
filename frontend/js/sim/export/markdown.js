@@ -12,6 +12,7 @@ import { sim, agentLabel, getAgentIcon, simTimeLabel, normalizeWeekday,
          meetingNarration, formatDayHour } from '../state.js';
 import { stripCodeFence } from '../utils/json.js';
 import { downloadFile, safeFilename, nowTag } from '../utils/download.js';
+import { exportLocationHistoryCsv } from './csv.js';
 
 const EMOTION_EMOJI = { happy: '😊', angry: '😤', sad: '😢', fear: '😨', neutral: '😐' };
 
@@ -73,6 +74,16 @@ export function initExportModal() {
     } catch (e) {
       console.error('[export] 마크다운 내보내기 실패:', e);
       alert(`마크다운 내보내기 실패: ${e.message}`);
+    }
+  });
+  // 위치 이력 CSV — 체크박스 선택과 무관한 별도 산출물이라 같은 모달에서 바로 내려받는다.
+  document.getElementById('sim-export-modal-csv')?.addEventListener('click', async () => {
+    closeExportModal();
+    try {
+      await exportLocationHistoryCsv();
+    } catch (e) {
+      console.error('[export] 위치 이력 CSV 내보내기 실패:', e);
+      alert(`위치 이력 CSV 내보내기 실패: ${e.message}`);
     }
   });
 }

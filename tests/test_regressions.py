@@ -628,6 +628,163 @@ class VariableTimeJumpClampTests(unittest.TestCase):
         self.assertEqual(jump, 180)  # 동석 아님 → 주간 캡만
 
 
+class TimeJumpEndTimeStrTests(unittest.TestCase):
+    """`time_jump` 이벤트의 `end_time_str` (ABM/simulation/runner.py).
+
+    위치 이력 CSV의 `wave_end_time`은 원래 "다음 wave 턴 로그의 time_str"을
+    훔쳐보는 방식이라 **마지막 wave가 늘 빈칸**이었다(다음 wave가 없으니까).
+    엔진은 마지막 wave에 대해서도 경과분을 판정하므로, 그 delta를 적용한 뒤의
+    절대 시각을 이벤트에 함께 실어 CSV가 다음 wave 없이도 종료 시각을 채우게 한다.
+
+    불변식: `end_time_str == _format_time_str(_sim_start_minutes + 이번 wave까지
+    누적된 _elapsed_minutes)`. runner에서 `self._elapsed_minutes += jump`는 emit
+    **다음**에 실행되므로, emit 시점의 `_elapsed_minutes`에 `jump`를 더해야 한다
+    — 이 순서를 뒤집으면 한 wave씩 밀린 시각이 나간다.
+    """
+
+    # 분류기가 늘 고르는 normal_scene 은 min==max 로 랜덤 요소를 없애 wave당
+    # 경과분을 결정론적으로 만든다. 두 번째 카테고리는 고르지 않지만, ai 모드의
+    # sanity 범위(전 카테고리의 min~max)를 넓혀 추론값이 clamp되지 않게 한다.
+    CATS = [
+        {"id": "normal_scene", "label": "일반 장면",
+         "min_minutes": 12, "max_minutes": 12},
+        {"id": "long_gap", "label": "긴 공백",
+         "min_minutes": 1, "max_minutes": 480},
+    ]
+
+    # 기존 필드 — 회귀(필드 삭제/개명) 방지용.
+    LEGACY_FIELDS = ("wave", "mode", "used_fallback", "category_id",
+                     "category_label", "reason", "raw_minutes", "minutes",
+                     "clamp_reason")
+
+    def _llm(self, *, ai_minutes=None):
+        """가짜 LLM — 에이전트 턴 / 카테고리 분류 / AI 분 추론 셋을 구분해 응답."""
+        def llm(messages, max_tokens=None, **kw):
+            sys_text = messages[0].get("content", "") if messages else ""
+            if "시간 관찰자" in sys_text:
+                if "분 단위 정수" in sys_text:      # estimate_wave_minutes (ai 모드)
+                    if ai_minutes is None:
+                        return "not json", "", {}   # AI 실패 → 카테고리 폴백
+                    return json.dumps({"minutes": ai_minutes,
+                                       "reason": "짧은 대화"}), "", {}
+                return json.dumps({"category": "normal_scene",
+                                   "reason": "t"}), "", {}
+            return json.dumps({
+                "content": "안녕하세요.", "action_note": "", "target": "all",
+                "move_to": None, "update_appearance": None,
+            }), "", {}
+        return llm
+
+    def _run(self, *, estimation_mode="category", ai_minutes=None,
+             start="14:00", weekday="mon", elapsed_init=0, max_waves=3):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096)
+                      for k in ("a", "b")}
+            sim = Simulation(
+                agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+                llm=self._llm(ai_minutes=ai_minutes),
+                time_mode="variable", time_categories=list(self.CATS),
+                time_estimation_mode=estimation_mode,
+                sim_start_time=start, sim_start_weekday=weekday,
+                elapsed_minutes_init=elapsed_init,
+            )
+            emitted = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            sim.run("a", max_waves=max_waves, step_delay=0.0)
+            jumps = [d for t, d in emitted if t == "time_jump"]
+            return sim, jumps
+
+    def _assert_invariant(self, sim, jumps, *, elapsed_init=0):
+        """각 이벤트의 end_time_str이 '그 wave 적용 후' 시각과 일치하는지."""
+        self.assertTrue(jumps, "time_jump 이벤트가 하나도 없음")
+        elapsed = elapsed_init
+        for ev in jumps:
+            elapsed += ev["minutes"]
+            self.assertEqual(
+                ev["end_time_str"],
+                sim._format_time_str(sim._sim_start_minutes + elapsed),
+                f"wave {ev['wave']} 의 end_time_str 불일치",
+            )
+        # 마지막 이벤트는 run 종료 시점의 시계와 같아야 한다 — CSV 마지막 행이
+        # 이 값을 쓰므로 여기서 어긋나면 빈칸이 '틀린 값'으로 바뀔 뿐이다.
+        self.assertEqual(elapsed, sim._elapsed_minutes)
+        self.assertEqual(
+            jumps[-1]["end_time_str"],
+            sim._format_time_str(sim._sim_start_minutes + sim._elapsed_minutes),
+        )
+
+    def test_category_mode_emits_end_time_str(self):
+        sim, jumps = self._run(estimation_mode="category", max_waves=3)
+
+        self._assert_invariant(sim, jumps)
+        # 14:00 시작 + wave당 12분 → 2시 12분 / 2시 24분 / 2시 36분
+        self.assertEqual([e["end_time_str"] for e in jumps],
+                         ["월요일 오후 2시 12분",
+                          "월요일 오후 2시 24분",
+                          "월요일 오후 2시 36분"])
+
+    def test_ai_mode_emits_end_time_str(self):
+        sim, jumps = self._run(estimation_mode="ai", ai_minutes=7, max_waves=3)
+
+        self.assertEqual([e["mode"] for e in jumps], ["ai"] * 3)
+        self.assertEqual([e["minutes"] for e in jumps], [7, 7, 7])
+        self._assert_invariant(sim, jumps)
+
+    def test_ai_fallback_path_also_emits_end_time_str(self):
+        # AI 추론 실패 → normal_scene 카테고리 폴백. 이 경로도 emit 지점은 같다.
+        sim, jumps = self._run(estimation_mode="ai", ai_minutes=None, max_waves=2)
+
+        self.assertTrue(all(e["used_fallback"] for e in jumps))
+        self.assertTrue(all(e["category_id"] == "normal_scene" for e in jumps))
+        self._assert_invariant(sim, jumps)
+
+    def test_end_time_str_is_not_off_by_one_wave(self):
+        # 회귀 방지: `_elapsed_minutes += jump` 뒤에 계산하거나(=한 wave 앞섬)
+        # jump 를 빼먹으면(=한 wave 뒤처짐) 첫 이벤트가 시작 시각 그대로 나온다.
+        sim, jumps = self._run(max_waves=2)
+        self.assertNotEqual(jumps[0]["end_time_str"],
+                            sim._format_time_str(sim._sim_start_minutes))
+
+    def test_end_time_str_rolls_over_midnight(self):
+        # 자정을 넘는 wave 도 요일까지 함께 넘어간 문자열이어야 한다.
+        sim, jumps = self._run(start="23:50", weekday="mon", max_waves=2)
+
+        self._assert_invariant(sim, jumps)
+        self.assertEqual(jumps[0]["end_time_str"], "화요일 오전 0시 02분")
+
+    def test_resumed_run_counts_from_restored_elapsed(self):
+        # /continue 로 복원된 누적 경과(elapsed_minutes_init)가 기준점이어야 한다.
+        sim, jumps = self._run(elapsed_init=100, max_waves=2)
+
+        self._assert_invariant(sim, jumps, elapsed_init=100)
+        self.assertEqual(jumps[0]["end_time_str"],
+                         sim._format_time_str(sim._sim_start_minutes + 112))
+
+    def test_legacy_fields_are_untouched(self):
+        # end_time_str 추가로 기존 필드가 사라지거나 개명되지 않았는지.
+        _, jumps = self._run(estimation_mode="category", max_waves=1)
+
+        ev = jumps[0]
+        for field in self.LEGACY_FIELDS:
+            self.assertIn(field, ev)
+        self.assertIn("end_time_str", ev)
+        self.assertEqual(ev["mode"], "category")
+        self.assertIs(ev["used_fallback"], False)
+        self.assertEqual(ev["category_id"], "normal_scene")
+        self.assertEqual(ev["category_label"], "일반 장면")
+        self.assertEqual(ev["raw_minutes"], 12)
+        self.assertEqual(ev["minutes"], 12)
+        self.assertIsNone(ev["clamp_reason"])
+
+    def test_time_jump_is_persisted_with_the_new_field(self):
+        # DB 스키마 변경 없이 payload 추가만으로 영속화되는지 (data_json 그대로).
+        from ABM.simulation.core import _PERSIST_EVENTS
+        self.assertIn("time_jump", _PERSIST_EVENTS)
+
+
 class TimeClassifierCurrentTimeTests(unittest.TestCase):
     """Layer 0 — 시간 분류기 프롬프트에 현재 시각 주입 (ABM/time_classifier.py)."""
 
@@ -6327,6 +6484,159 @@ class ChatAgentRelationshipsTests(unittest.TestCase):
         # 마이그레이션 후에도 새 에이전트 생성(INSERT 컬럼 목록)이 동작해야 한다.
         self.assertEqual(self._create(relationships={"a": "친구"})["relationships"],
                          {"a": "친구"})
+
+
+class TurnLocationLoggingTests(unittest.TestCase):
+    """턴 로그의 위치 이력 (감염병 접촉 분석용 CSV 내보내기의 데이터 원천).
+
+    핵심 불변식: 기록되는 `location` 은 그 wave 의 이동이 적용되기 **전** 스냅샷
+    이어야 한다 — 이동은 wave 안 모든 턴이 끝난 뒤 runner 가 적용하므로, 그 값이
+    바로 그 에이전트가 그 wave 동안 실제로 있던(=접촉이 일어난) 장소다. 이동
+    **후** 값을 남기면 '이미 떠난 장소'가 접촉 시점 위치로 둔갑한다.
+    """
+
+    GRAPH = [
+        {"name": "매장", "connects_to": ["창고", "동네"]},
+        {"name": "창고", "connects_to": ["매장"]},
+        # 외부 공간 — 동석해도 서로 못 보는 곳. 접촉으로 오판하면 안 되므로
+        # is_exterior 를 로그에 같이 남긴다.
+        {"name": "동네", "connects_to": ["매장"], "is_exterior": True},
+    ]
+
+    def _run_one_wave(self, tmp, *, db=None, sim_id=None):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096) for k in ("a", "b")}
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=_ScriptedLLM({
+                # a 는 말하면서 같은 턴에 창고로 떠난다.
+                "a": [{"content": "먼저 갈게.", "target": "self", "move_to": "창고"}],
+                "b": [{"content": "음.",       "target": "self"}],
+            }),
+            agent_locations={"a": "매장", "b": "동네"},
+            location_graph=self.GRAPH,
+            db=db, sim_id=sim_id,
+        )
+        sim._emit = lambda t, d: None
+        # 둘 다 wave 0 에 투입 — 한 wave 에 두 에이전트의 턴 로그를 얻기 위함.
+        sim.run("a", max_waves=1, step_delay=0.0, resume_wave={"a": [], "b": []})
+        return sim
+
+    @staticmethod
+    def _entry(log, speaker):
+        return next(e for e in reversed(log)
+                    if e.get("speaker") == speaker)
+
+    def test_shared_log_records_pre_move_location_and_is_exterior(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._run_one_wave(tmp)
+
+            a = self._entry(sim.shared_log, "a")
+            # a 는 이 wave 동안 매장에 있었고, 이동은 턴이 끝난 뒤 적용됐다.
+            self.assertEqual(sim._agent_location["a"], "창고")
+            self.assertEqual(a["location"], "매장")
+            self.assertIs(a["is_exterior"], False)
+
+            b = self._entry(sim.shared_log, "b")
+            self.assertEqual(b["location"], "동네")
+            self.assertIs(b["is_exterior"], True)
+
+    def test_engine_persists_location_to_db_log(self):
+        from ABM.db import SimDB
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            db = SimDB(os.path.join(tmp, "sim.db"))
+            try:
+                db.create_run("r1", "scn", "시나리오", "{}")
+                self._run_one_wave(tmp, db=db, sim_id="r1")
+
+                rows = {r["speaker"]: r for r in db.get_run_log("r1")}
+                self.assertEqual(rows["a"]["location"], "매장")
+                self.assertIs(rows["a"]["is_exterior"], False)
+                self.assertEqual(rows["b"]["location"], "동네")
+                self.assertIs(rows["b"]["is_exterior"], True)
+            finally:
+                conn = getattr(db._local, "conn", None)
+                if conn is not None:
+                    conn.close()
+
+    def test_log_turn_round_trip_and_backward_compatible_default(self):
+        from ABM.db import SimDB
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            db = SimDB(os.path.join(tmp, "sim.db"))
+            try:
+                db.create_run("r1", "scn", "시나리오", "{}")
+                db.log_turn("r1", 0, 0, "a", "안녕", "", {"emotion": "기쁨"}, ["b"],
+                            time_str="09:00", location="매장", is_exterior=False)
+                db.log_turn("r1", 0, 1, "b", "그래", "", {}, [],
+                            time_str="09:00", location="동네", is_exterior=True)
+                # location/is_exterior 를 안 넘기는 기존 호출부(하위 호환) — 깨지지 않고
+                # 그 행은 NULL 로 남는다.
+                db.log_turn("r1", 1, 2, "a", "옛 로그", "", {}, [])
+
+                rows = db.get_run_log("r1")
+                self.assertEqual([r["location"] for r in rows], ["매장", "동네", None])
+                self.assertEqual([r["is_exterior"] for r in rows], [False, True, None])
+                # 기존 필드는 그대로 살아있어야 한다.
+                self.assertEqual(rows[0]["meta"], {"emotion": "기쁨"})
+                self.assertEqual(rows[0]["targets"], ["b"])
+                self.assertEqual(rows[0]["time_str"], "09:00")
+            finally:
+                conn = getattr(db._local, "conn", None)
+                if conn is not None:
+                    conn.close()
+
+    def test_legacy_db_without_location_columns_is_migrated(self):
+        from ABM.db import SimDB
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            path = os.path.join(tmp, "old.db")
+            # 컬럼 추가 이전 스키마의 DB를 손으로 만든다.
+            legacy = sqlite3.connect(path)
+            legacy.execute("""
+                CREATE TABLE simulation_log (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id       TEXT    NOT NULL,
+                    wave         INTEGER NOT NULL DEFAULT 0,
+                    turn         INTEGER NOT NULL DEFAULT 0,
+                    speaker      TEXT    NOT NULL,
+                    content      TEXT    NOT NULL,
+                    action_note  TEXT    NOT NULL DEFAULT '',
+                    meta_json    TEXT    NOT NULL DEFAULT '{}',
+                    targets_json TEXT    NOT NULL DEFAULT '[]',
+                    timestamp    REAL    NOT NULL
+                )
+            """)
+            legacy.execute(
+                "INSERT INTO simulation_log (run_id, speaker, content, timestamp) VALUES (?,?,?,?)",
+                ("r1", "a", "옛 발화", 0.0),
+            )
+            legacy.commit()
+            legacy.close()
+
+            db = SimDB(path)
+            try:
+                cols = {r[1] for r in db._conn().execute(
+                    "PRAGMA table_info(simulation_log)").fetchall()}
+                self.assertIn("location", cols)
+                self.assertIn("is_exterior", cols)
+
+                # 옛 행은 백필하지 않는다 — NULL 로 조회되는 게 정상.
+                old = db.get_run_log("r1")[0]
+                self.assertIsNone(old["location"])
+                self.assertIsNone(old["is_exterior"])
+
+                # 마이그레이션 후에도 새 INSERT(컬럼 목록)가 동작해야 한다.
+                db.log_turn("r1", 0, 0, "b", "새 발화", "", {}, [], location="창고",
+                            is_exterior=False)
+                self.assertEqual(db.get_run_log("r1")[1]["location"], "창고")
+            finally:
+                conn = getattr(db._local, "conn", None)
+                if conn is not None:
+                    conn.close()
 
 
 if __name__ == "__main__":
