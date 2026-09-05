@@ -137,19 +137,36 @@ class _RunnerMixin:
             # 유령 발화가 됐고, 그 타깃이 유일했다면 next_wave가 통째로 비어 시뮬레이션이
             # 즉시 침묵 종료됐다. 의미론: "말은 떠나기 전에 했으므로 그 자리에 있던
             # 사람은 듣는다."
+            #
+            # `perception_mode == "spatial"`이면 여기에 더해 엿듣기·원거리 전달·
+            # 독백 행동 관찰이 붙는다(_route_spatial). 그 판정도 **같은 이동 전
+            # 스냅샷** 위에서 일어나야 하므로 반드시 이 자리다.
+            #
+            # 씬 주입 버퍼는 원래 아래 외모·이동 블록에서 만들었지만, 독백 행동
+            # 브로드캐스트가 같은 채널을 쓰므로 라우팅보다 앞으로 옮겼다. 빈 dict
+            # 초기화라 targeted 모드에서는 동작이 완전히 동일하다.
+            scene_injections: dict[str, list] = {}
+
             routed: dict[str, list] = {}
+            spatial = self._perception_mode == "spatial"
             for speaker_key, result in results.items():
                 if not result.get("success"):
                     continue
-                for target_key in self._resolve_targets(result["targets"], speaker_key):
-                    routed.setdefault(target_key, []).append({
-                        "speaker":     speaker_key,
-                        "content":     result["clean_content"],
-                        "action_note": result.get("action_note", ""),
-                    })
+                resolved = self._resolve_targets(result["targets"], speaker_key)
+                if not spatial:
+                    # ── targeted (기본) — 기존 코드 그대로 ──
+                    for target_key in resolved:
+                        routed.setdefault(target_key, []).append({
+                            "speaker":     speaker_key,
+                            "content":     result["clean_content"],
+                            "action_note": result.get("action_note", ""),
+                        })
+                    continue
+                self._route_spatial(
+                    speaker_key, result, resolved, routed, scene_injections,
+                )
 
             # ── 외모·이동 처리 ────────────────────────────────────────────────
-            scene_injections: dict[str, list] = {}
 
             # ── 외모 변경 (이동 적용 *전* 위치 스냅샷 기준) ────────────────────
             # 발화 라우팅과 같은 원칙이다: "옷은 떠나기 전에 갈아입었으므로 그 자리에
@@ -441,6 +458,109 @@ class _RunnerMixin:
             # "max_waves" | "target_duration" | "silence" | "no_agents" | "stopped"
             "end_reason":  end_reason,
         })
+
+    # ── 공간 기반 인지 라우팅 (perception_mode == "spatial") ────────────────────
+
+    def _route_spatial(
+        self,
+        speaker_key:      str,
+        result:           dict,
+        resolved:         list[str],
+        routed:           dict[str, list],
+        scene_injections: dict[str, list],
+    ) -> None:
+        """한 화자의 발화를 공간 규칙에 따라 배달한다 (spatial 모드 전용).
+
+        ``perception_mode == "targeted"``에서는 **호출조차 되지 않는다** —
+        run()의 라우팅 블록이 모드 분기로 통째로 건너뛴다.
+
+        화자의 **이동 전** 위치를 기준으로 네 갈래로 나뉜다:
+
+        1. 같은 방 + 직접 타깃 — 대사+행동. 기존과 완전히 동일한 딕셔너리.
+        2. 같은 zone 다른 방 + 직접 타깃 — **대사만**. 벽 너머로 목소리는 들려도
+           뭘 하는지는 안 보이므로 `action_note`를 지우고, `speaker`에
+           `"…, 멀리서"`를 넣어 `_inject_incoming`의 `[{speaker}] {content}`
+           포매팅을 그대로 재사용한다(step.py는 손대지 않는다).
+        3. 같은 방 + 제3자(엿듣기) — 대사+행동을 `[화자→대상들]` 태그로. 같은
+           공간이면 못 들을 이유가 없으므로 **그룹 필터를 적용하지 않는다**
+           (그룹은 "누구를 타깃할 수 있는가"의 서사적 장치이고, 엿듣기는 물리적
+           사실이다). 태그는 관찰자 시점이라 bystander마다 다르다.
+        4. 같은 방 + 독백(target=self/system) — 대사는 안 들리고 **행동만** 씬
+           채널로 보인다.
+
+        같은 zone 다른 방의 제3자에겐 아무것도 가지 않는다 — zone 인지
+        (`_compute_zone_awareness`)는 "저기 누가 있다"까지이고 대화 내용은 새지
+        않는다. 화자/수신자가 외부 공간(exterior)이면 전부 차단된다.
+        """
+        content = result.get("clean_content", "") or ""
+        action  = (result.get("action_note", "") or "").strip()
+
+        # (1)(2) 직접 타깃 — 같은 방 / 원거리 포맷 분기
+        for target_key in resolved:
+            if self._is_remote_target(speaker_key, target_key):
+                routed.setdefault(target_key, []).append({
+                    "speaker":     f"{speaker_key}, 멀리서",
+                    "content":     content,
+                    "action_note": "",     # 벽 너머 — 행동은 보이지 않는다
+                })
+            else:
+                routed.setdefault(target_key, []).append({
+                    "speaker":     speaker_key,
+                    "content":     content,
+                    "action_note": action,
+                })
+
+        speaker_loc = self._agent_location.get(speaker_key, "")
+        if speaker_loc in self._exterior_locations:
+            # 외부 공간 화자는 아무도 보거나 들을 수 없다(_resolve_targets의 가드와
+            # 대칭). resolved도 이미 비어 있다.
+            return
+
+        # (3)(4) 같은 방의 제3자. **정확히 같은 방**만 본다 — 원거리 제3자는 제외.
+        # 위치 미설정(레거시)은 `_same_loc`/`_reachable`과 같은 하위 호환 규칙을
+        # 쓴다 — 화자나 상대 어느 한쪽이라도 위치가 비어 있으면 "같은 방"으로 본다.
+        # 정확 일치만 썼다면 위치를 일부만 지정한 혼합 시나리오에서 "말은 걸 수
+        # 있는데(all) 엿듣지는 못하는" 비대칭이 생긴다 — `_reachable`은 위치 미설정
+        # 상대를 항상 통과시키지만 이 목록은 그렇지 않았기 때문. exterior는 위치가
+        # 비어 있을 수 없는 실제 장소명이라 이 완화와 무관하게 항상 제외한다.
+        def _co_located(k: str) -> bool:
+            other = self._agent_location.get(k, "")
+            if other in self._exterior_locations:
+                return False
+            return (not speaker_loc) or (not other) or (other == speaker_loc)
+
+        resolved_set = set(resolved)
+        bystanders = [
+            k for k in sorted(self.active_agents)
+            if k != speaker_key
+            and k not in resolved_set
+            and _co_located(k)
+        ]
+        if not bystanders:
+            return
+
+        if not self._is_monologue_targets(result.get("targets")) and content.strip():
+            # 소리 내어 말한 턴 — 부른 상대가 자리에 없어 resolved가 비었더라도
+            # 같은 방 사람은 듣는다. 태그는 관찰자별로 계산한다(캐시 금지).
+            for bystander in bystanders:
+                routed.setdefault(bystander, []).append({
+                    "speaker":     self._eavesdrop_tag(
+                        bystander, speaker_key, result.get("targets"),
+                    ),
+                    "content":     content,
+                    "action_note": action,
+                })
+        elif action:
+            # 혼잣말이거나 대사가 비었지만 몸으로 한 일이 있는 턴 — 행동만 보인다.
+            display = self._key_to_alias.get(speaker_key, speaker_key)
+            for bystander in bystanders:
+                scene_injections.setdefault(bystander, []).append({
+                    "speaker":     "씬",
+                    "content":     self._action_scene_msg(
+                        speaker_key, bystander, display, action,
+                    ),
+                    "action_note": "",
+                })
 
     def _classify_wave_time(self, wave_num: int, results: dict) -> str:
         """이번 wave의 발화 결과를 LLM으로 분류해 시간 경과 카테고리 id를 반환.

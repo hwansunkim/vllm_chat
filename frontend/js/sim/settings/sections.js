@@ -59,7 +59,9 @@ function _sectionEl(id) {
 function _autoExpand(id, sim) {
   if (!sim) return null;
   switch (id) {
-    case 'world':     return (sim.location_graph?.length ?? 0) > 0;
+    // 장소가 없어도 엿듣기가 켜져 있으면 펼친다 — 라우팅 규칙을 바꾸는 설정이
+    // 접힌 섹션 안에 숨어 있으면 "왜 대화가 새지" 를 추적할 수 없다.
+    case 'world':     return (sim.location_graph?.length ?? 0) > 0 || sim.perception_mode === 'spatial';
     case 'infection': return !!sim.infection_model?.enabled;
     case 'director':  return !!sim.system_agent?.enabled;
     case 'events':    return (sim.events?.length ?? 0) > 0;
@@ -153,8 +155,13 @@ function _badgeText(id, sim) {
       // "오버라이드"는 출력 계약을 직접 편집 중일 때만 — 엔진 생성분은 기본이라 배지가 없다.
       return sim.output_format_override ? `필드 ${n} · 오버라이드` : `필드 ${n}`;
     }
-    case 'world':
-      return sim.location_graph?.length ? `장소 ${sim.location_graph.length}` : '';
+    case 'world': {
+      // 엿듣기는 접힌 상태에서 잊기 쉬운 "숨은 규칙 변경"이라 장소가 없어도 표시한다.
+      const parts = [];
+      if (sim.location_graph?.length) parts.push(`장소 ${sim.location_graph.length}`);
+      if (sim.perception_mode === 'spatial') parts.push('엿듣기');
+      return parts.join(' · ');
+    }
     case 'director':
       return sim.system_agent?.enabled
         ? `${sim.system_agent.display_name || '내레이터'} · 시야 ${sim.system_agent.digest_waves ?? 6}w`

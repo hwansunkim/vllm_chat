@@ -1,3 +1,4 @@
+import ast
 import asyncio
 import json
 import os
@@ -814,7 +815,7 @@ class _ScriptedLLM:
     """에이전트별·호출순서별 응답을 미리 정해두는 스텁 LLM.
 
     script = {"a": [{"content":..., "target":..., "move_to":...,
-                     "update_appearance":...}, ...], ...}
+                     "update_appearance":..., "action_note":...}, ...], ...}
     시스템 프롬프트의 "너는 {key}다." 로 화자를 식별한다. 스크립트가 소진되면
     마지막 항목을 반복한다. 생략된 필드는 None(=미사용).
     """
@@ -834,7 +835,7 @@ class _ScriptedLLM:
         turn  = turns[idx] if idx < len(turns) else turns[-1]
         return json.dumps({
             "content":           turn.get("content", "..."),
-            "action_note":       "",
+            "action_note":       turn.get("action_note", ""),
             "target":            turn.get("target", "self"),
             "move_to":           turn.get("move_to"),
             "update_appearance": turn.get("update_appearance"),
@@ -1081,6 +1082,311 @@ class ZoneAwarenessTests(unittest.TestCase):
 
             ctx = sim._assemble_agent_prompt("a")
             self.assertNotIn("b", ctx["visible_agents"])
+
+
+class SpatialPerceptionTests(unittest.TestCase):
+    """perception_mode="spatial" — 엿듣기 · 원거리 전달 · 독백 행동 관찰.
+
+    옵트인 설정이다. 기본값 `"targeted"`는 기존 라우팅(타깃에게만 전달) 100%
+    그대로이고, `"spatial"`일 때만 아래 규칙이 **추가**된다(화자의 이동 전 위치 기준):
+
+      | 같은 방 · 직접 타깃      | 대사+행동 (기존과 동일)              |
+      | 같은 방 · 제3자(엿듣기)  | 대사+행동, `[화자→대상들]` 태그       |
+      | 같은 방 · 독백           | 행동만, 씬 채널                       |
+      | 같은 zone 다른 방 · 타깃 | **대사만**, `[화자, 멀리서]` (행동 X) |
+      | 같은 zone 다른 방 · 제3자| 없음 (zone 인지만 유지)               |
+      | 다른 zone / exterior     | 없음                                  |
+
+    가장 중요한 불변식은 첫 줄이다 — 기본 모드에서 이 로직이 **하나도** 발동하지
+    않아야 한다. 대화 라우팅은 엔진의 코어 메커니즘이라 회귀 시 모든 시나리오가
+    조용히 망가진다.
+    """
+
+    LOCATION_GRAPH = [
+        {"name": "안방",   "connects_to": ["거실"],                 "zone": "우리집"},
+        {"name": "거실",   "connects_to": ["안방", "부엌", "마당"], "zone": "우리집"},
+        {"name": "부엌",   "connects_to": ["거실"],                 "zone": "우리집"},
+        {"name": "마당",   "connects_to": ["거실"]},  # zone 미설정 — 벽이 그대로다
+        {"name": "교실",   "connects_to": [],                       "zone": "학교"},
+        {"name": "현관밖", "connects_to": ["마당"], "zone": "우리집", "is_exterior": True},
+    ]
+
+    def _make_sim(self, tmp, locations, script=None, **kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        agents = {
+            key: Agent(key, f"너는 {key}다.", tmp, token_limit=4096)
+            for key in locations
+        }
+        full_script = {k: [{"content": "...", "target": "self"}] for k in locations}
+        full_script.update(script or {})
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=_ScriptedLLM(full_script),
+            agent_locations=dict(locations),
+            location_graph=self.LOCATION_GRAPH,
+            **kw,
+        )
+        sim._emit = lambda t, d: None
+        return sim
+
+    def _speak(self, sim, speaker="a"):
+        """화자 한 명만 도는 wave. 다른 에이전트가 턴을 갖지 않으므로 stranger_N
+        할당 순서가 결정적이다(관찰자별 태그 검증에 필요)."""
+        sim.run(speaker, max_waves=1, step_delay=0.0, resume_wave={speaker: []})
+
+    def _incoming(self, sim, agent_key):
+        """_pending_wave에 쌓인 메시지를 실제 메모리 문자열로 포매팅.
+
+        step.py `_inject_incoming`을 그대로 태워 최종 표시 형태까지 확인한다 —
+        원거리 포맷이 step.py 변경 없이 성립한다는 게 설계의 핵심이라 여기서
+        직접 검증한다.
+        """
+        msgs = sim._pending_wave.get(agent_key, [])
+        return [m["content"] for m in sim._inject_incoming(sim.agents[agent_key], msgs)]
+
+    # ── 회귀: 기본 모드(targeted) ────────────────────────────────────────────
+
+    def test_targeted_mode_is_default_and_has_no_leakage(self):
+        # 같은 방의 제3자(c)도, 같은 zone 다른 방(d)도 아무것도 받지 않는다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(
+                tmp,
+                {"a": "안방", "b": "안방", "c": "안방", "d": "거실"},
+                {"a": [{"content": "밥 먹어.", "target": ["b"], "action_note": "상을 차린다"}]},
+            )
+            self.assertEqual(sim._perception_mode, "targeted")
+            self.assertFalse(sim._is_remote_target("a", "d"))
+            self.assertEqual(sim._resolve_targets(["d"], "a"), [])  # zone 완화 없음
+
+            self._speak(sim)
+            self.assertEqual(sim._pending_wave["b"], [{
+                "speaker": "a", "content": "밥 먹어.", "action_note": "상을 차린다",
+            }])
+            self.assertIsNone(sim._pending_wave.get("c"))
+            self.assertIsNone(sim._pending_wave.get("d"))
+
+    def test_targeted_mode_monologue_action_is_not_broadcast(self):
+        # 독백 행동 브로드캐스트도 기본 모드에서는 발동하지 않는다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(
+                tmp,
+                {"a": "안방", "b": "안방"},
+                {"a": [{"content": "배고프네.", "target": "self", "action_note": "밥을 먹는다"}]},
+            )
+            self._speak(sim)
+            # 아무도 받지 못해 next_wave가 비고 → 침묵 재투입(빈 리스트)만 남는다.
+            self.assertEqual(sim._pending_wave.get("b", []), [])
+
+    # ── 같은 방: 엿듣기 ──────────────────────────────────────────────────────
+
+    def test_same_room_bystander_overhears_with_target_tag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(
+                tmp,
+                {"a": "안방", "b": "안방", "c": "안방"},
+                {"a": [{"content": "밥 먹어.", "target": ["b"], "action_note": "상을 차린다"}]},
+                perception_mode="spatial",
+            )
+            self._speak(sim)
+            # 직접 타깃(b)은 기존과 글자 단위로 동일해야 한다.
+            self.assertEqual(sim._pending_wave["b"], [{
+                "speaker": "a", "content": "밥 먹어.", "action_note": "상을 차린다",
+            }])
+            # 제3자(c)는 누구에게 한 말인지 태그가 붙은 채로 대사+행동을 받는다.
+            self.assertEqual(self._incoming(sim, "c"), ["[a→b] 밥 먹어.\n(상을 차린다)"])
+
+    def test_eavesdrop_labels_are_per_observer_and_ignore_groups(self):
+        # d는 다른 그룹이라 <TARGETS>에도 안 뜨고 "all"에도 안 잡히지만, 같은 방에
+        # 물리적으로 있으므로 엿듣는다. 대신 a도 b도 모르므로 전부 stranger_N.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(
+                tmp,
+                {"a": "안방", "b": "안방", "c": "안방", "d": "안방"},
+                {"a": [{"content": "밥 먹어.", "target": ["b"], "action_note": "상을 차린다"}]},
+                perception_mode="spatial",
+                agent_groups={"a": ["가족"], "b": ["가족"], "c": ["가족"], "d": ["이웃"]},
+            )
+            # 그룹 필터는 타깃 해석에만 걸린다 — d는 "all"의 후보조차 아니다.
+            self.assertEqual(sorted(sim._resolve_targets(["all"], "a")), ["b", "c"])
+
+            self._speak(sim)
+            self.assertEqual(self._incoming(sim, "c"), ["[a→b] 밥 먹어.\n(상을 차린다)"])
+            self.assertEqual(
+                self._incoming(sim, "d"),
+                ['[낯선 이(ID: "stranger_1")→낯선 이(ID: "stranger_2")] 밥 먹어.\n(상을 차린다)'],
+            )
+
+    def test_absent_named_target_is_still_overheard(self):
+        # 부른 상대(b)가 이미 자리에 없어 resolved가 비어도, 원본 targets가 self가
+        # 아니었으므로 "소리 내어 말한 것"이다 → 같은 방의 c는 듣는다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(
+                tmp,
+                {"a": "안방", "b": "마당", "c": "안방"},
+                {"a": [{"content": "밥 먹어.", "target": ["b"], "action_note": "상을 차린다"}]},
+                perception_mode="spatial",
+            )
+            self.assertEqual(sim._resolve_targets(["b"], "a"), [])  # 마당은 zone 밖
+            self._speak(sim)
+            self.assertIsNone(sim._pending_wave.get("b"))
+            self.assertEqual(self._incoming(sim, "c"), ["[a→b] 밥 먹어.\n(상을 차린다)"])
+
+    # ── 같은 zone, 다른 방: 원거리 ────────────────────────────────────────────
+
+    def test_remote_direct_target_hears_speech_without_action(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(
+                tmp,
+                {"a": "안방", "b": "거실", "c": "거실", "d": "부엌"},
+                {"a": [{"content": "밥 먹어.", "target": ["b"], "action_note": "상을 차린다"}]},
+                perception_mode="spatial",
+            )
+            self.assertEqual(sim._resolve_targets(["b"], "a"), ["b"])
+            self.assertTrue(sim._is_remote_target("a", "b"))
+
+            self._speak(sim)
+            self.assertEqual(sim._pending_wave["b"], [{
+                "speaker": "a, 멀리서", "content": "밥 먹어.", "action_note": "",
+            }])
+            # step.py 변경 없이 원거리 포맷이 성립한다.
+            self.assertEqual(self._incoming(sim, "b"), ["[a, 멀리서] 밥 먹어."])
+            # 같은 zone 다른 방의 제3자에겐 대화 내용이 새지 않는다.
+            self.assertIsNone(sim._pending_wave.get("c"))
+            self.assertIsNone(sim._pending_wave.get("d"))
+
+    def test_same_room_target_keeps_plain_format_in_spatial_mode(self):
+        # 원거리 분기가 같은 방 타깃까지 오염시키지 않는지.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(
+                tmp,
+                {"a": "안방", "b": "안방"},
+                {"a": [{"content": "밥 먹어.", "target": ["b"], "action_note": "상을 차린다"}]},
+                perception_mode="spatial",
+            )
+            self.assertFalse(sim._is_remote_target("a", "b"))
+            self._speak(sim)
+            self.assertEqual(self._incoming(sim, "b"), ["[a] 밥 먹어.\n(상을 차린다)"])
+
+    def test_all_and_group_targets_stay_room_local_in_spatial_mode(self):
+        # zone 완화는 <key>/stranger_N 직접 타깃 전용이다. "모두"를 zone 전체로
+        # 넓히면 방의 의미가 사라진다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(
+                tmp,
+                {"a": "안방", "b": "안방", "c": "거실"},
+                perception_mode="spatial",
+                agent_groups={"a": ["가족"], "b": ["가족"], "c": ["가족"]},
+            )
+            self.assertEqual(sim._resolve_targets(["all"], "a"), ["b"])
+            self.assertEqual(sim._resolve_targets(["group:가족"], "a"), ["b"])
+            # 직접 타깃만 원거리로 열린다.
+            self.assertEqual(sim._resolve_targets(["c"], "a"), ["c"])
+
+    # ── 격리: 다른 zone / exterior ───────────────────────────────────────────
+
+    def test_other_zone_and_exterior_receive_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(
+                tmp,
+                {"a": "안방", "b": "교실", "c": "현관밖", "d": "마당"},
+                {"a": [{"content": "밥 먹어.", "target": ["b", "c", "d"],
+                        "action_note": "상을 차린다"}]},
+                perception_mode="spatial",
+            )
+            self.assertEqual(sim._resolve_targets(["b", "c", "d"], "a"), [])
+            self._speak(sim)
+            # 아무에게도 안 갔으므로 침묵 재투입(전원 빈 리스트)만 남는다.
+            self.assertTrue(all(not msgs for msgs in sim._pending_wave.values()))
+
+    def test_exterior_speaker_delivers_nothing_even_to_same_place(self):
+        # 외부 공간은 완전 격리 — 엿듣기·독백 관찰도 예외가 아니다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(
+                tmp,
+                {"a": "현관밖", "b": "현관밖", "c": "현관밖"},
+                {"a": [{"content": "밥 먹어.", "target": ["b"], "action_note": "상을 차린다"}]},
+                perception_mode="spatial",
+            )
+            self.assertEqual(sim._resolve_targets(["b"], "a"), [])
+            self._speak(sim)
+            self.assertTrue(all(not msgs for msgs in sim._pending_wave.values()))
+
+    # ── 독백: 행동만 씬으로 ──────────────────────────────────────────────────
+
+    def test_monologue_broadcasts_action_only_as_scene(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(
+                tmp,
+                {"a": "안방", "b": "안방", "c": "안방", "d": "거실"},
+                {"a": [{"content": "배고프네.", "target": "self", "action_note": "밥을 먹는다"}]},
+                perception_mode="spatial",
+            )
+            self._speak(sim)
+            for observer in ("b", "c"):
+                self.assertEqual(sim._pending_wave[observer], [{
+                    "speaker": "씬", "content": "[씬] a: 밥을 먹는다", "action_note": "",
+                }])
+            # 혼잣말의 **대사**는 아무에게도 가지 않는다.
+            self.assertNotIn("배고프네.", str(sim._pending_wave))
+            # 같은 zone 다른 방에는 행동조차 보이지 않는다.
+            self.assertEqual(sim._pending_wave.get("d", []), [])
+
+    def test_monologue_action_is_anonymized_for_strangers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(
+                tmp,
+                {"a": "안방", "b": "안방"},
+                {"a": [{"content": "배고프네.", "target": "self", "action_note": "밥을 먹는다"}]},
+                perception_mode="spatial",
+                agent_groups={"a": ["가족"], "b": ["이웃"]},
+            )
+            self._speak(sim)
+            self.assertEqual(
+                [m["content"] for m in sim._pending_wave["b"]],
+                ['[씬] 낯선 이(ID: "stranger_1"): 밥을 먹는다'],
+            )
+
+    def test_monologue_without_action_broadcasts_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(
+                tmp,
+                {"a": "안방", "b": "안방"},
+                {"a": [{"content": "배고프네.", "target": "self"}]},
+                perception_mode="spatial",
+            )
+            self._speak(sim)
+            self.assertEqual(sim._pending_wave.get("b", []), [])
+
+    # ── 계약: 반환 타입 / 폴백 ────────────────────────────────────────────────
+
+    def test_resolve_targets_return_type_is_unchanged_flat_list(self):
+        # turn.py의 관계 그래프 edge 생성이 이 형태에 의존한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(
+                tmp,
+                {"a": "안방", "b": "거실", "c": "안방"},
+                {"a": [{"content": "밥 먹어.", "target": ["b"], "action_note": "상을 차린다"}]},
+                perception_mode="spatial",
+            )
+            resolved = sim._resolve_targets(["b"], "a")
+            self.assertIsInstance(resolved, list)
+            self.assertTrue(all(isinstance(k, str) for k in resolved))
+
+            self._speak(sim)
+            # 원거리 타깃도 edge가 정상 생성된다(엿듣기는 edge를 만들지 않는다).
+            self.assertEqual(
+                [(e["source"], e["target"]) for e in sim.edges], [("a", "b")]
+            )
+
+    def test_invalid_perception_mode_falls_back_to_targeted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(
+                tmp, {"a": "안방", "b": "거실"}, perception_mode="nonsense",
+            )
+            self.assertEqual(sim._perception_mode, "targeted")
+            self.assertEqual(sim._resolve_targets(["b"], "a"), [])
 
 
 class ZoneExitTests(unittest.TestCase):
@@ -6637,6 +6943,109 @@ class TurnLocationLoggingTests(unittest.TestCase):
                 conn = getattr(db._local, "conn", None)
                 if conn is not None:
                     conn.close()
+
+
+class SimulationAssemblyParityTests(unittest.TestCase):
+    """`Simulation(...)` 을 직접 조립하는 세 경로가 config 필드를 함께 받는지 검사.
+
+    `/start` 는 `ABM/simulation/headless.py::run_config` 를 타지만, `/load` 와
+    `/resume` 은 `backend/api/simulation/runtime/load.py` · `resume.py` 가
+    **각자 따로** `Simulation(...)` 을 조립한다. 새 설정 필드를 headless 에만
+    넣고 두 파일을 빠뜨리면 되살린 실행만 조용히 엔진 기본값으로 돌아가는데,
+    이 버그를 실제로 세 번 반복해서 냈다(`time_estimation_mode`,
+    `perception_mode` 등). 런타임 테스트로는 잘 안 잡혀서 구조로 고정한다.
+
+    규칙: headless 의 `Simulation(...)` 키워드 중 **값 표현식이 `cfg` 를
+    참조하는 것**(= 시나리오 설정에서 온 값)은 load.py 와 resume.py 의
+    `Simulation(...)` 에도 반드시 키워드로 존재해야 한다.
+    """
+
+    # 정당한 예외가 생기면 여기에 필드명과 사유를 함께 남길 것.
+    _EXEMPT: dict[str, str] = {}
+
+    _HEADLESS = Path(__file__).resolve().parents[1] / "ABM" / "simulation" / "headless.py"
+    _RUNTIME  = Path(__file__).resolve().parents[1] / "backend" / "api" / "simulation" / "runtime"
+
+    @staticmethod
+    def _sim_call_keywords(path: Path) -> dict[str, ast.keyword]:
+        """파일 안 `Simulation(...)` 호출의 키워드 인자 맵."""
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        found: dict[str, ast.keyword] = {}
+        calls = 0
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "Simulation":
+                calls += 1
+                for kw in node.keywords:
+                    if kw.arg:
+                        found[kw.arg] = kw
+        assert calls == 1, f"{path.name}: expected exactly 1 Simulation(...) call, found {calls}"
+        return found
+
+    @classmethod
+    def _cfg_derived_fields(cls) -> set[str]:
+        """headless 의 Simulation 키워드 중 값이 `cfg` 에서 오는 것들."""
+        out = set()
+        for name, kw in cls._sim_call_keywords(cls._HEADLESS).items():
+            mentions_cfg = any(
+                isinstance(n, ast.Name) and n.id == "cfg" for n in ast.walk(kw.value)
+            )
+            if mentions_cfg and name not in cls._EXEMPT:
+                out.add(name)
+        return out
+
+    def test_cfg_derived_fields_are_wired_into_load_and_resume(self):
+        expected = self._cfg_derived_fields()
+        # 회귀 방지 하한 — 컴프리헨션이 깨져 빈 집합이 되면 테스트가 통과해 버린다.
+        self.assertGreaterEqual(len(expected), 10)
+        # 이번에 추가한 필드가 실제로 감지 대상에 들어오는지 못박아 둔다.
+        self.assertIn("perception_mode", expected)
+        self.assertIn("time_estimation_mode", expected)
+
+        for fname in ("load.py", "resume.py"):
+            with self.subTest(file=fname):
+                actual_kw = self._sim_call_keywords(self._RUNTIME / fname)
+                missing = sorted(expected - set(actual_kw))
+                # 키워드가 있어도 값이 cfg를 참조하지 않으면(예: 상수를 하드코딩)
+                # 실제로는 배선이 안 된 것과 같다 — 그 시나리오의 설정값이 무시된다.
+                constant = sorted(
+                    name for name in expected & set(actual_kw)
+                    if not any(
+                        isinstance(n, ast.Name) and n.id == "cfg"
+                        for n in ast.walk(actual_kw[name].value)
+                    )
+                )
+                self.assertEqual(
+                    (missing, constant), ([], []),
+                    f"backend/api/simulation/runtime/{fname} 의 Simulation(...) 이 "
+                    f"config 필드 {missing} 를 아예 안 넘기거나(missing), {constant} 를 "
+                    f"cfg 참조 없는 상수로 넘긴다(constant). headless.py(/start)에만 "
+                    f"제대로 넣고 여기를 빠뜨리면 /load·/resume 으로 되살린 실행만 "
+                    f"조용히 엔진 기본값으로 되돌아간다.",
+                )
+
+    def test_perception_mode_survives_scenario_round_trip(self):
+        """시나리오 저장(config_json) → 재파싱에서 perception_mode 가 유실되지 않는다."""
+        from backend.api.simulation.scenarios import _config_json
+
+        base = dict(
+            agents=[AgentConfig(name="a", system_prompt="p")],
+            background="bg",
+            start_agent="a",
+        )
+        self.assertEqual(SimStartConfig(**base).perception_mode, "targeted")
+
+        saved = _config_json(SimStartConfig(**base, perception_mode="spatial"))
+        self.assertEqual(
+            SimStartConfig(**json.loads(saved)).perception_mode, "spatial"
+        )
+
+        # 필드가 없던 구버전 config_json 은 기본값으로 안전하게 로드된다.
+        legacy = json.loads(saved)
+        legacy.pop("perception_mode")
+        self.assertEqual(SimStartConfig(**legacy).perception_mode, "targeted")
+
+        with self.assertRaises(ValidationError):
+            SimStartConfig(**base, perception_mode="bogus")
 
 
 if __name__ == "__main__":

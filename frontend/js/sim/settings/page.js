@@ -22,12 +22,13 @@ import { renderSystemAgentConfig } from './system-agent.js';
 import { renderInfectionConfig, readInfectionModel, addSymptomStage } from './infection-config.js';
 import { renderTemperatureSlider } from './temperature.js';
 import { renderServerSelect } from './server-select.js';
-import { renderLocationGraph, readLocationGraph, addLocationNode } from './location-graph.js';
+import { renderLocationGraph, readLocationGraph, addLocationNode,
+         renderPerceptionMode, readPerceptionMode, initPerceptionModeToggle } from './location-graph.js';
 import { renderContractPreview, readOutputFormatOverride } from './contract-preview.js';
 
 // 기존 사용처(index.js 등)가 계속 './settings/page.js' 하나만 import 하도록 재수출한다.
 export { initEarlyStopToggle, initTargetDurationUI, initTimeModeToggle,
-         initTimeEstimationModeToggle,
+         initTimeEstimationModeToggle, initPerceptionModeToggle,
          addTimeCategory, addSymptomStage, addLocationNode };
 
 export function renderSettingsPage() {
@@ -90,6 +91,7 @@ export function renderSettingsPage() {
   // _syncAgentSelection()이 그 stale ref를 먼저 sim.agents[0]으로 옮겨버린다.
   renderInfectionConfig();     // 감염병 모델 설정 (+ 환자 0번 피커)
   renderScenarioEvents();
+  renderPerceptionMode();      // 위치 그래프 섹션 상단의 공간 기반 인지 토글
   renderLocationGraph();
   renderServerSelect();        // 비동기 — 드롭다운 별도 렌더링
   renderSystemAgentConfig();   // system 에이전트 설정 동기 렌더링
@@ -140,6 +142,9 @@ export function readConfigFromUI() {
   const tempEl = document.getElementById('sim-temperature');
   sim.temperature = normalizeTemperature(tempEl ? tempEl.value : sim.temperature);
   sim.location_graph   = readLocationGraph();
+  // 위치 그래프가 비어 있어도 값은 그대로 보존한다 — 엔진이 위치 없는 시나리오에서는
+  // "전원이 같은 방"으로 해석하므로 무해하고, 장소를 지웠다 다시 넣을 때 초기화되지 않는다.
+  sim.perception_mode  = readPerceptionMode();
   sim.lang_fix_enabled = document.getElementById('sim-lang-fix-enabled')?.checked ?? true;
   sim.lang_fix_retries = parseInt(document.getElementById('sim-lang-fix-retries')?.value) || 2;
   // system 에이전트 설정 읽기

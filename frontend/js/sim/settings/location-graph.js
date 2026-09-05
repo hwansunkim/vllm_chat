@@ -1,8 +1,45 @@
 // frontend/js/sim/settings/location-graph.js
 // 위치 그래프 에디터 — 장소 노드/연결/zone 편집과 sim.location_graph 동기화.
+// 같은 섹션에 사는 공간 기반 인지(perception_mode) 토글도 여기서 다룬다 — 그 규칙이
+// 방(node)과 구역(zone)이라는 이 그래프의 개념 위에서만 의미를 갖기 때문이다.
 
 import { sim, esc } from '../state.js';
 import { updateSectionBadges } from './sections.js';
+
+// ── 공간 기반 인지 (perception_mode) ─────────────────────────────────────────
+// 'targeted'(기본) = 발화가 target에 지목된 상대에게만 전달된다(기존 동작 100% 유지).
+// 'spatial'        = ① 같은 장소의 제3자가 지목되지 않아도 엿듣고,
+//                    ② 같은 zone의 다른 장소에 있는 지목 상대(<key>/stranger_N)에게는
+//                       행동 묘사 없이 대사만 전달되고("[화자, 멀리서] …"),
+//                       ③ 혼잣말은 대사가 새지 않고 행동만 같은 장소 사람들에게 보인다.
+// UI는 체크박스 하나지만 백엔드 계약은 문자열이므로 경계에서만 변환한다.
+
+export function normalizePerceptionMode(v) {
+  return v === 'spatial' ? 'spatial' : 'targeted';
+}
+
+// 체크박스가 DOM에 없는 경로(설정 패널을 한 번도 열지 않고 저장/시작 등)에서는
+// 기존 상태 → 기본값 순으로 폴백한다 — time_estimation_mode와 같은 규칙.
+export function readPerceptionMode() {
+  const chk = document.getElementById('sim-perception-spatial');
+  if (!chk) return normalizePerceptionMode(sim.perception_mode);
+  return chk.checked ? 'spatial' : 'targeted';
+}
+
+/** 상태 → 폼. renderSettingsPage()가 호출한다. */
+export function renderPerceptionMode() {
+  const chk = document.getElementById('sim-perception-spatial');
+  if (chk) chk.checked = normalizePerceptionMode(sim.perception_mode) === 'spatial';
+}
+
+export function initPerceptionModeToggle() {
+  const chk = document.getElementById('sim-perception-spatial');
+  if (!chk) return;
+  chk.onchange = () => {
+    sim.perception_mode = chk.checked ? 'spatial' : 'targeted';
+    updateSectionBadges(sim);   // 접힌 world 섹션 헤더/네비 뱃지("엿듣기")를 즉시 갱신
+  };
+}
 
 export function renderLocationGraph() {
   const container = document.getElementById('sim-location-graph');

@@ -22,7 +22,7 @@ import {
   exportScenarioFile, importScenarioFile,
 } from './scenarios.js';
 import { addLocationNode, addTimeCategory, initEarlyStopToggle, initTimeModeToggle, initTargetDurationUI,
-         initTimeEstimationModeToggle, addSymptomStage } from './settings/page.js';
+         initTimeEstimationModeToggle, initPerceptionModeToggle, addSymptomStage } from './settings/page.js';
 import { toggleRunHistory, openAllRunsModal } from './runs/history.js';
 import { exportGraph } from './graph/d3.js';
 import { exportLocationMap } from './map/d3.js';
@@ -79,6 +79,7 @@ export function initSimulationEvents() {
   initEarlyStopToggle();
   initTimeModeToggle();
   initTimeEstimationModeToggle();
+  initPerceptionModeToggle();
   initTargetDurationUI();
 
   // 설정 페이지 레이아웃 — 섹션 아코디언 + 네비 레일, auto-grow textarea, 확대 오버레이.

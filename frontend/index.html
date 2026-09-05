@@ -501,13 +501,23 @@
     <!-- ── 위치 그래프 ───────────────────────────────────────────────────── -->
     <div class="sim-settings-section" id="sim-location-section" data-section="world" data-sec-icon="🗺" data-sec-label="위치 그래프">
       <div class="sim-settings-section-title">
-        <span class="sim-sec-title-text">🗺 위치 그래프<span class="sim-help" aria-hidden="true" data-tooltip="에이전트가 오갈 수 있는 장소와 그 연결 관계. 연결된 장소로만 이동할 수 있고, 외부 공간으로 표시한 장소의 에이전트는 서로를 볼 수 없습니다. zone(구역)을 같게 지정한 장소끼리는 서로의 존재를 인지하지만, 대화는 같은 장소에 있을 때만 가능합니다(예: 안방·거실·부엌 → zone '우리집'). 비워두면 위치 개념 없이 진행됩니다.">?</span></span>
+        <span class="sim-sec-title-text">🗺 위치 그래프<span class="sim-help" aria-hidden="true" data-tooltip="에이전트가 오갈 수 있는 장소와 그 연결 관계. 연결된 장소로만 이동할 수 있고, 외부 공간으로 표시한 장소의 에이전트는 서로를 볼 수 없습니다. zone(구역)을 같게 지정한 장소끼리는 서로의 존재를 인지하지만, 대화는 기본적으로 같은 장소에 있을 때만 가능합니다(예: 안방·거실·부엌 → zone '우리집'). 아래 '공간 기반 인지'를 켜면 같은 zone의 다른 장소에도 대사가 전달됩니다. 비워두면 위치 개념 없이 진행됩니다.">?</span></span>
         <span class="sim-sec-badge" data-sec-badge="world"></span>
         <button id="sim-add-location-btn" class="sim-settings-add-btn">+ 장소 추가</button>
         <button type="button" class="sim-sec-toggle" data-sec-toggle="world" aria-expanded="false" title="섹션 접기/펼치기">▾</button>
       </div>
       <div class="sim-sec-wrap">
         <div class="sim-sec-inner">
+          <!-- 공간 기반 인지(perception_mode) — zone 규칙 위에 얹히는 옵션이라 지도 편집기 바로 위에 둔다.
+               체크 = 'spatial', 해제 = 'targeted'(기본, 기존 동작). settings/location-graph.js -->
+          <div class="sim-option-row">
+            <label>공간 기반 인지(엿듣기)<span class="sim-help" aria-hidden="true" data-tooltip="끄면(기본) 발화는 target에 지목된 상대에게만 전달됩니다. 켜면 ① 같은 장소의 제3자가 지목되지 않아도 대화를 엿듣고(누구에게 한 말인지 함께 표시), ② 같은 zone의 다른 장소에 있는 지목 상대에게는 행동 묘사 없이 대사만 전달되며, ③ 혼잣말은 대사가 새지 않고 행동만 같은 장소 사람들에게 보입니다. zone을 지정한 장소가 있어야 ②가 의미를 가집니다.">?</span></label>
+            <label class="sim-toggle-small">
+              <input type="checkbox" id="sim-perception-spatial">
+              <span>활성화</span>
+            </label>
+          </div>
+          <div class="sim-fields-hint">켜면 같은 방의 대화를 타깃이 아니어도 들을 수 있고, 같은 구역(zone)의 다른 방에도 대사가 들립니다. 시나리오 서사가 이 가정에 맞게 조정될 수 있습니다.</div>
           <div id="sim-location-graph" class="sim-location-graph-container">
             <div class="sim-loc-empty">장소를 추가하면 에이전트가 지도 위에서 이동합니다.</div>
           </div>

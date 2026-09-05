@@ -104,6 +104,11 @@ def load_simulation(run_id: str):
             agent_visuals=agent_visuals,
             agent_llm=agent_llm,
             location_graph=[{"name": n.name, "connects_to": n.connects_to, "is_exterior": n.is_exterior, "zone": n.zone, "is_zone_entry": n.is_zone_entry} for n in cfg.location_graph],
+            # 빠뜨리면 /start 로는 엿듣기·원거리 전달이 켜지고 /load 로 되살린
+            # 실행에서만 조용히 targeted 로 되돌아간다(엔진 기본값). 구버전
+            # config_json 에는 필드가 없지만 SimStartConfig 기본값이 "targeted"
+            # 라 그대로 안전하다.
+            perception_mode=cfg.perception_mode,
             lang_fix_enabled=cfg.lang_fix_enabled,
             lang_fix_retries=cfg.lang_fix_retries,
             llm_max_tokens=cfg.llm_max_tokens,

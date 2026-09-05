@@ -73,6 +73,13 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         agent_visuals:    dict[str, str] | None       = None,
         agent_llm:        dict[str, LLMCall] | None   = None,
         location_graph:   list[dict] | None           = None,
+        # 공간 기반 인지 모드.
+        #   "targeted" (기본) — 기존 동작 100% 그대로. 발화는 targets에 명시된
+        #                       상대에게만 전달된다.
+        #   "spatial"        — 같은 방의 제3자 엿듣기 + 같은 zone 다른 방의 직접
+        #                       타깃에게 대사만 원거리 전달 + 독백의 행동을 같은 방
+        #                       전원에게 씬으로 브로드캐스트.
+        perception_mode:  str                         = "targeted",
         lang_fix_enabled: bool                        = True,
         lang_fix_retries: int                         = 2,
         llm_max_tokens:   int                         = 16384,
@@ -186,6 +193,14 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         self._max_scene_jump_minutes:   int = max(0, int(max_scene_jump_minutes))
         self._max_daytime_jump_minutes: int = max(0, int(max_daytime_jump_minutes))
         self._elapsed_minutes: int = elapsed_minutes_init
+
+        # 공간 기반 인지 모드. 알 수 없는 값이면 기존 동작인 "targeted"로 폴백한다
+        # (`_time_estimation_mode`와 같은 패턴). "targeted"일 때 라우팅 코드는
+        # 예전 경로를 글자 그대로 타므로 회귀가 발생할 수 없다 — runner.py의
+        # 분기와 targets.py의 `_reachable` 완화가 모두 이 플래그로만 열린다.
+        self._perception_mode: str = (
+            perception_mode if perception_mode in ("targeted", "spatial") else "targeted"
+        )
 
         # 위치 그래프 (인접 리스트) + 외부 공간 집합 + 인지 구역(zone) 맵
         # 주의: 여기서의 zone은 **위치 기반 인지 범위**이며, _agent_groups(캐릭터 관계

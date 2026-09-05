@@ -205,6 +205,16 @@ class SimStartConfig(BaseModel):
     extra_fields:           list[ExtraField] = DEFAULT_EXTRA_FIELDS
     events:                 list[ScenarioEvent] = []
     location_graph:         list[LocationNode]  = []
+    # 공간 기반 인지 모드. location_graph(특히 zone)와 짝이라 바로 옆에 둔다.
+    #   "targeted" (기본) — 기존 동작 100% 그대로. 대사는 해석된 직접 타깃에게만 간다.
+    #   "spatial"        — 같은 방 제3자 엿듣기 + 같은 zone 다른 방으로의 원거리
+    #                      대사 전달(직접 타깃 한정, 행동 줄 없음) + 독백의 행동을
+    #                      같은 방 전원에게 씬으로 브로드캐스트.
+    # 알 수 없는 값은 엔진(Simulation.__init__)이 조용히 "targeted"로 폴백한다
+    # (time_estimation_mode와 동일한 패턴 — 여기서 예외를 던지지 않는다).
+    # 계약 문자열(ABM/prompt_contract.py)은 이 값에 전혀 의존하지 않으므로
+    # ContractPreviewRequest에는 의도적으로 넣지 않았다.
+    perception_mode:        Literal["targeted", "spatial"] = "targeted"
     lang_fix_enabled:       bool             = True
     lang_fix_retries:       int              = 2
     # ── 출력 계약(프롬프트 계약 층) ────────────────────────────────────────────

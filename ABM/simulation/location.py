@@ -136,6 +136,24 @@ class _LocationMixin:
         sid = self._get_or_assign_stranger_id(observer_key, subject_key)
         return f'[씬] 낯선 이(ID: "{sid}")의 외모가 변했다: {description}'
 
+    def _action_scene_msg(
+        self, subject_key: str, observer_key: str, display: str, action_note: str
+    ) -> str:
+        """독백 턴의 **행동**을 같은 방 사람에게 보여줄 씬 메시지.
+
+        `perception_mode == "spatial"` 전용이다. 혼잣말(target=self/system)은 대사가
+        들리지 않지만 몸으로 한 일은 같은 공간에 있으면 보인다 — "남편이 이미 밥을
+        먹었다"를 아내가 모른 채 같은 안내를 반복하는 문제를 막는 채널이다.
+
+        이름 표기는 `_appearance_scene_msg`와 **정확히 같은 규칙**이다: 아는 사이면
+        실명, 아니면 `stranger_N`. 낯선 이가 여럿인 자리에서 누가 한 행동인지
+        특정할 수 있어야 `[현재 상황]` 블록의 ID와 맞물린다.
+        """
+        if subject_key in self._agent_knowledge.get(observer_key, set()):
+            return f"[씬] {display}: {action_note}"
+        sid = self._get_or_assign_stranger_id(observer_key, subject_key)
+        return f'[씬] 낯선 이(ID: "{sid}"): {action_note}'
+
     def _compute_wave_targets(self, agent_key: str):
         """현재 위치 기준 대화 가능 에이전트 계산.
 

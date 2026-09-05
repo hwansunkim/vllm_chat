@@ -137,6 +137,9 @@ def run_config(
         agent_visuals=agent_visuals,
         agent_llm=agent_llm or {},
         location_graph=[{"name": n.name, "connects_to": n.connects_to, "is_exterior": n.is_exterior, "zone": n.zone, "is_zone_entry": n.is_zone_entry} for n in cfg.location_graph],
+        # 백엔드 스키마가 아직 이 필드를 갖고 있지 않을 수 있으므로 getattr로 안전하게.
+        # 기본값 "targeted" = 기존 라우팅 동작 그대로.
+        perception_mode=getattr(cfg, "perception_mode", "targeted"),
         lang_fix_enabled=cfg.lang_fix_enabled,
         lang_fix_retries=cfg.lang_fix_retries,
         llm_max_tokens=cfg.llm_max_tokens,

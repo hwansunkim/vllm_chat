@@ -86,6 +86,9 @@ export async function startSimulation() {
       lang_fix_enabled:       sim.lang_fix_enabled ?? true,
       lang_fix_retries:       sim.lang_fix_retries ?? 2,
       location_graph:         sim.location_graph || [],
+      // 'spatial' = 같은 방 엿듣기 + 같은 zone 다른 방으로의 대사 전달 + 혼잣말 행동 관찰.
+      // 'targeted'(기본)이면 엔진이 기존 라우팅 경로를 그대로 탄다.
+      perception_mode:        sim.perception_mode === 'spatial' ? 'spatial' : 'targeted',
       // 전염 확률은 0~1, 모든 분 값은 0~52560000이고 max >= min — 벗어나면 서버가 422로 거부한다.
       infection_model:        buildInfectionModel(sim.infection_model),
     }),

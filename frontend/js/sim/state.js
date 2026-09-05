@@ -328,6 +328,10 @@ export const sim = {
   ],
   events:       [],
   location_graph: [],
+  // 공간 기반 인지. 'targeted'(기본) = 발화가 지목된 상대에게만 전달(기존 동작),
+  // 'spatial' = 같은 장소 제3자의 엿듣기 + 같은 zone 다른 장소로의 대사만 전달 +
+  // 혼잣말의 행동 관찰. 위치 그래프(방/zone) 위에서만 의미가 있는 옵션이다.
+  perception_mode: 'targeted',
   lang_fix_enabled: true,
   lang_fix_retries: 2,
   // 출력 **계약** 오버라이드. '' = 엔진이 실행 시점에 현재 설정으로 생성(기본).
