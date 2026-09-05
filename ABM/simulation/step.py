@@ -42,6 +42,12 @@ class _StepMixin:
             {
                 "role":    "user",
                 "content": (
+                    # "씬" 화자(이동/외모변경/독백 행동 관찰/만남 취소 등 환경 관찰
+                    # 메시지)는 content 자체가 이미 "[씬] "으로 시작한다(location.py
+                    # ::_appearance_scene_msg/_action_scene_msg, meeting.py, runner.py의
+                    # 도착·이탈 알림). 여기서 또 `[씬] `을 감싸면 "[씬] [씬] ..."로
+                    # 겹친다. 일반 화자는 지금처럼 감싼다.
+                    msg["content"] if msg["speaker"] == "씬" else
                     f"[{msg['speaker']}] {msg['content']}"
                     + (f"\n({msg['action_note']})" if msg.get("action_note") else "")
                 ),

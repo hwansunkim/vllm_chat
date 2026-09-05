@@ -1333,6 +1333,23 @@ class SpatialPerceptionTests(unittest.TestCase):
             # 같은 zone 다른 방에는 행동조차 보이지 않는다.
             self.assertEqual(sim._pending_wave.get("d", []), [])
 
+    def test_scene_channel_prefix_is_not_doubled_on_injection(self):
+        # 씬 메시지의 content는 이미 "[씬] "으로 시작한다(location.py 등). step.py의
+        # `_inject_incoming`이 speaker="씬"을 다시 `[씬] `로 감싸면 "[씬] [씬] ..."로
+        # 겹친다 — 실제 시나리오 로그에서 확인된 버그(이동/외모변경/이번 독백 관찰
+        # 전부 해당). 최종 주입 문자열은 접두사가 한 번만 있어야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(
+                tmp,
+                {"a": "안방", "b": "안방"},
+                {"a": [{"content": "배고프네.", "target": "self", "action_note": "밥을 먹는다"}]},
+                perception_mode="spatial",
+            )
+            self._speak(sim)
+            incoming = self._incoming(sim, "b")
+            self.assertEqual(incoming, ["[씬] a: 밥을 먹는다"])
+            self.assertNotIn("[씬] [씬]", incoming[0])
+
     def test_monologue_action_is_anonymized_for_strangers(self):
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._make_sim(
