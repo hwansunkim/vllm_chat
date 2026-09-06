@@ -6100,7 +6100,9 @@ def _golden_config():
 
 def _run_golden(db=None, sim_id=None):
     from ABM.simulation.headless import run_config
-    with tempfile.TemporaryDirectory() as tmp:
+    # ignore_cleanup_errors — SimDB 커넥션은 스레드 로컬로 열린 채 남고(close() 가 없다)
+    # Windows 는 열린 sqlite 파일을 못 지운다. 정리 실패로 테스트가 깨지면 안 된다.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         cfg, name = _golden_config()
         result = run_config(cfg, llm=_GoldenLLM(), log_dir=tmp, db=db, sim_id=sim_id)
     return cfg, name, result
@@ -6154,7 +6156,7 @@ class HeadlessRunnerTests(unittest.TestCase):
         `export --run-id` 가 GUI 내보내기와 달라진다.
         """
         from ABM.db import SimDB
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = SimDB(os.path.join(tmp, "sim.db"))
             db.create_run("run-1", None, "골든", "{}")
             _, _, result = _run_golden(db=db, sim_id="run-1")
@@ -6435,7 +6437,7 @@ class CliTests(unittest.TestCase):
         import io
         from contextlib import redirect_stdout
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = SimDB(os.path.join(tmp, "simulation.db"))
             cfg, name = _golden_config()
             db.create_run("run-x", None, name, cfg.model_dump_json())
@@ -6471,6 +6473,320 @@ class CliTests(unittest.TestCase):
         self.assertEqual(strip(buf.getvalue()), strip(direct))
 
 
+# ── 위치 이력 CSV ─────────────────────────────────────────────────────────────
+
+def _csv_rows(text):
+    """CRLF CSV → 필드 리스트의 리스트 (마지막 빈 줄 제외)."""
+    import csv as _stdlib_csv
+    return list(_stdlib_csv.reader(text.split("\r\n")[:-1]))
+
+
+class LocationCsvTests(unittest.TestCase):
+    """`ABM/export/csv.py` — `frontend/js/sim/export/csv.js` 의 파이썬 쌍둥이.
+
+    JS `buildLocationCsv()` 와 골든 파일로 묶지는 않지만(언어가 다르다) 규칙은
+    같아야 한다: 컬럼 순서, `wave_end_time` 우선순위(time_jump → 다음 wave 시작 →
+    빈 문자열), RFC 4180 이스케이프, CRLF, `String(true)` = 소문자 `"true"`.
+    """
+
+    LOG = [
+        # background_log 항목 — speaker 가 없으므로 CSV 에서 빠진다 (/logs 와 같은 규칙)
+        {"role": "user", "content": "[배경] 좁은 아파트"},
+        {"speaker": "a", "wave": 0, "time_str": "월 09:00", "location": "안방",
+         "is_exterior": False},
+        {"speaker": "b", "wave": 0, "time_str": "월 09:00", "location": "부엌",
+         "is_exterior": False},
+        {"speaker": "a", "wave": 1, "time_str": "월 09:30", "location": "현관",
+         "is_exterior": True},
+    ]
+
+    def _render(self, log=None, events=None):
+        from ABM.export.csv import render_location_csv
+        return render_location_csv(self.LOG if log is None else log, events)
+
+    def test_header_and_rows(self):
+        rows = _csv_rows(self._render())
+        self.assertEqual(rows[0], ["wave", "wave_start_time", "wave_end_time",
+                                   "agent", "location", "is_exterior"])
+        self.assertEqual(len(rows), 4)                      # 헤더 + 발화 3개 (배경 제외)
+        self.assertEqual(rows[1], ["0", "월 09:00", "월 09:30", "a", "안방", "false"])
+        self.assertEqual(rows[2], ["0", "월 09:00", "월 09:30", "b", "부엌", "false"])
+        # 마지막 wave 는 time_jump 가 없으면 종료 시각을 알 수 없다 → 빈칸
+        self.assertEqual(rows[3], ["1", "월 09:30", "", "a", "현관", "true"])
+
+    def test_crlf_line_endings_including_the_last_line(self):
+        text = self._render()
+        self.assertTrue(text.endswith("\r\n"))
+        self.assertEqual(text.count("\r\n"), 4)
+        self.assertNotIn("\n\n", text)
+        # 홀로 선 LF 가 없어야 한다 (JS 쪽과 같은 바이트)
+        self.assertEqual(text.count("\n"), text.count("\r\n"))
+
+    def test_is_exterior_is_lowercase_like_js_string_true(self):
+        """파이썬 `str(True)` = "True" 를 그대로 쓰면 JS 출력과 갈린다."""
+        text = self._render()
+        self.assertIn(",true\r\n", text)
+        self.assertIn(",false\r\n", text)
+        self.assertNotIn("True", text)
+        self.assertNotIn("False", text)
+
+    def test_time_jump_fills_the_last_wave(self):
+        events = [
+            {"wave": 1, "event_type": "time_jump", "timestamp": 2,
+             "data": {"end_time_str": "월 11:00"}},
+        ]
+        rows = _csv_rows(self._render(events=events))
+        self.assertEqual(rows[3][2], "월 11:00")            # 폴백으로는 못 채우던 칸
+        self.assertEqual(rows[1][2], "월 09:30")            # wave 0 은 폴백 그대로
+
+    def test_time_jump_wins_over_the_next_wave_fallback(self):
+        events = [{"wave": 0, "event_type": "time_jump", "timestamp": 1,
+                   "data": {"end_time_str": "월 09:29"}}]
+        self.assertEqual(_csv_rows(self._render(events=events))[1][2], "월 09:29")
+
+    def test_later_time_jump_for_the_same_wave_wins(self):
+        """한 wave 에 이벤트가 두 번 실린 경우(재개 등) 나중 값이 최신이다."""
+        events = [{"wave": 1, "event_type": "time_jump", "data": {"end_time_str": "옛값"}},
+                  {"wave": 1, "event_type": "time_jump", "data": {"end_time_str": "새값"}}]
+        self.assertEqual(_csv_rows(self._render(events=events))[3][2], "새값")
+
+    def test_other_event_types_are_ignored(self):
+        """JS 는 서버가 `types=time_jump` 로 걸러준 배열을 받지만 여기선 전체를 받는다."""
+        events = [
+            {"wave": 1, "event_type": "agent_move",
+             "data": {"end_time_str": "이건 시간점프가 아니다"}},
+            {"wave": 1, "event_type": "time_jump", "data": {"end_time_str": ""}},   # 빈 값
+            {"wave": 1, "event_type": "time_jump", "data": {}},                     # 필드 없음
+            {"wave": 1, "event_type": "time_jump", "data": None},                   # data 없음
+            {"wave": 1, "event_type": "time_jump", "data": {"end_time_str": 7}},    # 문자열 아님
+            None,                                                                   # 쓰레기
+        ]
+        self.assertEqual(_csv_rows(self._render(events=events))[3][2], "")
+
+    def test_legacy_log_without_location_columns(self):
+        """컬럼 추가 이전 run 의 로그 — 행을 버리지 않고 빈 값으로 남긴다."""
+        rows = _csv_rows(self._render(log=[
+            {"speaker": "a", "wave": 0},
+            {"speaker": "b", "wave": 0, "location": None, "is_exterior": None,
+             "time_str": None},
+        ]))
+        self.assertEqual(rows[1], ["0", "", "", "a", "", ""])
+        self.assertEqual(rows[2], ["0", "", "", "b", "", ""])
+
+    def test_missing_wave_defaults_to_zero(self):
+        rows = _csv_rows(self._render(log=[{"speaker": "a"}]))
+        self.assertEqual(rows[1][0], "0")
+
+    def test_wave_start_time_scans_every_entry_of_the_wave(self):
+        """앞쪽 항목에 time_str 이 없어도 같은 wave 의 뒷 항목에서 찾아낸다."""
+        rows = _csv_rows(self._render(log=[
+            {"speaker": "a", "wave": 0},
+            {"speaker": "b", "wave": 0, "time_str": "월 09:00"},
+        ]))
+        self.assertEqual([r[1] for r in rows[1:]], ["월 09:00", "월 09:00"])
+
+    def test_rfc4180_escaping(self):
+        rows = _csv_rows(self._render(log=[
+            {"speaker": '가온, "본명"', "wave": 0, "time_str": "월 09:00",
+             "location": "거실\n(창가)", "is_exterior": False},
+        ]))
+        self.assertEqual(rows[1][3], '가온, "본명"')
+        self.assertEqual(rows[1][4], "거실\n(창가)")
+        raw = self._render(log=[{"speaker": 'a"b', "wave": 0, "location": "x,y"}])
+        self.assertIn('"a""b"', raw)
+        self.assertIn('"x,y"', raw)
+
+    def test_sort_is_stable_within_a_wave(self):
+        rows = _csv_rows(self._render(log=[
+            {"speaker": "late", "wave": 2},
+            {"speaker": "b", "wave": 0},
+            {"speaker": "a", "wave": 0},
+        ]))
+        self.assertEqual([r[3] for r in rows[1:]], ["b", "a", "late"])
+
+    def test_empty_and_none_input(self):
+        from ABM.export.csv import render_location_csv
+        header = "wave,wave_start_time,wave_end_time,agent,location,is_exterior\r\n"
+        self.assertEqual(render_location_csv([], []), header)
+        self.assertEqual(render_location_csv(None), header)
+
+    def test_no_db_run_still_produces_a_csv(self):
+        """`--no-db` 실행 경로 — `RunResult` 는 DB 없이도 로그/이벤트를 담고 있다.
+
+        CSV 를 DB 조회로 만들었다면 여기서 빈 문서가 나왔을 것이다.
+        """
+        from ABM.export.csv import render_location_csv
+        _, _, result = _run_golden()                        # db=None
+        rows = _csv_rows(render_location_csv(result.shared_log, result.events))
+        turns = [e for e in result.shared_log if "speaker" in e]
+        self.assertEqual(len(rows) - 1, len(turns))
+        self.assertEqual(len(turns), 5)
+        # 엔진이 실어준 위치 컬럼이 실제로 채워진다. `location` 은 그 wave 의 이동이
+        # 적용되기 **전** 값이라(turn.py `_apply_turn_result`) 마지막에 현관으로 나간
+        # 턴도 실내 위치로 기록된다 — 접촉이 일어난 장소가 그쪽이기 때문.
+        self.assertTrue(all(r[4] for r in rows[1:]))
+        self.assertTrue(all(r[5] in ("true", "false") for r in rows[1:]))
+        self.assertTrue(all(r[1] for r in rows[1:]))        # wave_start_time
+        # wave 오름차순
+        waves = [int(r[0]) for r in rows[1:]]
+        self.assertEqual(waves, sorted(waves))
+
+
+class CliFormatTests(unittest.TestCase):
+    """`--format {md,csv}` 배선 (ABM/cli.py) — 확장자·렌더러 분기."""
+
+    def _args(self, argv):
+        from ABM.cli import build_parser
+        return build_parser().parse_args(argv)
+
+    def test_format_defaults_to_md(self):
+        self.assertEqual(self._args(["run", "s.json"]).format, "md")
+        self.assertEqual(self._args(["export", "--run-id", "x"]).format, "md")
+
+    def test_unknown_format_is_rejected(self):
+        with self.assertRaises(SystemExit):
+            self._args(["run", "s.json", "--format", "pdf"])
+
+    def test_csv_skips_markdown_toggle_validation(self):
+        """토글은 마크다운 전용 — csv 에서는 알 수 없는 값이어도 오류가 아니다."""
+        import io
+        from contextlib import redirect_stderr
+        from ABM.cli import ConfigError, _resolve_format
+        err = io.StringIO()
+        with redirect_stderr(err):
+            fmt, ext, include = _resolve_format(
+                self._args(["export", "--run-id", "x", "--format", "csv",
+                            "--include", "없는토글"]))
+        self.assertEqual((fmt, ext, include), ("csv", ".csv", None))
+        self.assertIn("무시", err.getvalue())
+        # md 는 그대로 검증한다
+        with self.assertRaises(ConfigError):
+            _resolve_format(self._args(["export", "--run-id", "x", "--include", "없는토글"]))
+
+    def test_write_output_keeps_crlf_byte_for_byte(self):
+        """Windows 텍스트 모드가 CSV 의 ``\\r\\n`` 을 ``\\r\\r\\n`` 으로 부풀리면 안 된다."""
+        import io
+        from contextlib import redirect_stdout
+        from ABM.cli import _write_output
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "a.csv")
+            _write_output("a\r\nb\r\n", path)
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"a\r\nb\r\n")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            _write_output("a\r\nb\r\n", "-")      # StringIO 엔 reconfigure 가 없다
+        self.assertEqual(buf.getvalue(), "a\r\nb\r\n")
+
+    def _run_cli(self, extra_argv, outdir):
+        """LLM 없이 `cmd_run` 을 태운다 — 골든 실행 결과를 그대로 돌려주는 가짜 러너."""
+        import signal
+        import ABM.cli as cli
+        import ABM.simulation.headless as headless
+        from backend.api.simulation.runtime import llm_config
+
+        _, _, result = _run_golden()
+
+        class _NoRuntime:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        originals = {
+            (cli, "LLMRuntime"):            _NoRuntime,
+            (headless, "run_config"):       lambda cfg, **kw: result,
+            (llm_config, "_make_llm"):      lambda *a, **k: "LLM",
+            (llm_config, "_make_agent_llm_map"): lambda c: {},
+        }
+        saved = {k: getattr(k[0], k[1]) for k in originals}
+        prev_sigint = signal.getsignal(signal.SIGINT)
+        try:
+            for (mod, name), value in originals.items():
+                setattr(mod, name, value)
+            argv = ["run", str(_FIXTURES / "golden_scenario.json"),
+                    "--no-db", "--quiet", "--outdir", outdir] + extra_argv
+            code = cli.cmd_run(self._args(argv))
+        finally:
+            for (mod, name), value in saved.items():
+                setattr(mod, name, value)
+            signal.signal(signal.SIGINT, prev_sigint)
+        return code, result
+
+    def test_run_writes_csv_with_the_csv_extension(self):
+        from ABM.cli import EXIT_OK
+        from ABM.export.csv import render_location_csv
+        with tempfile.TemporaryDirectory() as tmp:
+            code, result = self._run_cli(["--format", "csv"], tmp)
+            files = os.listdir(tmp)
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(len(files), 1)
+            self.assertTrue(files[0].endswith(".csv"), files[0])
+            with open(os.path.join(tmp, files[0]), encoding="utf-8", newline="") as f:
+                text = f.read()
+        self.assertEqual(text, render_location_csv(result.shared_log, result.events))
+        # CRLF 가 파일에 그대로 살아 있어야 한다 (\r\r\n 이 되면 안 된다)
+        self.assertNotIn("\r\r\n", text)
+
+    def test_run_defaults_to_md_extension(self):
+        from ABM.cli import EXIT_OK
+        with tempfile.TemporaryDirectory() as tmp:
+            code, _ = self._run_cli([], tmp)
+            files = os.listdir(tmp)
+        self.assertEqual(code, EXIT_OK)
+        self.assertEqual(len(files), 1)
+        self.assertTrue(files[0].endswith(".md"), files[0])
+
+    def test_repeat_runs_use_the_format_extension(self):
+        from ABM.cli import EXIT_OK
+        with tempfile.TemporaryDirectory() as tmp:
+            code, _ = self._run_cli(["--format", "csv", "-n", "3"], tmp)
+            files = sorted(os.listdir(tmp))
+        self.assertEqual(code, EXIT_OK)
+        self.assertEqual(len(files), 3)
+        self.assertTrue(all(f.endswith(".csv") for f in files), files)
+        self.assertTrue(all("_run" in f for f in files), files)
+
+    def test_export_format_csv_from_the_db(self):
+        """`export --run-id --format csv` 가 실행 직후 렌더와 같은 CSV 를 만드는지."""
+        import ABM.cli as cli
+        from ABM.db import SimDB
+        from ABM.export.csv import render_location_csv
+
+        # SimDB 커넥션이 스레드 로컬로 열린 채 남아 Windows 에서 파일을 못 지운다.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            db = SimDB(os.path.join(tmp, "simulation.db"))
+            cfg, name = _golden_config()
+            db.create_run("run-csv", None, name, cfg.model_dump_json())
+            _, _, result = _run_golden(db=db, sim_id="run-csv")
+            db.finish_run("run-csv", "done", result.completed_waves, len(result.shared_log))
+            direct = render_location_csv(result.shared_log, result.events)
+
+            outdir = os.path.join(tmp, "out")
+            os.makedirs(outdir)
+            orig_log_dir = os.environ.get("ABM_LOG_DIR")
+            os.environ["ABM_LOG_DIR"] = tmp
+            try:
+                import importlib
+                import ABM.config
+                importlib.reload(ABM.config)
+                code = cli.cmd_export(self._args(
+                    ["export", "--run-id", "run-csv", "--format", "csv", "-o", outdir]))
+                files = os.listdir(outdir)
+                with open(os.path.join(outdir, files[0]), encoding="utf-8", newline="") as f:
+                    text = f.read()
+            finally:
+                if orig_log_dir is None:
+                    os.environ.pop("ABM_LOG_DIR", None)
+                else:
+                    os.environ["ABM_LOG_DIR"] = orig_log_dir
+                import importlib
+                import ABM.config
+                importlib.reload(ABM.config)
+
+        self.assertEqual(code, cli.EXIT_OK)
+        self.assertEqual(len(files), 1)
+        self.assertTrue(files[0].endswith(".csv"), files[0])
+        # DB 재조회 경로와 메모리 경로가 같은 문서를 만든다
+        self.assertEqual(text, direct)
 
 
 class StartEndpointDelegationTests(unittest.TestCase):

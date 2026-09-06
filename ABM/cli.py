@@ -1,9 +1,10 @@
-"""GUI 없이 시나리오를 돌리고 스크린플레이 마크다운을 얻는 CLI.
+"""GUI 없이 시나리오를 돌리고 스크린플레이 마크다운(또는 위치 이력 CSV)을 얻는 CLI.
 
 같은 시나리오를 N회 반복하거나, 파라미터를 바꿔가며 스윕하거나, 회귀 평가를
-자동화할 때 쓴다. 브라우저에서 하던 "시작 → 지켜보기 → 마크다운 내보내기"를
-명령 한 줄로 접은 것이며, 실행 경로(``ABM/simulation/headless.run_config``)와
-문서 포맷(``ABM/export/markdown.render_markdown``)을 GUI 와 **공유**한다.
+자동화할 때 쓴다. 브라우저에서 하던 "시작 → 지켜보기 → 내보내기"를 명령 한 줄로
+접은 것이며, 실행 경로(``ABM/simulation/headless.run_config``)와 문서 포맷
+(``ABM/export/markdown.render_markdown`` · ``ABM/export/csv.render_location_csv``)을
+GUI 와 **공유**한다.
 
     # 리포지토리 루트에서 실행할 것 (memory.db · servers.json · logs_graph 경로가 상대경로)
     cd /path/to/vllm
@@ -27,14 +28,24 @@
     python -m ABM.cli export --run-id <uuid> -o out.md
     python -m ABM.cli export --scenario "4인가족" --latest
 
+    # 위치 이력 CSV (감염병 접촉 분석용) — GUI 의 CSV 다운로드와 같은 컬럼
+    python -m ABM.cli run scenario.json --format csv -o out.csv
+    python -m ABM.cli run scenario.json --no-db --format csv -o out.csv
+    python -m ABM.cli export --run-id <uuid> --format csv -o out.csv
+
 시나리오 파일(``scenario.json``)은 세 가지 모양을 모두 받는다.
   1. ``SimStartConfig`` 그 자체 (``{"agents": [...], "background": ..., ...}``)
   2. 시나리오 저장 형식 (``{"name": ..., "config": {...}}``) — ``name`` 이 문서 제목이 된다
   3. ``/api/simulation/scenarios`` 응답 항목 (``{"name": ..., "config_json": "..."}``)
 
+**포맷** (``--format``): ``md`` (기본, 스크린플레이 마크다운) 또는 ``csv``
+(위치 이력 — ``wave,wave_start_time,wave_end_time,agent,location,is_exterior``).
+출력 파일 확장자도 포맷을 따라간다.
+
 **토글** (``--include`` / ``--exclude``, 쉼표 구분):
 ``time`` ``action`` ``move`` ``appearance`` ``world`` ``intervention``
-``infection`` ``meeting``. 기본값은 전부 포함.
+``infection`` ``meeting``. 기본값은 전부 포함. **마크다운 전용**이라
+``--format csv`` 에서는 무시된다.
 
 **종료 코드**
   0  정상 (``end_reason`` 이 무엇이든)
@@ -202,6 +213,26 @@ def _parse_include(args) -> frozenset:
             f"(가능: {', '.join(INCLUDE_KEYS)})"
         )
     return frozenset(keys)
+
+
+# ── 출력 포맷 ─────────────────────────────────────────────────────────────────
+
+FORMAT_EXT = {"md": ".md", "csv": ".csv"}
+
+
+def _resolve_format(args) -> tuple[str, str, frozenset | None]:
+    """``(포맷, 확장자, include 집합)``.
+
+    ``--include`` / ``--exclude`` 는 마크다운 전용 토글이라 CSV 에서는 파싱조차 하지
+    않고(알 수 없는 토글이어도 오류를 내지 않는다) 무시한다는 안내만 stderr 에 남긴다.
+    """
+    fmt = getattr(args, "format", None) or "md"
+    if fmt == "csv":
+        if getattr(args, "include", None) or getattr(args, "exclude", None):
+            print("⚠ --include/--exclude 는 마크다운 전용 토글입니다 — "
+                  "--format csv 에서는 무시됩니다.", file=sys.stderr)
+        return fmt, FORMAT_EXT[fmt], None
+    return fmt, FORMAT_EXT[fmt], _parse_include(args)
 
 
 # ── LLM 런타임 부트스트랩 ─────────────────────────────────────────────────────
@@ -382,14 +413,22 @@ def _dry_run(cfg, scenario_name: str) -> int:
     return EXIT_OK
 
 
-def _write_output(md: str, path: str | None) -> None:
+def _write_output(text: str, path: str | None) -> None:
     if path is None or path == "-":
-        sys.stdout.write(md)
+        # CSV 는 CRLF 를 직접 넣으므로 Windows 텍스트 모드의 재변환(\r\r\n)을 막는다.
+        # (StringIO 로 리다이렉트된 테스트 환경에는 reconfigure 가 없다.)
+        try:
+            sys.stdout.reconfigure(newline="")
+        except (AttributeError, ValueError):
+            pass
+        sys.stdout.write(text)
         return
     parent = os.path.dirname(os.path.abspath(path))
     os.makedirs(parent, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(md)
+    # newline="" — CSV 는 이미 CRLF 를 직접 넣으므로 파이썬이 한 번 더 변환하면 안 된다
+    # (Windows 에서 \r\r\n 이 된다). 마크다운은 \n 만 쓰므로 영향이 없다.
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
 
 
 def _finish_db_run(db, run_id: str, sim, status: str) -> None:
@@ -421,7 +460,7 @@ def _finish_db_run(db, run_id: str, sim, status: str) -> None:
 
 def cmd_run(args) -> int:
     cfg, scenario_name = _build_config(args)
-    include = _parse_include(args)
+    fmt, ext, include = _resolve_format(args)
 
     if args.dry_run:
         return _dry_run(cfg, scenario_name)
@@ -437,6 +476,7 @@ def cmd_run(args) -> int:
 
     from ABM.config import LOG_DIR
     from ABM.db import SimDB
+    from ABM.export.csv import render_location_csv
     from ABM.export.markdown import render_markdown
     from ABM.simulation.headless import run_config
     from backend.api.simulation.runtime.llm_config import _make_agent_llm_map, _make_llm
@@ -501,21 +541,26 @@ def cmd_run(args) -> int:
                 if db is not None:
                     _finish_db_run(db, run_id, res.sim, status)
 
-                md = render_markdown(
-                    config=cfg.model_dump(),
-                    shared_log=res.shared_log,
-                    events=res.events,
-                    scenario_name=scenario_name,
-                    status=status,
-                    include=include,
-                )
+                if fmt == "csv":
+                    # DB 조회가 아니라 메모리의 shared_log/events 를 그대로 쓴다 —
+                    # 그래서 --no-db 실행에서도 CSV 가 나온다.
+                    doc = render_location_csv(res.shared_log, res.events)
+                else:
+                    doc = render_markdown(
+                        config=cfg.model_dump(),
+                        shared_log=res.shared_log,
+                        events=res.events,
+                        scenario_name=scenario_name,
+                        status=status,
+                        include=include,
+                    )
                 progress.say(
                     f"[run {idx}/{n}] ✅ {res.end_reason or status} · "
                     f"wave {res.completed_waves} · 턴 {res.total_turns} · "
                     f"{time.time() - started:.0f}s"
                 )
                 return {
-                    "idx": idx, "run_id": run_id, "md": md, "error": None,
+                    "idx": idx, "run_id": run_id, "doc": doc, "error": None,
                     "end_reason": res.end_reason,
                     "waves": res.completed_waves, "turns": res.total_turns,
                 }
@@ -538,14 +583,14 @@ def cmd_run(args) -> int:
         if r.get("error") is not None:
             continue
         if n > 1:
-            path = os.path.join(args.outdir, f"{base}_run{r['idx']}_{tag}.md")
+            path = os.path.join(args.outdir, f"{base}_run{r['idx']}_{tag}{ext}")
         elif args.output:
             path = args.output
         elif args.outdir:
-            path = os.path.join(args.outdir, f"{base}_{tag}.md")
+            path = os.path.join(args.outdir, f"{base}_{tag}{ext}")
         else:
-            path = f"{base}_{tag}.md"
-        _write_output(r["md"], path)
+            path = f"{base}_{tag}{ext}"
+        _write_output(r["doc"], path)
         if path != "-":
             print(f"→ {path}", file=sys.stderr)
 
@@ -576,9 +621,10 @@ def cmd_run(args) -> int:
 def cmd_export(args) -> int:
     from ABM.config import LOG_DIR
     from ABM.db import SimDB
+    from ABM.export.csv import render_location_csv
     from ABM.export.markdown import render_markdown
 
-    include = _parse_include(args)
+    fmt, ext, include = _resolve_format(args)
     db = SimDB(os.path.join(LOG_DIR, "simulation.db"))
 
     run_id = args.run_id
@@ -599,19 +645,24 @@ def cmd_export(args) -> int:
     except json.JSONDecodeError:
         config = {}
 
-    md = render_markdown(
-        config=config,
-        shared_log=db.get_run_log(run_id),
-        events=db.get_run_events(run_id),
-        scenario_name=run.get("scenario_name") or "시나리오",
-        status=run.get("status") or "",
-        include=include,
-    )
+    log    = db.get_run_log(run_id)
+    events = db.get_run_events(run_id)
+    if fmt == "csv":
+        doc = render_location_csv(log, events)
+    else:
+        doc = render_markdown(
+            config=config,
+            shared_log=log,
+            events=events,
+            scenario_name=run.get("scenario_name") or "시나리오",
+            status=run.get("status") or "",
+            include=include,
+        )
     path = args.output
     if path and path != "-" and os.path.isdir(path):
         path = os.path.join(
-            path, f"{safe_filename(run.get('scenario_name') or '시나리오')}_{now_tag()}.md")
-    _write_output(md, path)
+            path, f"{safe_filename(run.get('scenario_name') or '시나리오')}_{now_tag()}{ext}")
+    _write_output(doc, path)
     if path and path != "-":
         print(f"→ {path}", file=sys.stderr)
     return EXIT_OK
@@ -622,19 +673,22 @@ def cmd_export(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m ABM.cli",
-        description="시나리오 JSON → 시뮬레이션 → 스크린플레이 마크다운 (GUI 불필요)",
+        description="시나리오 JSON → 시뮬레이션 → 스크린플레이 마크다운 / 위치 이력 CSV (GUI 불필요)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
     sub = p.add_subparsers(dest="command", required=True)
 
     def _add_toggles(sp):
+        # 기본값 md — 기존 사용자는 아무것도 바뀌지 않는다.
+        sp.add_argument("--format", choices=sorted(FORMAT_EXT), default="md",
+                        help="출력 포맷: md=스크린플레이 마크다운(기본), csv=위치 이력")
         sp.add_argument("--include", metavar="a,b,c",
-                        help="포함할 항목 (기본: 전부)")
-        sp.add_argument("--exclude", metavar="a,b,c", help="제외할 항목")
+                        help="포함할 항목 (기본: 전부, 마크다운 전용)")
+        sp.add_argument("--exclude", metavar="a,b,c", help="제외할 항목 (마크다운 전용)")
 
     # run ---------------------------------------------------------------------
-    r = sub.add_parser("run", help="시나리오를 실행하고 마크다운을 만든다")
+    r = sub.add_parser("run", help="시나리오를 실행하고 문서(마크다운/CSV)를 만든다")
     r.add_argument("scenario", nargs="?", help="시나리오 JSON 경로")
     r.add_argument("--scenario-id", help="DB(simulation_scenarios)에 저장된 시나리오 id")
     r.add_argument("-o", "--output", help="출력 파일 (- 면 stdout)")
@@ -657,7 +711,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.set_defaults(func=cmd_run)
 
     # export ------------------------------------------------------------------
-    e = sub.add_parser("export", help="이미 끝난 실행을 마크다운으로 다시 뽑는다")
+    e = sub.add_parser("export", help="이미 끝난 실행을 문서(마크다운/CSV)로 다시 뽑는다")
     e.add_argument("--run-id", help="simulation_runs.run_id")
     e.add_argument("--scenario", dest="scenario_name", help="시나리오 이름 (--latest 와 함께)")
     e.add_argument("--latest", action="store_true",
