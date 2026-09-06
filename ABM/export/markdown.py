@@ -95,6 +95,53 @@ def _quote(text: str) -> str:
 
 # ── 로그 + 이벤트를 하나의 wave 순서 스트림으로 ────────────────────────────────
 
+
+# wave 루프 안에서 이 이벤트 종류가 그 wave의 대사보다 먼저 emit되는지 나중에
+# emit되는지. ``timestamp``는 Windows에서 클럭 해상도(~15ms)가 낮아, 대사와
+# 이벤트가 거의 동시에 emit되면 동점이 나서 정렬이 뒤집힐 수 있다(실측 재현됨 —
+# `_workspace` 조사 기록 참고). 그런데 이 순서는 시각과 무관하게 코드 구조로
+# 이미 고정돼 있다: 스크립트 이벤트·디렉터 개입은 그 wave의
+# ThreadPoolExecutor(대사)가 돌기 **전**에 실행되고(runner.py `run()` 상단),
+# 이동·만남·감염 자동판정·시간판정은 그 wave의 대사 결과(`results`)가 있어야
+# 계산되므로 **항상 그 다음**이다. 그래서 시각 대신 이 구조적 사실 하나로
+# 동점을 결정론적으로 깬다. 같은 phase 안에서의 동점(예: 이벤트끼리, 대사끼리)은
+# 애초에 서로 인과관계가 없어(같은 wave의 다른 에이전트 대사는 서로의 이번 wave
+# 발화를 못 보고 이전 wave까지만 반영해 독립적으로 추론한다) 순서가 안 맞아도
+# 의미가 달라지지 않으므로 그대로 둔다.
+#
+# 주의 — ``infection_update``는 emit 지점이 **둘**이라 이벤트 타입만으로는
+# phase가 안 정해진다: 시나리오 스크립트가 심는 환자 0번(``events.py``의
+# ``infect_agent``, ``_set_infected(..., "event")``)은 스크립트 이벤트와 같은
+# 자리(대사 **전**)에서 emit되고, 매 wave 자동 전파/회복
+# (``infection.py::_apply_infection_wave``, cause "transmission"/"recovery")은
+# 이동 반영 이후(대사 **후**)에 emit된다. 그래서 이 하나만 payload의 ``cause``
+# 필드를 봐서 갈라야 한다 — 아래 ``_stream_phase``에서 처리.
+#
+# ``appearance_update``도 이론적으로는 같은 이중 emit 구조다(스크립트
+# ``update_appearance`` 이벤트는 대사 전, 턴의 외모변경은 대사 후) — 다만
+# payload에 이 둘을 구분할 필드가 없고(``events.py``가 넘기는 ``wave`` 값이
+# 항상 0으로 고정돼 있어 신뢰할 수 없음), 스크립트로 외모를 바꾸는 경우 자체가
+# 드물다. 지금은 다수 사례(턴에서의 변경, 대사 후)로 고정해 둔다 — 스크립트
+# 외모변경이 그 wave 대사와 클럭 틱까지 겹치는 경우에만(아주 드묾) 여전히
+# 흔들릴 수 있는 걸로 알려진 한계다.
+_PRE_DIALOGUE_EVENT_TYPES  = {"scene_event", "director_call", "system_intervention", "world_event"}
+_POST_DIALOGUE_EVENT_TYPES = {"appearance_update", "agent_move", "meeting_update",
+                              "infection_update", "time_jump"}
+
+
+def _stream_phase(kind: str, payload: dict | None = None) -> int:
+    """이 항목이 그 wave의 대사 기준으로 이전(-1)/대사 자체(0)/이후(1)인지."""
+    if kind == "dialogue":
+        return 0
+    if kind == "infection_update":
+        # cause="event" = 시나리오 스크립트로 심은 환자 0번(대사 전).
+        # 그 외("transmission"/"recovery")는 매 wave 자동 판정(대사 후).
+        return -1 if (payload or {}).get("cause") == "event" else 1
+    if kind in _PRE_DIALOGUE_EVENT_TYPES:
+        return -1
+    return 1  # 나머지 이벤트 종류(주로 _POST_DIALOGUE_EVENT_TYPES)는 대사 이후
+
+
 def _build_stream(log: list[dict], events: list[dict], include: frozenset) -> list[dict]:
     want = {t for key, t in _TOGGLE_EVENT_TYPE.items() if key in include}
 
@@ -109,10 +156,11 @@ def _build_stream(log: list[dict], events: list[dict], include: frozenset) -> li
         items.append({"wave": evt.get("wave") or 0, "ts": evt.get("timestamp") or 0,
                       "kind": etype, "payload": evt.get("data") or {}})
 
-    # (wave, timestamp) 안정 정렬 — 이벤트가 대화 사이에 자연스럽게 끼어든다.
-    # JS Array.prototype.sort 도 안정 정렬이라 동점 항목의 상대 순서는 삽입 순서
-    # (대화 전체 → 이벤트 전체)를 따른다.
-    items.sort(key=lambda it: (it["wave"], it["ts"]))
+    # (wave, phase, timestamp) 안정 정렬. phase가 시각보다 우선이라 대사 vs
+    # 이벤트 사이의 동점이 더는 클럭 해상도에 좌우되지 않는다. 같은 phase 안의
+    # 동점은 JS Array.prototype.sort와 동일하게 안정 정렬이 삽입 순서(대사 전체 →
+    # 이벤트 전체)를 보존한다.
+    items.sort(key=lambda it: (it["wave"], _stream_phase(it["kind"], it["payload"]), it["ts"]))
     return items
 
 

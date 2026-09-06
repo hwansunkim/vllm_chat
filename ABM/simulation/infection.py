@@ -137,7 +137,7 @@ class _InfectionMixin:
         """
         buckets:  dict[str, list[str]] = {}
         floaters: list[str] = []
-        for key in self.active_agents:
+        for key in sorted(self.active_agents):
             loc = self._agent_location.get(key, "")
             if loc in self._exterior_locations:
                 continue  # 외부 공간 — 서로 접촉하지 않음

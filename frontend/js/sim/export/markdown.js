@@ -104,6 +104,31 @@ async function fetchAll() {
 }
 
 // ── Merge logs + events into a single wave-ordered stream ─────────────────────
+//
+// wave 루프 안에서 이 이벤트 종류가 그 wave의 대사보다 먼저 emit되는지 나중에
+// emit되는지 (ABM/export/markdown.py 의 같은 이름 상수와 동일해야 함 — 파이썬
+// 쪽 주석에 근거가 자세히 적혀 있다). timestamp만으로 정렬하면 Windows 클럭
+// 해상도(~15ms) 안에서 대사와 이벤트가 동점이 나 순서가 뒤집힐 수 있는데, 이
+// 순서는 시각과 무관하게 코드 구조로 이미 고정돼 있어 phase로 결정론적으로
+// 깬다. 같은 phase 안의 동점(이벤트끼리, 대사끼리)은 서로 인과관계가 없어
+// (같은 wave의 다른 에이전트 대사는 서로의 이번 wave 발화를 못 보고 이전 wave
+// 까지만 반영해 독립적으로 추론한다) 순서가 안 맞아도 의미가 달라지지 않는다.
+// 주의 — infection_update는 emit 지점이 둘이라 이벤트 타입만으로는 phase가 안
+// 정해진다: 시나리오 스크립트가 심는 환자 0번(cause="event")은 대사 전, 매 wave
+// 자동 전파/회복(cause="transmission"/"recovery")은 이동 반영 이후(대사 후)다.
+// 그래서 이것만 payload.cause를 본다 — ABM/export/markdown.py와 동일 규칙.
+// appearance_update도 이론적으로 같은 이중 emit 구조지만(스크립트 vs 턴), payload에
+// 구분할 필드가 없고 스크립트로 외모를 바꾸는 경우 자체가 드물어 다수 사례(턴,
+// 대사 후)로 고정해 둔다 — 알려진 한계.
+const PRE_DIALOGUE_EVENT_TYPES  = new Set(['scene_event', 'director_call', 'system_intervention', 'world_event']);
+const POST_DIALOGUE_EVENT_TYPES = new Set(['appearance_update', 'agent_move', 'meeting_update', 'infection_update', 'time_jump']);
+
+function streamPhase(kind, payload) {
+  if (kind === 'dialogue') return 0;
+  if (kind === 'infection_update') return (payload || {}).cause === 'event' ? -1 : 1;
+  if (PRE_DIALOGUE_EVENT_TYPES.has(kind)) return -1;
+  return 1; // 나머지(주로 POST_DIALOGUE_EVENT_TYPES)는 대사 이후
+}
 
 function buildStream(log, events, checks) {
   // Collect active event types based on checkboxes
@@ -126,8 +151,16 @@ function buildStream(log, events, checks) {
     items.push({ wave: evt.wave ?? 0, ts: evt.timestamp ?? 0, kind: evt.event_type, payload: evt.data });
   }
 
-  // Sort by (wave, timestamp) so events interleave naturally with dialogue
-  items.sort((a, b) => a.wave !== b.wave ? a.wave - b.wave : a.ts - b.ts);
+  // Sort by (wave, phase, timestamp) so events interleave naturally with dialogue.
+  // phase가 timestamp보다 우선이라 대사 vs 이벤트 동점이 클럭 해상도에 좌우되지
+  // 않는다. Array.prototype.sort는 안정 정렬이라 같은 phase 안의 동점은 삽입
+  // 순서(대사 전체 → 이벤트 전체)를 보존한다.
+  items.sort((a, b) => {
+    if (a.wave !== b.wave) return a.wave - b.wave;
+    const pa = streamPhase(a.kind, a.payload), pb = streamPhase(b.kind, b.payload);
+    if (pa !== pb) return pa - pb;
+    return a.ts - b.ts;
+  });
   return items;
 }
 

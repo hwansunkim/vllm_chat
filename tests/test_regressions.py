@@ -6248,6 +6248,71 @@ class MarkdownGoldenTests(unittest.TestCase):
         self.assertEqual(md.count("**Wave** 4 · **총 턴** 5"), 1)
 
 
+class MarkdownStreamPhaseTests(unittest.TestCase):
+    """`_build_stream()`의 (wave, phase, timestamp) 정렬 — 클럭 동점 회귀 가드.
+
+    Windows 클럭 해상도(~15ms) 때문에 같은 wave의 대사와 이벤트가 정확히 같은
+    ``timestamp``를 받는 경우가 실측 8% 확률로 발생했고, 예전엔 시각만으로
+    정렬해 그 동점이 어느 쪽으로 뒤집힐지가 운에 달려 있었다(`MarkdownGoldenTests`
+    가 실행마다 무작위로 실패한 원인). 여기서는 타이밍에 의존하지 않고 동일
+    timestamp를 직접 구성해 phase 규칙 자체를 고정한다 — 클럭과 무관하게 항상
+    같은 결과가 나와야 한다.
+    """
+
+    def _stream(self, log, events, include=None):
+        from ABM.export.markdown import _build_stream
+        want = include if include is not None else frozenset(
+            {"move", "appearance", "intervention", "world", "infection", "meeting"})
+        return [it["kind"] for it in _build_stream(log, events, want)]
+
+    def test_pre_dialogue_event_sorts_before_tied_dialogue(self):
+        # world_event는 그 wave의 대사보다 항상 먼저 emit된다(디렉터가 wave 루프
+        # 상단에서 돎) — 동점이어도 이벤트가 앞에 와야 인과관계가 맞다.
+        log    = [{"wave": 0, "timestamp": 100.0, "speaker": "a", "content": "..."}]
+        events = [{"wave": 0, "timestamp": 100.0, "event_type": "world_event", "data": {}}]
+        self.assertEqual(self._stream(log, events), ["world_event", "dialogue"])
+
+    def test_post_dialogue_event_sorts_after_tied_dialogue(self):
+        # agent_move는 그 wave의 대사 결과(results)가 있어야 계산되므로 항상 나중.
+        log    = [{"wave": 0, "timestamp": 100.0, "speaker": "a", "content": "..."}]
+        events = [{"wave": 0, "timestamp": 100.0, "event_type": "agent_move", "data": {}}]
+        self.assertEqual(self._stream(log, events), ["dialogue", "agent_move"])
+
+    def test_infection_update_phase_depends_on_cause(self):
+        # cause="event" = 시나리오 스크립트가 심은 환자 0번 → 대사 전.
+        # cause="transmission"/"recovery" = 매 wave 자동 판정 → 대사 후.
+        log = [{"wave": 0, "timestamp": 100.0, "speaker": "a", "content": "..."}]
+
+        seeded = [{"wave": 0, "timestamp": 100.0, "event_type": "infection_update",
+                   "data": {"cause": "event"}}]
+        self.assertEqual(self._stream(log, seeded), ["infection_update", "dialogue"])
+
+        spread = [{"wave": 0, "timestamp": 100.0, "event_type": "infection_update",
+                   "data": {"cause": "transmission"}}]
+        self.assertEqual(self._stream(log, spread), ["dialogue", "infection_update"])
+
+        recovered = [{"wave": 0, "timestamp": 100.0, "event_type": "infection_update",
+                      "data": {"cause": "recovery"}}]
+        self.assertEqual(self._stream(log, recovered), ["dialogue", "infection_update"])
+
+    def test_same_phase_tie_keeps_insertion_order(self):
+        # 같은 phase 안의 동점(대사끼리, 이벤트끼리)은 인과관계가 없으므로
+        # 안정 정렬의 삽입 순서(대사 전체 → 이벤트 전체)를 그대로 유지해도 된다 —
+        # 이 부분은 이번 수정으로 바뀌지 않았음을 못박아 둔다.
+        log = [
+            {"wave": 0, "timestamp": 100.0, "speaker": "a", "content": "..."},
+            {"wave": 0, "timestamp": 100.0, "speaker": "b", "content": "..."},
+        ]
+        events = [
+            {"wave": 0, "timestamp": 100.0, "event_type": "world_event", "data": {}},
+            {"wave": 0, "timestamp": 100.0, "event_type": "system_intervention", "data": {}},
+        ]
+        self.assertEqual(
+            self._stream(log, events),
+            ["world_event", "system_intervention", "dialogue", "dialogue"],
+        )
+
+
 class MarkdownLabelPortTests(unittest.TestCase):
     """state.js 포팅분(ABM/export/labels.py)의 JS 의미 재현."""
 

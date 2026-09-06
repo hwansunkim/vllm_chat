@@ -126,6 +126,12 @@ class _RunnerMixin:
                 end_reason = "stopped"
                 break
 
+            # as_completed()가 채운 `results`는 LLM 응답 지연에 따른 **완료 순서**라
+            # 매 실행마다 다르다. 아래 라우팅·외모변경·이동 블록이 전부 이 dict를
+            # 순회하므로, 여기서 키 순으로 한 번 정규화해 이벤트 emit 순서를
+            # 결정론적으로 만든다(LLM 호출 자체의 병렬성은 그대로 유지).
+            results = {k: results[k] for k in sorted(results)}
+
             turn_counter += len(current_wave)
             total_turns  += len(current_wave)
             self.completed_waves = run_wave + 1
