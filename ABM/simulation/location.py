@@ -185,6 +185,16 @@ class _LocationMixin:
                 strangers.append((sid, other_key, visual))
         return known, strangers
 
+    def _has_reachable_partner(self, agent_key: str) -> bool:
+        """이 에이전트가 지금 대화할 수 있는 다른 활성 에이전트가 있는가.
+
+        `_compute_wave_targets` 와 같은 판정(같은 장소 · 외부 공간 격리)을 쓴다.
+        위치를 안 쓰는 레거시 시나리오에서는 항상 전원이 보이므로 True →
+        휴면(dormancy) 로직이 절대 발동하지 않아 하위 호환이 완전하다.
+        """
+        known, strangers = self._compute_wave_targets(agent_key)
+        return bool(known or strangers)
+
     def _compute_zone_awareness(self, agent_key: str):
         """같은 구역(zone)의 **다른 장소**에 있는 에이전트 인지 계산.
 

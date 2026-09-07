@@ -66,6 +66,14 @@ class _SystemMixin:
             self.shared_log, self._key_to_alias, waves=self._sys_digest_waves,
         )
 
+        # 지금 같은 장소에 대화 상대가 아무도 없는 에이전트 — 디렉터가 "억지로
+        # 발화시키지 말 것" 규칙을 적용할 대상. 위치 미사용 시나리오는 항상 빈
+        # 목록이라 규칙이 조용히 비활성된다.
+        isolated = [
+            key for key in self.active_agents
+            if not self._has_reachable_partner(key)
+        ]
+
         t0 = time.perf_counter()
         result = run_system_agent(
             system_prompt        = self._sys_prompt,
@@ -74,6 +82,7 @@ class _SystemMixin:
             recent_activity      = recent_activity,
             active_agents        = {k: self._key_to_alias.get(k, k) for k in self.active_agents},
             silent_agents        = silent,
+            isolated_agents      = isolated,
             silence_threshold    = self._sys_threshold,
             repetition_info      = repetition_info,
             repeat_threshold_pct = int(_REPEAT_THRESHOLD * 100),

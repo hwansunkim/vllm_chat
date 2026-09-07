@@ -5408,7 +5408,7 @@ class SystemAgentTimeAndOrderTests(unittest.TestCase):
             # 침묵 목록에 없어야 한다.
             self.assertTrue(llm.director_calls)
             for call in llm.director_calls:
-                silent_block = call.split("[침묵 중인 에이전트")[1].split("[반복")[0]
+                silent_block = call.split("[침묵 중인 에이전트")[1].split("[고립된 에이전트")[0]
                 self.assertIn("없음", silent_block)
                 self.assertNotIn('"a"', silent_block)
 
@@ -5459,6 +5459,125 @@ class SystemAgentTimeAndOrderTests(unittest.TestCase):
 
             self.assertEqual(llm.director_calls, [])
             self.assertFalse([t for t, _ in emitted if t == "system_intervention"])
+
+
+class IsolatedAgentDormancyTests(unittest.TestCase):
+    """early_stop_enabled=False 에서 고립된 채 독백만 하는 에이전트의 휴면 처리.
+
+    배경: 가족이 각자 회사·학교로 흩어지면 서로 도달 불가능해진다. 옛 코드는
+    early_stop_enabled=False 라 매 wave 전원을 재투입 → 같은 독백을 max_waves 까지
+    무한 반복. 이제:
+      - 대화 상대가 없고 아무에게도 닿지 않은 채 독백을 max_silence_waves 회
+        연속한 에이전트는 '휴면'으로 보고 밀집 재투입에서 뺀다.
+      - 전원 휴면이면 시간을 크게 흘려보내고(가변 모드 idle 스케줄) 전원을 깨운다
+        → '모두 흩어진 하루'가 조각 점프로 갈리지 않고 빠르게 지나간다.
+      - 누군가 도달하면(이동·이벤트·디렉터) 스트릭이 0으로 리셋되어 깨어난다.
+    """
+
+    def _build(self, tmp, script, *, locations, graph, **kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in script}
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=_ScriptedLLM(script),
+            agent_locations=locations,
+            location_graph=graph,
+            **kw,
+        )
+        return sim
+
+    _GRAPH = [
+        {"name": "집",   "connects_to": ["회사", "학교"]},
+        {"name": "회사", "connects_to": ["집"]},
+        {"name": "학교", "connects_to": ["집"]},
+    ]
+
+    def test_all_isolated_fast_forwards_time_instead_of_grinding_waves(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # a 회사, b 집 — 서로 도달 불가. 둘 다 독백만(재회 없음).
+            sim = self._build(
+                tmp,
+                {"a": [{"content": "일하자.", "target": "self"}],
+                 "b": [{"content": "청소하자.", "target": "self"}]},
+                locations={"a": "회사", "b": "집"}, graph=self._GRAPH,
+                time_mode="variable",
+            )
+            jumps: list[int] = []
+            orig_emit = sim._emit
+            sim._emit = lambda t, d: (jumps.append(d["minutes"]) if t == "time_jump" else None)
+            sim.run("a", max_waves=8, step_delay=0.0,
+                    early_stop_enabled=False, max_silence_waves=3,
+                    resume_wave={"a": [], "b": []})
+
+        # 전원 휴면에 들어가면 idle 스케줄(60/120/180)로 크게 점프한다 —
+        # normal_scene 조각 점프(15~30분)로 max_waves 까지 갈리지 않는다.
+        self.assertTrue(sim._solo_streak.get("a", 0) >= 3)
+        self.assertTrue(any(j >= 60 for j in jumps[-3:]),
+                        f"휴면 후 큰 시간 점프가 없다: {jumps}")
+        # 8 wave 로도 하루 이상 흘렀다(조각 점프였다면 4시간도 안 됐을 것).
+        self.assertGreater(sim._elapsed_minutes, 8 * 60)
+
+    def test_dormant_agent_wakes_when_someone_reaches_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # a 는 집에서 계속 독백, b 는 회사에 있다가 3번째 턴에 집으로 이동해
+            # a 에게 말을 건다.
+            sim = self._build(
+                tmp,
+                {"a": [{"content": "혼잣말.", "target": "self"}],
+                 "b": [{"content": "일.",     "target": "self"},
+                       {"content": "일.",     "target": "self"},
+                       {"content": "집에 갈까.", "target": "self", "move_to": "집"},
+                       {"content": "왔어.",   "target": "a"}]},
+                locations={"a": "집", "b": "회사"}, graph=self._GRAPH,
+                time_mode="variable",
+            )
+            sim._emit = lambda t, d: None
+            sim.run("a", max_waves=10, step_delay=0.0,
+                    early_stop_enabled=False, max_silence_waves=3,
+                    resume_wave={"a": [], "b": []})
+
+        # b 가 집에 도착해 a 에게 말을 걸면 a 의 스트릭이 리셋되어야 한다.
+        self.assertEqual(sim._solo_streak.get("a", 0), 0)
+        # a 는 b 의 발화를 실제로 받았다(관전 로그에 a→? 가 아니라 b→a 가 있다).
+        got = [e for e in sim.shared_log if e.get("speaker") == "b" and "a" in (e.get("targets") or [])]
+        self.assertTrue(got)
+
+    def test_legacy_no_location_scenario_never_goes_dormant(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # 위치 미사용 — _has_reachable_partner 가 항상 True → 스트릭이 안 쌓인다.
+            sim = self._build(
+                tmp,
+                {"a": [{"content": "음.", "target": "self"}],
+                 "b": [{"content": "음.", "target": "self"}]},
+                locations=None, graph=[],
+                time_mode="variable",
+            )
+            sim._emit = lambda t, d: None
+            sim.run("a", max_waves=5, step_delay=0.0,
+                    early_stop_enabled=False, resume_wave={"a": [], "b": []})
+        self.assertEqual(sim._solo_streak.get("a", 0), 0)
+        self.assertEqual(sim._solo_streak.get("b", 0), 0)
+
+    def test_director_prompt_lists_isolated_agents_and_carries_the_rule(self):
+        from ABM.system_agent import run_system_agent, DEFAULT_SYSTEM_AGENT_PROMPT
+        captured = {}
+
+        def llm(messages, max_tokens=None, **kw):
+            captured["user"] = messages[1]["content"]
+            return json.dumps({"interventions": [], "world_event": None,
+                               "director_memo": "", "reason": ""}), "", {}
+
+        run_system_agent(
+            system_prompt="", wave=5,
+            active_agents={"a": "가온", "b": "나린"},
+            silent_agents=[], isolated_agents=["a"], silence_threshold=3,
+            repetition_info={}, director_note="", director_memo="",
+            key_to_alias={"a": "가온", "b": "나린"}, llm=llm,
+        )
+        self.assertIn("[고립된 에이전트", captured["user"])
+        self.assertIn('ID: "a"', captured["user"].split("[고립된 에이전트")[1].split("[반복")[0])
+        self.assertIn("억지로 발화시키지 마십시오", captured["user"])
 
 
 class DirectorRepetitionDetectionTests(unittest.TestCase):

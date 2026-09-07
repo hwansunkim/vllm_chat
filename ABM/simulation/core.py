@@ -164,6 +164,15 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
 
         self._last_spoke_wave: dict[str, int] = {}
 
+        # {에이전트 key: 연속으로 "혼잣말만 하고 대화 상대도 없던" wave 수}.
+        # early_stop_enabled=False 로 전원을 매 wave 재투입하는 시나리오에서, 회사·
+        # 학교로 흩어져 서로 도달 불가능한 에이전트가 같은 독백을 무한 반복하는 것을
+        # 막는다. 이 값이 max_silence_waves 이상이면 '휴면'으로 보고 밀집 재투입에서
+        # 제외한다 — 누군가 그에게 도달하면(이동·이벤트·디렉터 개입) 즉시 0으로
+        # 리셋되어 깨어난다. runner._RunnerMixin.run() 가 유일한 소비자이며 파생
+        # 상태라 재개 스냅샷에 넣지 않는다.
+        self._solo_streak: dict[str, int] = {}
+
         # 언어 교잡 수정 설정
         self._lang_fix_enabled: bool = lang_fix_enabled
         self._lang_fix_retries: int  = max(1, int(lang_fix_retries))

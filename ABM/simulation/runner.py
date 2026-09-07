@@ -154,11 +154,15 @@ class _RunnerMixin:
             scene_injections: dict[str, list] = {}
 
             routed: dict[str, list] = {}
+            # 이번 wave 에 발화한 에이전트가 실제로 누군가에게 말이 닿았는지
+            # (순수 혼잣말이면 False). 아래 휴면(dormancy) 스트릭 갱신에 쓴다.
+            reached_someone: dict[str, bool] = {}
             spatial = self._perception_mode == "spatial"
             for speaker_key, result in results.items():
                 if not result.get("success"):
                     continue
                 resolved = self._resolve_targets(result["targets"], speaker_key)
+                reached_someone[speaker_key] = bool(resolved)
                 if not spatial:
                     # ── targeted (기본) — 기존 코드 그대로 ──
                     for target_key in resolved:
@@ -309,6 +313,20 @@ class _RunnerMixin:
             # 스냅샷이 틀리고 이름 노출·외부공간 격리도 안 됐던 구버전이라 제거했다.)
             self._apply_infection_wave(run_wave, disp_wave)
 
+            # ── 휴면(dormancy) 스트릭 갱신 ─────────────────────────────────────
+            # 이동이 모두 반영된 뒤의 위치 기준으로, "이번 wave 에 발화했으나
+            # 아무에게도 닿지 않았고(순수 혼잣말) 지금 같은 장소에 대화 상대도
+            # 없는" 에이전트의 연속 카운트를 올린다. 누군가에게 닿았거나 곁에
+            # 상대가 생기면 0으로 리셋(= 깨어남). 위치 미사용 레거시 시나리오는
+            # `_has_reachable_partner` 가 항상 True 라 스트릭이 절대 쌓이지 않는다.
+            for speaker_key, result in results.items():
+                if not result.get("success"):
+                    continue
+                if reached_someone.get(speaker_key) or self._has_reachable_partner(speaker_key):
+                    self._solo_streak[speaker_key] = 0
+                else:
+                    self._solo_streak[speaker_key] = self._solo_streak.get(speaker_key, 0) + 1
+
             # ── next_wave 구성 ────────────────────────────────────────────────
             # 조립 자체는 이동이 끝난 뒤에 한다(도착/이탈 씬 메시지가 필요하므로).
             # "누가 무엇을 듣는지" 판정만 위에서 이동 전 스냅샷으로 이미 끝났다.
@@ -327,8 +345,28 @@ class _RunnerMixin:
 
             if not next_wave:
                 if not early_stop_enabled:
-                    # 조기 종료 OFF: 항상 모든 active 에이전트 재투입 (max_waves까지 실행)
-                    next_wave = {key: [] for key in self.active_agents}
+                    # 조기 종료 OFF: max_waves 까지 계속 돈다. 단 **고립 독백을
+                    # max_silence_waves 회 이상 연속한(휴면)** 에이전트는 밀집
+                    # 재투입에서 뺀다 — 회사·학교로 흩어져 서로 못 닿는 에이전트가
+                    # 같은 독백을 무한 반복하는 것을 막는다. 누군가 그에게 도달하면
+                    # (이동·이벤트·디렉터 개입 → routed/scene_injections) 위쪽
+                    # 조립에서 이미 next_wave 에 들어가므로 자동으로 깨어난다.
+                    dormant_cap = max(1, max_silence_waves)
+                    wakeable = sorted(
+                        k for k in self.active_agents
+                        if self._solo_streak.get(k, 0) < dormant_cap
+                    )
+                    if wakeable:
+                        next_wave = {k: [] for k in wakeable}
+                    else:
+                        # 전원 휴면 — 같은 독백을 재생하는 대신 시간을 크게 흘려보내고
+                        # (가변 모드는 idle 스케줄) 전원을 한 번 깨운다. 새 시각을 보고
+                        # 재회할지 각자 판단하게 한다. 이게 없으면 '모두 흩어진 하루'가
+                        # 조각 점프로 max_waves 까지 갈린다.
+                        silence_count += 1
+                        forced_silence_reinject = True
+                        logger.info(f"[W{disp_wave}] 전원 휴면 — 시간 점프 + 전원 재투입 #{silence_count}")
+                        next_wave = {k: [] for k in sorted(self.active_agents)}
                 elif self._time_per_wave > 0 or self._time_mode == "variable":
                     # 시간 주도형 + 조기 종료 ON: max_silence_waves 초과 시 종료
                     silence_count += 1
@@ -356,8 +394,26 @@ class _RunnerMixin:
             if self._time_mode == "variable":
                 has_content = any(r.get("success") for r in results.values())
                 if forced_silence_reinject:
-                    idx = min(silence_count, len(self._idle_minutes_schedule)) - 1
-                    self._elapsed_minutes += self._idle_minutes_schedule[idx]
+                    idx  = min(silence_count, len(self._idle_minutes_schedule)) - 1
+                    jump = self._idle_minutes_schedule[idx]
+                    # 관전 텔레메트리 — 강제 재투입(전원 침묵/전원 휴면)으로 시간이
+                    # 크게 건너뛰는 것을 피드에서 볼 수 있게 한다. 예전엔 이 점프가
+                    # 조용히 일어나 "왜 갑자기 3시간이 지났지?"가 됐다.
+                    self._emit("time_jump", {
+                        "wave":           disp_wave,
+                        "mode":           "idle",
+                        "used_fallback":  False,
+                        "category_id":    None,
+                        "category_label": None,
+                        "reason":         "전원 휴면(고립 독백)" if not early_stop_enabled else "연속 침묵",
+                        "raw_minutes":    jump,
+                        "minutes":        jump,
+                        "clamp_reason":   None,
+                        "end_time_str":   self._format_time_str(
+                            self._sim_start_minutes + self._elapsed_minutes + jump
+                        ),
+                    })
+                    self._elapsed_minutes += jump
                 elif organically_filled or has_content:
                     # raw_jump(이번 wave의 경과 분)를 정하는 방식만 모드별로 갈린다.
                     # 이후의 _clamp_time_jump()는 모드 무관 공통 경로다 — 그 함수는

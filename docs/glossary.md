@@ -407,6 +407,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 | **start_agent (시작 에이전트)** | wave 0에서 첫 발화하는 에이전트 |
 | **initial_active / 초기 등장** | `false`면 비활성으로 시작 → `agent_enter` 이벤트로 등장 |
 | **조기 종료 (early stop)** | 아무도 발화 안 하는 wave가 `max_silence_waves`회 연속되면 `max_waves` 전에 종료 |
+| **휴면 (dormancy)** | `early_stop_enabled=False`에서, 대화 상대 없이 혼잣말만 `max_silence_waves`회 연속한 에이전트를 밀집 재투입에서 제외 (`_solo_streak`). 누군가 도달하면 깨어남. 흩어진 가족이 무한 독백하는 것 방지 |
 | **침묵 (silence)** | 발화 성공이 0인 wave. `end_reason` 값 중 하나 |
 | **end_reason** | 종료 사유: `max_waves` / `target_duration` / `silence` / `no_agents` / `stopped` |
 | **목표 기간 (target_duration_minutes)** | 시뮬레이션 내 경과 시간이 이 값에 도달하면 정상 종료. `max_waves`와 함께 쓰면 먼저 도달하는 쪽 |
@@ -520,7 +521,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 | **`meeting_update`** | 만남 lock 생성/해소 (start/arrived/cancelled) | 만남 카드 🤝 |
 | **`infection_update`** | 감염 상태 전이 (시드/전파/회복) | 감염 카드 🦠 + 뱃지 |
 | **`appearance_update`** | `update_appearance`로 외모 변경 | 외모 카드 👗 |
-| **`time_jump`** | 가변 시간 모드의 경과 분 결정 (카테고리/AI/클램프) | 시간 점프 카드 🕐 |
+| **`time_jump`** | 가변 시간 모드의 경과 분 결정. `mode`: `category`/`ai`/`idle`(전원 침묵·전원 휴면 강제 점프) | 시간 점프 카드 🕐 |
 | `compression_start` / `compression_done` | 에이전트 메모리 압축 | — |
 | **`simulation_end`** | 종료 (total_turns, end_reason) | "완료 \| 총 N턴 \| 사유" |
 | `error` | 연결 오류 (브라우저 스펙상 메시지 없음) | 연결 오류 누적 |

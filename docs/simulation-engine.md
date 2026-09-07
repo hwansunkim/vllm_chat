@@ -87,29 +87,35 @@ disp_wave = _wave_base + run_wave
 ── 감염 (이동 후 위치 기준) ──
 15. _apply_infection_wave(run_wave, disp_wave)   : 같은 wave·같은 장소 접촉 → 확률 전염
 
+── 휴면 스트릭 갱신 ──
+16. 이번 wave에 발화한 각 에이전트: 아무에게도 안 닿았고(순수 혼잣말) 지금 곁에
+    대화 상대도 없으면 _solo_streak[k] += 1, 아니면 0으로 리셋
+    (_has_reachable_partner — 위치 미사용 시나리오는 항상 True → 스트릭 안 쌓임)
+
 ── next_wave 조립 ──
-16. next_wave = scene_injections + routed   (active_agents인 것만)
+17. next_wave = scene_injections + routed   (active_agents인 것만)
 
 ── 조기 종료 / 강제 재투입 ──
-17. next_wave 비었으면:
-       early_stop OFF          → 전원 재투입 (max_waves까지)
+18. next_wave 비었으면:
+       early_stop OFF  →  _solo_streak < max_silence_waves 인 에이전트만 재투입(wakeable).
+                          전원 휴면(wakeable 없음)이면 forced_silence_reinject + 전원 재투입
        시간 주도형 + early_stop → silence_count++, max_silence_waves 미만이면 전원 재투입,
                                   도달하면 end_reason="silence"
        time_per_wave=0          → 즉시 "silence"
     next_wave 있으면 silence_count = 0
 
 ── 시간 누적 (variable 모드만) ──
-18. forced_silence_reinject → idle_minutes_schedule[silence_count]
+19. forced_silence_reinject → idle_minutes_schedule[silence_count], _emit("time_jump", mode="idle")
     아니면 → _classify_wave_time / _estimate_wave_minutes → _clamp_time_jump
             _emit("time_jump", {...}) → _elapsed_minutes += jump
 
-19. current_wave = next_wave
+20. current_wave = next_wave
 
 ── 목표 기간 체크 ──
-20. target_minutes > 0 이고 (_current_elapsed_minutes(run_wave+1) - baseline) >= target
+21. target_minutes > 0 이고 (_current_elapsed_minutes(run_wave+1) - baseline) >= target
        → end_reason = "target_duration", break
 
-21. step_delay 만큼 sleep (stop_event 확인하며)
+22. step_delay 만큼 sleep (stop_event 확인하며)
 
 ── 루프 종료 후 ──
 _pending_wave = current_wave;  _save_edges()

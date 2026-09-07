@@ -178,10 +178,23 @@
   - 실내 한 곳에 2명+ 동석 발화 중 → `max_scene_jump_minutes` (진행 중 장면 안 잘림)
   - 밤(22~06시) 아니고 집에 남은 사람 있음 → `max_daytime_jump_minutes` (학원·저녁
     재집결 장면 안 건너뜀). 집이 완전히 비면 미적용.
+- **강제 재투입 시간 점프** (`mode: "idle"`) — 전원이 연속 침묵(early stop ON)이거나
+  **전원이 고립 독백 중(휴면)**이면, LLM 분류 대신 `idle_minutes_schedule`로 시간을
+  크게 건너뛴다 (침묵/휴면 회차가 늘수록 다음 값, 끝에서 고정). "가족이 각자
+  회사·학교로 흩어진 하루"가 15~30분 조각 점프로 `max_waves`까지 갈리지 않도록.
 
 **이벤트** — `time_jump {wave, mode, used_fallback, category_id, category_label, reason,
-raw_minutes, minutes, clamp_reason, end_time_str}`. fixed 모드·침묵 강제 재투입 wave엔
-안 나옴. `turn_complete`·로그의 `time_str`이 실제 시각.
+raw_minutes, minutes, clamp_reason, end_time_str}`. `mode`는 `category` / `ai` / `idle`.
+fixed 모드엔 안 나옴. `turn_complete`·로그의 `time_str`이 실제 시각.
+
+### 고립 에이전트 휴면 (dormancy)
+
+`early_stop_enabled=False` (max_waves까지 계속 실행)에서, 대화 상대가 없고 아무에게도
+닿지 않은 채 **혼잣말만 `max_silence_waves`회 연속**한 에이전트는 "휴면"으로 보고
+매 wave 밀집 재투입에서 뺀다 (`_solo_streak` — `runner.py`). 누군가 이동·이벤트·디렉터
+개입으로 그에게 도달하면 스트릭이 0으로 리셋되어 깨어난다. 전원 휴면이면 위 `idle`
+시간 점프 + 전원 재투입(새 시각을 보고 재회 판단). 위치 미사용 시나리오는
+`_has_reachable_partner`가 항상 True라 이 로직이 절대 발동하지 않는다 (완전 하위 호환).
 
 **계약 블록** — `build_time_contract` → `[시간 인식]` (`[현재 시각]` 읽는 법, 평일/주말
 행동). 에이전트에겐 ephemeral `[현재 시각: 월요일 오전 9시 00분]`.
@@ -200,14 +213,20 @@ raw_minutes, minutes, clamp_reason, end_time_str}`. fixed 모드·침묵 강제 
 | `enabled` | 활성화 |
 | `icon` / `display_name` | 타임라인 표시 (기본 🎬 / "내레이터") |
 | `system_prompt` | 페르소나 (비우면 `DEFAULT_SYSTEM_AGENT_PROMPT`) |
-| `intervention_interval` | N wave마다 개입 판단 (1 = 매 wave) |
-| `silence_threshold` | N wave 미발화 = 침묵 |
+| `intervention_interval` | N wave마다 디렉터 LLM 호출 (1 = 매 wave). **디렉터가 도는 유일한 게이트** |
+| `silence_threshold` | N wave 미발화면 `[침묵 중인 에이전트]` 목록에 올림 — **강제 발화가 아니라 디렉터에게 주는 정보** |
 | `digest_waves` | 개입 판단 시 원문으로 되짚는 최근 wave 수 (엔진 clamp [2,20], 총 라인 120 캡) |
 | `director_note` | **불변** 서사 목표·결말 조건 — 매 개입마다 참조 (페르소나보다 우선) |
 
-**엔진 동작** (`system.py` + `system_agent.py`) — wave 루프 **상단**에서 실행:
+**엔진 동작** (`system.py` + `system_agent.py`) — wave 루프 **상단**에서 실행.
+디렉터는 아래 정보를 받아 **개입 여부를 스스로 판단**한다 (아무것도 안 하면
+`interventions: []`). 어떤 신호도 기계적으로 발화를 강제하지 않는다.
 
-- **침묵 감지** — `(wave-1) - _last_spoke_wave[key] >= silence_threshold`.
+- **침묵 감지** — `(wave-1) - _last_spoke_wave[key] >= silence_threshold` → `[침묵 중인 에이전트]` 목록. (독백도 발화라 매 wave 혼잣말하는 에이전트는 침묵으로 안 잡힘)
+- **고립 감지** — `not _has_reachable_partner(key)` → `[고립된 에이전트]` 목록.
+  프롬프트 규칙: 고립돼서 할 게 없는 에이전트에게 "계속 진행하라" 류 추상적 독려를
+  보내지 말 것 — 같은 말 반복만 낳는다. 상황을 실제로 바꾸는 world_event를 쓰거나,
+  아무것도 하지 말 것.
 - **반복 감지 D1** — 최근 4발언(`_REPEAT_WINDOW`)의 어휘 유사도 `>= 0.65`
   (`_REPEAT_THRESHOLD`). 대사 우선, 없으면 행동 묘사.
 - **반복 감지 D2** — 디렉터가 `_recent_activity_digest`(최근 `digest_waves` wave 원문)를

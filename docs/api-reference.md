@@ -218,7 +218,7 @@ Prefix `/api/simulation`. 저장소는 채팅 DB `simulation_scenarios`.
 | `meeting_update` | `chaser`, `chaser_name`, `target`, `target_name`, `target_location`, `status` (`start`/`arrived`/`cancelled`), `reason`, `wave` | ✅ |
 | `infection_update` | `wave`, `elapsed_minutes`, `agent`, `display_name`, `status` (`S`/`I`/`R`), `cause` (`event`/`transmission`/`recovery`), `disease_name` | ✅ |
 | `appearance_update` | `wave`, `agent`, `display_name`, `description` | ✅ |
-| `time_jump` | `wave`, `mode`, `used_fallback`, `category_id`, `category_label`, `reason`, `raw_minutes`, `minutes`, `clamp_reason`, `end_time_str` | ✅ |
+| `time_jump` | `wave`, `mode` (`category`/`ai`/`idle`), `used_fallback`, `category_id`, `category_label`, `reason`, `raw_minutes`, `minutes`, `clamp_reason`, `end_time_str` | ✅ |
 | `compression_start` / `compression_done` | `agent`, `wave`, `msg_count` | |
 | `simulation_end` | `total_turns`, `edges_count`, `log_count`, `end_reason` (`max_waves`/`target_duration`/`silence`/`no_agents`/`stopped`) | |
 | `ping` | `{}` | |

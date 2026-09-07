@@ -42,6 +42,9 @@ _USER_TEMPLATE = """\
 [침묵 중인 에이전트 ({threshold}웨이브 이상 미발화)]
 {silent}
 
+[고립된 에이전트 (같은 장소에 대화 상대 없음)]
+{isolated}
+
 [반복 중인 에이전트 (최근 발언 유사도 {repeat_threshold}% 이상)]
 {repetition}
 
@@ -69,6 +72,13 @@ _USER_TEMPLATE = """\
   맴돌고 있으면(문구가 조금씩 달라도) 반복으로 간주하십시오. 이때는 상황을
   바꾸는 개입이나 world_event로 장면을 전진시키십시오 — 같은 비트가 3wave
   이상 이어지는 것은 서사 정체입니다.
+- **[고립된 에이전트]를 억지로 발화시키지 마십시오.** 혼자 있고(같은 장소에
+  아무도 없음) 지금 할 수 있는 일이 정해진 것도 없는 에이전트에게 interventions로
+  "계속 진행하라 / 다음 단계로 넘어가라" 같은 추상적 독려를 보내면 같은 말의
+  반복만 낳습니다. 이런 에이전트에게 필요하다면 ① 상황을 **실제로 바꾸는**
+  것(누가 찾아온다, 연락이 온다, 자리를 뜰 이유가 생긴다 등 — 구체적 사건)만
+  주고, 그럴 계기가 없다면 ② 그냥 두십시오. 고립 자체는 정체가 아니며, 시간이
+  흐르면 엔진이 알아서 그 장면을 건너뜁니다.
 - **시각·시계·시간을 임의로 지어내지 말 것.** 위 [현재 시각]만을 참조하십시오.
   [현재 시각] 섹션이 없다면 이 세계에는 시간 개념이 없는 것이므로 시각을 아예 언급하지 마십시오.
   "벽시계가 N시를 알린다" 같은 표현은 [현재 시각]과 정확히 일치할 때만 쓸 수 있습니다.
@@ -86,6 +96,7 @@ def run_system_agent(
     active_agents: dict[str, str],       # key → display_name
     silent_agents: list[str],             # agent keys
     silence_threshold: int,
+    isolated_agents: list[str] | None = None,   # 같은 장소에 대화 상대가 없는 agent keys
     repetition_info: dict[str, float],    # key → similarity score
     director_note: str,
     director_memo: str,
@@ -122,6 +133,9 @@ def run_system_agent(
     silent_lines = "\n".join(
         f'  - ID: "{k}"  ({alias.get(k, k)})' for k in silent_agents
     ) if silent_agents else "  없음"
+    isolated_lines = "\n".join(
+        f'  - ID: "{k}"  ({alias.get(k, k)})' for k in (isolated_agents or [])
+    ) if isolated_agents else "  없음"
 
     if repetition_info:
         repetition_lines = "\n".join(
@@ -157,6 +171,7 @@ def run_system_agent(
         director_memo_section   = director_memo_section,
         agents                  = agent_lines,
         silent                  = silent_lines,
+        isolated                = isolated_lines,
         threshold               = silence_threshold,
         repetition              = repetition_lines,
         repeat_threshold        = repeat_threshold_pct,

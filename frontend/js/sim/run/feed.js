@@ -230,9 +230,12 @@ function _shortLabel(s) {
 export function addTimeJumpCard(d) {
   removeFeedEmpty();
   const isAi     = d.mode === 'ai';
+  const isIdle   = d.mode === 'idle';   // 전원 침묵/전원 휴면 강제 시간 점프
   const catLabel = d.category_label || d.category_id || '';
   let verdict;
-  if (d.used_fallback) {
+  if (isIdle) {
+    verdict = '자동 경과';
+  } else if (d.used_fallback) {
     verdict = catLabel ? `AI 추론 실패 → 카테고리 "${_shortLabel(catLabel)}"(폴백)`
                        : 'AI 추론 실패 → 카테고리 폴백';
   } else if (isAi) {
@@ -243,8 +246,8 @@ export function addTimeJumpCard(d) {
 
   const bits = ['시간 판정', verdict, d.minutes != null ? `${d.minutes}분` : ''].filter(Boolean);
   let text = `⏱ ${bits.join(' · ')}`;
-  // reason 은 ai 성공 경로에서만 채워진다(폴백이면 null).
-  if (isAi && !d.used_fallback && d.reason) text += ` — "${d.reason}"`;
+  // reason: ai 성공 경로 또는 idle(전원 휴면/침묵) 경로에서 채워진다.
+  if (d.reason && ((isAi && !d.used_fallback) || isIdle)) text += ` — ${isIdle ? d.reason : `"${d.reason}"`}`;
   // clamp_reason 은 엔진이 이미 사람이 읽을 수 있는 한국어로 준다("동석 장면(실내 2인+) 400→45분").
   if (d.clamp_reason) text += ` · 클램프: ${d.clamp_reason}`;
 
