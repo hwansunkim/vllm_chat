@@ -5325,8 +5325,7 @@ class _DirectorLLM:
             self.director_calls.append(user_text)
             n = len(self.director_calls)
             return json.dumps({
-                "interventions": [{"agent": "a", "message": f"디렉터 자극 {n}"}],
-                "world_event":   None,
+                "interventions": [{"targets": ["a"], "message": f"디렉터 자극 {n}"}],
                 "director_memo": "",
                 "reason":        "테스트",
             }), "", {}
@@ -5440,7 +5439,7 @@ class SystemAgentTimeAndOrderTests(unittest.TestCase):
             _, llm, _ = self._run(tmp, waves=2, time_per_wave=30)
             rules = llm.director_calls[0]
             self.assertIn("시각·시계·시간을 임의로 지어내지 말 것", rules)
-            self.assertIn("world_event는 물리적 사실을 새로 만들지 않습니다", rules)
+            self.assertIn("완료된 행동·없던 사물·물리적 상태 변화를 만들어내지 마십시오", rules)
             self.assertIn("느껴진다", rules)
 
     def test_director_off_is_unaffected(self):
@@ -5564,7 +5563,7 @@ class IsolatedAgentDormancyTests(unittest.TestCase):
 
         def llm(messages, max_tokens=None, **kw):
             captured["user"] = messages[1]["content"]
-            return json.dumps({"interventions": [], "world_event": None,
+            return json.dumps({"interventions": [],
                                "director_memo": "", "reason": ""}), "", {}
 
         run_system_agent(
@@ -5734,7 +5733,7 @@ class DirectorViewAndCostTests(unittest.TestCase):
         from ABM.simulation import Simulation
 
         res = director_result if director_result is not None else {
-            "interventions": [], "world_event": None, "director_memo": "", "reason": "x",
+            "interventions": [], "director_memo": "", "reason": "x",
         }
 
         def llm(messages, max_tokens=None, **kw):
@@ -5786,8 +5785,10 @@ class DirectorViewAndCostTests(unittest.TestCase):
     def test_director_call_reports_intervention_and_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(tmp, director_result={
-                "interventions": [{"agent": "a", "message": "일어나"}],
-                "world_event": {"content": "종이 울린다", "targets": ["all"]},
+                "interventions": [
+                    {"targets": ["a"], "message": "일어나"},
+                    {"targets": ["all"], "message": "종이 울린다"},
+                ],
                 "director_memo": "", "reason": "x",
             })
             emitted: list[tuple[str, dict]] = []
@@ -5795,8 +5796,10 @@ class DirectorViewAndCostTests(unittest.TestCase):
             sim._run_system_agent(4, {"a": []})
             c = next(d for t, d in emitted if t == "director_call")
             self.assertTrue(c["intervened"])
-            self.assertEqual(c["n_interventions"], 1)
-            self.assertTrue(c["world_event"])
+            self.assertEqual(c["n_interventions"], 2)
+            ivs = [d for t, d in emitted if t == "system_intervention"]
+            self.assertEqual(len(ivs), 2)
+            self.assertEqual(ivs[1]["target_label"], "전체")
 
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(tmp)
@@ -6187,11 +6190,11 @@ class _GoldenLLM:
         if "[현재 Wave:" in user_text:                      # system agent (디렉터)
             self.director_calls += 1
             return json.dumps({
-                "interventions": [{"agent": "b", "message": "창밖에서 자동차 경적이 길게 울린다."}],
                 # targets 를 b 로 좁혀야 a 가 이 wave 에 끌려 들어오지 않는다
                 # (= wave 당 발화자 1명 불변식 유지).
-                "world_event":   {"content": "복도에서 이삿짐 나르는 소리가 크게 들려온다.",
-                                  "targets": ["b"]},
+                "interventions": [
+                    {"targets": ["b"], "message": "창밖에서 자동차 경적이 길게 울린다."},
+                ],
                 "director_memo": "",
                 "reason":        "정적을 깨기 위해",
             }), "", {}
@@ -6264,7 +6267,7 @@ class HeadlessRunnerTests(unittest.TestCase):
         _, _, result = _run_golden()
         kinds = {e["event_type"] for e in result.events}
         for expected in ("agent_move", "appearance_update", "system_intervention",
-                         "world_event", "infection_update", "meeting_update"):
+                         "infection_update", "meeting_update"):
             self.assertIn(expected, kinds)
 
     def test_collected_events_match_what_the_db_persists(self):
@@ -6334,8 +6337,7 @@ class MarkdownGoldenTests(unittest.TestCase):
         cfg, name, result = _run_golden()
         full = _render_golden(cfg, name, result, include=_ALL_TOGGLES)
         bare = _render_golden(cfg, name, result, include={"time"})
-        for marker in ("[씬]", "[🌍 세계 사건]", "[🎬 내레이터]", "[🦠 감염]",
-                       "[🏃 씬]"):
+        for marker in ("[씬]", "[🎬 내레이터]", "[🦠 감염]", "[🏃 씬]"):
             self.assertIn(marker, full)
             self.assertNotIn(marker, bare)
         # action 토글이 꺼지면 action_note 줄이 사라진다

@@ -43,9 +43,9 @@ GUI 와 **공유**한다.
 출력 파일 확장자도 포맷을 따라간다.
 
 **토글** (``--include`` / ``--exclude``, 쉼표 구분):
-``time`` ``action`` ``move`` ``appearance`` ``world`` ``intervention``
-``infection`` ``meeting``. 기본값은 전부 포함. **마크다운 전용**이라
-``--format csv`` 에서는 무시된다.
+``time`` ``action`` ``move`` ``appearance`` ``intervention`` ``infection``
+``meeting`` (``world`` 는 ``intervention`` 의 별칭 — 구 실행의 세계 사건).
+기본값은 전부 포함. **마크다운 전용**이라 ``--format csv`` 에서는 무시된다.
 
 **종료 코드**
   0  정상 (``end_reason`` 이 무엇이든)

@@ -180,7 +180,11 @@ export function addFeedMessage(data) {
 
 export function addInterventionCard(d) {
   removeFeedEmpty();
-  const targetLabel = d.target_alias || d.target;
+  // 새 스키마: target_label(사전 join) / target_aliases[] / targets[].
+  // 구 스키마(레거시 실행 재생): target_alias / target (단수).
+  const targetLabel = d.target_label
+    || (d.target_aliases || d.targets || (d.target ? [d.target] : [])).join(', ')
+    || '전체';
   const el          = document.createElement('div');
   el.className      = 'sim-intervention-card';
   el.innerHTML = `
@@ -202,7 +206,7 @@ export function addDirectorCallCard(d) {
              : d.prompt_chars != null ? `${(d.prompt_chars / 1000).toFixed(1)}k자` : '';
   const secs = d.elapsed_ms != null ? `${(d.elapsed_ms / 1000).toFixed(1)}s` : '';
   const verdict = d.failed ? '호출 실패'
-                : d.intervened ? `개입 ${d.n_interventions || 0}${d.world_event ? ' + 세계사건' : ''}`
+                : d.intervened ? `개입 ${d.n_interventions || 0}`
                 : '관망';
   const bits = [`시야 ${d.digest_waves}w`, tok, secs, verdict].filter(Boolean);
   const el = document.createElement('div');

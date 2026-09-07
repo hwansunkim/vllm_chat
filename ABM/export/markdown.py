@@ -32,18 +32,20 @@ from .labels import (
 EMOTION_EMOJI = {"happy": "😊", "angry": "😤", "sad": "😢", "fear": "😨", "neutral": "😐"}
 
 # 내보내기 토글. GUI 체크박스 기본값과 같다(전부 켜짐).
-INCLUDE_KEYS = ("time", "action", "move", "appearance", "world",
-                "intervention", "infection", "meeting")
+# `world` 는 `intervention` 의 별칭 — 세계 사건은 내레이터 개입으로 통합됐고,
+# 구 실행의 `world_event` 행만 이 키가 남아 있는 이유다.
+INCLUDE_KEYS = ("time", "action", "move", "appearance",
+                "intervention", "world", "infection", "meeting")
 DEFAULT_INCLUDE = frozenset(INCLUDE_KEYS)
 
-# 토글 → 스트림에 실을 이벤트 타입.
-_TOGGLE_EVENT_TYPE = {
-    "move":         "agent_move",
-    "appearance":   "appearance_update",
-    "intervention": "system_intervention",
-    "world":        "world_event",
-    "infection":    "infection_update",
-    "meeting":      "meeting_update",
+# 토글 → 스트림에 실을 이벤트 타입. 한 토글이 여러 타입을 열 수 있다.
+_TOGGLE_EVENT_TYPES = {
+    "move":         ("agent_move",),
+    "appearance":   ("appearance_update",),
+    "intervention": ("system_intervention", "world_event"),   # world_event = 레거시
+    "world":        ("world_event",),                          # 하위호환 별칭
+    "infection":    ("infection_update",),
+    "meeting":      ("meeting_update",),
 }
 
 _STATUS_LABEL = {
@@ -143,7 +145,7 @@ def _stream_phase(kind: str, payload: dict | None = None) -> int:
 
 
 def _build_stream(log: list[dict], events: list[dict], include: frozenset) -> list[dict]:
-    want = {t for key, t in _TOGGLE_EVENT_TYPE.items() if key in include}
+    want = {t for key, types in _TOGGLE_EVENT_TYPES.items() if key in include for t in types}
 
     items: list[dict] = []
     for entry in log:
@@ -206,11 +208,17 @@ def _fmt_appearance(data: dict) -> str:
 def _fmt_intervention(data: dict) -> str:
     icon = data.get("icon") or "🎬"
     nm = data.get("display_name") or "내레이터"
-    tgt = data.get("target_alias") or data.get("target") or ""
+    # 새 스키마: target_label / target_aliases[] / targets[]. 구: target_alias / target.
+    tgt = data.get("target_label") or ", ".join(
+        data.get("target_aliases")
+        or data.get("targets")
+        or ([data["target"]] if data.get("target") else [])
+    ) or ""
     return f"\n> **[{icon} {nm}]** → *{tgt}* : {data.get('message')}\n"
 
 
 def _fmt_world_event(data: dict) -> str:
+    # 레거시 실행 재출력 전용 (신규 실행은 system_intervention 만 낸다).
     return f"\n> **[🌍 세계 사건]** *{data.get('content')}*\n"
 
 

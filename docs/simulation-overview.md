@@ -190,8 +190,8 @@ async def _gen():
 | `interview_log` | 사후 인터뷰 (**타임라인과 완전 분리** — 리플레이가 절대 읽지 않음) | `interviews.py` |
 
 `_PERSIST_EVENTS` = `agent_move`, `appearance_update`, `system_intervention`,
-`world_event`, `meeting_update`, `scene_event`, `director_call`, `infection_update`,
-`time_jump`. (= 마크다운 내보내기가 소비하는 집합과 동일.)
+`meeting_update`, `scene_event`, `director_call`, `infection_update`, `time_jump`
+(+ `world_event` — 레거시, 구 실행 재출력용). (= 마크다운 내보내기가 소비하는 집합.)
 
 전체 컬럼: [`database.md`](database.md).
 

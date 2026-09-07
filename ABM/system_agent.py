@@ -1,9 +1,9 @@
 """System agent — simulation narrator/director.
 
 Runs at the start of a wave (configurable interval), receives the recent
-activity digest, silent agents, repetition info, director_note, and the
-accumulated director_memo, then outputs interventions, an optional world_event
-broadcast, an updated director_memo, and a reason string.
+activity digest, silent/isolated agents, repetition info, director_note, and the
+accumulated director_memo, then outputs interventions (each addressed to one or
+more agents), an updated director_memo, and a reason string.
 
 The parsed result also carries a ``_meta`` dict (prompt_tokens / prompt_chars)
 so the engine can surface director-call cost via the ``director_call`` event.
@@ -19,14 +19,14 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SYSTEM_AGENT_PROMPT = """\
 당신은 멀티에이전트 시뮬레이션의 내레이터이자 진행자입니다.
-주어진 시뮬레이션 요약, 침묵·반복 에이전트 정보, 감독 노트를 분석하여
+주어진 시뮬레이션 요약, 침묵·반복·고립 에이전트 정보, 감독 노트를 분석하여
 이야기가 감독 노트의 방향으로 흐르도록 필요한 개입을 결정하세요.
 
-개입 수단은 두 가지입니다:
-1. interventions: 특정 에이전트에게 1:1로 상황·자극 메시지 전달
-2. world_event: 특정 그룹 또는 전체에 환경 변화·사건을 브로드캐스트
+개입은 한 종류입니다 — 하나 이상의 에이전트에게 상황·자극 메시지를 전달합니다.
+- 한 명에게만 보내면 그 캐릭터만 지각합니다 (사적인 촉발·감각·기억).
+- 여럿 또는 전체에게 보내면 그들이 동시에 같은 것을 지각합니다 (공유된 소리·빛·분위기).
 
-이야기가 자연스럽게 흐르고 있다면 interventions는 빈 배열, world_event는 null로 반환하세요.\
+이야기가 자연스럽게 흐르고 있다면 interventions는 빈 배열로 반환하세요.\
 """
 
 _USER_TEMPLATE = """\
@@ -51,41 +51,37 @@ _USER_TEMPLATE = """\
 반드시 아래 JSON 형식으로만 응답하세요:
 {{
   "interventions": [
-    {{"agent": "에이전트_ID", "message": "에이전트에게 전달할 상황/자극 메시지"}}
+    {{"targets": ["에이전트_ID", ...], "message": "지목한 에이전트(들)에게 전달할 상황/자극 메시지"}}
   ],
-  "world_event": {{
-    "content": "전체 또는 그룹에 브로드캐스트할 세계 사건 묘사",
-    "targets": ["all"]
-  }},
   "director_memo": "이번 개입 결과와 다음 전략 메모 (간결하게 1~2줄)",
   "reason": "개입 이유 또는 판단 근거"
 }}
 
 규칙:
-- interventions가 없으면 빈 배열 []
-- world_event가 없으면 null (객체가 아닌 null)
-- agent는 반드시 활성 에이전트 ID 중 하나 (표시 이름 사용 금지)
-- world_event.targets: "all" / "group:그룹명" / 특정 에이전트 ID 목록
+- 개입이 필요 없으면 interventions는 빈 배열 []
+- targets: "all" / "group:그룹명" / 특정 에이전트 ID 목록 (표시 이름 절대 금지)
 - 모든 텍스트는 한국어로 작성
 - **[반복 중인 에이전트]는 거의 똑같은 문장만 잡아냅니다.** [최근 활동]을 직접
   읽고, 특정 에이전트가 여러 wave에 걸쳐 같은 화제·같은 욕구·같은 자리에서
   맴돌고 있으면(문구가 조금씩 달라도) 반복으로 간주하십시오. 이때는 상황을
-  바꾸는 개입이나 world_event로 장면을 전진시키십시오 — 같은 비트가 3wave
-  이상 이어지는 것은 서사 정체입니다.
+  바꾸는 개입으로 장면을 전진시키십시오 — 같은 비트가 3wave 이상 이어지는 것은
+  서사 정체입니다.
 - **[고립된 에이전트]를 억지로 발화시키지 마십시오.** 혼자 있고(같은 장소에
-  아무도 없음) 지금 할 수 있는 일이 정해진 것도 없는 에이전트에게 interventions로
-  "계속 진행하라 / 다음 단계로 넘어가라" 같은 추상적 독려를 보내면 같은 말의
-  반복만 낳습니다. 이런 에이전트에게 필요하다면 ① 상황을 **실제로 바꾸는**
-  것(누가 찾아온다, 연락이 온다, 자리를 뜰 이유가 생긴다 등 — 구체적 사건)만
-  주고, 그럴 계기가 없다면 ② 그냥 두십시오. 고립 자체는 정체가 아니며, 시간이
-  흐르면 엔진이 알아서 그 장면을 건너뜁니다.
+  아무도 없음) 지금 할 수 있는 일이 정해진 것도 없는 에이전트에게 "계속 진행하라 /
+  다음 단계로 넘어가라" 같은 추상적 독려를 보내면 같은 말의 반복만 낳습니다.
+  이런 에이전트에게 필요하다면 ① 상황을 **실제로 바꾸는** 것(누가 찾아온다,
+  연락이 온다, 자리를 뜰 이유가 생긴다 등 — 구체적 사건)만 주고, 그럴 계기가
+  없다면 ② 그냥 두십시오. 고립 자체는 정체가 아니며, 시간이 흐르면 엔진이 알아서
+  그 장면을 건너뜁니다.
 - **시각·시계·시간을 임의로 지어내지 말 것.** 위 [현재 시각]만을 참조하십시오.
   [현재 시각] 섹션이 없다면 이 세계에는 시간 개념이 없는 것이므로 시각을 아예 언급하지 마십시오.
   "벽시계가 N시를 알린다" 같은 표현은 [현재 시각]과 정확히 일치할 때만 쓸 수 있습니다.
-- **world_event는 물리적 사실을 새로 만들지 않습니다.** 환경의 분위기·외부 자극만 묘사하십시오.
-  사물의 존재(예: 없던 음식이 놓여 있다), 특정 인물의 완료된 행동(예: 누가 요리를 마쳤다),
-  물리적 상태 변화를 world_event로 만들어내지 마십시오 — 그건 에이전트가 행동으로 만드는 것입니다.
-  디렉터가 주는 것은 '무엇이 일어났다'가 아니라 '무엇이 느껴진다 / 보인다 / 들린다'입니다.\
+- **완료된 행동·없던 사물·물리적 상태 변화를 만들어내지 마십시오.** 당신이 주는 것은
+  '무엇이 일어났다'가 아니라 '무엇이 느껴진다 / 보인다 / 들린다'입니다. 사물의 존재
+  (없던 음식이 놓여 있다), 특정 인물의 완료된 행동(누가 요리를 마쳤다), 상태 변화는
+  에이전트가 **행동으로** 만드는 것입니다. 여러 명에게 보내는 공유 자극일수록 특히
+  엄격하게 — 뒤에 사람·행동이 따라와야 하는 자극(초인종·노크·전화)도 피하고,
+  뒤끝 없는 순간적 자극(천둥·정전·사이렌·바람·냄새)만 쓰십시오.\
 """
 
 
@@ -109,14 +105,13 @@ def run_system_agent(
 ) -> dict | None:
     """Run the system agent LLM call.
 
-    Returns a dict with ``interventions``, ``world_event``, ``director_memo``,
-    ``reason``, and ``_meta`` (``prompt_tokens`` / ``prompt_chars``), or None on
-    failure.
+    Returns a dict with ``interventions``, ``director_memo``, ``reason``, and
+    ``_meta`` (``prompt_tokens`` / ``prompt_chars``), or None on failure.
 
     ``current_time_str`` 은 에이전트들이 보는 것과 **같은** 시각 문자열
     (`Simulation._format_time_str(...)`, 요일 포함)이다. 비어 있으면 [현재 시각]
     섹션 자체를 생략한다 — 시간 개념이 꺼진 시뮬레이션에서 없는 시계를 만들지
-    않기 위해서다. 이 인자가 없던 시절 디렉터는 시각을 전혀 못 받아 world_event에
+    않기 위해서다. 이 인자가 없던 시절 디렉터는 시각을 전혀 못 받아 개입에
     엉뚱한 시각("벽시계가 8시를 친다")을 지어냈다.
 
     ``recent_activity`` 는 `_recent_activity_digest(...)` 결과 — 마지막 몇 wave의

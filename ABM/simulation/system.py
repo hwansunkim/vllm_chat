@@ -7,13 +7,13 @@ from ._constants import (
 
 
 class _SystemMixin:
-    """system 에이전트 실행 (개입, world_event, director_memo 갱신)."""
+    """system 에이전트(디렉터) 실행 — 개입 주입 + director_memo 갱신."""
 
     def _run_system_agent(self, wave_num: int, current_wave: dict) -> dict:
-        """system 에이전트를 실행해 개입/월드이벤트를 주입. 수정된 current_wave 반환.
+        """디렉터를 실행해 개입 메시지를 주입. 수정된 current_wave 반환.
 
         `wave_num`은 runner가 넘기는 **누적 표시 wave(disp_wave)**다 — 디렉터 프롬프트의
-        "Wave N" 표기, `system_intervention`/`world_event` 이벤트 라벨, director_memo에
+        "Wave N" 표기, `system_intervention` 이벤트 라벨, director_memo에
         쓰인다. 시각 계산만은 per-run 축이어야 하므로 `self.completed_waves`를 쓴다
         (디렉터는 wave 시작 시점에 도므로 이 값이 곧 '이번 wave 진입 직전까지 완료된
         wave 수' = 옛 per-run wave_num과 동일하다).
@@ -49,7 +49,7 @@ class _SystemMixin:
 
         # 디렉터에게 보여줄 현재 시각. 에이전트 프롬프트
         # (`_assemble_agent_prompt`)와 **정확히 같은 식**을 쓴다 — 둘이 갈라지면
-        # 디렉터의 world_event 시각과 에이전트가 보는 시계가 어긋난다.
+        # 디렉터의 개입 시각과 에이전트가 보는 시계가 어긋난다.
         # 시간 개념이 꺼져 있으면 빈 문자열 → [현재 시각] 섹션 자체가 생략된다.
         current_time_str = ""
         if self._time_mode == "variable" or self._time_per_wave > 0:
@@ -97,16 +97,14 @@ class _SystemMixin:
         result_d = result if isinstance(result, dict) else {}
         meta = result_d.pop("_meta", {})
         n_iv = len(result_d.get("interventions") or [])
-        has_we = bool(result_d.get("world_event"))
         self._emit("director_call", {
             "wave":          wave_num,
             "digest_waves":  self._sys_digest_waves,
             "prompt_tokens": meta.get("prompt_tokens"),
             "prompt_chars":  meta.get("prompt_chars"),
             "elapsed_ms":    elapsed_ms,
-            "intervened":    n_iv > 0 or has_we,
+            "intervened":    n_iv > 0,
             "n_interventions": n_iv,
-            "world_event":   has_we,
             "failed":        not isinstance(result, dict),
             "icon":          self._sys_icon,
             "display_name":  self._sys_name,
@@ -126,59 +124,39 @@ class _SystemMixin:
                 lines = lines[-(_MEMO_MAX_LINES - 1):]
             self._director_memo = "\n".join(lines + [entry])
 
+        active_set = set(self.active_agents)
         for iv in (result_d.get("interventions") or []):
-            agent_key = self._normalize_target(iv.get("agent", ""))
-            message   = (iv.get("message") or "").strip()
-            if not agent_key or agent_key not in self.active_agents or not message:
+            message = (iv.get("message") or "").strip()
+            if not message:
                 continue
-            wave_copy.setdefault(agent_key, []).append({
-                "speaker":     self._sys_name,
-                "content":     message,
-                "action_note": "",
-            })
-            self._emit("system_intervention", {
-                "wave":         wave_num,
-                "target":       agent_key,
-                "target_alias": self._key_to_alias.get(agent_key, agent_key),
-                "message":      message,
-                "reason":       reason,
-                "icon":         self._sys_icon,
-                "display_name": self._sys_name,
-            })
-
-        we = result_d.get("world_event")
-        if we and isinstance(we, dict):
-            we_content = (we.get("content") or "").strip()
-            we_targets = we.get("targets") or ["all"]
-            if we_content:
-                target_keys: set[str] = set()
-                for t in we_targets:
-                    if t == "all":
-                        target_keys.update(self.active_agents)
-                    elif isinstance(t, str) and t.startswith("group:"):
-                        gname = t[6:]
-                        for k in self.active_agents:
-                            if gname in self._agent_groups.get(k, []):
-                                target_keys.add(k)
-                    elif t in self.active_agents:
-                        target_keys.add(t)
-
-                for key in target_keys:
-                    wave_copy.setdefault(key, []).append({
-                        "speaker":     "세계 사건",
-                        "content":     we_content,
-                        "action_note": "",
-                    })
-
-                sorted_targets = sorted(target_keys)
-                self._emit("world_event", {
-                    "wave":           wave_num,
-                    "content":        we_content,
-                    "targets":        sorted_targets,
-                    "target_aliases": [self._key_to_alias.get(k, k) for k in sorted_targets],
-                    "icon":           self._sys_icon,
-                    "display_name":   self._sys_name,
-                    "reason":         reason,
+            # 대상: 새 스키마는 `targets`(리스트/문자열), 구 스키마는 `agent`(문자열).
+            raw = iv.get("targets")
+            if isinstance(raw, str):
+                raw = [raw]
+            if not raw:
+                legacy = iv.get("agent")
+                raw = [legacy] if legacy else []
+            target_keys = sorted(set(self._resolve_event_targets([str(t) for t in raw])))
+            if not target_keys:
+                continue
+            for key in target_keys:
+                wave_copy.setdefault(key, []).append({
+                    "speaker":     self._sys_name,
+                    "content":     message,
+                    "action_note": "",
                 })
+            # 전원이면 "전체", 아니면 표시 이름 join — 렌더러가 그대로 쓴다.
+            label = ("전체" if set(target_keys) == active_set
+                     else ", ".join(self._key_to_alias.get(k, k) for k in target_keys))
+            self._emit("system_intervention", {
+                "wave":           wave_num,
+                "targets":        target_keys,
+                "target_aliases": [self._key_to_alias.get(k, k) for k in target_keys],
+                "target_label":   label,
+                "message":        message,
+                "reason":         reason,
+                "icon":           self._sys_icon,
+                "display_name":   self._sys_name,
+            })
 
         return wave_copy

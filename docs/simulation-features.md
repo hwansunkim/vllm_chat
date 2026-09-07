@@ -230,24 +230,29 @@ fixed 모드엔 안 나옴. `turn_complete`·로그의 `time_str`이 실제 시�
 - **침묵 감지** — `(wave-1) - _last_spoke_wave[key] >= silence_threshold` → `[침묵 중인 에이전트]` 목록. (독백도 발화라 매 wave 혼잣말하는 에이전트는 침묵으로 안 잡힘)
 - **고립 감지** — `not _has_reachable_partner(key)` → `[고립된 에이전트]` 목록.
   프롬프트 규칙: 고립돼서 할 게 없는 에이전트에게 "계속 진행하라" 류 추상적 독려를
-  보내지 말 것 — 같은 말 반복만 낳는다. 상황을 실제로 바꾸는 world_event를 쓰거나,
+  보내지 말 것 — 같은 말 반복만 낳는다. 상황을 실제로 바꾸는 개입을 쓰거나,
   아무것도 하지 말 것.
 - **반복 감지 D1** — 최근 4발언(`_REPEAT_WINDOW`)의 어휘 유사도 `>= 0.65`
   (`_REPEAT_THRESHOLD`). 대사 우선, 없으면 행동 묘사.
 - **반복 감지 D2** — 디렉터가 `_recent_activity_digest`(최근 `digest_waves` wave 원문)를
   직접 읽고 표현을 바꿔가며 같은 화제를 맴도는 주제 반복 판단. 심층:
   [`director-repetition-detection.md`](director-repetition-detection.md).
-- LLM 출력: `{ interventions[], world_event, director_memo, reason }`.
-  - `interventions` → 특정 에이전트의 `current_wave`에 메시지 주입.
-  - `world_event` → `targets`(all/group:X/key)의 `current_wave`에 "세계 사건" 주입.
+- LLM 출력: `{ interventions[], director_memo, reason }`.
+  - `interventions[]` — 각 항목 `{targets: [...], message}`. `_resolve_event_targets`로
+    `all`/`group:X`/ID 해석 → 대상 전원의 `current_wave`에 `[내레이터] {message}` 주입.
+    대상 1명이면 사적 촉발, 여럿이면 공유 자극. **구 `world_event`(별도 세계 사건 채널)는
+    여기로 통합됨** — 디렉터가 채널을 고르는 분기가 사라지고 대상 수로 표현이 유도된다.
   - `director_memo` → 스스로 갱신하는 진행 메모 (최근 12줄, `_MEMO_MAX_LINES`).
+- **개입 규칙** — 완료된 행동·없던 사물·상태 변화 authoring 금지 (그건 에이전트가 행동으로).
+  뒤에 사람·행동이 따라와야 하는 자극(초인종·노크·전화)도 피하고 뒤끝 없는 순간적
+  자극(천둥·정전·사이렌·바람·냄새)만. `[현재 시각]` 외 시각 지어내기 금지.
 
 **이벤트**:
 - `director_call {wave, digest_waves, prompt_tokens, prompt_chars, elapsed_ms,
-  intervened, n_interventions, world_event, failed}` — 돈 사실 + 비용. 개입 여부와
-  무관하게 매번 (성능 관측용).
-- `system_intervention {wave, target, target_alias, message, reason}`
-- `world_event {wave, content, targets, target_aliases, reason}`
+  intervened, n_interventions, failed, icon, display_name}` — 돈 사실 + 비용. 개입
+  여부와 무관하게 매번 (성능 관측용).
+- `system_intervention {wave, targets[], target_aliases[], target_label, message, reason, icon, display_name}` — `target_label`은 전원이면 `"전체"`, 아니면 이름 join.
+- `world_event {...}` — **레거시 실행 재생·재출력에서만**. 신규 실행은 안 냄.
 
 **계약 블록** — 없음 (디렉터는 자체 프롬프트로 별도 LLM 호출).
 

@@ -231,7 +231,8 @@ startSimulation() (run/control.js)
 | `turn_error` | — | 오류 로그 누적 (`run/errors.js`) |
 | `scene_event` | 씬 카드 (📢 시스템 / 🎭 등장 / 🚪 퇴장) | 카드 active/exited 클래스 |
 | `director_call` | 디렉터 판단 한 줄 (시야·토큰·소요시간·판정) | — |
-| `system_intervention` / `world_event` | 개입 카드 🎬 / 세계 사건 카드 🌍 | — |
+| `system_intervention` | 개입 카드 🎬 `→ 대상` | — |
+| `world_event` (레거시 재생만) | 세계 사건 카드 🌍 | — |
 | `agent_move` | 이동 카드 🚶 | 카드 위치 뱃지, 지도 아바타 이동 |
 | `meeting_update` | 만남 카드 🤝 (문구는 `state.js:meetingNarration`) | 카드 "→ 목표" 뱃지, 지도 점선 |
 | `infection_update` | 감염 카드 🦠 | 카드 뱃지, 그래프 노드 색, 지도 아바타 |
@@ -240,7 +241,7 @@ startSimulation() (run/control.js)
 | `simulation_end` | "완료 \| 총 N턴 \| 사유" | 진행 바 100%, 연결 종료 |
 | `error` | — | 연결 오류 누적, 상태 `error` |
 
-**wave 카드 버퍼링** — `system_intervention`·`world_event`·`director_call`·`time_jump`는
+**wave 카드 버퍼링** — `system_intervention`·`director_call`·`time_jump`는
 엔진이 wave 루프 상단/하단에서 emit하므로 해당 wave의 `wave_start`보다 **먼저** 도착할
 수 있다. `_appendWaveCard`가 아직 시작 안 된 wave의 카드를 들고 있다가, 그 wave의
 구분선을 그린 뒤 `flushPendingWaveCards`로 흘려보낸다.
@@ -271,7 +272,8 @@ startSimulation() (run/control.js)
   **두 벌** 존재. 출력이 바이트 단위로 같도록 `tests/fixtures/golden_*.md` 골든 테스트로
   고정. 포맷을 바꾸면 양쪽을 함께 고쳐야 한다.
 - 내보낼 요소는 **내보내기 옵션 모달**(`#sim-export-modal`)에서 체크박스로 토글
-  (시간 구분·지문·이동·외모·세계 사건·개입·감염·만남).
+  (시간 구분·지문·이동·외모·내레이터 개입·감염·만남). "개입" 토글이 구 실행의
+  `world_event`까지 함께 제어한다.
 - **위치 이력 CSV** (`sim/export/csv.js`) — wave별 에이전트 위치. 감염병 접촉 분석용.
 
 ---

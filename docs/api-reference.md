@@ -211,9 +211,9 @@ Prefix `/api/simulation`. 저장소는 채팅 DB `simulation_scenarios`.
 | `turn_error` | `turn`, `speaker`, `error` | |
 | `turn_language_fix` | `speaker`, `wave`, `turn` | |
 | `scene_event` | `event_type` (`system_message`/`agent_enter`/`agent_exit`/`infect_agent`/`update_appearance`), `message`, `targets[]`, `agent`, `observer_only` | ✅ |
-| `director_call` | `wave`, `digest_waves`, `prompt_tokens`, `prompt_chars`, `elapsed_ms`, `intervened`, `n_interventions`, `world_event`, `failed`, `icon`, `display_name` | ✅ |
-| `system_intervention` | `wave`, `target`, `target_alias`, `message`, `reason`, `icon`, `display_name` | ✅ |
-| `world_event` | `wave`, `content`, `targets[]`, `target_aliases[]`, `reason`, `icon`, `display_name` | ✅ |
+| `director_call` | `wave`, `digest_waves`, `prompt_tokens`, `prompt_chars`, `elapsed_ms`, `intervened`, `n_interventions`, `failed`, `icon`, `display_name` | ✅ |
+| `system_intervention` | `wave`, `targets[]`, `target_aliases[]`, `target_label` (`"전체"` 또는 이름 join), `message`, `reason`, `icon`, `display_name` | ✅ |
+| `world_event` | (레거시) `wave`, `content`, `targets[]`, `target_aliases[]`, `reason` — **신규 실행은 안 냄**, 구 실행 재출력에서만 | ✅ |
 | `agent_move` | `wave`, `agent`, `display_name`, `from`, `to`, `to_exterior` | ✅ |
 | `meeting_update` | `chaser`, `chaser_name`, `target`, `target_name`, `target_location`, `status` (`start`/`arrived`/`cancelled`), `reason`, `wave` | ✅ |
 | `infection_update` | `wave`, `elapsed_minutes`, `agent`, `display_name`, `status` (`S`/`I`/`R`), `cause` (`event`/`transmission`/`recovery`), `disease_name` | ✅ |

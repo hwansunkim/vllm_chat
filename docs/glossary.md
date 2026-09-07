@@ -140,9 +140,10 @@
 | **컨텍스트 탭** | `#sim-tab-context` | 선택 에이전트(`#sim-context-agent-name`)의 프롬프트 메시지 열(`#sim-context-msgs`) + 토큰 배너 | `sim/context.js` |
 
 > **타임라인 카드 종류** (모두 `sim/run/feed.js`의 `addXxxCard`): 발화 말풍선, 상황 카드(`addSituationCard`),
-> 디렉터 판단 카드(`addDirectorCallCard` 🎬), 개입 카드(`addInterventionCard`), 세계 사건 카드(`addWorldEventCard` 🌍),
+> 디렉터 판단 카드(`addDirectorCallCard` 🎬), 개입 카드(`addInterventionCard` — `→ 대상` 표기),
 > 이동 카드(`addMovementCard` 🚶), 외모 변화 카드(`addAppearanceCard` 👗), 만남 카드(`addMeetingCard` 🤝),
 > 감염 카드(`addInfectionCard` 🦠), 시간 점프 카드(`addTimeJumpCard` 🕐), 씬 이벤트(`addSceneEventToFeed`).
+> `addWorldEventCard` 🌍는 레거시 실행 재생 전용.
 
 ## A-5. 설정 뷰 구성요소 (`#sim-settings-view`)
 
@@ -335,7 +336,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 | **미팅 믹스인** | `meeting.py` | `_apply_move_intents`, `_update_meeting_paths` | **만남 lock** (`move_to`에 장소가 아닌 **사람**을 지목): 추격·랑데부·집결, `meeting_update` emit |
 | **감염 믹스인** | `infection.py` | `_apply_infection_wave`, `_sample_recovery_minutes` | **결정론적 SIR/SIS**. 같은 wave·같은 장소 접촉 → 확률 전염. 증상 진행·회복은 경과 분 기준. LLM은 상태·확률을 절대 안 봄 |
 | **이벤트 믹스인** | `events.py` | `_execute_event` | 시나리오 이벤트: `system_message`, `agent_enter`, `agent_exit` |
-| **시스템 믹스인** | `system.py` | `_run_system_agent` | **디렉터(system 에이전트)** 실행: 침묵·반복 감지, 개입/세계 사건 주입, `director_memo` 갱신, `director_call` emit |
+| **시스템 믹스인** | `system.py` | `_run_system_agent` | **디렉터(system 에이전트)** 실행: 침묵·반복·고립 감지, 개입 메시지 주입(1..N 대상), `director_memo` 갱신, `director_call` emit |
 
 ## C-2. Agent (`ABM/agent.py`)
 
@@ -456,11 +457,12 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 | 용어 | 정의 |
 |---|---|
 | **디렉터 / system 에이전트 / 내레이터** | **셋 다 같은 것**. 내부 식별자는 `system`, 표시 이름은 기본 "내레이터" (변경 가능). 이야기 흐름을 감시하다 정체·반복 시 개입 |
-| **개입 (intervention)** | 특정 에이전트를 지목해 메시지 주입 (`system_intervention` 이벤트) |
-| **세계 사건 (world_event)** | 상황 자체를 서술해 여러 에이전트에 주입 (`world_event` 이벤트) |
+| **개입 (intervention)** | 디렉터의 **유일한** 개입 수단. `{targets: [...], message}` — 1..N명(`all`/`group:X`/ID 리스트)에게 상황·자극 메시지 주입. `system_intervention` 이벤트. 대상이 1명이면 사적 촉발, 여럿이면 공유 자극. 구 `world_event`(별도 세계 사건)는 여기로 통합됨 — 레거시 실행 재생·재출력에서만 `world_event` 이벤트가 보인다 |
+| **개입 규칙** | 완료된 행동·없던 사물·상태 변화를 만들지 말 것 (그건 에이전트가 행동으로). 뒤끝 없는 순간적 자극(천둥·사이렌·냄새)만. `[현재 시각]` 외 시각 지어내기 금지 |
 | **감독 노트 (director_note)** | 사용자가 쓰는 **불변** 서사 목표·결말 조건. 디렉터가 매 개입마다 참조 (페르소나보다 우선) |
 | **director_memo** | 디렉터가 **스스로** 갱신하는 진행 메모 (최근 N줄) |
 | **시야 (digest_waves)** | 디렉터가 개입 판단 시 원문으로 되짚는 최근 wave 수 (엔진 clamp [2,20]) |
+| **감독 아이콘·표시 이름** | 개입 카드/에이전트가 보는 화자 라벨(`[내레이터]`)에 적용. 대상이 전원이면 `→ 전체`, 아니면 `→ 이름들` |
 | **director_call 이벤트** | 디렉터가 돈 사실 + 비용(토큰·소요시간). 개입 여부와 무관하게 emit (성능 관측용) |
 | **반복 감지 (D1 + D2)** | D1 = 어휘 유사도(축자 반복), D2 = 디렉터가 다이제스트를 읽고 주제 반복 판단. 상세: `docs/director-repetition-detection.md` |
 
@@ -513,9 +515,9 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 | `turn_error` | 발화 실패 (빈 응답/예외) | 오류 배지 누적 |
 | `turn_language_fix` | 언어 교잡 감지 → 재시도 시작 | — |
 | **`scene_event`** | 시나리오 이벤트 실행 (`system_message`/`agent_enter`/`agent_exit`) | 씬 카드 |
-| **`system_intervention`** | 디렉터 개입 (특정 에이전트 지목) | 개입 카드 🎬 |
-| **`world_event`** | 디렉터 세계 사건 | 세계 사건 카드 🌍 |
-| `director_call` | 디렉터가 돈 사실 + 비용 | 디렉터 판단 카드 |
+| **`system_intervention`** | 디렉터 개입 (`targets` 1..N, `target_label`, `message`) | 개입 카드 🎬 `→ 대상` |
+| **`world_event`** | (레거시) 구 실행의 디렉터 세계 사건 — 신규 실행은 안 냄 | 세계 사건 카드 🌍 |
+| `director_call` | 디렉터가 돈 사실 + 비용 (`n_interventions`) | 디렉터 판단 카드 |
 | **`agent_move`** | 에이전트 이동 (from → to) | 이동 카드 🚶 + 지도 갱신 |
 | **`meeting_update`** | 만남 lock 생성/해소 (start/arrived/cancelled) | 만남 카드 🤝 |
 | **`infection_update`** | 감염 상태 전이 (시드/전파/회복) | 감염 카드 🦠 + 뱃지 |

@@ -54,7 +54,7 @@ function readChecks() {
     action:       document.getElementById('exp-chk-action')?.checked       ?? true,
     move:         document.getElementById('exp-chk-move')?.checked         ?? true,
     appearance:   document.getElementById('exp-chk-appearance')?.checked   ?? true,
-    world:        document.getElementById('exp-chk-world')?.checked        ?? true,
+    // "내레이터 개입" 토글이 세계 사건(레거시 실행)까지 함께 제어한다 — 이제 같은 개념.
     intervention: document.getElementById('exp-chk-intervention')?.checked ?? true,
     infection:    document.getElementById('exp-chk-infection')?.checked    ?? true,
     meeting:      document.getElementById('exp-chk-meeting')?.checked      ?? true,
@@ -135,8 +135,7 @@ function buildStream(log, events, checks) {
   const wantTypes = new Set();
   if (checks.move)         wantTypes.add('agent_move');
   if (checks.appearance)   wantTypes.add('appearance_update');
-  if (checks.intervention) wantTypes.add('system_intervention');
-  if (checks.world)        wantTypes.add('world_event');
+  if (checks.intervention) { wantTypes.add('system_intervention'); wantTypes.add('world_event'); }
   if (checks.infection)    wantTypes.add('infection_update');
   if (checks.meeting)      wantTypes.add('meeting_update');
 
@@ -198,11 +197,15 @@ function fmtAppearance(data) {
 function fmtIntervention(data) {
   const icon = data.icon || '🎬';
   const nm   = data.display_name || '내레이터';
-  const tgt  = data.target_alias || data.target || '';
+  // 새 스키마: target_label / target_aliases[] / targets[]. 구: target_alias / target.
+  const tgt = data.target_label
+    || (data.target_aliases || data.targets || (data.target ? [data.target] : [])).join(', ')
+    || '';
   return `\n> **[${icon} ${nm}]** → *${tgt}* : ${data.message}\n`;
 }
 
 function fmtWorldEvent(data) {
+  // 레거시 실행 재출력 전용 (신규 실행은 system_intervention 만 낸다).
   return `\n> **[🌍 세계 사건]** *${data.content}*\n`;
 }
 
@@ -370,7 +373,7 @@ export async function exportRunMarkdown(runId, run, preloadedLog) {
   // 마찬가지로 없으면 "꺼진 모델"로 폴백 — 이 실행의 감염 설정을 문서 머리에 싣는다.
   sim.infection_model         = buildInfectionModel(parsedConfig.infection_model);
 
-  const defaultChecks = { time: true, action: true, move: true, appearance: true, world: true, intervention: true, infection: true, meeting: true };
+  const defaultChecks = { time: true, action: true, move: true, appearance: true, intervention: true, infection: true, meeting: true };
 
   try {
     const evtRes = await fetch(`/api/simulation/runs/${encodeURIComponent(runId)}/events`);

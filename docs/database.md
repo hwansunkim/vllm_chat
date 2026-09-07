@@ -169,7 +169,7 @@ nullable/기본값이라 기존 행은 영향 없음. 컬럼 삭제·이름 변�
 | `id` | INTEGER PK | |
 | `run_id` | TEXT | |
 | `wave` | INTEGER | |
-| `event_type` | TEXT | `agent_move`, `infection_update`, `system_intervention`, `world_event`, `meeting_update`, `scene_event`, `director_call`, `appearance_update`, `time_jump` (= `_PERSIST_EVENTS`) |
+| `event_type` | TEXT | `agent_move`, `infection_update`, `system_intervention`, `meeting_update`, `scene_event`, `director_call`, `appearance_update`, `time_jump` (= `_PERSIST_EVENTS`). `world_event`는 레거시 — 구 실행 행에만 존재 |
 | `data_json` | TEXT | 이벤트 페이로드 |
 | `timestamp` | REAL | epoch |
 
