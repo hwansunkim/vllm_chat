@@ -1,3 +1,4 @@
+import json
 import time
 import logging
 
@@ -22,13 +23,36 @@ class _TurnMixin:
         est_tokens:  int,
         time_str:    str | None = None,
     ) -> dict:
-        """Parse the LLM response, update memory/log/edges, emit events, persist to DB."""
+        """Parse the LLM response, update memory/log/edges, emit events, persist to DB.
+
+        파싱 불가(유효한 JSON 객체 없음)면 상태를 전혀 건드리지 않고
+        ``{"success": False}`` 를 돌려준다 — 호출부(``_step_agent``)가 LLM 실패와
+        똑같이 turn_error emit + incoming 롤백을 한다. 원본 JSON 텍스트가 대사로
+        새어 shared_log·피드·메모리를 오염시키던 경로를 끊는다.
+        """
         prompt_tokens = usage.get("prompt_tokens", est_tokens)
         agent._last_prompt_tokens = prompt_tokens
 
-        clean_content, meta, parsed_targets = parse_json_response(raw_content, agent._extra_fields)
+        clean_content, meta, parsed_targets, parsed = parse_json_response(raw_content, agent._extra_fields)
+        if parsed is None:
+            logger.warning(
+                f"[{agent.name}] 턴 결과 파싱 실패 (유효한 JSON 객체 없음) — turn_error 로 처리. "
+                f"원본: {raw_content[:200]}"
+            )
+            self._emit("turn_error", {
+                "turn":    turn,
+                "speaker": agent.name,
+                "error":   "JSON 파싱 실패 (유효한 객체 없음)",
+            })
+            return {"success": False, "agent_key": agent_key}
 
-        agent.add_to_memory({"role": "assistant", "content": raw_content})
+        # 메모리에는 원본이 아니라 **정규화한 첫 객체**를 남긴다 — 모델이 자기
+        # 히스토리의 깨진 형식(중첩 펜스·다중 객체·앞뒤 산문)을 다시 보고 같은
+        # 패턴을 반복하는 루프를 끊는다. 정상 응답에서는 사실상 no-op(같은 내용).
+        agent.add_to_memory({
+            "role":    "assistant",
+            "content": json.dumps(parsed, ensure_ascii=False),
+        })
         agent.add_to_log(
             content=clean_content, reasoning=reasoning,
             extra=meta, targets=parsed_targets,

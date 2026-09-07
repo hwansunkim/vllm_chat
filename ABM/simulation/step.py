@@ -354,6 +354,12 @@ class _StepMixin:
             active_agent, agent_key, content, reasoning, usage, disp_wave, turn, est_tokens,
             time_str=time_str,
         )
+        if not result.get("success"):
+            # 파싱 불가 — _apply_turn_result 가 이미 turn_error 를 emit 했다. LLM
+            # 실패와 동일하게 이번 wave 에 들은 말을 되돌려, 강제 재투입 때 다시
+            # 듣고 응답을 재시도하게 한다.
+            self._rollback_incoming(active_agent, incoming_msgs)
+            return {"success": False, "agent_key": agent_key}
         result["move_to"]            = extras.get("move_to")
         result["update_appearance"]  = extras.get("update_appearance")
         result["time_str"]           = time_str

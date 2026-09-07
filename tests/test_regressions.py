@@ -7190,6 +7190,115 @@ class ChatAgentRelationshipsTests(unittest.TestCase):
                          {"a": "친구"})
 
 
+class MalformedJsonResponseTests(unittest.TestCase):
+    """약한 모델이 한 응답에 JSON 객체를 여러 개 배치로 내는 경우 (ABM/parser.py).
+
+    실전 사례: gemma4 에이전트가 강한 디렉터(gpt-5.6)의 "구체적으로 여러 단계
+    처리하라" 압박에, 여러 턴 분량을 각각 ```json 펜스로 감싸 한 응답에 이어붙였다.
+    옛 파서는 json.loads() 가 "Extra data" 로 터지자 **원본 블롭 전체를 clean_content
+    로 덤프**해 shared_log·피드·메모리에 날 JSON 이 새고, target 을 self 로 강제하고,
+    turn_error 도 안 냈다(완전 무성 실패).
+    """
+
+    _MULTI = (
+        "```json\n"
+        '{"content": "먼저 이것부터.", "action_note": "메일을 연다", '
+        '"target": "self", "move_to": null, "update_appearance": null}\n'
+        "```\n\n"
+        "```json\n"
+        '{"content": "다음은 이거.", "action_note": "답장을 쓴다", '
+        '"target": "self", "move_to": "창고", "update_appearance": null}\n'
+        "```\n"
+    )
+
+    def test_first_object_is_recovered_from_a_multi_object_blob(self):
+        from ABM.parser import parse_json_response
+        content, meta, targets, parsed = parse_json_response(self._MULTI)
+        self.assertEqual(content, "먼저 이것부터.")
+        self.assertEqual(targets, ["self"])
+        self.assertEqual(meta["action_note"], "메일을 연다")
+        self.assertIsInstance(parsed, dict)
+
+    def test_extras_come_from_the_first_object_only(self):
+        from ABM.parser import parse_json_extras
+        # 첫 객체의 move_to 는 null → None. 두 번째의 "창고" 를 주워오면 안 된다.
+        self.assertEqual(parse_json_extras(self._MULTI),
+                         {"move_to": None, "update_appearance": None})
+
+    def test_plain_and_fenced_single_objects_still_parse(self):
+        from ABM.parser import parse_json_response
+        plain  = '{"content": "안녕", "target": "a"}'
+        fenced = '```json\n{"content": "안녕", "target": "a"}\n```'
+        for raw in (plain, fenced):
+            content, _, targets, parsed = parse_json_response(raw)
+            self.assertEqual(content, "안녕")
+            self.assertEqual(targets, ["a"])
+            self.assertIsNotNone(parsed)
+
+    def test_prose_before_the_object_is_tolerated(self):
+        from ABM.parser import parse_json_response
+        content, _, _, parsed = parse_json_response(
+            '네, 알겠습니다:\n{"content": "감사합니다", "target": "self"}'
+        )
+        self.assertEqual(content, "감사합니다")
+        self.assertIsNotNone(parsed)
+
+    def test_no_json_object_at_all_is_a_parse_failure(self):
+        from ABM.parser import parse_json_response, parse_json_extras
+        content, meta, targets, parsed = parse_json_response("죄송합니다, 잘 모르겠어요.")
+        self.assertIsNone(parsed)          # ← 호출부가 턴 실패로 취급하는 신호
+        self.assertEqual(content, "")      # 원본을 대사로 흘리지 않는다
+        self.assertEqual(targets, ["self"])
+        self.assertEqual(parse_json_extras("그냥 텍스트"), {})
+
+    def _run_one_turn(self, raw_reply):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        def llm(messages, max_tokens=None, **kw):
+            sys_text = messages[0].get("content", "") if messages else ""
+            if "시간 관찰자" in sys_text:
+                return json.dumps({"category": "normal_scene", "reason": "t"}), "", {}
+            return raw_reply, "", {}
+
+        events: list[tuple[str, dict]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {"a": Agent("a", "너는 a다.", tmp, token_limit=4096)}
+            sim = Simulation(
+                agents, [{"role": "user", "content": "[배경] 테스트"}], tmp, llm=llm,
+            )
+            sim._emit = lambda t, d: events.append((t, d))
+            sim.run("a", max_waves=1, step_delay=0.0)
+        return sim, agents["a"], events
+
+    def test_multi_object_reply_recovers_the_first_object_without_leaking_raw(self):
+        sim, agent, events = self._run_one_turn(self._MULTI)
+        kinds = [t for t, _ in events]
+        self.assertIn("turn_complete", kinds)
+        self.assertNotIn("turn_error", kinds)
+        # shared_log 에는 정제된 첫 대사만 — 원본 블롭도, ```json 도 없다.
+        entry = next(e for e in sim.shared_log if e.get("speaker") == "a")
+        self.assertEqual(entry["content"], "먼저 이것부터.")
+        # 메모리도 정규화된 단일 객체 — 다음 턴 프롬프트가 오염되지 않는다.
+        self.assertEqual(len(agent.memory), 1)
+        stored = json.loads(agent.memory[0]["content"])
+        self.assertEqual(stored["content"], "먼저 이것부터.")
+        self.assertNotIn("```", agent.memory[0]["content"])
+
+    def test_unparseable_reply_surfaces_turn_error_and_rolls_back(self):
+        sim, agent, events = self._run_one_turn("죄송합니다, 지금은 잘 모르겠어요.")
+        kinds = [t for t, _ in events]
+        self.assertIn("turn_error", kinds)
+        self.assertNotIn("turn_complete", kinds)
+        self.assertEqual([e for e in sim.shared_log if e.get("speaker") == "a"], [])
+        self.assertEqual(agent.memory, [])   # incoming 롤백
+
+    def test_output_contract_tells_the_model_to_emit_exactly_one_object(self):
+        from ABM.prompt_contract import build_output_contract
+        text = build_output_contract(["a"], [{"name": "emotion", "default": "neutral"}])
+        self.assertIn("정확히 하나", text)
+
+
 class TurnLocationLoggingTests(unittest.TestCase):
     """턴 로그의 위치 이력 (감염병 접촉 분석용 CSV 내보내기의 데이터 원천).
 
