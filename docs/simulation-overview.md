@@ -25,7 +25,7 @@ Wave 0 : start_agent 발화 → target = [b, c]
 Wave 1 : b, c 동시 발화 (ThreadPoolExecutor 병렬) → 각자의 target
 Wave 2 : Wave 1 target들이 발화
   ⋮
-종료:  max_waves 도달  |  목표 기간 도달  |  연속 침묵 (early stop)  |  활성 에이전트 없음  |  사용자 중지
+종료:  max_waves 도달  |  목표 기간 도달  |  활성 에이전트 없음  |  진행 불가(응답 없음)  |  사용자 중지
 ```
 
 | 용어 | 정의 |
@@ -117,7 +117,7 @@ SSE 큐·stop_event 생성, swap_event_queue
 - `status ∈ {done, stopped}` 이고 `sim_obj`가 살아 있어야 함 (아니면 409).
 - 메모리에 있는 `sim_obj`를 **그대로 이어 쓴다** (재조립 없음). 새 SSE 큐·새 `run_id`.
 - `fold_elapsed_and_reset_waves(sim_obj)` — 시계 연속성.
-- **원래 실행의 `config_json`에서** `max_silence_waves`·`early_stop_enabled` 복원
+- **원래 실행의 `config_json`에서** `max_silence_waves` 복원
   (`SimContinueConfig`에는 없는 필드).
 - 이벤트는 **재생하지 않는다** (`events=[]`) — wave 0부터 다시 세므로 과거 wave의
   이벤트가 매번 다시 발동한다. `resume_wave = sim_obj._pending_wave`.
@@ -134,7 +134,7 @@ SSE 큐·stop_event 생성, swap_event_queue
 
 `/load`와 같은 재조립 + **바로 스레드 실행**. `wave_base_init = prior_cum`
 (직전 run들의 누적 wave), `elapsed_minutes_init`, `restore_agent_state`,
-`resume_wave = saved_pending`. 조기 종료 설정은 복원된 `SimStartConfig`에서.
+`resume_wave = saved_pending`. `max_silence_waves`는 복원된 `SimStartConfig`에서.
 
 > `/load`·`/resume` 조립 코드가 `headless.run_config`의 `Simulation(...)` 인자를
 > 손으로 복제하고 있다. 새 엔진 인자를 추가하면 **세 곳**(headless, load, resume)을
@@ -223,7 +223,7 @@ async def _gen():
 | `time_mode` / `time_per_wave` | `fixed` / 30 | 시간 모델 |
 | `time_categories[]` / `time_estimation_mode` | 4종 / `category` | 가변 시간 |
 | `max_scene_jump_minutes` / `max_daytime_jump_minutes` | 45 / 180 | 시간 점프 상한 |
-| `max_silence_waves` / `early_stop_enabled` | 3 / `true` | 조기 종료 |
+| `max_silence_waves` | 3 | 고립 휴면 기준 (연속 혼잣말 N회 → 밀집 재투입 제외) + idle 점프 인덱스 |
 | `server_id` / `temperature` | `null` / 0.7 | 시뮬레이션 기본 LLM |
 | `lang_fix_enabled` / `lang_fix_retries` | `true` / 2 | 언어 교잡 수정 |
 | `output_format_override` | `""` | 출력 계약 오버라이드 (opt-in). 빈 값 = 엔진 자동 생성 |

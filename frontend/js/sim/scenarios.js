@@ -78,7 +78,6 @@ export function buildScenarioConfig() {
     max_scene_jump_minutes:   sim.max_scene_jump_minutes   ?? 45,
     max_daytime_jump_minutes: sim.max_daytime_jump_minutes ?? 180,
     max_silence_waves:      sim.max_silence_waves  ?? 3,
-    early_stop_enabled:     sim.early_stop_enabled ?? true,
     server_id:              sim.server_id         ?? null,
     temperature:            normalizeTemperature(sim.temperature),
     system_agent:           sim.system_agent,
@@ -175,7 +174,6 @@ export function newScenario() {
   sim.max_scene_jump_minutes   = 45;
   sim.max_daytime_jump_minutes = 180;
   sim.max_silence_waves      = 3;
-  sim.early_stop_enabled     = true;
   sim.server_id              = null;
   sim.temperature            = DEFAULT_TEMPERATURE;
   sim.system_agent           = { enabled: false, icon: '🎬', display_name: '내레이터', system_prompt: '', intervention_interval: 1, silence_threshold: 3, director_note: '', digest_waves: 6 };
@@ -253,7 +251,6 @@ export function applyScenario(s) {
   sim.max_scene_jump_minutes   = cfg.max_scene_jump_minutes   ?? 45;
   sim.max_daytime_jump_minutes = cfg.max_daytime_jump_minutes ?? 180;
   sim.max_silence_waves      = cfg.max_silence_waves      ?? 3;
-  sim.early_stop_enabled     = cfg.early_stop_enabled     ?? true;
   sim.server_id              = cfg.server_id              ?? null;
   // 구버전 시나리오에는 필드가 없다 — normalizeTemperature()가 0.7로 폴백한다.
   sim.temperature            = normalizeTemperature(cfg.temperature);

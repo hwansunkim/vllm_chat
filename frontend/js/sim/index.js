@@ -21,7 +21,7 @@ import {
   newScenario, applyScenario,
   exportScenarioFile, importScenarioFile,
 } from './scenarios.js';
-import { addLocationNode, addTimeCategory, initEarlyStopToggle, initTimeModeToggle, initTargetDurationUI,
+import { addLocationNode, addTimeCategory, initTimeModeToggle, initTargetDurationUI,
          initTimeEstimationModeToggle, initPerceptionModeToggle, addSymptomStage } from './settings/page.js';
 import { toggleRunHistory, openAllRunsModal } from './runs/history.js';
 import { exportGraph } from './graph/d3.js';
@@ -76,7 +76,6 @@ export function initSimulationEvents() {
   document.getElementById('sim-export-md-btn').addEventListener('click', openExportModal);
   initExportModal();
   initErrorPopupEvents();
-  initEarlyStopToggle();
   initTimeModeToggle();
   initTimeEstimationModeToggle();
   initPerceptionModeToggle();

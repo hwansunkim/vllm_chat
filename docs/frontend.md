@@ -82,7 +82,7 @@ body
 | 시나리오 | `agents[]`, `background`, `start_agent`, `max_waves`, `target_duration_minutes`, `extra_fields[]`, `events[]` |
 | 위치 | `location_graph[]`, `perception_mode` (`targeted`\|`spatial`) |
 | 시간 | `time_mode`, `time_per_wave`, `time_categories[]`, `time_estimation_mode`, `idle_minutes_schedule[]`, `max_scene_jump_minutes`, `max_daytime_jump_minutes`, `sim_start_time`, `sim_start_weekday` |
-| 종료 | `max_silence_waves`, `early_stop_enabled` |
+| 휴면 | `max_silence_waves` (고립 휴면 기준) |
 | LLM | `server_id`, `temperature`, `token_limit`, `llm_max_tokens`, `lang_fix_*` |
 | 하위 모델 | `system_agent{}`, `infection_model{}` |
 | 런타임 | `eventSource`, `scenarios[]`, `agentEmotions{}`, `agentInfection{}`, `errorLog[]` |
@@ -337,6 +337,6 @@ startSimulation() (run/control.js)
 | `map/d3.js` | 인스펙터 위치 지도 탭 (951줄) |
 | `runs/history.js` · `runs/replay.js` · `runs/interview.js` | 과거 실행 |
 | `settings/page.js` | 설정 뷰 오케스트레이션 (`renderSettingsPage` / `readConfigFromUI`) |
-| `settings/*.js` | 섹션별 렌더/수집 (agents, events, location-graph, system-agent, infection-config, time-categories, contract-preview, output-fields, target-duration, early-stop, temperature, server-select, sections, textareas …) |
+| `settings/*.js` | 섹션별 렌더/수집 (agents, events, location-graph, system-agent, infection-config, time-categories, contract-preview, output-fields, target-duration, temperature, server-select, sections, textareas …) |
 | `export/markdown.js` · `export/csv.js` | 내보내기 (프론트 포매터) |
 | `utils/download.js` · `utils/json.js` · `utils/time.js` | 소형 헬퍼 |

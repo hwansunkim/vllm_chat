@@ -220,7 +220,7 @@ Prefix `/api/simulation`. 저장소는 채팅 DB `simulation_scenarios`.
 | `appearance_update` | `wave`, `agent`, `display_name`, `description` | ✅ |
 | `time_jump` | `wave`, `mode` (`category`/`ai`/`idle`), `used_fallback`, `category_id`, `category_label`, `reason`, `raw_minutes`, `minutes`, `clamp_reason`, `end_time_str` | ✅ |
 | `compression_start` / `compression_done` | `agent`, `wave`, `msg_count` | |
-| `simulation_end` | `total_turns`, `edges_count`, `log_count`, `end_reason` (`max_waves`/`target_duration`/`silence`/`no_agents`/`stopped`) | |
+| `simulation_end` | `total_turns`, `edges_count`, `log_count`, `end_reason` (`max_waves`/`target_duration`/`no_agents`/`no_progress`/`stopped`) | |
 | `ping` | `{}` | |
 
 **영속** = `sim_events` 테이블 저장 (`_PERSIST_EVENTS`) = 마크다운 내보내기 대상.

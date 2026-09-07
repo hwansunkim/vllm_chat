@@ -260,12 +260,16 @@ class SimStartConfig(BaseModel):
     # 두 캡 모두 0 = 해당 캡 비활성(순수 카테고리 랜덤값 사용).
     max_scene_jump_minutes:   int            = 45   # 실내 한 곳에 2명+ 동석 발화 중일 때의 점프 상한
     max_daytime_jump_minutes: int            = 180  # 밤(22~06시)이 아니고 집에 남은 사람이 있을 때의 점프 상한
-    max_silence_waves:      int              = 3         # 연속 침묵 허용 wave 수 (early_stop_enabled + time_per_wave > 0일 때 활성)
-    early_stop_enabled:     bool             = True      # False = 조기 종료 비활성 (max_waves까지 항상 실행)
-    # 목표 기간(분). None = 미사용(기존 동작: max_waves + 침묵 조기종료만).
-    # 설정 시 "시뮬레이션 내 경과 시간이 이 값에 도달"이 주 종료 신호가 되고,
-    # max_waves는 상한 안전장치로 남는다 — 둘 중 먼저 도달하는 쪽에서 정상 종료.
-    # 시간 개념이 비활성(time_mode="fixed" AND time_per_wave=0)이면 이 값은 조용히 무시된다.
+    # 고립 독백을 이 횟수 연속하면 '휴면'으로 보고 밀집 재투입에서 제외 +
+    # 전원 휴면 시 idle 시간 점프 스케줄의 인덱스로도 쓰인다. (구 early_stop_enabled
+    # 플래그는 제거됐다 — 대화가 시들해지는 것으로는 더 이상 실행을 종료하지 않고,
+    # 시간을 건너뛰며 계속한다. 종료는 max_waves / target_duration_minutes /
+    # no_agents / no_progress / stopped.)
+    max_silence_waves:      int              = 3
+    # 목표 기간(분). None = 미사용. 설정 시 "시뮬레이션 내 경과 시간이 이 값에 도달"이
+    # 주 종료 신호가 되고, max_waves는 상한 안전장치로 남는다 — 둘 중 먼저 도달하는
+    # 쪽에서 정상 종료. 시간 개념이 비활성(time_mode="fixed" AND time_per_wave=0)이면
+    # 이 값은 조용히 무시된다.
     target_duration_minutes: int | None      = Field(default=None, ge=1)
     server_id:              str | None       = None  # None = DB default 서버, 미설정 시 env 폴백
     # 시뮬레이션 전체 기본 샘플링 온도. AgentConfig.temperature 로 에이전트별 오버라이드 가능.

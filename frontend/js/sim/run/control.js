@@ -79,7 +79,6 @@ export async function startSimulation() {
       max_scene_jump_minutes:   sim.max_scene_jump_minutes   ?? 45,
       max_daytime_jump_minutes: sim.max_daytime_jump_minutes ?? 180,
       max_silence_waves:      sim.max_silence_waves  ?? 3,
-      early_stop_enabled:     sim.early_stop_enabled ?? true,
       server_id:              sim.server_id || null,
       temperature:            normalizeTemperature(sim.temperature),
       system_agent:           sim.system_agent,

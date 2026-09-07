@@ -352,8 +352,10 @@ export const sim = {
   // 동석 상황 기준으로 캡한다(schemas.py SimStartConfig와 동일 기본값). 0 = 캡 비활성.
   max_scene_jump_minutes:   45,   // 실내 한 곳에 2명+ 동석 발화 중일 때
   max_daytime_jump_minutes: 180,  // 밤(22~06시)이 아니고 집에 남은 사람이 있을 때
-  max_silence_waves:  3,        // 연속 침묵 허용 wave 수 (early_stop_enabled + time_per_wave > 0일 때 활성)
-  early_stop_enabled: true,    // false = 조기 종료 비활성 (max_waves까지 항상 실행)
+  // 고립 독백을 이 횟수 연속하면 그 에이전트를 밀집 재투입에서 뺀다(휴면) +
+  // 전원 휴면 시 idle 시간 점프 스케줄 인덱스. 대화가 시들해지는 것만으로는
+  // 시뮬레이션이 끝나지 않는다(종료: max_waves / target_duration / no_agents / no_progress).
+  max_silence_waves:  3,
   server_id:        null,   // null = 기본 서버, string = 특정 서버 ID
   temperature:      0.7,    // 시뮬레이션 전체 기본 샘플링 온도 (0.0~2.0). 에이전트별로 오버라이드 가능
   system_agent: {

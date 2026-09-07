@@ -344,16 +344,11 @@
             </select>
           </div>
           <div class="sim-option-row">
-            <label>조기 종료<span class="sim-help" aria-hidden="true" data-tooltip="아무도 발화하지 않는 wave가 이어지면 최대 wave 수에 도달하기 전에 종료합니다. 침묵 허용 = 종료까지 견디는 연속 침묵 wave 수. (조기 종료 활성 + 시간 개념 활성 시에만 적용)">?</span></label>
+            <label>고립 휴면 기준<span class="sim-help" aria-hidden="true" data-tooltip="대화 상대 없이 혼잣말만 이 횟수 연속하면 그 에이전트를 매 wave 재투입에서 뺍니다(휴면). 전원이 휴면이면 시간을 크게 건너뛰고 전원을 다시 깨웁니다 — 가족이 각자 회사·학교로 흩어진 시간대를 빠르게 지나갑니다. 대화가 시들해지는 것만으로는 시뮬레이션이 끝나지 않습니다(종료는 최대 wave 수 · 목표 기간 도달 시).">?</span></label>
             <div class="sim-lang-fix-row">
-              <label class="sim-toggle-small">
-                <input type="checkbox" id="sim-early-stop-enabled" checked>
-                <span>활성화</span>
-              </label>
-              <span class="sim-lang-fix-sep">침묵 허용</span>
               <input type="number" id="sim-max-silence-waves" value="3" min="1" max="20" step="1"
                      class="sim-lang-fix-count"/>
-              <span class="sim-lang-fix-unit">wave</span>
+              <span class="sim-lang-fix-unit">wave 연속</span>
             </div>
           </div>
 

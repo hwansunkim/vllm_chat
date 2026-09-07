@@ -40,7 +40,6 @@
     "time_per_wave": 30,
     "time_mode": "fixed",
     "max_silence_waves": 3,
-    "early_stop_enabled": true,
     "system_agent": {
       "enabled": true,
       "icon": "🎬",

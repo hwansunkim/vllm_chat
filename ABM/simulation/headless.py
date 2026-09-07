@@ -195,7 +195,6 @@ def run_config(
             step_delay=cfg.step_delay,
             events=[e.model_dump() for e in cfg.events],
             max_silence_waves=cfg.max_silence_waves,
-            early_stop_enabled=cfg.early_stop_enabled,
             target_duration_minutes=cfg.target_duration_minutes,
         )
     finally:

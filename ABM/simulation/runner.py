@@ -17,14 +17,19 @@ class _RunnerMixin:
         events:            list        = None,
         resume_wave:       dict | None = None,
         max_silence_waves: int         = 3,
-        early_stop_enabled: bool       = True,
         target_duration_minutes: int | None = None,
     ):
         """Wave-based BFS + 시나리오 이벤트 실행.
 
-        ``target_duration_minutes``가 주어지면 시뮬레이션 내 경과 시간이 그 값에
-        도달하는 시점에서도 정상 종료한다. ``max_waves``는 그대로 상한(안전장치)으로
-        남으며, 둘 중 먼저 도달하는 조건에서 멈춘다.
+        종료 조건: ``max_waves`` 도달 · ``target_duration_minutes`` 도달 · 활성
+        에이전트 없음(``no_agents``) · 외부 중지(``stopped``) · **진행 불가**
+        (``no_progress`` — 연속으로 성공한 발화가 하나도 없어 사실상 고장난 실행).
+
+        대화가 시들해지는 것 자체로는 멈추지 않는다 — 시간을 크게 건너뛰고
+        (``idle`` 시간 점프) 계속하며, 고립돼 혼잣말만 하는 에이전트는 밀집
+        재투입에서 빠진다(휴면). 예전의 ``early_stop_enabled`` 플래그는 제거됐다:
+        시간 개념이 있으면 "침묵"은 종료 신호가 아니라 "건너뛰기" 신호이고,
+        시간 개념이 없는 순수 대화 시나리오는 더 이상 쓰이지 않는다.
         """
         events_by_wave: dict[int, list] = {}
         for e in (events or []):
@@ -35,6 +40,12 @@ class _RunnerMixin:
         turn_counter  = 0
         total_turns   = 0
         silence_count = 0
+        # 연속으로 "성공한 발화가 0인" wave 수. 옛 early_stop 이 암묵적으로 하던
+        # "LLM 이 전부 죽으면 max_waves 까지 두들기지 말고 멈춘다"를 대체하는
+        # 명시적 백스톱. 짧은 말이라도 뱉으면(any success) 0 으로 리셋되므로
+        # "대화가 시들해짐"이 아니라 "정말 아무것도 생성 못 함(고장)"만 잡는다.
+        dead_waves = 0
+        dead_wave_limit = max(6, max_silence_waves * 2)
 
         # ── 목표 기간(선택) ──────────────────────────────────────────────────
         # 시간 개념이 꺼져 있으면(fixed 모드 + time_per_wave=0) 목표 기간은 계산할
@@ -72,9 +83,10 @@ class _RunnerMixin:
                     current_wave[entrant] = []
 
             if not current_wave:
-                # "silence"는 직전 루프에서 이미 원인을 표시해뒀다(침묵 조기종료).
-                # 그 외(예: 초기 시나리오에 에이전트가 아예 없는 경우)에만 no_agents.
-                if end_reason != "silence":
+                # 직전 루프가 종료 사유를 이미 세팅했으면(no_progress 등) 존중하고,
+                # 아직 기본값이면 "활성 에이전트 없음"으로 본다 (초기 시나리오에
+                # 에이전트가 없거나 전원 agent_exit 한 경우).
+                if end_reason == "max_waves":
                     end_reason = "no_agents"
                 break
 
@@ -86,7 +98,7 @@ class _RunnerMixin:
             # 이제 이번 wave의 current_wave에 바로 주입하므로 emit의 wave, 반응
             # wave, 표시 시각이 셋 다 일치한다.
             # 배치는 `if not current_wave` 가드 **뒤**다 — 앞이면 디렉터의 개입이
-            # 빈 wave를 되살려 침묵 조기종료(early_stop)를 무력화한다.
+            # 전원 agent_exit 로 비워진 wave 를 되살려 no_agents 종료를 무력화한다.
             # 판정식도 `(wave_num+1) % interval` → `wave_num % interval`로 바뀌지만
             # 실제로 개입이 꽂히는 wave 번호는 예전과 동일하다(wave 0만 스킵).
             if self._sys_enabled and disp_wave > 0 and not self._stop_event.is_set():
@@ -339,73 +351,76 @@ class _RunnerMixin:
                 if agent_key in self.active_agents:
                     next_wave.setdefault(agent_key, []).extend(msgs)
 
-            # ── 조기 종료 / 시간 주도형 루프 ─────────────────────────────────────
+            # ── 침묵 처리 — 종료가 아니라 재투입/시간 점프 ────────────────────────
             organically_filled = bool(next_wave)
             forced_silence_reinject = False
 
             if not next_wave:
-                if not early_stop_enabled:
-                    # 조기 종료 OFF: max_waves 까지 계속 돈다. 단 **고립 독백을
-                    # max_silence_waves 회 이상 연속한(휴면)** 에이전트는 밀집
-                    # 재투입에서 뺀다 — 회사·학교로 흩어져 서로 못 닿는 에이전트가
-                    # 같은 독백을 무한 반복하는 것을 막는다. 누군가 그에게 도달하면
-                    # (이동·이벤트·디렉터 개입 → routed/scene_injections) 위쪽
-                    # 조립에서 이미 next_wave 에 들어가므로 자동으로 깨어난다.
-                    dormant_cap = max(1, max_silence_waves)
-                    wakeable = sorted(
-                        k for k in self.active_agents
-                        if self._solo_streak.get(k, 0) < dormant_cap
-                    )
-                    if wakeable:
-                        next_wave = {k: [] for k in wakeable}
-                    else:
-                        # 전원 휴면 — 같은 독백을 재생하는 대신 시간을 크게 흘려보내고
-                        # (가변 모드는 idle 스케줄) 전원을 한 번 깨운다. 새 시각을 보고
-                        # 재회할지 각자 판단하게 한다. 이게 없으면 '모두 흩어진 하루'가
-                        # 조각 점프로 max_waves 까지 갈린다.
-                        silence_count += 1
-                        forced_silence_reinject = True
-                        logger.info(f"[W{disp_wave}] 전원 휴면 — 시간 점프 + 전원 재투입 #{silence_count}")
-                        next_wave = {k: [] for k in sorted(self.active_agents)}
-                elif self._time_per_wave > 0 or self._time_mode == "variable":
-                    # 시간 주도형 + 조기 종료 ON: max_silence_waves 초과 시 종료
+                # 이번 wave 에 아무도 서로를 target 하지 않았다. 종료하지 않는다:
+                # max_waves 까지 계속 돈다. 단 **고립 독백을 max_silence_waves 회
+                # 이상 연속한(휴면)** 에이전트는 밀집 재투입에서 뺀다 — 회사·학교로
+                # 흩어져 서로 못 닿는 에이전트가 같은 독백을 무한 반복하는 것을
+                # 막는다. 누군가 그에게 도달하면(이동·이벤트·디렉터 개입 →
+                # routed/scene_injections) 위쪽 조립에서 이미 next_wave 에 들어가므로
+                # 자동으로 깨어난다.
+                dormant_cap = max(1, max_silence_waves)
+                wakeable = sorted(
+                    k for k in self.active_agents
+                    if self._solo_streak.get(k, 0) < dormant_cap
+                )
+                if wakeable:
+                    next_wave = {k: [] for k in wakeable}
+                else:
+                    # 전원 휴면 — 같은 독백을 재생하는 대신 시간을 크게 흘려보내고
+                    # (가변 모드는 idle 스케줄) 전원을 한 번 깨운다. 새 시각을 보고
+                    # 재회할지 각자 판단하게 한다. 이게 없으면 '모두 흩어진 하루'가
+                    # 조각 점프로 max_waves 까지 갈린다.
                     silence_count += 1
                     forced_silence_reinject = True
-                    logger.info(f"[W{disp_wave}] 침묵 #{silence_count}/{max_silence_waves}")
-                    if silence_count < max_silence_waves:
-                        next_wave = {key: [] for key in self.active_agents}
-                    else:
-                        # next_wave가 빈 채로 남아 다음 루프 선두의 `if not current_wave:`
-                        # 가드에 걸리는데, 그 가드는 무조건 "no_agents"를 붙인다. 침묵으로
-                        # 멈춘 것을 여기서 먼저 표시해 그 덮어쓰기를 막는다.
-                        end_reason = "silence"
-                else:
-                    # time_per_wave=0, early_stop=ON → 즉시 종료 (원래 동작)
-                    end_reason = "silence"
-            elif next_wave:
+                    logger.info(f"[W{disp_wave}] 전원 휴면 — 시간 점프 + 전원 재투입 #{silence_count}")
+                    next_wave = {k: [] for k in sorted(self.active_agents)}
+            else:
                 silence_count = 0
+
+            # ── 진행 불가 백스톱 ─────────────────────────────────────────────────
+            # 이번 wave 에 성공한 발화가 하나라도 있었으면 리셋, 없으면 카운트.
+            # 연속으로 아무 응답도 못 받으면(LLM 서버 다운, 전부 파싱 실패 등)
+            # max_waves 까지 헛되이 두들기지 말고 멈춘다. 이건 옛 early_stop 이
+            # 암묵적으로 하던 보호였다.
+            if any(r.get("success") for r in results.values()):
+                dead_waves = 0
+            else:
+                dead_waves += 1
+                if dead_waves >= dead_wave_limit:
+                    logger.warning(
+                        f"[W{disp_wave}] 연속 {dead_waves} wave 동안 성공한 발화 0 — "
+                        f"진행 불가로 종료(no_progress)"
+                    )
+                    end_reason = "no_progress"
+                    current_wave = next_wave
+                    break
 
             # ── 시간 누적 (가변 모드) ─────────────────────────────────────────
             # organically_filled(라우팅으로 next_wave가 자연스럽게 채워짐)가 아니어도,
-            # 이번 wave에 성공한 발화가 있었다면(예: early_stop_enabled=False로 강제
-            # 전원 재투입됐지만 에이전트들이 서로를 타겟하지 않고 각자 행동하는 경우)
-            # 진짜 침묵이 아니므로 LLM 분류 대상에 포함시킨다. forced_silence_reinject
-            # (정말 아무도 응답하지 않아 강제 재투입된 경우)만 결정적 idle 스케줄을 쓴다.
+            # 이번 wave에 성공한 발화가 있었다면(전원 재투입됐지만 에이전트들이 서로를
+            # 타겟하지 않고 각자 행동하는 경우) 진짜 침묵이 아니므로 LLM 분류 대상에
+            # 포함시킨다. forced_silence_reinject(전원 휴면 → 강제 재투입)만 결정적
+            # idle 스케줄을 쓴다.
             if self._time_mode == "variable":
                 has_content = any(r.get("success") for r in results.values())
                 if forced_silence_reinject:
                     idx  = min(silence_count, len(self._idle_minutes_schedule)) - 1
                     jump = self._idle_minutes_schedule[idx]
-                    # 관전 텔레메트리 — 강제 재투입(전원 침묵/전원 휴면)으로 시간이
-                    # 크게 건너뛰는 것을 피드에서 볼 수 있게 한다. 예전엔 이 점프가
-                    # 조용히 일어나 "왜 갑자기 3시간이 지났지?"가 됐다.
+                    # 관전 텔레메트리 — 전원 휴면 강제 재투입으로 시간이 크게 건너뛰는
+                    # 것을 피드에서 볼 수 있게 한다. 예전엔 이 점프가 조용히 일어나
+                    # "왜 갑자기 3시간이 지났지?"가 됐다.
                     self._emit("time_jump", {
                         "wave":           disp_wave,
                         "mode":           "idle",
                         "used_fallback":  False,
                         "category_id":    None,
                         "category_label": None,
-                        "reason":         "전원 휴면(고립 독백)" if not early_stop_enabled else "연속 침묵",
+                        "reason":         "전원 휴면(고립 독백)",
                         "raw_minutes":    jump,
                         "minutes":        jump,
                         "clamp_reason":   None,
@@ -483,7 +498,6 @@ class _RunnerMixin:
             logger.info(f"[W{disp_wave}] next_wave: {list(current_wave.keys())}")
 
             # ── 목표 기간 도달 체크 ───────────────────────────────────────────
-            # 침묵 조기종료(early_stop_enabled/max_silence_waves)와 독립적으로,
             # 이번 wave까지의 경과 시간이 목표에 도달하면 정상 종료한다.
             # 경과 시간 기준은 에이전트에게 보여지는 시각 계산(step.py) 및 감염
             # 진행과 동일한 `_current_elapsed_minutes`로 단일화한다 — 모드별로
@@ -517,7 +531,7 @@ class _RunnerMixin:
             "edges_count": len(self.edges),
             "log_count":   len(self.shared_log),
             # 종료 사유 (추가 필드 — 모르는 소비자는 무시해도 기존과 동일하게 동작):
-            # "max_waves" | "target_duration" | "silence" | "no_agents" | "stopped"
+            # "max_waves" | "target_duration" | "no_agents" | "no_progress" | "stopped"
             "end_reason":  end_reason,
         })
 

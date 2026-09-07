@@ -74,12 +74,12 @@ python -m ABM.cli run scenario.json --exclude infection,meeting
 | `--no-db` | `logs_graph/simulation.db` 에 기록하지 않음 (기본은 기록 → GUI run 히스토리에 노출) |
 | `--dry-run` | 설정 검증 + 엔진 계약 출력만, 실행 안 함 |
 | `--quiet` | stderr 진행률 억제 |
-| `--strict` | `end_reason ∈ {silence, no_agents}` 이면 종료 코드 1 |
+| `--strict` | `end_reason ∈ {no_progress, no_agents}` 이면 종료 코드 1 |
 
 **종료 코드**: `0` 정상 · `1` `--strict` 조건 · `2` 설정/IO 오류 · `3` 실행 예외
 
 **진행률(stderr)**: `[run 3/20] wave 45/200 · 턴 118 · a, b` →
-마지막에 `완료 18 / 오류 2 — max_waves 16 / silence 2 · 평균 wave 87.3 · 평균 턴 241.0`
+마지막에 `완료 18 / 오류 2 — max_waves 16 / target_duration 2 · 평균 wave 87.3 · 평균 턴 241.0`
 
 ### `export` — 이미 끝난 실행을 다시 마크다운으로
 

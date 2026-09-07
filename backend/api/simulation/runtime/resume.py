@@ -166,11 +166,9 @@ def resume_simulation(run_id: str):
                 step_delay=cfg.step_delay,
                 events=[],
                 resume_wave=saved_pending,
-                # 3-1 버그 수정: 재개 시 조기종료 설정이 유실돼 항상 기본값
-                # (max_silence_waves=3, early_stop_enabled=True)으로 돌던 것을 고침.
-                # cfg 는 이미 복원된 SimStartConfig 라 두 필드가 존재한다.
+                # 재개 시 max_silence_waves 유실 방지 — cfg 는 이미 복원된
+                # SimStartConfig 라 필드가 존재한다.
                 max_silence_waves=cfg.max_silence_waves,
-                early_stop_enabled=cfg.early_stop_enabled,
                 target_duration_minutes=cfg.target_duration_minutes,
             )
             finalize_run(new_db, run_sim_id, stop_ev, sim, eq)

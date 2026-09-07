@@ -155,15 +155,13 @@ def continue_simulation(cfg: SimContinueConfig):
 
             config_json = _sim.get("config_json") or "{}"
 
-            # 3-1: 원래 실행의 조기종료 설정을 복원해 run()에 다시 넘긴다.
-            # /continue 요청 본문(SimContinueConfig)에는 이 두 필드가 없어서,
+            # 원래 실행의 max_silence_waves 를 복원해 run()에 다시 넘긴다.
+            # /continue 요청 본문(SimContinueConfig)에는 이 필드가 없어서,
             # 이어서 실행하면 항상 기본값으로 돌던 버그가 있었다.
-            max_silence_waves  = 3
-            early_stop_enabled = True
+            max_silence_waves = 3
             try:
                 _start_cfg = SimStartConfig(**json.loads(config_json))
-                max_silence_waves  = _start_cfg.max_silence_waves
-                early_stop_enabled = _start_cfg.early_stop_enabled
+                max_silence_waves = _start_cfg.max_silence_waves
             except Exception:
                 pass  # 스냅샷이 없거나 파싱 실패 → 방어적으로 기본값 유지
 
@@ -187,7 +185,6 @@ def continue_simulation(cfg: SimContinueConfig):
                 events=[],
                 resume_wave=pending,
                 max_silence_waves=max_silence_waves,
-                early_stop_enabled=early_stop_enabled,
                 target_duration_minutes=cfg.target_duration_minutes,
             )
             finalize_run(db, run_sim_id, stop_ev, sim_obj, eq)

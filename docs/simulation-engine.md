@@ -49,7 +49,7 @@ disp_wave = _wave_base + run_wave
 
  1. stop_event 확인 → "stopped"
  2. 이번 wave의 시나리오 이벤트 실행 (_execute_event) — agent_enter면 current_wave에 추가
- 3. current_wave 비었으면 종료 ("silence" 또는 "no_agents")
+ 3. current_wave 비었으면 종료 (직전 루프가 no_progress 세팅했으면 존중, 아니면 "no_agents")
  4. 디렉터 (disp_wave > 0 이고 disp_wave % interval == 0)
        _run_system_agent(disp_wave, current_wave) → 개입/세계사건을 current_wave에 주입
        ※ wave 루프 상단에서 돈다 — emit·반응 wave·표시 시각이 일치하도록
@@ -95,34 +95,37 @@ disp_wave = _wave_base + run_wave
 ── next_wave 조립 ──
 17. next_wave = scene_injections + routed   (active_agents인 것만)
 
-── 조기 종료 / 강제 재투입 ──
+── 침묵 처리 — 종료가 아니라 재투입/시간 점프 ──
 18. next_wave 비었으면:
-       early_stop OFF  →  _solo_streak < max_silence_waves 인 에이전트만 재투입(wakeable).
-                          전원 휴면(wakeable 없음)이면 forced_silence_reinject + 전원 재투입
-       시간 주도형 + early_stop → silence_count++, max_silence_waves 미만이면 전원 재투입,
-                                  도달하면 end_reason="silence"
-       time_per_wave=0          → 즉시 "silence"
+       _solo_streak < max_silence_waves 인 에이전트만 재투입(wakeable)
+       전원 휴면(wakeable 없음) → forced_silence_reinject + 전원 재투입
     next_wave 있으면 silence_count = 0
 
+── 진행 불가 백스톱 ──
+19. 이번 wave에 성공한 발화 있으면 dead_waves=0, 없으면 dead_waves+1
+    dead_waves >= max(6, max_silence_waves×2) → end_reason="no_progress", break
+
 ── 시간 누적 (variable 모드만) ──
-19. forced_silence_reinject → idle_minutes_schedule[silence_count], _emit("time_jump", mode="idle")
+20. forced_silence_reinject → idle_minutes_schedule[silence_count], _emit("time_jump", mode="idle")
     아니면 → _classify_wave_time / _estimate_wave_minutes → _clamp_time_jump
             _emit("time_jump", {...}) → _elapsed_minutes += jump
 
-20. current_wave = next_wave
+21. current_wave = next_wave
 
 ── 목표 기간 체크 ──
-21. target_minutes > 0 이고 (_current_elapsed_minutes(run_wave+1) - baseline) >= target
+22. target_minutes > 0 이고 (_current_elapsed_minutes(run_wave+1) - baseline) >= target
        → end_reason = "target_duration", break
 
-22. step_delay 만큼 sleep (stop_event 확인하며)
+23. step_delay 만큼 sleep (stop_event 확인하며)
 
 ── 루프 종료 후 ──
 _pending_wave = current_wave;  _save_edges()
 _emit("simulation_end", {total_turns, edges_count, log_count, end_reason})
 ```
 
-**`end_reason`**: `max_waves` / `target_duration` / `silence` / `no_agents` / `stopped`.
+**`end_reason`**: `max_waves` / `target_duration` / `no_agents` / `no_progress` / `stopped`.
+(구 `early_stop_enabled` 플래그 제거 — 대화가 시들해지는 것으로는 멈추지 않고
+시간을 건너뛰며 계속한다. `no_progress`는 연속으로 아무 응답도 못 받은 경우만.)
 
 ---
 

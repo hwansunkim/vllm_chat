@@ -22,9 +22,10 @@ import { fetchAgentContext } from '../context.js';
 const END_REASON_LABELS = {
   max_waves:       '최대 wave 수 도달로 종료',
   target_duration: '목표 기간 도달로 종료',
-  silence:         '대화가 끊겨 조기 종료',
   no_agents:       '활성 에이전트가 없어 종료',
+  no_progress:     '응답이 이어지지 않아 종료 (LLM 서버 확인 필요)',
   stopped:         '사용자 중지로 종료',
+  silence:         '대화가 끊겨 조기 종료',   // 구버전 백엔드 호환
 };
 
 export function connectSSE() {

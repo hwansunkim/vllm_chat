@@ -12,7 +12,6 @@ import { renderScenarioEvents } from './events.js';
 import { invalidateServerList } from './server-list.js';
 import { applySectionState, updateSectionBadges } from './sections.js';
 import { autoGrowAll } from './textareas.js';
-import { updateEarlyStopUI, initEarlyStopToggle } from './early-stop.js';
 import { renderTargetDuration, readTargetDuration, initTargetDurationUI } from './target-duration.js';
 import { updateVariableTimeUI, renderTimeCategories, readTimeCategories,
          readIdleSchedule, addTimeCategory, initTimeModeToggle,
@@ -27,7 +26,7 @@ import { renderLocationGraph, readLocationGraph, addLocationNode,
 import { renderContractPreview, readOutputFormatOverride } from './contract-preview.js';
 
 // 기존 사용처(index.js 등)가 계속 './settings/page.js' 하나만 import 하도록 재수출한다.
-export { initEarlyStopToggle, initTargetDurationUI, initTimeModeToggle,
+export { initTargetDurationUI, initTimeModeToggle,
          initTimeEstimationModeToggle, initPerceptionModeToggle,
          addTimeCategory, addSymptomStage, addLocationNode };
 
@@ -71,11 +70,6 @@ export function renderSettingsPage() {
   if (maxDaytimeJumpEl) maxDaytimeJumpEl.value = sim.max_daytime_jump_minutes ?? 180;
   const maxSilenceEl = document.getElementById('sim-max-silence-waves');
   if (maxSilenceEl) maxSilenceEl.value = sim.max_silence_waves ?? 3;
-  const earlyStopEl = document.getElementById('sim-early-stop-enabled');
-  if (earlyStopEl) {
-    earlyStopEl.checked = sim.early_stop_enabled ?? true;
-    updateEarlyStopUI(earlyStopEl.checked);
-  }
   const langFixEl = document.getElementById('sim-lang-fix-enabled');
   if (langFixEl) langFixEl.checked = sim.lang_fix_enabled ?? true;
   const langRetEl = document.getElementById('sim-lang-fix-retries');
@@ -134,7 +128,6 @@ export function readConfigFromUI() {
   sim.max_daytime_jump_minutes = (_daytimeJump == null || _daytimeJump === '')
     ? 180 : Math.max(0, parseInt(_daytimeJump) || 0);
   sim.max_silence_waves  = parseInt(document.getElementById('sim-max-silence-waves')?.value)  || 3;
-  sim.early_stop_enabled = document.getElementById('sim-early-stop-enabled')?.checked ?? true;
   const sel = document.getElementById('sim-server-select');
   sim.server_id              = sel?.value || null;
   // 슬라이더가 DOM에 있으면 그 값이 항상 우선이고(정규화는 범위 밖 대비),

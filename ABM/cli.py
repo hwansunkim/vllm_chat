@@ -49,7 +49,7 @@ GUI 와 **공유**한다.
 
 **종료 코드**
   0  정상 (``end_reason`` 이 무엇이든)
-  1  ``--strict`` 이고 ``end_reason`` 이 ``silence`` / ``no_agents``
+  1  ``--strict`` 이고 ``end_reason`` 이 ``no_progress`` / ``no_agents``
   2  설정·입출력 오류 (파일 없음, JSON 파싱 실패, 스키마 위반, 알 수 없는 토글)
   3  실행 중 예외 (LLM 연결 실패 등)
 
@@ -90,7 +90,7 @@ EXIT_STRICT  = 1
 EXIT_CONFIG  = 2
 EXIT_RUNTIME = 3
 
-_STRICT_END_REASONS = {"silence", "no_agents"}
+_STRICT_END_REASONS = {"no_progress", "no_agents"}
 
 
 class ConfigError(Exception):
@@ -707,7 +707,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="설정 검증 + 엔진 계약 출력만 하고 실행하지 않는다")
     r.add_argument("--quiet", action="store_true", help="stderr 진행률 억제")
     r.add_argument("--strict", action="store_true",
-                   help="end_reason 이 silence/no_agents 면 종료 코드 1")
+                   help="end_reason 이 no_progress/no_agents 면 종료 코드 1")
     r.set_defaults(func=cmd_run)
 
     # export ------------------------------------------------------------------

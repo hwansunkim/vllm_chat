@@ -178,10 +178,10 @@
   - 실내 한 곳에 2명+ 동석 발화 중 → `max_scene_jump_minutes` (진행 중 장면 안 잘림)
   - 밤(22~06시) 아니고 집에 남은 사람 있음 → `max_daytime_jump_minutes` (학원·저녁
     재집결 장면 안 건너뜀). 집이 완전히 비면 미적용.
-- **강제 재투입 시간 점프** (`mode: "idle"`) — 전원이 연속 침묵(early stop ON)이거나
-  **전원이 고립 독백 중(휴면)**이면, LLM 분류 대신 `idle_minutes_schedule`로 시간을
-  크게 건너뛴다 (침묵/휴면 회차가 늘수록 다음 값, 끝에서 고정). "가족이 각자
-  회사·학교로 흩어진 하루"가 15~30분 조각 점프로 `max_waves`까지 갈리지 않도록.
+- **강제 재투입 시간 점프** (`mode: "idle"`) — **전원이 고립 독백 중(휴면)**이면,
+  LLM 분류 대신 `idle_minutes_schedule`로 시간을 크게 건너뛴다 (회차가 늘수록 다음
+  값, 끝에서 고정). "가족이 각자 회사·학교로 흩어진 하루"가 15~30분 조각 점프로
+  `max_waves`까지 갈리지 않도록.
 
 **이벤트** — `time_jump {wave, mode, used_fallback, category_id, category_label, reason,
 raw_minutes, minutes, clamp_reason, end_time_str}`. `mode`는 `category` / `ai` / `idle`.
@@ -189,12 +189,17 @@ fixed 모드엔 안 나옴. `turn_complete`·로그의 `time_str`이 실제 시�
 
 ### 고립 에이전트 휴면 (dormancy)
 
-`early_stop_enabled=False` (max_waves까지 계속 실행)에서, 대화 상대가 없고 아무에게도
-닿지 않은 채 **혼잣말만 `max_silence_waves`회 연속**한 에이전트는 "휴면"으로 보고
-매 wave 밀집 재투입에서 뺀다 (`_solo_streak` — `runner.py`). 누군가 이동·이벤트·디렉터
+대화가 비면 전원을 재투입해 `max_waves`까지 계속 돈다 (구 `early_stop_enabled`
+플래그는 제거 — "대화가 시들해짐"으로는 더 이상 멈추지 않는다). 단 대화 상대가 없고
+아무에게도 닿지 않은 채 **혼잣말만 `max_silence_waves`회 연속**한 에이전트는 "휴면"으로
+보고 밀집 재투입에서 뺀다 (`_solo_streak` — `runner.py`). 누군가 이동·이벤트·디렉터
 개입으로 그에게 도달하면 스트릭이 0으로 리셋되어 깨어난다. 전원 휴면이면 위 `idle`
 시간 점프 + 전원 재투입(새 시각을 보고 재회 판단). 위치 미사용 시나리오는
 `_has_reachable_partner`가 항상 True라 이 로직이 절대 발동하지 않는다 (완전 하위 호환).
+
+**진행 불가 백스톱**: 연속으로 성공한 발화가 하나도 없는 wave가 `max(6, max_silence_waves×2)`회
+이어지면(LLM 서버 다운, 전부 파싱 실패 등) `end_reason="no_progress"`로 종료 —
+`max_waves`까지 헛되이 두들기지 않는다. 구 `early_stop`이 암묵적으로 하던 보호다.
 
 **계약 블록** — `build_time_contract` → `[시간 인식]` (`[현재 시각]` 읽는 법, 평일/주말
 행동). 에이전트에겐 ephemeral `[현재 시각: 월요일 오전 9시 00분]`.

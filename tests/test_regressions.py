@@ -856,7 +856,7 @@ class MoveRoutingTests(unittest.TestCase):
         {"name": "창고", "connects_to": ["매장"]},
     ]
 
-    def _run(self, script, *, max_waves=1, early_stop_enabled=True, locations=None,
+    def _run(self, script, *, max_waves=1, locations=None,
              resume_wave=None):
         from ABM.agent import Agent
         from ABM.simulation import Simulation
@@ -875,7 +875,7 @@ class MoveRoutingTests(unittest.TestCase):
             emitted = []
             sim._emit = lambda t, d: emitted.append((t, d))
             sim.run("a", max_waves=max_waves, step_delay=0.0,
-                    early_stop_enabled=early_stop_enabled, resume_wave=resume_wave)
+                    resume_wave=resume_wave)
             return sim, emitted
 
     @staticmethod
@@ -938,14 +938,14 @@ class MoveRoutingTests(unittest.TestCase):
         # 이미 정상 동작하는 경로의 회귀 가드 — 라우팅 순서를 바꿔도 다음 wave의
         # [현재 상황] 블록은 이동 후 위치를 반영해야 한다.
         # b를 입구에 두어 wave 0의 next_wave가 비게 하고(씬 주입 대상 없음),
-        # early_stop_enabled=False로 전원 재투입시켜 a가 wave 1에도 돌게 한다.
+        # 대화가 비면 전원 재투입되므로 a가 wave 1에도 돈다.
         sim, emitted = self._run(
             {
                 "a": [{"content": "창고 좀 볼게.", "target": "self", "move_to": "창고"},
                       {"content": "여긴 창고군.", "target": "self"}],
                 "b": [{"content": "음.", "target": "self"}],
             },
-            max_waves=2, early_stop_enabled=False,
+            max_waves=2,
             locations={"a": "매장", "b": "입구"},
         )
 
@@ -2551,7 +2551,7 @@ class CumulativeWaveTests(unittest.TestCase):
     def test_run_emits_cumulative_wave_numbers(self):
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(tmp, wave_base_init=10)
-            sim.run("a", max_waves=3, step_delay=0.0, early_stop_enabled=False)
+            sim.run("a", max_waves=3, step_delay=0.0)
 
             wave_starts = [d["wave"] for t, d in sim._emitted if t == "wave_start"]
             self.assertEqual(wave_starts, [10, 11, 12])
@@ -2562,7 +2562,7 @@ class CumulativeWaveTests(unittest.TestCase):
     def test_fresh_start_is_unchanged_by_the_split(self):
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(tmp, wave_base_init=0)
-            sim.run("a", max_waves=3, step_delay=0.0, early_stop_enabled=False)
+            sim.run("a", max_waves=3, step_delay=0.0)
 
             wave_starts = [d["wave"] for t, d in sim._emitted if t == "wave_start"]
             self.assertEqual(wave_starts, [0, 1, 2])
@@ -2572,7 +2572,7 @@ class CumulativeWaveTests(unittest.TestCase):
     def test_turn_complete_and_log_use_cumulative_wave(self):
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(tmp, wave_base_init=7)
-            sim.run("a", max_waves=2, step_delay=0.0, early_stop_enabled=False)
+            sim.run("a", max_waves=2, step_delay=0.0)
 
             tc_waves = {d["wave"] for t, d in sim._emitted if t == "turn_complete"}
             self.assertTrue(tc_waves <= {7, 8})
@@ -2602,7 +2602,7 @@ class CumulativeWaveTests(unittest.TestCase):
             sim = self._sim(tmp, wave_base_init=600, time_per_wave=30)
             emitted = []
             sim._emit = lambda t, d: emitted.append((t, d))
-            sim.run("a", max_waves=20, step_delay=0.0, early_stop_enabled=False,
+            sim.run("a", max_waves=20, step_delay=0.0,
                     target_duration_minutes=60)
             end = [d for t, d in emitted if t == "simulation_end"][-1]
             self.assertEqual(end["end_reason"], "target_duration")
@@ -2669,8 +2669,7 @@ class ResumeContinueWaveBaseTests(unittest.TestCase):
     - `/resume`: `create_run(start_wave=이전 start_wave + total_waves)` +
       `Simulation(wave_base_init=...)` + 응답에 `start_wave`.
     - `fold_elapsed_and_reset_waves`: `completed_waves` 리셋 직전 `_wave_base` 누적.
-    - 3-1 버그: `/resume` 이 조기종료 설정(`early_stop_enabled`,
-      `max_silence_waves`)을 `run()` 까지 전달.
+    - `/resume` 이 `max_silence_waves` 를 `run()` 까지 전달 (유실 시 기본값으로 회귀).
     """
 
     def tearDown(self):
@@ -2819,11 +2818,12 @@ class ResumeContinueWaveBaseTests(unittest.TestCase):
         self.assertEqual(calls["create_run"]["kwargs"].get("start_wave"), 0)
         self.assertEqual(resp.get("start_wave"), 0)
 
-    def test_resume_forwards_early_stop_settings_to_run(self):
+    def test_resume_forwards_max_silence_waves_to_run(self):
         resp, calls = self._run_resume(
-            self._run_row(self._cfg(early_stop_enabled=False, max_silence_waves=9)))
-        self.assertIs(calls["run"]["kwargs"].get("early_stop_enabled"), False)
+            self._run_row(self._cfg(max_silence_waves=9)))
         self.assertEqual(calls["run"]["kwargs"].get("max_silence_waves"), 9)
+        # 폐기된 플래그는 더 이상 넘기지 않는다.
+        self.assertNotIn("early_stop_enabled", calls["run"]["kwargs"])
 
     def test_resume_forwards_the_relationship_map(self):
         # /start 에선 관계 계약이 붙고 /resume 에선 조용히 사라지는 비일관을 막는다.
@@ -3834,7 +3834,7 @@ class _MeetingSimHarness:
             emitted = []
             sim._emit = lambda t, d: emitted.append((t, d))
             sim.run(keys[0], max_waves=max_waves, step_delay=0.0,
-                    early_stop_enabled=False, events=events,
+                    events=events,
                     resume_wave={k: [] for k in keys})
             return sim, emitted
 
@@ -5363,7 +5363,7 @@ class SystemAgentTimeAndOrderTests(unittest.TestCase):
         )
         emitted: list[tuple[str, dict]] = []
         sim._emit = lambda t, d: emitted.append((t, d))
-        sim.run("a", max_waves=waves, step_delay=0.0, early_stop_enabled=False)
+        sim.run("a", max_waves=waves, step_delay=0.0)
         return sim, llm, emitted
 
     def test_director_runs_before_wave_start_and_skips_wave_zero(self):
@@ -5455,18 +5455,17 @@ class SystemAgentTimeAndOrderTests(unittest.TestCase):
             )
             emitted: list[tuple[str, dict]] = []
             sim._emit = lambda t, d: emitted.append((t, d))
-            sim.run("a", max_waves=3, step_delay=0.0, early_stop_enabled=False)
+            sim.run("a", max_waves=3, step_delay=0.0)
 
             self.assertEqual(llm.director_calls, [])
             self.assertFalse([t for t, _ in emitted if t == "system_intervention"])
 
 
 class IsolatedAgentDormancyTests(unittest.TestCase):
-    """early_stop_enabled=False 에서 고립된 채 독백만 하는 에이전트의 휴면 처리.
+    """고립된 채 독백만 하는 에이전트의 휴면 처리.
 
-    배경: 가족이 각자 회사·학교로 흩어지면 서로 도달 불가능해진다. 옛 코드는
-    early_stop_enabled=False 라 매 wave 전원을 재투입 → 같은 독백을 max_waves 까지
-    무한 반복. 이제:
+    배경: 가족이 각자 회사·학교로 흩어지면 서로 도달 불가능해진다. 대화가 비면
+    전원을 재투입하므로 옛 코드는 같은 독백을 max_waves 까지 무한 반복. 이제:
       - 대화 상대가 없고 아무에게도 닿지 않은 채 독백을 max_silence_waves 회
         연속한 에이전트는 '휴면'으로 보고 밀집 재투입에서 뺀다.
       - 전원 휴면이면 시간을 크게 흘려보내고(가변 모드 idle 스케줄) 전원을 깨운다
@@ -5507,7 +5506,7 @@ class IsolatedAgentDormancyTests(unittest.TestCase):
             orig_emit = sim._emit
             sim._emit = lambda t, d: (jumps.append(d["minutes"]) if t == "time_jump" else None)
             sim.run("a", max_waves=8, step_delay=0.0,
-                    early_stop_enabled=False, max_silence_waves=3,
+                    max_silence_waves=3,
                     resume_wave={"a": [], "b": []})
 
         # 전원 휴면에 들어가면 idle 스케줄(60/120/180)로 크게 점프한다 —
@@ -5534,7 +5533,7 @@ class IsolatedAgentDormancyTests(unittest.TestCase):
             )
             sim._emit = lambda t, d: None
             sim.run("a", max_waves=10, step_delay=0.0,
-                    early_stop_enabled=False, max_silence_waves=3,
+                    max_silence_waves=3,
                     resume_wave={"a": [], "b": []})
 
         # b 가 집에 도착해 a 에게 말을 걸면 a 의 스트릭이 리셋되어야 한다.
@@ -5555,7 +5554,7 @@ class IsolatedAgentDormancyTests(unittest.TestCase):
             )
             sim._emit = lambda t, d: None
             sim.run("a", max_waves=5, step_delay=0.0,
-                    early_stop_enabled=False, resume_wave={"a": [], "b": []})
+                    resume_wave={"a": [], "b": []})
         self.assertEqual(sim._solo_streak.get("a", 0), 0)
         self.assertEqual(sim._solo_streak.get("b", 0), 0)
 
@@ -7171,7 +7170,6 @@ class HeadlessSimulationArgumentTests(unittest.TestCase):
         self.assertEqual(cap["run_start_agent"], "a")
         self.assertEqual(cap["run_kwargs"]["max_waves"], 5)
         self.assertEqual(cap["run_kwargs"]["max_silence_waves"], 3)
-        self.assertTrue(cap["run_kwargs"]["early_stop_enabled"])
         self.assertIsNone(cap["run_kwargs"]["target_duration_minutes"])
         self.assertEqual(len(cap["run_kwargs"]["events"]), 1)
         self.assertEqual(cap["run_kwargs"]["events"][0]["type"], "infect_agent")
@@ -7416,6 +7414,30 @@ class MalformedJsonResponseTests(unittest.TestCase):
         from ABM.prompt_contract import build_output_contract
         text = build_output_contract(["a"], [{"name": "emotion", "default": "neutral"}])
         self.assertIn("정확히 하나", text)
+
+    def test_all_replies_unparseable_terminates_with_no_progress(self):
+        """옛 early_stop 이 암묵적으로 하던 '전부 실패하면 max_waves 까지 두들기지
+        말고 멈춘다'를 no_progress 백스톱이 대체한다."""
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        def llm(messages, max_tokens=None, **kw):
+            sys_text = messages[0].get("content", "") if messages else ""
+            if "시간 관찰자" in sys_text:
+                return json.dumps({"category": "normal_scene"}), "", {}
+            return "미안, 지금은 응답 못 해.", "", {}   # 매 턴 파싱 실패
+
+        events: list[tuple[str, dict]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {"a": Agent("a", "너는 a다.", tmp, token_limit=4096)}
+            sim = Simulation(agents, [{"role": "user", "content": "[배경] t"}], tmp, llm=llm)
+            sim._emit = lambda t, d: events.append((t, d))
+            # max_waves=100 이지만 백스톱(연속 6 dead wave)에서 훨씬 일찍 멈춘다.
+            sim.run("a", max_waves=100, step_delay=0.0, max_silence_waves=3)
+
+        end = next(d for t, d in events if t == "simulation_end")
+        self.assertEqual(end["end_reason"], "no_progress")
+        self.assertLess(sim.completed_waves, 20)
 
 
 class TurnLocationLoggingTests(unittest.TestCase):
