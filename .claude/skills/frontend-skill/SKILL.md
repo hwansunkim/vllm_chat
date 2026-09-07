@@ -5,96 +5,106 @@ description: "vLLM Chat 프론트엔드(HTML, CSS, JavaScript) 개발 가이드.
 
 # Frontend Development Guide — vLLM Chat
 
+전체 구조·모듈 레퍼런스는 **`docs/frontend.md`**. 패널 호칭은 **`docs/glossary.md` Part A**.
+이 문서는 "코드를 만질 때 지켜야 할 것"만 담는다.
+
 ## 핵심 제약 (반드시 준수)
 
-- **빌드 도구 없음** — CDN 라이브러리만. import/require/npm 금지
-- **XSS 방어** — innerHTML 직접 할당 금지. `DOMPurify.sanitize()` 또는 DOM API 사용
-- **새 JS 파일** — `index.html`에 `<script src="js/new.js">` 추가 필수
-- **전역 상태** — `state.js`의 `AppState` 객체 경유
+- **빌드 도구 없음** — `package.json`·번들러·트랜스파일러 없음. 브라우저가 파일을 그대로 로드
+- **ES 모듈** — `import`/`export`는 쓴다 (네이티브). npm 패키지는 금지, 서드파티는 CDN `<script>`만
+- **새 JS 파일** → 기존 모듈에서 `import` 하거나 `index.html`에 `<script type="module">` 추가
+- **XSS 방어** — 사용자·LLM 문자열을 `innerHTML`에 넣기 전 반드시:
+  - `esc(str)` (HTML 이스케이프, `js/utils.js` 또는 `js/sim/state.js`)
+  - 또는 `DOMPurify.sanitize()` / DOM API (`textContent`, `createElement`)
+  - 마크다운은 `renderMarkdown()`(`js/markdown.js`)이 내부에서 sanitize
+- **전역 상태** — 프레임워크 없음. 평범한 객체:
+  - 채팅: `state` (`js/state.js`)
+  - 시뮬레이션: `sim` (`js/sim/state.js`)
+  - 반응성 없음 — 상태를 바꾸면 해당 `render*()`를 직접 호출
 
 ## 주요 패턴
 
-### API 호출 (api.js에 함수 추가)
+### API 호출
 
 ```javascript
-// api.js
-export async function fetchNewFeature(params) {
-    const res = await fetch(`/api/new-feature?${new URLSearchParams(params)}`);
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
-}
+// 채팅 도메인: js/api.js 의 범용 래퍼
+import { api } from './api.js';
+const list = await api('GET', '/agents');           // → /api/agents
+await api('POST', '/conversations', { title: '...' });
+
+// 시뮬레이션 도메인: 직접 fetch (경로가 /api/simulation/... 로 길고 제각각)
+const res = await fetch('/api/simulation/scenarios');
+if (!res.ok) throw new Error(await res.text());
 ```
 
-### DOM 요소 생성 (XSS 안전)
+### DOM 생성 (XSS 안전)
 
 ```javascript
-// 안전한 방법: DOM API
-function createMessageEl(text) {
-    const div = document.createElement('div');
-    div.textContent = text;  // textContent는 자동 이스케이프
-    return div;
-}
+// textContent 는 자동 이스케이프
+const div = document.createElement('div');
+div.textContent = userText;
 
-// 마크다운 렌더링이 필요한 경우
-function renderMarkdown(text) {
-    const html = md.render(text);
-    return DOMPurify.sanitize(html);  // 반드시 sanitize
-}
+// 템플릿 문자열 + innerHTML 을 쓸 땐 값마다 esc()
+el.innerHTML = `<span class="name">${esc(agent.name)}</span>`;
 ```
 
-### 이벤트 리스너 등록 패턴
+### SSE — 두 종류가 다르다
 
 ```javascript
-// main.js에서 초기화
-document.addEventListener('DOMContentLoaded', () => {
-    // 기존 초기화 코드 아래에 추가
-    initNewFeature();
+// ① 채팅: POST + fetch 스트림 리더 (EventSource 아님 — POST 바디가 필요)
+//    js/stream.js 의 readSSEStream(response.body, row) 참조
+const res = await fetch(`/api/conversations/${id}/chat`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ content, thinking_level: state.thinkingLevel, web_search: state.webSearchEnabled }),
 });
+await readSSEStream(res.body, row);   // event: search → thinking → answer → done
+
+// ② 시뮬레이션: GET + EventSource
+//    js/sim/run/sse.js 의 connectSSE() 참조
+const es = new EventSource('/api/simulation/stream');
+es.addEventListener('turn_complete', e => { const d = JSON.parse(e.data); /* ... */ });
 ```
 
-### SSE 스트리밍 (stream.js 패턴 참조)
+### 이벤트 리스너 등록
 
-```javascript
-const source = new EventSource(`/api/chat/stream?id=${convId}`);
-source.addEventListener('token', (e) => {
-    const data = JSON.parse(e.data);
-    appendToken(data.content);
-});
-source.addEventListener('done', () => source.close());
-source.onerror = () => source.close();
-```
+`js/main.js`가 로드 시점에 `init*Events()`를 호출한다 (`DOMContentLoaded` 미사용 —
+`<script type="module">`은 기본 defer). 새 기능은 담당 도메인의 `init*Events()`에서 배선:
+- 채팅: `js/main.js`에 `initXxx()` 추가
+- 시뮬레이션: `js/sim/index.js`의 `initSimulationEvents()`에 추가
 
-## CSS 시스템
+## CSS
 
-`base.css`의 CSS 변수 활용:
-```css
-.new-component {
-    background: var(--bg-secondary);
-    color: var(--text-primary);
-    border: 1px solid var(--border-color);
-    border-radius: var(--border-radius);
-}
-```
+`frontend/css/` 7개 파일, `index.html`에서 `<link>`. **CSS 변수 없음** — 색은 hex 직접
+(`#4f46e5` 인디고, `#1e293b` 슬레이트900, `#e2e8f0` 보더 등, 기존 파일 참고). 새 컴포넌트
+CSS는 해당 기능 파일에 추가하거나 독립 기능이면 새 파일 + `<link>`.
 
-새 컴포넌트 CSS는 해당 기능의 `*.css` 파일에 추가하거나, 독립 기능이면 새 파일 생성 후 `index.html`의 `<link>` 추가.
+| 파일 | 범위 |
+|---|---|
+| `base.css` | 리셋, 공통 |
+| `layout.css` / `sidebar.css` | 사이드바, `#main`, 채팅 헤더 |
+| `messages.css` / `input.css` | 말풍선·thinking / 입력 영역·컨텍스트 바 |
+| `modals.css` | 모든 모달 |
+| `simulation.css` | 실행 뷰 + 설정 뷰 전체 (2200줄) |
 
-## 모듈별 책임
+## 상태 정규화 계약 (시뮬레이션)
 
-| 파일 | 담당 |
-|------|------|
-| `state.js` | AppState 전역 상태, 선택된 대화/에이전트 등 |
-| `api.js` | fetch 래퍼 함수들 (GET/POST/DELETE) |
-| `stream.js` | SSE 연결, 토큰 스트리밍, 완료 처리 |
-| `messages.js` | 메시지 DOM 생성/추가/업데이트 |
-| `markdown.js` | md 인스턴스 생성, renderMarkdown() 노출 |
-| `chat.js` | 전송 버튼, 입력 처리, 스트림 시작 |
-| `conversations.js` | 사이드바 대화 목록 렌더링 |
+`js/sim/state.js`의 순수 함수가 UI 입력을 백엔드 pydantic 스키마 모양으로 강제한다.
+상태로 들어오는 모든 경로(불러오기·파일 import·편집)가 이걸 통과해야 한다 —
+범위 밖 값은 백엔드가 422로 거부:
+`normalizeWeekday`, `normalizeTemperature`, `normalizeTargetDuration`, `normalizeProbability`,
+`buildInfectionModel`, `normalizeSymptomStages` 등.
 
-## UI 추가 시 체크리스트
+> **이중 구현 주의**: `js/sim/state.js`의 순수 헬퍼 일부(`buildInfectionModel`,
+> `infectionBadge`, `meetingNarration`, `simTimeLabel`, `getAgentIcon` 등)는
+> `ABM/export/labels.py`에 파이썬으로도 있다. 한쪽을 바꾸면 다른 쪽도 —
+> `tests/fixtures/*.md` 골든 테스트가 잡는다. 마크다운 내보내기(`js/sim/export/markdown.js`
+> ↔ `ABM/export/markdown.py`)도 같은 규칙.
 
-1. HTML: `index.html`의 적절한 위치에 마크업 추가
-2. CSS: 관련 CSS 파일에 스타일 추가 (CSS 변수 활용)
-3. JS: 필요한 fetch 함수를 `api.js`에 추가
-4. JS: 컴포넌트 로직을 담당 모듈 또는 새 파일에 구현
-5. JS: `main.js`에서 초기화 호출
-6. 새 파일이면: `index.html`에 `<script>` 또는 `<link>` 추가
+## UI 추가 체크리스트
+
+1. HTML: `index.html` 적절한 위치에 마크업
+2. CSS: 관련 `.css` 파일에 스타일 (색은 hex 직접)
+3. JS: fetch는 `api.js`(채팅) 또는 직접(시뮬)
+4. JS: 로직을 담당 모듈 또는 새 파일에
+5. JS: `main.js` 또는 `sim/index.js`에서 초기화 배선
+6. 새 파일이면 `index.html`에 `<script type="module">` (또는 기존 모듈에서 import)

@@ -122,8 +122,16 @@ sqlite3 logs_graph/simulation.db \
 
 ## 문서
 
-- [아키텍처](docs/architecture.md) — 전체 시스템 구조
-- [메모리 시스템](docs/memory-system.md) — RAG 메모리 동작 원리
-- [API 레퍼런스](docs/api.md) — REST API 명세
+- [용어집](docs/glossary.md) — 파트·패널·모듈의 공통 호칭 (디버깅 대화용)
+- [아키텍처 개요](docs/architecture.md) — 전체 구조·프로세스 모델·요청 경로
+- [프론트엔드](docs/frontend.md) — 화면 구조·상태 관리·SSE 소비·모듈 맵
+- [백엔드](docs/backend.md) — 채팅 파이프라인·LLM 레이어·서버 레지스트리·브릿지
+- [메모리 시스템](docs/memory-system.md) — RAG 메모리 (키워드 검색·아카이브)
+- [시뮬레이션 개요](docs/simulation-overview.md) — Wave 모델·실행 라이프사이클·SSE·CLI
+- [시뮬레이션 엔진](docs/simulation-engine.md) — `run()` 루프·프롬프트 조립·계약 층
+- [시뮬레이션 기능](docs/simulation-features.md) — 위치/zone·공간 인지·시간·디렉터·감염
+- [API 레퍼런스](docs/api-reference.md) — REST 엔드포인트·SSE 이벤트 스펙
+- [데이터베이스](docs/database.md) — `memory.db` + `simulation.db` 전체 스키마
+- [공간 기반 인지](docs/spatial-perception.md) — 엿듣기·원거리 전달 심층
+- [디렉터 반복 감지](docs/director-repetition-detection.md) — 주제 반복 감지 (D1 + D2)
 - [Vector DB 전환 검토](docs/vectordb.md) — SQLite → Vector DB 마이그레이션 고려사항
-- [디렉터 반복 감지](docs/director-repetition-detection.md) — 시뮬레이션 디렉터가 주제 반복을 잡는 방법 (D1 + D2)

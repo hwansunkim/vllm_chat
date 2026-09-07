@@ -1,143 +1,139 @@
-# 메모리 시스템
+# RAG 메모리 시스템 (채팅)
 
-## 개요
+> 채팅 도메인이 컨텍스트 윈도우 한계를 넘기는 방법. 시뮬레이션 에이전트의 메모리
+> 압축은 별개다 → [`simulation-engine.md`](simulation-engine.md#6-메모리-압축).
+> 파이프라인 맥락은 [`backend.md`](backend.md#2-채팅-파이프라인).
 
-컨텍스트 윈도우 한계를 극복하기 위한 RAG(Retrieval-Augmented Generation) 기반 메모리 구조다.  
-모든 대화를 LLM에 누적해서 넣는 대신, 오래된 대화를 구조화된 메모리로 변환하고 현재 질문과 관련 있는 것만 선택적으로 주입한다.
+---
 
-## 핵심 아이디어
+## 1. 아이디어
 
 ```
-전통적 방식:  [모든 이전 대화] + [현재 질문]  → 컨텍스트 폭발
+전통적 방식:  [모든 이전 대화] + [현재 질문]          → 컨텍스트 폭발
 이 시스템:    [관련 메모리 N건] + [최근 4턴] + [현재 질문]  → 일정한 컨텍스트
 ```
 
-## DB 스키마
+오래된 대화를 **구조화 메모리**로 변환해 저장하고, 현재 질문의 키워드와 겹치는 것만
+선택적으로 프롬프트에 주입한다.
 
-### `memories` 테이블
+**코드 위치** (구 `chat.py`/`server.py`는 없어졌다):
 
-| 컬럼 | 타입 | 설명 |
-|------|------|------|
-| `id` | TEXT PK | UUID |
-| `type` | TEXT | `fact` / `decision` / `pending` |
-| `content` | TEXT | 메모리 내용 |
-| `created_at` | TEXT | 생성 시각 |
-| `last_accessed` | TEXT | 마지막 검색 조회 시각 |
+| 관심사 | 위치 |
+|---|---|
+| 메모리 저장·검색 | `backend/core/memory.py` |
+| 키워드·메모리 추출 (LLM) | `backend/llm/pipeline.py` |
+| 아카이브 트리거 | `backend/api/_conv_helpers.py: _maybe_archive` |
+| 메시지 조립 | `backend/llm/pipeline.py: build_messages` |
+| 임계값 상수 | `backend/config.py` |
+| 저장소 UI | 메모리 저장소 모달 (`frontend/js/memories.js`) |
 
-**type 정의:**
-- `fact` — 사실, 수치, 설정값, 고유명사
-- `decision` — 결정된 사항
-- `pending` — 미결 또는 진행 중인 항목
+---
 
-### `memory_keywords` 테이블
+## 2. 스키마
 
-| 컬럼 | 타입 | 설명 |
-|------|------|------|
-| `memory_id` | TEXT FK | `memories.id` 참조 |
-| `keyword` | TEXT | 소문자 정규화된 키워드 |
+전체 정의는 [`database.md`](database.md). 요약:
 
-`idx_keyword` 인덱스로 키워드 검색을 가속한다.
+### `memories`
 
-### `turns` 테이블 (server.py 관리)
+| 컬럼 | 의미 |
+|---|---|
+| `id` | UUID |
+| `type` | `fact` / `decision` / `pending` |
+| `content` | 메모리 내용 |
+| `created_at` | 생성 시각 |
+| `last_accessed` | 마지막 검색 조회 시각 (검색 랭킹의 2차 정렬 키) |
 
-| 컬럼 | 타입 | 설명 |
-|------|------|------|
-| `id` | TEXT PK | UUID |
-| `conversation_id` | TEXT | 소속 대화 |
-| `role` | TEXT | `user` / `assistant` |
-| `content` | TEXT | 메시지 내용 |
-| `memories_json` | TEXT | 이 응답에 주입된 메모리 목록 (JSON) |
-| `context_pct` | REAL | 응답 시점 컨텍스트 사용률 (0.0~1.0) |
-| `prompt_tokens` | INTEGER | 입력 토큰 수 |
-| `max_tokens` | INTEGER | 모델 최대 컨텍스트 한도 |
-| `archived` | INTEGER | 0: active, 1: 아카이브됨 |
+**type 정의** — `fact`: 사실·수치·설정값·고유명사 · `decision`: 결정된 사항 ·
+`pending`: 미결 또는 진행 중.
 
-## 메모리 저장 흐름 (아카이브)
+### `memory_keywords`
 
-컨텍스트 사용률이 `ARCHIVE_THRESHOLD`(75%)를 초과하면 아카이브가 트리거된다.
+`memory_id`(FK) · `keyword`(소문자 정규화). `idx_keyword` 인덱스로 검색 가속.
 
-```
-1. active 턴 ID 목록 조회 (오래된 순)
-2. 마지막 KEEP_RECENT_TURNS(4)개를 제외한 나머지를 대상으로 선택
-3. extract_memories_from_turns(대상 턴들)
-   └─ LLM 호출: 대화에서 나중에 참조할 만한 정보 추출
-   └─ 반환: [{type, content, keywords}, ...]
-4. save_memories(conn, 추출된 메모리들)
-   └─ memories 테이블에 INSERT
-   └─ memory_keywords 테이블에 키워드별 INSERT
-5. 대상 턴들 archived = 1 처리
-```
+### `turns` (관련 컬럼)
 
-아카이브 이후 LLM에는 최근 4개 active 턴만 전달된다.  
-UI에는 아카이브된 메시지도 계속 표시되므로 사용자는 전체 히스토리를 볼 수 있다.
+| 컬럼 | 의미 |
+|---|---|
+| `archived` | `0` active / `1` 아카이브됨 |
+| `memories_json` | 이 응답에 주입된 메모리 목록 (JSON) |
+| `context_pct` | 응답 시점 컨텍스트 사용률 (0.0~1.0) |
+| `prompt_tokens` / `max_tokens` | 입력 토큰 / 모델 컨텍스트 한도 |
+| `thinking` | 추론 과정 텍스트 (사고 켜졌을 때) |
+| `sources_json` | 웹 검색 출처 (검색 켜졌을 때) |
 
-## 메모리 검색 흐름 (RAG)
+---
 
-매 채팅 요청마다 실행된다.
+## 3. 검색 흐름 (RAG) — 매 채팅 요청
 
 ```
-1. extract_keywords(사용자 메시지)
-   └─ LLM 호출: 핵심 명사·기술 용어 최대 7개 추출
-   └─ 반환: ["키워드1", "키워드2", ...]
+1. async_extract_keywords(user_content)          (pipeline.py, LLM 호출)
+     "명사·고유명사·기술 용어 위주 최대 7개, JSON 배열만"
+     → ["서버", "포트", "모델이름"]   (실패 시 [])
 
-2. retrieve_memories(conn, keywords, top_k=5)
-   └─ SQL:
-      SELECT m.id, m.type, m.content, COUNT(mk.keyword) AS match_count
-      FROM memories m
-      JOIN memory_keywords mk ON m.id = mk.memory_id
-      WHERE mk.keyword IN (키워드들)
-      GROUP BY m.id
-      ORDER BY match_count DESC, m.last_accessed DESC
-      LIMIT 5
-   └─ 조회된 메모리의 last_accessed 갱신
+2. retrieve_memories(conn, keywords, top_k=5)    (core/memory.py)
+     SELECT m.id, m.type, m.content, COUNT(mk.keyword) AS match_count
+     FROM memories m JOIN memory_keywords mk ON m.id = mk.memory_id
+     WHERE mk.keyword IN (?, ?, …)
+     GROUP BY m.id
+     ORDER BY match_count DESC, m.last_accessed DESC
+     LIMIT 5
+     → 조회된 메모리의 last_accessed 갱신
 
-3. build_messages(system_prompt, retrieved, recent_turns)
-   └─ system 메시지에 "[관련 메모리]\n[type] content\n..." 삽입
-   └─ 이어서 최근 active 턴들 추가
+3. build_messages(system_prompt, retrieved, recent_turns, web_context)
+     system 메시지 =  [페르소나]
+                   \n\n[관련 메모리]\n[fact] ...\n[decision] ...
+                   \n\n[웹 검색 컨텍스트]   (검색 켜졌을 때)
+     그 뒤에 archived=0 인 최근 턴들
 ```
 
-## UI와 LLM 컨텍스트의 차이
+키워드가 비면 검색을 건너뛴다 (`retrieve_memories`가 `[]` 반환).
 
-아카이브가 발생하면 UI와 LLM이 보는 대화 내용이 달라진다.
+---
 
-```
-UI 화면:
-  [오래된 메시지 (archived)] ← 사용자에게는 계속 보임
-  ──── N개 메시지가 메모리로 저장됨 ────
-  [최근 4개 메시지 (active)]
+## 4. 아카이브 흐름 — 컨텍스트 75% 초과 시
 
-LLM 입력:
-  system: [검색된 관련 메모리 N건]
-  + [최근 4개 active 메시지]
-```
-
-`💡 메모리 N건 참조` 패널에 표시되는 내용 = LLM의 system 프롬프트에 실제로 주입된 메모리.  
-아카이브된 전체 내용이 아니라, 현재 질문의 키워드와 교집합이 있는 메모리만 선택적으로 올라온다.
-
-## 메모리 추출 프롬프트 구조
-
-`extract_memories_from_turns`에서 LLM에 전달하는 지시:
+응답 저장 직후 `_maybe_archive(conn, conv_id, context_pct, max_model_len)` 실행:
 
 ```
-type 종류:
-- fact: 사실, 수치, 설정값, 고유명사
-- decision: 결정된 사항
-- pending: 미결 또는 진행 중인 항목
+조건:  max_model_len 있음  AND  context_pct >= ARCHIVE_THRESHOLD (0.75)
 
-keywords는 이 항목을 나중에 검색할 때 쓸 핵심 단어 (최대 5개).
-새로운 정보가 없으면 빈 배열 []을 반환.
-
-반환 형식:
-[{"type": "fact", "content": "...", "keywords": ["...", "..."]}]
+1. active 턴 id 목록 (archived=0, 오래된 순)
+2. 마지막 KEEP_RECENT_TURNS(4)개를 제외한 나머지를 대상으로
+   (대상이 없으면 종료 → 0 반환)
+3. async_extract_memories_from_turns(대상 턴들)     (LLM 호출)
+     "나중에 참조할 새 정보 추출, type: fact/decision/pending, keywords 최대 5개"
+     → [{"type": "fact", "content": "...", "keywords": [...]}, ...]  (없으면 [])
+4. save_memories(conn, 추출 결과)
+     memories INSERT + 키워드별 memory_keywords INSERT (소문자)
+5. 대상 턴들 archived = 1
+6. 아카이브된 턴 수 반환 → done 이벤트의 archived_count
 ```
 
-## 한계와 개선 방향
+아카이브 이후 LLM에는 **최근 4개 active 턴 + 검색된 메모리**만 전달된다.
+
+---
+
+## 5. UI와 LLM 컨텍스트의 차이
+
+```
+브라우저 화면 (#messages):                LLM 입력:
+  [오래된 메시지 (archived=1)]  ← 계속 보임   system: [검색된 관련 메모리 N건]
+  ──── N개 메시지가 메모리로 저장됨 ────       +  [최근 4개 active 턴]
+  [최근 4개 메시지 (archived=0)]
+```
+
+- `💡 메모리 N건 참조` 패널 = LLM system 프롬프트에 **실제로 주입된** 메모리
+  (`turn.memories_json`으로 영속). 아카이브된 전체가 아니라 현재 질문 키워드와
+  교집합이 있는 것만.
+- 대화를 다시 열면 `conversations.js`가 `memories_json`을 복원해 같은 패널을 그린다.
+
+---
+
+## 6. 한계와 개선 방향
 
 | 한계 | 개선 방향 |
-|------|-----------|
-| 키워드 기반 검색 → 동의어·맥락 미스 | Vector DB로 전환 (의미 기반 유사도 검색) |
-| 아카이브 기준이 토큰 수 임계값 고정 | 대화 내용의 중요도 기반 동적 아카이브 |
-| 메모리 중복 저장 가능 | 저장 시 유사 메모리 dedup 처리 |
-| 오래된 메모리도 동일하게 취급 | time-decay 가중치 적용 |
-
-Vector DB 전환 검토는 [vectordb.md](vectordb.md) 참조.
+|---|---|
+| 키워드 정확 매칭 → 동의어·맥락 미스 | Vector DB (의미 유사도) → [`vectordb.md`](vectordb.md) |
+| 아카이브 기준이 토큰 임계값 고정 | 중요도 기반 동적 아카이브 |
+| 메모리 중복 저장 가능 | 저장 시 유사 메모리 dedup |
+| 오래된 메모리도 동일 취급 | time-decay 가중치 |
