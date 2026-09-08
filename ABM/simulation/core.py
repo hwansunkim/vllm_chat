@@ -72,11 +72,11 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         agent_visuals:    dict[str, str] | None       = None,
         agent_llm:        dict[str, LLMCall] | None   = None,
         location_graph:   list[dict] | None           = None,
-        # 공간 기반 인지 모드.
-        #   "targeted" (기본) — 기존 동작 100% 그대로. 발화는 targets에 명시된
-        #                       상대에게만 전달된다.
-        #   "spatial"        — 같은 방의 제3자 엿듣기 + 같은 zone 다른 방의 직접
-        #                       타깃에게 대사만 원거리 전달 + 독백의 행동을 같은 방
+        # 공간 기반 인지 모드. 두 모드 모두 대화는 **같은 방**이어야 성립하고
+        # (1-wave 유예 포함 — _resolve_targets 참고), 차이는 spatial 이 그 위에
+        # 부가 효과를 얹는다는 점뿐이다.
+        #   "targeted" (기본) — 발화는 targets에 명시된 상대에게만 전달된다.
+        #   "spatial"        — + 같은 방의 제3자 엿듣기 + 독백의 행동을 같은 방
         #                       전원에게 씬으로 브로드캐스트.
         perception_mode:  str                         = "targeted",
         lang_fix_enabled: bool                        = True,
@@ -169,6 +169,13 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         # 넣지 않는다.
         self._solo_streak: dict[str, int] = {}
 
+        # {에이전트 key: 직전 wave **시작 시점**(이동 적용 전) 위치}. 발화 라우팅의
+        # 1-wave 대화 유예에 쓴다 — 지금은 다른 방이지만 직전 wave엔 같은 방이었던
+        # 상대에게 "마지막 한마디"를 한 번 더 배달한다(방금 자리를 뜬 사람에게 답하는
+        # 경우). run() 이 매 wave 끝에서 그 wave의 시작 스냅샷으로 갱신한다. 파생
+        # 상태라 재개 스냅샷에 넣지 않는다(재개 첫 wave는 유예 없이 시작).
+        self._prev_wave_start_location: dict[str, str] = {}
+
         # 언어 교잡 수정 설정
         self._lang_fix_enabled: bool = lang_fix_enabled
         self._lang_fix_retries: int  = max(1, int(lang_fix_retries))
@@ -200,9 +207,9 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         self._elapsed_minutes: int = elapsed_minutes_init
 
         # 공간 기반 인지 모드. 알 수 없는 값이면 기존 동작인 "targeted"로 폴백한다
-        # (`_time_estimation_mode`와 같은 패턴). "targeted"일 때 라우팅 코드는
-        # 예전 경로를 글자 그대로 타므로 회귀가 발생할 수 없다 — runner.py의
-        # 분기와 targets.py의 `_reachable` 완화가 모두 이 플래그로만 열린다.
+        # (`_time_estimation_mode`와 같은 패턴). "spatial"일 때만 엿듣기·독백 행동
+        # 관찰(_route_spatial)이 붙는다. 대화 도달성(같은 방 + 1-wave 유예)은 두
+        # 모드가 동일하다 — 옛 zone 원거리 대화(`_reachable`)는 제거됐다.
         self._perception_mode: str = (
             perception_mode if perception_mode in ("targeted", "spatial") else "targeted"
         )

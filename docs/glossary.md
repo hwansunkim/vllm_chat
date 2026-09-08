@@ -435,7 +435,8 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 | **외부 공간 (exterior)** | 완전 격리 장소. 그 안의 에이전트는 아무도 못 보고 못 들음 (씬 메시지도 안 감) |
 | **관계 지도 (relationships)** | `{상대 key: 내가 그를 부르는 관계어}`. **각자 자기 시점** (김봉남→채민경 "아내", 채민경→김봉남 "남편"). 대칭 불필요. 시나리오 전체가 비어 있으면 기능 미사용(전원 아는 사이). 하나라도 있으면 각자 명시한 상대만 아는 사이 — 소속·호칭·인지관계를 모두 표현한다 (구 `groups`는 제거됨) |
 | **낯선 이 / stranger_N** | 관계 지도에 없는 상대를 만났을 때 부여되는 임시 ID (`stranger_1`, `stranger_2` …). 외모 묘사로 표시 |
-| **공간 기반 인지 (perception_mode)** | `targeted` (기본) = 발화는 target 지목 상대에게만. `spatial` = ①같은 방 제3자 엿듣기 ②같은 zone 다른 방에 대사만 원거리 전달 ③혼잣말은 행동만 같은 방에 브로드캐스트 |
+| **공간 기반 인지 (perception_mode)** | `targeted` (기본) = 발화는 target 지목 상대에게만. `spatial` = 그 위에 ①같은 방 제3자 엿듣기 ②혼잣말은 행동만 같은 방에 브로드캐스트를 추가. 대화 도달성(같은 방 + 1-wave 유예)은 두 모드 동일 |
+| **1-wave 대화 유예** | 직접 타깃이 지금은 다른 방이어도 **직전 wave 시작 시점에 같은 방**이었으면 한 번 더 배달. 방금 자리를 뜬 상대에게 답·작별. `_recently_co_located` / `_prev_wave_start_location`. `"all"`·외부 공간 제외 |
 | **씬 메시지 (`[씬]`)** | 환경 관찰 메시지: 도착/이탈, 외모 변화, 독백 행동, 만남 취소. `speaker="씬"` |
 | **만남 lock (`_meeting_intent`)** | `move_to`에 장소가 아닌 **사람**을 지목 → 그 사람을 따라감(추격/랑데부). 동석·다른 `move_to`·목표 이탈에서 해제 |
 

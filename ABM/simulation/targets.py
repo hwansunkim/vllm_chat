@@ -16,21 +16,23 @@ class _TargetsMixin:
         """발화 target 해석 — active_agents 기준, 위치 기반 필터링 적용.
 
         지원 형식:
-          "all"        → 화자와 같은 위치의 활성 에이전트
+          "all"        → 화자와 **같은 방**의 활성 에이전트 (유예 없음)
           "stranger_N" → 해당 낯선 이 (real_key 변환 + knowledge 확장)
-          "<key>"      → 특정 에이전트 (같은 위치일 때만)
-        위치 미설정 에이전트는 기존 동작 유지 (하위 호환).
-        외부 공간 에이전트는 아무에게도 메시지를 전달할 수 없음.
+          "<key>"      → 특정 에이전트
 
-        ``perception_mode == "spatial"``이면 `<key>`/`stranger_N` **직접 타깃**에
-        한해 "같은 zone의 다른 방"까지 도달 범위를 넓힌다(`_reachable`). 벽 너머로
-        목소리는 들리기 때문이다. `all`은 이때도 **같은 방 한정**이다 —
-        zone 전체를 향해 "모두"를 외치는 건 범위가 너무 넓다.
+        대화는 **같은 방**이어야 성립한다(zone 전체가 아니다 — 벽 너머로 또렷이
+        대화하는 건 공간 개념을 무너뜨린다). 단 직접 타깃(`<key>`/`stranger_N`)에
+        한해 **1-wave 유예**를 둔다: 지금은 다른 방이지만 **직전 wave 시작 시점에
+        같은 방이었으면** 한 번 더 배달한다. 방금 자리를 뜬 상대에게 마지막 한마디를
+        건네는 경우(질문에 대한 답, 작별 인사)를 위한 것으로, 그 다음 wave엔 다시
+        같은 방이어야 한다. 외부 공간(exterior) 격리는 유예로도 못 뚫는다.
+
+        위치 미설정 에이전트는 기존 동작 유지(항상 같은 방 취급 — 하위 호환).
+        외부 공간 화자는 아무에게도 전달할 수 없다.
 
         **반환 타입은 언제나 플랫 `list[str]`이다.** runner.py(라우팅)와
         turn.py(`_apply_turn_result`의 관계 그래프 edge 생성)가 둘 다 이 형태를
-        기대하므로 절대 바꾸지 말 것. "같은 방인지 원거리인지"의 구분이 필요한
-        호출부는 `_is_remote_target()`으로 개별 조회한다.
+        기대하므로 절대 바꾸지 말 것.
         """
         speaker_loc = self._agent_location.get(speaker_key, "")
         if speaker_loc in self._exterior_locations:
@@ -55,16 +57,14 @@ class _TargetsMixin:
             )
             return False
 
-        spatial = self._perception_mode == "spatial"
-
         def _can_address(key: str) -> bool:
             """직접 타깃(`<key>`/`stranger_N`) 전용 도달 판정.
 
-            spatial 모드에서만 zone 완화(`_reachable`)를 먼저 본다. 순서가 중요하다 —
-            `_same_loc`을 먼저 부르면 원거리로 도달 가능한 타깃에도 "location
-            mismatch" 드롭 로그가 남아 추적을 흐린다.
+            1-wave 유예(`_recently_co_located`)를 먼저 본다. 순서가 중요하다 —
+            `_same_loc`을 먼저 부르면 유예로 살아남는 타깃에도 "location mismatch"
+            드롭 로그가 남아 추적을 흐린다.
             """
-            if spatial and self._reachable(speaker_loc, key):
+            if self._recently_co_located(speaker_key, key):
                 return True
             return _same_loc(key)
 
@@ -73,14 +73,15 @@ class _TargetsMixin:
             if t_s.lower() in ("self", "system"):
                 continue
             elif t_s.lower() == "all":
+                # "모두"는 유예 없이 **같은 방 한정**이다 — 방금 나간 사람에게까지
+                # 방송을 밀어 넣을 이유가 없다(직접 타깃만 마지막 한마디를 받는다).
                 candidates = (k for k in self.active_agents if k != speaker_key)
                 resolved.extend(k for k in candidates if _same_loc(k))
             elif t_s.startswith("stranger_"):
                 # stranger_N ID는 같은 장소에서뿐 아니라 같은 zone의 다른 장소를
-                # 인지할 때도 발급된다. targeted 모드의 대화 가능 범위는 어디까지나
-                # "같은 장소"이므로 _same_loc()로 걸러야 zone 인지가 대화 채널로
-                # 새지 않는다. spatial 모드에서만 _can_address()가 같은 zone의 다른
-                # 방까지 열어준다(대사만 — 행동은 runner.py가 떼어낸다).
+                # 인지할 때도 발급된다. 대화 가능 범위는 어디까지나 "같은 방"이므로
+                # _can_address()(같은 방 + 1-wave 유예)로 걸러야 zone 인지가 대화
+                # 채널로 새지 않는다.
                 real_key = self._stranger_map.get(speaker_key, {}).get(t_s)
                 if real_key and real_key in self.active_agents and _can_address(real_key):
                     self._agent_knowledge.setdefault(speaker_key, set()).add(real_key)
@@ -100,57 +101,45 @@ class _TargetsMixin:
                     resolved.append(key)
         return list(dict.fromkeys(resolved))
 
-    # ── 공간 기반 인지 (perception_mode == "spatial") ──────────────────────────
-    #
-    # 아래 네 헬퍼는 `perception_mode == "spatial"`일 때만 의미가 있다.
-    # `_reachable`/`_is_remote_target`은 모드 플래그를 스스로 확인하므로,
-    # targeted 모드에서 실수로 불려도 기존 판정을 바꾸지 않는다.
+    # ── 대화 도달성 ───────────────────────────────────────────────────────────
 
-    def _reachable(self, speaker_loc: str, key: str) -> bool:
-        """spatial 모드에서 직접 타깃 도달 가능 여부.
+    def _same_room(self, a: str, b: str) -> bool:
+        """a, b가 **지금** 같은 방에 있는가.
 
-        같은 방이거나(항상) 같은 zone의 다른 방(원거리)이면 True. zone이 없는 방,
-        다른 zone, 외부 공간(exterior)은 False.
-
-        `_same_loc`과 달리 로그를 남기지 않는다 — 이건 "완화 조건"이라 False가
-        곧 드롭을 뜻하지 않고, 호출부(`_can_address`)가 `_same_loc`으로 한 번 더
-        본다.
+        위치 미설정(레거시)은 어느 한쪽이라도 비어 있으면 "같은 방"으로 본다 —
+        `_resolve_targets._same_loc`과 같은 하위 호환 규칙. 외부 공간(exterior)이
+        한쪽이라도 끼면 격리가 우선이라 False.
         """
-        if not speaker_loc:
-            return True                       # 위치 미설정 화자 — 하위 호환(_same_loc과 동일)
-        if speaker_loc in self._exterior_locations:
-            return False                      # 외부 공간은 완전 격리
-        other_loc = self._agent_location.get(key, "")
-        if not other_loc:
-            return True                       # 위치 미설정 상대 — 하위 호환
-        if other_loc in self._exterior_locations:
-            return False
-        if speaker_loc == other_loc:
-            return True                       # 같은 방
-        my_zone = self._location_zone.get(speaker_loc, "")
-        if not my_zone:
-            return False                      # zone 미설정 방끼리는 벽이 그대로다
-        return self._location_zone.get(other_loc, "") == my_zone
+        la = self._agent_location.get(a, "")
+        lb = self._agent_location.get(b, "")
+        if la in self._exterior_locations or lb in self._exterior_locations:
+            return la == lb and la not in self._exterior_locations
+        return (not la) or (not lb) or (la == lb)
 
-    def _is_remote_target(self, speaker_key: str, target_key: str) -> bool:
-        """해석된 타깃이 '같은 방'이 아니라 '같은 zone의 다른 방'(원거리)인지.
+    def _recently_co_located(self, a: str, b: str) -> bool:
+        """직전 wave **시작 시점**에 a, b가 같은 방이었는가 (1-wave 대화 유예).
 
-        `_resolve_targets`의 반환 타입을 바꾸지 않기 위한 짝 함수다 — runner.py가
-        resolved 리스트를 순회하며 타깃마다 이걸 물어보고 전달 포맷을 나눈다
-        (원거리는 대사만, 행동 없음). targeted 모드에서는 항상 False라 호출부의
-        분기가 통째로 죽는다.
+        지금 같은 방이면 이 함수와 무관하게 배달되므로(호출부가 `_same_loc`을 따로
+        본다), 여기서 참이 의미를 갖는 건 **방금 갈라선** 경우뿐이다. 그 상황에서
+        직접 타깃에게 마지막 한마디(질문의 답·작별)를 한 번 더 배달한다. 그 다음
+        wave엔 직전 스냅샷도 '다른 방'이 되므로 유예가 자동으로 닫힌다.
+
+        외부 공간(exterior)은 **지금이든 직전이든** 한쪽이라도 끼면 격리가 우선이라
+        False. 직전 위치를 모르면(재개 첫 wave 등) 유예 없음.
         """
-        if self._perception_mode != "spatial":
+        if (self._agent_location.get(a, "") in self._exterior_locations
+                or self._agent_location.get(b, "") in self._exterior_locations):
             return False
-        speaker_loc = self._agent_location.get(speaker_key, "")
-        other_loc   = self._agent_location.get(target_key, "")
-        if not speaker_loc or not other_loc or speaker_loc == other_loc:
-            # 위치 미설정(레거시)은 "같은 방"으로 취급 — _same_loc/_reachable과 동일.
+        prev = self._prev_wave_start_location
+        if not prev:
             return False
-        if speaker_loc in self._exterior_locations or other_loc in self._exterior_locations:
+        la = prev.get(a, "")
+        lb = prev.get(b, "")
+        if not la or not lb:
             return False
-        my_zone = self._location_zone.get(speaker_loc, "")
-        return bool(my_zone) and self._location_zone.get(other_loc, "") == my_zone
+        if la in self._exterior_locations or lb in self._exterior_locations:
+            return False
+        return la == lb
 
     def _is_monologue_targets(self, targets: list[str] | None) -> bool:
         """이 턴이 '혼잣말'인지 — 원본 targets 필드 기준.
@@ -206,15 +195,13 @@ class _TargetsMixin:
                     label = "당신"
                 elif real_key in self._agent_knowledge.get(observer_key, set()):
                     label = self._key_to_alias.get(real_key, real_key)
-                elif self._reachable(self._agent_location.get(observer_key, ""), real_key):
-                    # 관찰자가 실제로 지각할 수 있는 범위(같은 방, 또는 같은 zone —
-                    # `_reachable`은 direct-target 도달성과 같은 기준)에 있는 사람이면
-                    # 새 stranger_N을 발급해도 안전하다 — 관찰자가 그 사람의 존재를
-                    # 몰랐다면 이 순간 처음 알게 된 것이므로 `_meeting_label()`의
-                    # 정상적인 발급 경로를 그대로 탄다.
+                elif self._same_room(observer_key, real_key):
+                    # 관찰자와 **같은 방**에 있는 사람이면 새 stranger_N을 발급해도
+                    # 안전하다 — 관찰자가 그 사람의 존재를 몰랐다면 이 순간 처음
+                    # 알게 된 것이므로 `_meeting_label()`의 정상적인 발급 경로를 탄다.
                     label = self._meeting_label(observer_key, real_key)
                 else:
-                    # 관찰자의 지각 범위 밖(다른 zone 등)이면 ID를 새로 발급하지
+                    # 관찰자와 다른 방이면 ID를 새로 발급하지
                     # 않는다(읽기 전용 조회). 대화에 이름만 등장했을 뿐 관찰자가
                     # 실제로 마주친 적 없는 사람에게 `_get_or_assign_stranger_id`로
                     # ID를 선점시키면 (1) 나중에 실제로 만난 사람의 번호가 밀리고,

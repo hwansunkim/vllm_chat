@@ -63,10 +63,13 @@ disp_wave = _wave_base + run_wave
 
 ── 발화 라우팅 (이동 전 위치 스냅샷) ──
 10. scene_injections = {}   (씬 메시지 버퍼)
+    wave_start_location = dict(_agent_location)   ← 이번 wave 시작 스냅샷
 11. 각 성공한 speaker:
-       resolved = _resolve_targets(result.targets, speaker)
-       targeted 모드 → routed[target] += {speaker, content, action_note}
-       spatial 모드  → _route_spatial(...) : 같은 방/원거리/엿듣기/독백 4갈래
+       resolved = _resolve_targets(result.targets, speaker)   ← 같은 방 + 1-wave 유예
+       routed[target] += {speaker, content, action_note}       ← 두 모드 공통
+       spatial 모드  → _route_spatial(...) : 그 위에 엿듣기·독백 행동 관찰만 얹음
+    ...
+    (wave 끝) _prev_wave_start_location = wave_start_location   ← 다음 wave 유예 기준
 
 ── 외모 변경 (이동 전 스냅샷) ──
 12. 각 update_appearance:
@@ -217,15 +220,17 @@ return {success: True, clean_content, action_note, targets}
 | 입력 | 해석 |
 |---|---|
 | `"self"` / `"system"` | 건너뜀 (혼잣말) |
-| `"all"` | 화자와 **같은 위치**의 활성 에이전트 전원 (아는 사이·낯선 이 구분 없이 — 같은 방이면 목소리가 닿는다) |
-| `"stranger_N"` | 화자 사전의 낯선 이 → 실제 key 변환 + 양방향 knowledge 갱신 ("이름은 만나서 안다") |
-| `"<key>"` / display_name | 정규화 후 같은 위치일 때만. 화자가 아직 "낯선 이"로만 아는 상대를 실명으로 부르면 폐기 (`_is_anonymous_to`) |
+| `"all"` | 화자와 **같은 방**의 활성 에이전트 전원 (아는 사이·낯선 이 구분 없이 — 같은 방이면 목소리가 닿는다). **유예 없음** |
+| `"stranger_N"` | 화자 사전의 낯선 이 → 실제 key 변환 + 양방향 knowledge 갱신 ("이름은 만나서 안다"). 직접 타깃이므로 1-wave 유예 적용 |
+| `"<key>"` / display_name | 정규화 후 `_can_address`(같은 방 OR 1-wave 유예)일 때만. 화자가 아직 "낯선 이"로만 아는 상대를 실명으로 부르면 폐기 (`_is_anonymous_to`) |
 
-- **외부 공간(exterior) 화자** → 항상 `[]` (아무에게도 전달 불가).
-- **위치 미설정** → 항상 같은 위치로 취급 (하위 호환).
-- **spatial 모드** → `<key>`/`stranger_N` **직접 타깃**에 한해 `_reachable`로 "같은 zone
-  다른 방"까지 확장 (벽 너머 목소리). `all`은 여전히 같은 방 한정.
-  `_is_remote_target`이 짝 함수 — runner가 타깃마다 물어보고 원거리는 대사만 전달.
+- **외부 공간(exterior) 화자** → 항상 `[]` (아무에게도 전달 불가). 유예도 exterior는 못 뚫는다.
+- **위치 미설정** → 항상 같은 방으로 취급 (하위 호환).
+- **1-wave 대화 유예** (`_recently_co_located`) → 직접 타깃(`<key>`/`stranger_N`)에 한해,
+  지금은 다른 방이어도 **직전 wave 시작 시점에 같은 방**이었으면 한 번 더 배달.
+  방금 자리를 뜬 상대에게 답·작별을 건네는 경로. 그 다음 wave엔 유예가 닫힌다.
+  `perception_mode`와 무관하게 두 모드 공통. `_prev_wave_start_location`이 기준
+  스냅샷 (runner가 매 wave 끝에서 갱신, 재개 스냅샷엔 안 들어감 → 재개 첫 wave는 유예 없음).
 - 위치 불일치로 폐기되는 경로는 `logger.debug`로 추적 (무성 폐기가 wave를 통째로
   비우는 원인).
 

@@ -1211,8 +1211,7 @@ class SpatialPerceptionTests(unittest.TestCase):
                 {"a": [{"content": "밥 먹어.", "target": ["b"], "action_note": "상을 차린다"}]},
             )
             self.assertEqual(sim._perception_mode, "targeted")
-            self.assertFalse(sim._is_remote_target("a", "d"))
-            self.assertEqual(sim._resolve_targets(["d"], "a"), [])  # zone 완화 없음
+            self.assertEqual(sim._resolve_targets(["d"], "a"), [])  # 다른 방 — 전달 불가
 
             self._speak(sim)
             self.assertEqual(sim._pending_wave["b"], [{
@@ -1288,45 +1287,83 @@ class SpatialPerceptionTests(unittest.TestCase):
             self.assertIsNone(sim._pending_wave.get("b"))
             self.assertEqual(self._incoming(sim, "c"), ["[a→b] 밥 먹어.\n(상을 차린다)"])
 
-    # ── 같은 zone, 다른 방: 원거리 ────────────────────────────────────────────
+    # ── 1-wave 대화 유예: 방금 자리를 뜬 상대에게 마지막 한마디 ────────────────
 
-    def test_remote_direct_target_hears_speech_without_action(self):
+    def test_question_then_departure_still_gets_an_answer_via_grace(self):
+        # 사용자가 지적한 시나리오 — a가 안방에서 b에게 질문. b는 (질문을 못 본 채
+        # 병렬로) 같은 wave에 거실로 이동. 다음 wave엔 둘이 갈라졌지만 **직전 wave엔
+        # 같은 방**이었으므로 한 라운드가 더 오간다(빨리 와 / 응 먹었어). 그 다음
+        # wave부터는 유예가 닫혀 어느 쪽 대사도 닿지 않는다.
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._make_sim(
-                tmp,
-                {"a": "안방", "b": "거실", "c": "거실", "d": "부엌"},
-                {"a": [{"content": "밥 먹어.", "target": ["b"], "action_note": "상을 차린다"}]},
+                tmp, {"a": "안방", "b": "안방"},
+                {"a": [{"content": "밥 먹었어?", "target": ["b"]},
+                       {"content": "빨리 와.",  "target": ["b"]},
+                       {"content": "야!",       "target": ["b"]}],
+                 "b": [{"content": "화장실 좀.", "target": "self", "move_to": "거실"},
+                       {"content": "응 먹었어.", "target": ["a"]},
+                       {"content": "잠깐만.",   "target": ["a"]}]},
                 perception_mode="spatial",
             )
-            self.assertEqual(sim._resolve_targets(["b"], "a"), ["b"])
-            self.assertTrue(sim._is_remote_target("a", "b"))
+            sim.run("a", max_waves=3, step_delay=0.0, resume_wave={"a": [], "b": []})
+            edges = [(e["source"], e["target"], e["content"]) for e in sim.edges]
+            self.assertIn(("a", "b", "밥 먹었어?"), edges)   # 질문 전달
+            self.assertIn(("b", "a", "응 먹었어."), edges)   # 답 — 1-wave 유예
+            self.assertIn(("a", "b", "빨리 와."), edges)     # 마지막 부름 — 유예
+            self.assertNotIn(("a", "b", "야!"), edges)       # 유예 닫힘 → 드롭
+            self.assertNotIn(("b", "a", "잠깐만."), edges)   # 유예 닫힘 → 드롭
 
+    def test_direct_target_who_just_left_gets_one_more_line_then_thread_closes(self):
+        # 지금은 다른 방이라 유예가 없으면 드롭. 직전 wave 시작 시점에 같은 방이었으면
+        # 딱 한 번 더 배달되고(질문의 답·작별), 그 다음 wave엔 유예가 닫힌다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(
+                tmp, {"a": "안방", "b": "거실"}, perception_mode="spatial",
+            )
+            self.assertEqual(sim._resolve_targets(["b"], "a"), [])   # 유예 기준 없음
+
+            sim._prev_wave_start_location = {"a": "안방", "b": "안방"}  # 방금 갈라섬
+            self.assertEqual(sim._resolve_targets(["b"], "a"), ["b"])
+
+            sim._prev_wave_start_location = {"a": "안방", "b": "거실"}  # 이미 다른 방
+            self.assertEqual(sim._resolve_targets(["b"], "a"), [])
+
+    def test_all_gets_no_grace_only_direct_targets_do(self):
+        # "모두"는 같은 방 한정 — 방금 나간 사람에게까지 방송을 밀지 않는다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(
+                tmp, {"a": "안방", "b": "거실", "c": "안방"}, perception_mode="spatial",
+            )
+            sim._prev_wave_start_location = {"a": "안방", "b": "안방", "c": "안방"}
+            self.assertEqual(sim._resolve_targets(["all"], "a"), ["c"])   # b 제외
+            self.assertEqual(sim._resolve_targets(["b"], "a"), ["b"])     # 직접 타깃은 유예
+
+    def test_grace_message_is_a_plain_line_speech_and_action(self):
+        # 유예 배달엔 특별 포맷이 없다 (옛 "멀리서"는 제거됨). 대사+행동 그대로.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._make_sim(
+                tmp, {"a": "안방", "b": "거실", "c": "거실"},
+                {"a": [{"content": "빨리 와.", "target": ["b"], "action_note": "문을 연다"}]},
+                perception_mode="spatial",
+            )
+            sim._prev_wave_start_location = {"a": "안방", "b": "안방", "c": "안방"}
             self._speak(sim)
             self.assertEqual(sim._pending_wave["b"], [{
-                "speaker": "a, 멀리서", "content": "밥 먹어.", "action_note": "",
+                "speaker": "a", "content": "빨리 와.", "action_note": "문을 연다",
             }])
-            # step.py 변경 없이 원거리 포맷이 성립한다.
-            self.assertEqual(self._incoming(sim, "b"), ["[a, 멀리서] 밥 먹어."])
-            # 같은 zone 다른 방의 제3자에겐 대화 내용이 새지 않는다.
-            self.assertIsNone(sim._pending_wave.get("c"))
-            self.assertIsNone(sim._pending_wave.get("d"))
+            self.assertIsNone(sim._pending_wave.get("c"))  # 유예는 직접 타깃만
 
-    def test_same_room_target_keeps_plain_format_in_spatial_mode(self):
-        # 원거리 분기가 같은 방 타깃까지 오염시키지 않는지.
+    def test_grace_never_crosses_exterior_isolation(self):
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._make_sim(
-                tmp,
-                {"a": "안방", "b": "안방"},
-                {"a": [{"content": "밥 먹어.", "target": ["b"], "action_note": "상을 차린다"}]},
-                perception_mode="spatial",
+                tmp, {"a": "안방", "b": "현관밖"}, perception_mode="spatial",
             )
-            self.assertFalse(sim._is_remote_target("a", "b"))
-            self._speak(sim)
-            self.assertEqual(self._incoming(sim, "b"), ["[a] 밥 먹어.\n(상을 차린다)"])
+            # 직전에 같이 있었어도 지금 b가 외부 공간이면 유예 없음.
+            sim._prev_wave_start_location = {"a": "안방", "b": "안방"}
+            self.assertEqual(sim._resolve_targets(["b"], "a"), [])
 
     def test_all_targets_stay_room_local_in_spatial_mode(self):
-        # zone 완화는 <key>/stranger_N 직접 타깃 전용이다. "모두"를 zone 전체로
-        # 넓히면 방의 의미가 사라진다.
+        # "모두"는 같은 방 한정. 다른 방 사람은 직접 지목해도(유예 없으면) 닿지 않는다.
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._make_sim(
                 tmp,
@@ -1335,8 +1372,7 @@ class SpatialPerceptionTests(unittest.TestCase):
                 agent_groups={"a": ["가족"], "b": ["가족"], "c": ["가족"]},
             )
             self.assertEqual(sim._resolve_targets(["all"], "a"), ["b"])
-            # 직접 타깃만 원거리로 열린다.
-            self.assertEqual(sim._resolve_targets(["c"], "a"), ["c"])
+            self.assertEqual(sim._resolve_targets(["c"], "a"), [])
 
     # ── 격리: 다른 zone / exterior ───────────────────────────────────────────
 
@@ -1437,7 +1473,7 @@ class SpatialPerceptionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._make_sim(
                 tmp,
-                {"a": "안방", "b": "거실", "c": "안방"},
+                {"a": "안방", "b": "안방", "c": "거실"},
                 {"a": [{"content": "밥 먹어.", "target": ["b"], "action_note": "상을 차린다"}]},
                 perception_mode="spatial",
             )
@@ -1446,7 +1482,7 @@ class SpatialPerceptionTests(unittest.TestCase):
             self.assertTrue(all(isinstance(k, str) for k in resolved))
 
             self._speak(sim)
-            # 원거리 타깃도 edge가 정상 생성된다(엿듣기는 edge를 만들지 않는다).
+            # 직접 타깃엔 edge가 생성된다(엿듣기는 edge를 만들지 않는다).
             self.assertEqual(
                 [(e["source"], e["target"]) for e in sim.edges], [("a", "b")]
             )
