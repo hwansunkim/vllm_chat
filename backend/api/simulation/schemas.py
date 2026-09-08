@@ -13,10 +13,9 @@ class AgentConfig(BaseModel):
     gender:             str       = "auto"  # "auto" | "male" | "female" | "unknown"
     initial_active:     bool      = True
     display_name:       str       = ""
-    groups:             list[str] = []   # 소속 그룹 ID 목록. 빈 배열 = 전체 에이전트 노출 (하위 호환)
     # 관계 지도 {상대 agent key(= AgentConfig.name): 내가 그를 부르는 관계}.
     # 예) 김봉남: {"채민경": "아내", "김미경": "큰딸"} / 채민경: {"김봉남": "남편"}.
-    # **각자 자기 시점**이라 서로 대칭일 필요가 없다. location/groups 처럼 ABM 엔진이
+    # **각자 자기 시점**이라 서로 대칭일 필요가 없다. location 처럼 ABM 엔진이
     # 해석하는 필드로, 엔진은 이 값으로 (1) [아는 사람] 계약 블록을 에이전트별로 만들고
     # (2) <TARGETS>·[이 자리의 사람들]에 관계어 라벨을 붙이고 (3) 서로를 known 으로 시드한다.
     # 빈 dict = 관계 기능 미사용(계약 블록이 붙지 않고 나머지 동작은 완전히 동일).
@@ -60,7 +59,7 @@ class LocationNode(BaseModel):
     connects_to: list[str] = []
     is_exterior: bool      = False
     # 인지 구역. 같은 zone의 다른 장소에 있는 사람은 서로 존재를 인지하지만 대화는 불가.
-    # 빈 문자열 = zone 없음(독립 노드). 위치 개념이며 AgentConfig.groups(캐릭터 관계 그룹)와 무관.
+    # 빈 문자열 = zone 없음(독립 노드). 위치 개념이며 관계 지도와 무관.
     zone:        str       = ""
     # 이 노드를 zone의 기본 입구로 지정. zone당 1개(중복 시 첫 번째만 채택 + warning).
     # 외부 노드가 connects_to에 zone명을 넣으면: 진입은 이 입구를 거치고, 탈출은

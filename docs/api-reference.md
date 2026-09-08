@@ -89,6 +89,9 @@
   "display_name": "", "initial_active": true, "relationships": {},
   "created_at", "updated_at" }
 ```
+`groups`는 **더 이상 쓰이지 않는다** — ABM 엔진에서 제거됐고, 관계 지도
+(`relationships`)가 소속·호칭·인지관계를 모두 표현한다. 컬럼은 기존 데이터 왕복
+안전을 위해 남겨둔 휴면 필드다 (읽기/쓰기 시 보존만).
 
 ### `POST /api/agents` → `201` (`AgentCreate`)
 필수: `name`. 나머지는 위 기본값. `role`/`goal`/`backstory`를 주면 프론트가

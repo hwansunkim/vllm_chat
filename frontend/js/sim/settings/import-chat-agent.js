@@ -14,7 +14,7 @@
 
 import { api } from '../../api.js';
 import { chatAgentToSimAgent, uniqueName } from '../../agent-transfer.js';
-import { sim, _expandedAgents, getAllGroups } from '../state.js';
+import { sim, _expandedAgents } from '../state.js';
 import { renderAgentListInConfig, renderStartAgentSelect } from './agents.js';
 import { getServerList, invalidateServerList } from './server-list.js';
 
@@ -137,20 +137,9 @@ function renderPreview() {
 
   const { agent } = candidate;
 
-  // ── 그룹/위치는 시나리오 지역 ID라, 다른 시나리오에서 가져온 값이 이 시나리오
-  // 어디에도 없으면 대화 상대가 아예 없는 채로 고립된다(ABM/simulation/targets.py
-  // — 그룹이 비어있으면 전체 노출, 있으면 같은 그룹원만 노출이라 아무도 공유하지
-  // 않는 그룹은 실질적으로 "혼자만의 그룹"이 된다). 값 자체는 그대로 복사하되,
-  // 고립 위험이 있으면 확정 전에 눈에 띄게 알린다.
-  const knownGroups = new Set(getAllGroups());
-  const orphanGroups = (agent.groups || []).filter(g => !knownGroups.has(g));
-  if (orphanGroups.length) {
-    const warn = document.createElement('div');
-    warn.className = 'xfer-note xfer-note-warn';
-    warn.textContent = `⚠ 그룹 "${orphanGroups.join(', ')}" 은(는) 이 시나리오의 다른 에이전트가 아무도 안 씁니다 — `
-      + `이 상태로 시작하면 이 에이전트는 아무와도 대화하지 못합니다. 필요하면 가져온 뒤 그룹을 지우거나 이 시나리오의 기존 그룹으로 바꾸세요.`;
-    pane.appendChild(warn);
-  }
+  // ── 위치는 시나리오 지역 ID라, 다른 시나리오에서 가져온 값이 이 시나리오의
+  // 위치 그래프에 없으면 시작 위치가 어긋난다. 값 자체는 그대로 복사하되,
+  // 어긋나면 확정 전에 눈에 띄게 알린다.
   const knownLocations = new Set((sim.location_graph || []).map(n => n.name));
   if (agent.location && !knownLocations.has(agent.location)) {
     const warn = document.createElement('div');
@@ -202,7 +191,6 @@ function renderPreview() {
     ['시스템 프롬프트', agent.system_prompt || '(없음)'],
     ['온도',          agent.temperature ?? '(시뮬레이션 기본값)'],
     ['성별',          agent.gender],
-    ['그룹',          agent.groups.length ? agent.groups.join(', ') : '(없음)'],
     ['위치',          agent.location || '(없음)'],
     ['외모 묘사',      agent.visual_description || '(없음)'],
     ['처음부터 등장',   agent.initial_active ? '예' : '아니오'],

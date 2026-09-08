@@ -54,7 +54,7 @@ Wave 1: 그 target들이 동시 발화 (ThreadPoolExecutor 병렬)
   "agents": [
     { "name": "manager", "display_name": "점장",
       "system_prompt": "당신은 카페 점장입니다. 목표: 손님을 친절히 응대하고 매출을 올린다. 친절하고 적극적인 말투.",
-      "groups": [], "location": "", "relationships": {}, "initial_active": true }
+      "location": "", "relationships": {}, "initial_active": true }
   ],
   "background": "오후 3시, 조용한 카페. 손님이 막 들어왔다.",
   "start_agent": "manager",

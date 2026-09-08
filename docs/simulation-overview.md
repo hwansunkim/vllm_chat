@@ -210,7 +210,7 @@ async def _gen():
 
 | 필드 | 기본 | 의미 |
 |---|---|---|
-| `agents[]` | — | `AgentConfig` — `name`(=key), `system_prompt`, `display_name`, `groups`, `relationships`, `location`, `visual_description`, `server_id`, `temperature`, `initial_active` |
+| `agents[]` | — | `AgentConfig` — `name`(=key), `system_prompt`, `display_name`, `relationships`, `location`, `visual_description`, `server_id`, `temperature`, `initial_active` |
 | `background` | — | 공통 장면 전제 |
 | `start_agent` | — | wave 0 발화자 (= `agents[].name` 중 하나) |
 | `max_waves` | 10 | wave 상한 (안전장치) |

@@ -81,7 +81,7 @@ nullable/기본값이라 기존 행은 영향 없음. 컬럼 삭제·이름 변�
 | `temperature` | REAL | 기본 0.7 |
 | `max_tokens` | INTEGER | 기본 1024 |
 | `role` / `goal` / `backstory` | TEXT | 구조화 입력 → 시스템 프롬프트 자동 생성 |
-| `gender` · `groups` · `location` · `visual_description` · `display_name` · `initial_active` · `relationships` | TEXT/BOOL | **시뮬레이션 에이전트와 공유되는 필드** — 채팅 로직은 해석 안 함. 채팅↔시뮬 왕복 시 보존만. `groups`는 JSON 배열 문자열, `relationships`는 JSON 객체 문자열 |
+| `gender` · `groups` · `location` · `visual_description` · `display_name` · `initial_active` · `relationships` | TEXT/BOOL | **시뮬레이션 에이전트와 공유되는 필드** — 채팅 로직은 해석 안 함. 채팅↔시뮬 왕복 시 보존만. `relationships`는 JSON 객체 문자열. `groups`(JSON 배열 문자열)는 **휴면 필드** — ABM 엔진에서 제거됐고 관계 지도로 대체됐다. 마이그레이션 회피용으로 컬럼만 유지 |
 | `created_at` / `updated_at` | TEXT | ISO |
 
 ## `servers` (LLM 서버)

@@ -501,16 +501,6 @@ export function agentLabelWithIcon(key) {
   return `${getAgentIcon(a, sim.agentEmotions[a.name])} ${a.display_name || a.name}`;
 }
 
-// ── Group helpers ─────────────────────────────────────────────────────────────
-/** 현재 에이전트 목록에서 사용 중인 그룹 ID를 수집 (자동완성용) */
-export function getAllGroups() {
-  const groups = new Set();
-  for (const agent of sim.agents) {
-    for (const g of (agent.groups || [])) groups.add(g);
-  }
-  return [...groups].sort();
-}
-
 // ── Relationship helpers (관계 지도) ───────────────────────────────────────────
 // AgentConfig.relationships = { 상대 agent의 name(key): "내가 그를 부르는 관계" }.
 // 각자 **자기 시점**이라 대칭일 필요가 없다(김봉남→채민경 "아내", 채민경→김봉남 "남편").

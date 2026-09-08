@@ -6,68 +6,17 @@ logger = logging.getLogger(__name__)
 class _TargetsMixin:
     """에이전트 target 해석 및 가시성 관련 메서드."""
 
-    def _build_visible_targets(self, agent_groups: dict[str, list[str]]) -> dict[str, list[str]]:
-        """에이전트별 <TARGETS>에 노출할 다른 에이전트 key 목록 계산.
-
-        groups가 빈 에이전트는 모든 에이전트를 볼 수 있음 (하위 호환).
-        groups가 있으면 같은 그룹에 속한 에이전트만 노출.
-        """
-        all_keys = list(self.agents.keys())
-        result: dict[str, list[str]] = {}
-        for key in all_keys:
-            groups = agent_groups.get(key, [])
-            if not groups:
-                result[key] = [k for k in all_keys if k != key]
-            else:
-                visible: set[str] = set()
-                for gid in groups:
-                    for other_key in all_keys:
-                        if gid in agent_groups.get(other_key, []):
-                            visible.add(other_key)
-                visible.discard(key)
-                result[key] = sorted(visible)
-        return result
-
     def _normalize_target(self, t: str) -> str:
         """한국어 display_name → 시스템 key 정규화. 이미 key면 그대로 반환."""
         if t in self.agents:
             return t
         return self._alias_to_key.get(t, t)
 
-    def _get_visible_sections(
-        self, agent_key: str, visible_agents: list[str]
-    ) -> list[tuple[str, list[str]]] | None:
-        """그룹 소속 에이전트의 <TARGETS>를 그룹-섹션으로 분류.
-
-        그룹 미설정 에이전트는 None 반환 (flat 목록 유지, 하위 호환).
-        """
-        my_groups = self._agent_groups.get(agent_key, [])
-        if not my_groups:
-            return None
-
-        sections: list[tuple[str, list[str]]] = []
-        seen: set[str] = set()
-        for gid in my_groups:
-            members = [
-                k for k in visible_agents
-                if k not in seen and gid in self._agent_groups.get(k, [])
-            ]
-            if members:
-                sections.append((gid, members))
-                seen.update(members)
-
-        ungrouped = [k for k in visible_agents if k not in seen]
-        if ungrouped:
-            sections.append(("기타", ungrouped))
-
-        return sections or None
-
     def _resolve_targets(self, targets: list[str], speaker_key: str) -> list[str]:
         """발화 target 해석 — active_agents 기준, 위치 기반 필터링 적용.
 
         지원 형식:
           "all"        → 화자와 같은 위치의 활성 에이전트
-          "group:X"    → 그룹 X 소속 + 같은 위치 에이전트
           "stranger_N" → 해당 낯선 이 (real_key 변환 + knowledge 확장)
           "<key>"      → 특정 에이전트 (같은 위치일 때만)
         위치 미설정 에이전트는 기존 동작 유지 (하위 호환).
@@ -75,7 +24,7 @@ class _TargetsMixin:
 
         ``perception_mode == "spatial"``이면 `<key>`/`stranger_N` **직접 타깃**에
         한해 "같은 zone의 다른 방"까지 도달 범위를 넓힌다(`_reachable`). 벽 너머로
-        목소리는 들리기 때문이다. `all`/`group:X`는 이때도 **같은 방 한정**이다 —
+        목소리는 들리기 때문이다. `all`은 이때도 **같은 방 한정**이다 —
         zone 전체를 향해 "모두"를 외치는 건 범위가 너무 넓다.
 
         **반환 타입은 언제나 플랫 `list[str]`이다.** runner.py(라우팅)와
@@ -88,7 +37,6 @@ class _TargetsMixin:
             return []  # 외부 공간 화자 — 메시지 전달 불가
 
         resolved    = []
-        visible_set = set(self._visible_targets.get(speaker_key, []))
 
         def _same_loc(key: str) -> bool:
             """위치 시스템 활성 시 같은 위치인지 확인. 위치 미설정이면 항상 True."""
@@ -125,20 +73,8 @@ class _TargetsMixin:
             if t_s.lower() in ("self", "system"):
                 continue
             elif t_s.lower() == "all":
-                my_groups = self._agent_groups.get(speaker_key, [])
-                if my_groups:
-                    candidates = (k for k in visible_set if k in self.active_agents)
-                else:
-                    candidates = (k for k in self.active_agents if k != speaker_key)
+                candidates = (k for k in self.active_agents if k != speaker_key)
                 resolved.extend(k for k in candidates if _same_loc(k))
-            elif t_s.lower().startswith("group:"):
-                gid = t_s[6:]
-                resolved.extend(
-                    k for k in visible_set
-                    if k in self.active_agents
-                    and gid in self._agent_groups.get(k, [])
-                    and _same_loc(k)
-                )
             elif t_s.startswith("stranger_"):
                 # stranger_N ID는 같은 장소에서뿐 아니라 같은 zone의 다른 장소를
                 # 인지할 때도 발급된다. targeted 모드의 대화 가능 범위는 어디까지나
@@ -253,8 +189,6 @@ class _TargetsMixin:
                 continue
             if low == "all":
                 label = "모두"
-            elif low.startswith("group:"):
-                label = t_s[6:] or "모두"
             else:
                 if t_s.startswith("stranger_"):
                     # stranger_N은 **화자**의 사전에서만 의미가 있다. 관찰자에게는
@@ -306,15 +240,15 @@ class _TargetsMixin:
         있었다. 그러면 memory엔 실명이 있는데 `[현재 상황]` 블록은 계속 stranger_N을
         보여주는 상태 불일치가 고착된다.
 
-        **하위 호환 설계 — 보수적 판정.** knowledge 검사를 무조건 걸면 위치/그룹
+        **하위 호환 설계 — 보수적 판정.** knowledge 검사를 무조건 걸면 위치/관계
         시스템을 쓰지 않는 레거시 시나리오를 깨뜨릴 위험이 있으므로, "stranger_N ID가
         실제로 발급된 적 있는 상대"에게만 knowledge를 요구한다. ID는 관찰자가 그
         사람을 익명으로 본 적이 있을 때만(_compute_wave_targets / _compute_zone_awareness)
         발급되므로:
 
-          - 그룹 미설정 시나리오: core.py가 knowledge에 전원을 넣어두므로 애초에 낯선
+          - 관계 미설정 시나리오: core.py가 knowledge에 전원을 넣어두므로 애초에 낯선
             이가 없고 ID도 발급되지 않는다 → 항상 False → 기존 동작 그대로.
-          - 위치 미설정 + 그룹 설정 시나리오: 위치가 비어도 _compute_wave_targets는
+          - 위치 미설정 + 관계 설정 시나리오: 위치가 비어도 _compute_wave_targets는
             동작하므로 ID가 정상 발급된다 → 익명화가 그대로 적용된다.
 
         _resolve_targets는 언제나 화자 자신의 턴 **직후**에 불리고, 그 턴의 프롬프트
@@ -331,21 +265,13 @@ class _TargetsMixin:
 
         지원 형식:
           "all"      → 모든 활성 에이전트
-          "group:X"  → 그룹 X 소속 활성 에이전트 전원
           "<key>"    → 특정 에이전트
         """
         if any(t.strip().lower() == "all" for t in targets):
             return list(self.active_agents)
         resolved = []
         for t in targets:
-            t_s = t.strip()
-            if t_s.lower().startswith("group:"):
-                gid = t_s[6:]
-                for key in self.active_agents:
-                    if gid in self._agent_groups.get(key, []):
-                        resolved.append(key)
-            else:
-                key = self._normalize_target(t_s)
-                if key in self.active_agents:
-                    resolved.append(key)
+            key = self._normalize_target(t.strip())
+            if key in self.active_agents:
+                resolved.append(key)
         return list(dict.fromkeys(resolved))

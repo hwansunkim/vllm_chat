@@ -223,10 +223,8 @@ class _StepMixin:
             target_sections = None
         else:
             # 위치 미사용(레거시) 시나리오 전용 전역 폴백 — 하위 호환 유지.
-            other_agents   = [k for k in self.active_agents if k != agent_key]
-            visible_agents = [k for k in self._visible_targets.get(agent_key, other_agents)
-                              if k in self.active_agents]
-            target_sections = self._get_visible_sections(agent_key, visible_agents)
+            visible_agents  = [k for k in self.active_agents if k != agent_key]
+            target_sections = None
 
         # 동석자가 있을 때만 상황 컨텍스트로 target 제공 — 혼자면 <TARGETS>가 "(없음)"이 된다.
         sit_targets = bool(my_loc and (known or strangers))

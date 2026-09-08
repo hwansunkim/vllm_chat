@@ -262,12 +262,11 @@ function _buildMarkdown(log, events, statusStr, checks) {
   md += `\n---\n\n`;
 
   md += `## 등장인물\n\n`;
-  md += `| 아이콘 | 이름 | ID | 그룹 | 초기 활성 |\n`;
-  md += `|--------|------|----|------|-----------|\n`;
+  md += `| 아이콘 | 이름 | ID | 초기 활성 |\n`;
+  md += `|--------|------|----|-----------|\n`;
   for (const a of sim.agents) {
-    const groups = (a.groups || []).join(', ') || '—';
     const active = a.initial_active !== false ? '✅' : '—';
-    md += `| ${a.icon || '🤖'} | ${a.display_name || a.name} | \`${a.name}\` | ${groups} | ${active} |\n`;
+    md += `| ${a.icon || '🤖'} | ${a.display_name || a.name} | \`${a.name}\` | ${active} |\n`;
   }
   md += `\n`;
 
@@ -360,7 +359,7 @@ export async function exportRunMarkdown(runId, run, preloadedLog) {
     infection_model:     sim.infection_model,
   };
   sim.agents              = (parsedConfig.agents || []).map(a => ({
-    icon: '🤖', groups: [], initial_active: true, relationships: {}, ...a,
+    icon: '🤖', initial_active: true, relationships: {}, ...a,
   }));
   sim.background          = parsedConfig.background          || '';
   sim.currentScenarioName = run.scenario_name                || '시나리오';
@@ -395,7 +394,6 @@ export async function exportAgentContextMarkdown(agentName) {
   const agent       = sim.agents.find(a => a.name === agentName);
   const icon        = agent?.icon || '🤖';
   const displayName = agent?.display_name || agentName;
-  const groups      = (agent?.groups || []).join(', ') || '—';
   const nowKo       = new Date().toLocaleString('ko-KR', {
     year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit',
   });
@@ -406,7 +404,7 @@ export async function exportAgentContextMarkdown(agentName) {
 
   let md = '';
   md += `# ${icon} ${displayName} — 컨텍스트 윈도우\n\n`;
-  md += `> **에이전트** \`${agentName}\` · **그룹** ${groups}\n`;
+  md += `> **에이전트** \`${agentName}\`\n`;
   md += `> **메모리** ${memory_size}개 메시지 · **토큰** ${prompt_tokens.toLocaleString()} / ${token_limit.toLocaleString()} (${pct}%)\n`;
   if (trimmed > 0) md += `> ⚠ **트림** ${trimmed}개 메시지 제거됨\n`;
   md += `> **추출 시각** ${nowKo}\n`;

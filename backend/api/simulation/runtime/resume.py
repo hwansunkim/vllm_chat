@@ -103,7 +103,6 @@ def resume_simulation(run_id: str):
             background_log  = [{"role": "user", "content": f"[배경] {cfg.background}"}]
             init_agents     = list(saved_active) if saved_active is not None else None
 
-            agent_groups    = {a.name: a.groups            for a in cfg.agents}
             agent_locations = {a.name: a.location          for a in cfg.agents}
             agent_visuals   = {a.name: a.visual_description for a in cfg.agents}
             # 관계 지도도 config 에서 매번 새로 만든다 — 계약 층과 같은 원칙이다.
@@ -117,7 +116,6 @@ def resume_simulation(run_id: str):
                 initial_agents=init_agents,
                 name_aliases=alias_map,
                 sim_id=run_sim_id, db=new_db,
-                agent_groups=agent_groups,
                 agent_relationships=agent_relationships,
                 system_agent=cfg.system_agent.model_dump(),
                 agent_locations=agent_locations,

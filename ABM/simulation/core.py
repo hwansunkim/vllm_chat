@@ -63,7 +63,6 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         name_aliases:     dict[str, str] | None  = None,
         sim_id:           str | None             = None,
         db=None,
-        agent_groups:     dict[str, list[str]] | None = None,
         # {에이전트 key: {상대 key: 그 상대를 부르는 관계}}. 각 항목은 **그 에이전트
         # 시점**이다(김봉남→채민경="아내", 채민경→김봉남="남편"). 비었거나 생략되면
         # 관계 계약 블록이 아예 붙지 않는다 = 기능 미사용.
@@ -134,14 +133,11 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         else:
             self.active_agents = set(agents.keys())
 
-        self._agent_groups: dict[str, list[str]] = agent_groups or {}
-        self._visible_targets: dict[str, list[str]] = self._build_visible_targets(
-            self._agent_groups
-        )
         # 관계 지도. 실존하지 않는 상대 key(시나리오 편집 중 이름이 바뀌면 생긴다)와
         # 자기 자신 참조는 여기서 걸러내고, 사유는 _verify_engine_contract()가 경고로
         # 낸다. 이후 모든 소비 지점(계약 블록·<TARGETS>·[이 자리의 사람들]·knowledge
-        # 시드)은 이 정제된 맵 하나만 본다.
+        # 시드)은 이 정제된 맵 하나만 본다. (구 `groups` 는 제거됐다 — 관계 지도가
+        # 소속·호칭·인지관계를 모두 표현한다.)
         self._dangling_relationships: list[str] = []
         self._agent_relationships: dict[str, dict[str, str]] = self._sanitize_relationships(
             agent_relationships
@@ -212,8 +208,8 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         )
 
         # 위치 그래프 (인접 리스트) + 외부 공간 집합 + 인지 구역(zone) 맵
-        # 주의: 여기서의 zone은 **위치 기반 인지 범위**이며, _agent_groups(캐릭터 관계
-        # 그룹)와는 완전히 별개의 개념이다. 같은 zone의 다른 장소에 있는 사람은 서로
+        # 주의: 여기서의 zone은 **위치 기반 인지 범위**이며, 관계 지도(캐릭터 관계)와는
+        # 완전히 별개의 개념이다. 같은 zone의 다른 장소에 있는 사람은 서로
         # 존재를 인지하지만, 대화는 여전히 같은 장소(노드)에 있어야만 가능하다.
         self._location_graph:    dict[str, list[str]] = {}
         self._exterior_locations: set[str]            = set()
@@ -317,13 +313,11 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         # 번호가 중복되거나 건너뛸 수 있다.
         self._stranger_lock = threading.Lock()
 
-        _groups = self._agent_groups
         for key in self.agents:
             if agent_locations and key in agent_locations:
                 self._agent_location[key] = agent_locations[key]
             else:
-                first_group = (_groups.get(key) or [None])[0]
-                self._agent_location[key] = first_group if first_group else ""
+                self._agent_location[key] = ""
 
         for key in self.agents:
             self._agent_visual[key] = (agent_visuals or {}).get(key, "")
@@ -341,23 +335,20 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
             self._agent_knowledge[key] = set()
             self._stranger_map[key]    = {}
             self._stranger_rmap[key]   = {}
+        # 관계 지도가 knowledge 시드를 결정한다. 계약 층과 같은 on/off 규칙이다 —
+        # 시나리오 어디에도 관계가 없으면 "기능 미사용"이고, 그때는 구 `groups` 시절의
+        # "그룹 미지정 = 전원 인지" 기본값을 그대로 쓴다. 관계를 하나라도 쓰기 시작하면
+        # (기능 사용) 각 에이전트는 **자기가 명시한 상대만** 아는 사이다 — 관계 목록에
+        # 없는 사람은 같은 방에서 만나도 stranger_N 으로 보인다(의도된 익명성).
+        # 관계는 화자 방향뿐이므로(a→b 만 적으면 b 는 a 를 낯선 이로 본다),
+        # 익명성을 대칭으로 두려면 양쪽 다 적어야 한다 — _sanitize_relationships 가
+        # 단방향을 경고로 잡아준다.
+        relationships_in_use = any(self._agent_relationships.values())
         for key in all_keys:
-            my_groups = _groups.get(key, [])
-            if my_groups:
-                for other_key in all_keys:
-                    if other_key == key:
-                        continue
-                    other_groups = _groups.get(other_key, [])
-                    if any(g in other_groups for g in my_groups):
-                        self._agent_knowledge[key].add(other_key)
+            if relationships_in_use:
+                self._agent_knowledge[key] = set(self._agent_relationships.get(key, {}))
             else:
-                for other_key in all_keys:
-                    if other_key != key:
-                        self._agent_knowledge[key].add(other_key)
-            # 관계를 명시한 상대는 groups 와 무관하게 **무조건 아는 사이**다.
-            # 안 그러면 "아내"라고 계약에 써 놓고 정작 같은 방에서 만나면
-            # stranger_1 로 보이는 모순이 생긴다. (관계는 그룹보다 강한 신호다.)
-            self._agent_knowledge[key].update(self._agent_relationships.get(key, {}))
+                self._agent_knowledge[key] = {k for k in all_keys if k != key}
 
         os.makedirs(log_dir, exist_ok=True)
         self._save_shared_log()

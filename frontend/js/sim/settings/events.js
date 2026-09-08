@@ -1,7 +1,7 @@
 // frontend/js/sim/settings/events.js
 // Scenario events editor (wave-keyed system messages / agent enter/exit).
 
-import { sim, esc, getAllGroups } from '../state.js';
+import { sim, esc } from '../state.js';
 import { updateSectionBadges } from './sections.js';
 
 const EVENT_LABELS = {
@@ -17,9 +17,6 @@ const AGENT_EVENT_TYPES = ['agent_enter', 'agent_exit', 'infect_agent'];
 // Build the ordered list of selectable targets for system_message events.
 function _buildTargetOptions() {
   const opts = [{ value: 'all', label: '전체', cls: 'evt-target-all' }];
-  for (const g of getAllGroups()) {
-    opts.push({ value: `group:${g}`, label: `그룹 ${g}`, cls: 'evt-target-group' });
-  }
   for (const a of sim.agents) {
     opts.push({ value: a.name, label: `${a.icon} ${a.name}`, cls: 'evt-target-agent' });
   }

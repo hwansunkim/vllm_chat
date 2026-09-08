@@ -196,7 +196,6 @@ export function applyScenario(s) {
   sim.currentScenarioName = s.name;
   sim.agents       = (cfg.agents || []).map(a => ({
     ...a,
-    groups:             a.groups             || [],
     location:           a.location           ?? '',
     visual_description: a.visual_description ?? '',
     // 구버전 시나리오에는 필드 자체가 없다 — null(= 시뮬레이션 기본 서버)로 채운다.

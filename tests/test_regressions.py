@@ -41,6 +41,48 @@ from backend.websearch.providers.duckduckgo import (
 )
 
 
+# ── 레거시 `groups` → 관계 지도 변환 (테스트 shim) ──────────────────────────────
+# ABM 엔진에서 `groups` 를 제거하면서, 옛 대칭 그룹 멤버십을 같은 known/stranger
+# 위상을 만드는 관계 지도로 옮긴다. 규칙:
+#   - 같은 그룹원끼리 상호 "지인" 엣지를 만든다.
+#   - 관계 지도는 계약 층과 같은 on/off 다 — 지도가 비면 "전원 인지"(구 그룹
+#     미설정 기본값), 하나라도 있으면 각자 명시한 상대만 아는 사이.
+#   - 옛 "서로 다른 싱글턴 그룹 = 남남" 을 재현하려면 그룹을 쓰는 순간 지도가
+#     non-empty 여야 한다. 공유 그룹이 없어 엣지가 하나도 안 생기면, 격리된
+#     앵커 에이전트 하나에 모두를 연결해 "기능 사용" 상태만 만든다(앵커는
+#     exterior 노드에 두어 어떤 씬·대화 스코프에도 안 낀다).
+_GROUP_ANCHOR = "_외부인"
+
+
+def _groups_to_relationships(groups, *, anchor_location=None):
+    """returns (relationships, extra_locations).
+
+    extra_locations 는 앵커가 필요할 때 {앵커 key: 위치} 로, sim 의 agent/location
+    맵에 합쳐야 한다. 앵커가 필요 없으면 빈 dict.
+    """
+    groups = groups or {}
+    members: dict[str, list] = {}
+    for k, gs in groups.items():
+        for g in (gs or []):
+            members.setdefault(g, []).append(k)
+
+    rels: dict[str, dict] = {}
+    for k, gs in groups.items():
+        for g in (gs or []):
+            for other in members[g]:
+                if other != k:
+                    rels.setdefault(k, {})[other] = "지인"
+
+    groups_in_use = any(gs for gs in groups.values())
+    extra: dict[str, str] = {}
+    if groups_in_use and not any(rels.values()) and anchor_location is not None:
+        for k in groups:
+            rels.setdefault(k, {})[_GROUP_ANCHOR] = "지인"
+        rels[_GROUP_ANCHOR] = {k: "지인" for k in groups}
+        extra[_GROUP_ANCHOR] = anchor_location
+    return rels, extra
+
+
 class FakeStreamResponse:
     def __init__(self, lines):
         self._lines = lines
@@ -986,14 +1028,20 @@ class ZoneAwarenessTests(unittest.TestCase):
         from ABM.agent import Agent
         from ABM.simulation import Simulation
 
+        groups = kw.pop("agent_groups", None)
+        locations = dict(self.LOCATIONS)
+        if groups is not None:
+            rels, extra = _groups_to_relationships(groups, anchor_location="현관밖")
+            kw.setdefault("agent_relationships", rels)
+            locations.update(extra)
         agents = {
             key: Agent(key, f"너는 {key}다.", tmp, token_limit=4096)
-            for key in self.LOCATIONS
+            for key in locations
         }
         return Simulation(
             agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
             llm=_ScriptedLLM(script or {}),
-            agent_locations=dict(self.LOCATIONS),
+            agent_locations=locations,
             location_graph=self.LOCATION_GRAPH,
             **kw,
         )
@@ -1115,6 +1163,12 @@ class SpatialPerceptionTests(unittest.TestCase):
         from ABM.agent import Agent
         from ABM.simulation import Simulation
 
+        groups = kw.pop("agent_groups", None)
+        locations = dict(locations)
+        if groups is not None:
+            rels, extra = _groups_to_relationships(groups, anchor_location="현관밖")
+            kw.setdefault("agent_relationships", rels)
+            locations.update(extra)
         agents = {
             key: Agent(key, f"너는 {key}다.", tmp, token_limit=4096)
             for key in locations
@@ -1124,7 +1178,7 @@ class SpatialPerceptionTests(unittest.TestCase):
         sim = Simulation(
             agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
             llm=_ScriptedLLM(full_script),
-            agent_locations=dict(locations),
+            agent_locations=locations,
             location_graph=self.LOCATION_GRAPH,
             **kw,
         )
@@ -1197,9 +1251,10 @@ class SpatialPerceptionTests(unittest.TestCase):
             # 제3자(c)는 누구에게 한 말인지 태그가 붙은 채로 대사+행동을 받는다.
             self.assertEqual(self._incoming(sim, "c"), ["[a→b] 밥 먹어.\n(상을 차린다)"])
 
-    def test_eavesdrop_labels_are_per_observer_and_ignore_groups(self):
-        # d는 다른 그룹이라 <TARGETS>에도 안 뜨고 "all"에도 안 잡히지만, 같은 방에
-        # 물리적으로 있으므로 엿듣는다. 대신 a도 b도 모르므로 전부 stranger_N.
+    def test_eavesdrop_labels_are_per_observer_and_ignore_acquaintance(self):
+        # a는 b(아는 사이)에게만 말을 건다. 같은 방의 c(아는 사이)·d(모르는 사이)는
+        # 둘 다 엿듣는다 — 엿듣기는 물리적 사실이라 인지 관계와 무관하다. 대신
+        # 라벨은 관찰자 시점: a도 d도 서로 모르므로 d의 엿듣기 태그는 전부 stranger_N.
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._make_sim(
                 tmp,
@@ -1208,8 +1263,8 @@ class SpatialPerceptionTests(unittest.TestCase):
                 perception_mode="spatial",
                 agent_groups={"a": ["가족"], "b": ["가족"], "c": ["가족"], "d": ["이웃"]},
             )
-            # 그룹 필터는 타깃 해석에만 걸린다 — d는 "all"의 후보조차 아니다.
-            self.assertEqual(sorted(sim._resolve_targets(["all"], "a")), ["b", "c"])
+            # "all"은 이제 인지 관계로 거르지 않는다 — 같은 방 전원이 후보다.
+            self.assertEqual(sorted(sim._resolve_targets(["all"], "a")), ["b", "c", "d"])
 
             self._speak(sim)
             self.assertEqual(self._incoming(sim, "c"), ["[a→b] 밥 먹어.\n(상을 차린다)"])
@@ -1269,7 +1324,7 @@ class SpatialPerceptionTests(unittest.TestCase):
             self._speak(sim)
             self.assertEqual(self._incoming(sim, "b"), ["[a] 밥 먹어.\n(상을 차린다)"])
 
-    def test_all_and_group_targets_stay_room_local_in_spatial_mode(self):
+    def test_all_targets_stay_room_local_in_spatial_mode(self):
         # zone 완화는 <key>/stranger_N 직접 타깃 전용이다. "모두"를 zone 전체로
         # 넓히면 방의 의미가 사라진다.
         with tempfile.TemporaryDirectory() as tmp:
@@ -1280,7 +1335,6 @@ class SpatialPerceptionTests(unittest.TestCase):
                 agent_groups={"a": ["가족"], "b": ["가족"], "c": ["가족"]},
             )
             self.assertEqual(sim._resolve_targets(["all"], "a"), ["b"])
-            self.assertEqual(sim._resolve_targets(["group:가족"], "a"), ["b"])
             # 직접 타깃만 원거리로 열린다.
             self.assertEqual(sim._resolve_targets(["c"], "a"), ["c"])
 
@@ -1594,13 +1648,17 @@ class AppearanceUpdateTests(unittest.TestCase):
         from ABM.agent import Agent
         from ABM.simulation import Simulation
 
+        rels, extra = _groups_to_relationships(groups, anchor_location="옥상")
+        locations = {**locations, **extra}
+        visuals = {**visuals, **{k: "" for k in extra}}
+        keys = list(keys) + list(extra)
         agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096) for k in keys}
         sim = Simulation(
             agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
             llm=_ScriptedLLM(script),
             agent_locations=locations,
             agent_visuals=visuals,
-            agent_groups=groups,
+            agent_relationships=rels,
             location_graph=self.LOCATION_GRAPH,
             **kw,
         )
@@ -3819,6 +3877,13 @@ class _MeetingSimHarness:
         from ABM.simulation import Simulation
 
         keys = keys or sorted(locations)
+        groups = sim_kw.pop("agent_groups", None)
+        locations = dict(locations)
+        if groups is not None:
+            rels, extra = _groups_to_relationships(groups, anchor_location="밖")
+            sim_kw.setdefault("agent_relationships", rels)
+            locations.update(extra)
+            keys = list(keys) + list(extra)
         with tempfile.TemporaryDirectory() as tmp:
             agents = {
                 key: Agent(key, f"너는 {key}다.", tmp, token_limit=4096)
@@ -3827,7 +3892,7 @@ class _MeetingSimHarness:
             sim = Simulation(
                 agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
                 llm=_ScriptedLLM(script),
-                agent_locations=dict(locations),
+                agent_locations=locations,
                 location_graph=self.LOCATION_GRAPH if graph is None else graph,
                 **sim_kw,
             )
@@ -4611,7 +4676,10 @@ class EngineContractBuilderTests(unittest.TestCase):
             target_sections=[("아는 사람", ["a"]), ("처음 보는 사람", ["stranger_1"])],
         )
         self.assertIn("[아는 사람]", sectioned)
-        self.assertIn('group:아는 사람', sectioned)  # 그룹 2개 이상 → 단축 표기
+        self.assertIn("[처음 보는 사람]", sectioned)
+        self.assertIn('- ID: "stranger_1"', sectioned)
+        # 섹션은 known/stranger 분류일 뿐 — 그룹 단축 표기 같은 건 이제 없다.
+        self.assertNotIn("group:", sectioned)
 
         situational = build_output_contract([], _FIELDS, situation_targets=True)
         self.assertIn("[현재 상황] 컨텍스트에서", situational)
@@ -5033,21 +5101,28 @@ class RelationshipEngineWiringTests(unittest.TestCase):
             self.assertIn('- ID: "채민경"  (채민경 · 아내)', dad)
             self.assertIn('- ID: "김봉남"  (김봉남 · 남편)', mom)
 
-    def test_relationships_seed_mutual_knowledge_over_groups(self):
-        # groups 로는 서로 모르는 사이인데 관계가 명시돼 있으면 아는 사이여야 한다.
+    def test_relationships_seed_knowledge_per_viewer(self):
+        # 관계 지도가 knowledge 시드를 그대로 결정한다 — 각자 자기가 명시한 상대만.
         # (안 그러면 계약엔 "아내"라 써 놓고 같은 방에서 stranger_1 로 보인다.)
         with tempfile.TemporaryDirectory() as tmp:
-            sim, _ = self._sim(
-                tmp,
-                agent_groups={"김봉남": ["집"], "채민경": ["직장"], "김미경": ["학교"]},
-            )
+            sim, _ = self._sim(tmp)   # _REL_FAMILY — 셋이 서로 다 안다
             self.assertEqual(sim._agent_knowledge["김봉남"], {"채민경", "김미경"})
             self.assertEqual(sim._agent_knowledge["채민경"], {"김봉남", "김미경"})
 
-    def test_groups_fallback_survives_when_relationships_are_absent(self):
-        # relationships 없는 에이전트는 groups 규칙("groups 없으면 전원 known")대로.
+    def test_agent_without_relationships_knows_nobody_once_feature_is_on(self):
+        # 관계 기능이 켜지면(누군가 관계를 명시) 관계를 안 쓴 에이전트는 명시한
+        # 상대가 없으므로 아무와도 아는 사이가 아니다 — 같은 방에서 만나면 stranger.
         with tempfile.TemporaryDirectory() as tmp:
-            sim, _ = self._sim(tmp, rels={"김봉남": {"채민경": "아내"}})
+            sim, _ = self._sim(tmp, rels={"김봉남": {"채민경": "아내"},
+                                          "채민경": {"김봉남": "남편"}})
+            self.assertEqual(sim._agent_knowledge["김미경"], set())
+            self.assertEqual(sim._agent_knowledge["김봉남"], {"채민경"})
+
+    def test_no_relationships_anywhere_means_everyone_is_acquainted(self):
+        # 관계를 아무도 안 쓰면(기능 미사용) 구 `groups` 미설정 기본값 그대로 —
+        # 전원이 아는 사이라 stranger_N 체계 자체가 발동하지 않는다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _ = self._sim(tmp, rels={})
             self.assertEqual(sim._agent_knowledge["김미경"], {"김봉남", "채민경"})
             self.assertEqual(sim._agent_knowledge["김봉남"], {"채민경", "김미경"})
 
@@ -5276,10 +5351,16 @@ class ZoneMeetHintTests(_MeetingSimHarness, unittest.TestCase):
         from ABM.agent import Agent
         from ABM.simulation import Simulation
 
+        groups = kw.pop("agent_groups", None)
+        locations = dict(locations)
+        if groups is not None:
+            rels, extra = _groups_to_relationships(groups, anchor_location="밖")
+            kw.setdefault("agent_relationships", rels)
+            locations.update(extra)
         agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096) for k in locations}
         return Simulation(
             agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
-            agent_locations=dict(locations),
+            agent_locations=locations,
             location_graph=self.LOCATION_GRAPH, **kw,
         )
 

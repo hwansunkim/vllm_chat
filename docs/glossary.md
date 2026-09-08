@@ -161,7 +161,7 @@
 | Canonical | `data-section` | 아이콘 | 편집 대상 | 소유 모듈 |
 |---|---|---|---|---|
 | **배경 설명** | `background` | 📋 | 모든 에이전트 공통 장면 전제 (`#sim-background`) | `settings/textareas.js` |
-| **에이전트** | `agents` | 👤 | 등장인물 카드: 페르소나·그룹·위치·관계·temperature·초기 등장 | `settings/agents.js` |
+| **에이전트** | `agents` | 👤 | 등장인물 카드: 페르소나·위치·관계·temperature·초기 등장 | `settings/agents.js` |
 | **실행 설정** | `run` | 🚀 | 시작 에이전트, 최대 wave, 목표 기간, LLM 서버, temperature | `settings/page.js` |
 | **시간 설정** | `time` | ⏱ | 시작 요일·시각, wave당 시간, 시간 모드(고정/가변), 고립 휴면 기준, 가변 시간 카테고리 | `settings/page.js`, `settings/time-categories.js` |
 | **생성 옵션** | `tuning` | ⚙ | step delay, token limit, LLM max tokens, 언어 교잡 수정 | `settings/page.js` |
@@ -331,7 +331,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 | **러너 믹스인** | `runner.py` | `run()` | **Wave 기반 BFS 루프**. 발화 라우팅, 이동·외모 적용, 감염 처리, 시간 누적, 휴면/재투입, 목표 기간·진행 불가 판정. 가변 시간 분류/클램프 |
 | **스텝 믹스인** | `step.py` | `_step_agent`, `_assemble_agent_prompt` | 단일 에이전트 한 턴: 프롬프트 조립 (**단일 진실 원천**), 메모리 압축 트리거, 토큰 트림, 언어 교잡 수정, LLM 호출 |
 | **턴 믹스인** | `turn.py` | `_apply_turn_result` | LLM 응답 파싱 → `agent.memory` / `shared_log` / `edges` / DB 기록, `turn_complete` emit |
-| **타깃 믹스인** | `targets.py` | `_resolve_targets`, `_compute_wave_targets` | 발화 대상 해석: 그룹 가시성, 같은 장소 필터, **낯선 이(stranger_N)** 할당, `all`/`self` 처리 |
+| **타깃 믹스인** | `targets.py` | `_resolve_targets`, `_compute_wave_targets` | 발화 대상 해석: 같은 장소 필터, 관계 지도 기반 아는 사이/**낯선 이(stranger_N)** 분류, `all`/`self` 처리 |
 | **로케이션 믹스인** | `location.py` | `_expand_zone_edges`, `_compute_zone_awareness`, 씬 메시지 빌더 | 위치 그래프(BFS 이동), **zone(구역) 인지**, 외부공간 격리, 도착/이탈 씬 메시지 |
 | **미팅 믹스인** | `meeting.py` | `_apply_move_intents`, `_update_meeting_paths` | **만남 lock** (`move_to`에 장소가 아닌 **사람**을 지목): 추격·랑데부·집결, `meeting_update` emit |
 | **감염 믹스인** | `infection.py` | `_apply_infection_wave`, `_sample_recovery_minutes` | **결정론적 SIR/SIS**. 같은 wave·같은 장소 접촉 → 확률 전염. 증상 진행·회복은 경과 분 기준. LLM은 상태·확률을 절대 안 봄 |
@@ -431,11 +431,10 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 | 용어 | 정의 |
 |---|---|
 | **위치 그래프 (location graph)** | 장소 노드 + 연결(인접 리스트). 연결된 장소로만 이동 가능. 이동은 wave당 한 칸(BFS 경로) |
-| **zone (구역)** | **위치 기반 인지 범위**. 같은 zone의 다른 장소에 있는 사람은 서로 존재를 인지 (대화는 여전히 같은 장소여야). `_agent_groups`(캐릭터 관계 그룹)와 **완전 별개** |
+| **zone (구역)** | **위치 기반 인지 범위**. 같은 zone의 다른 장소에 있는 사람은 서로 존재를 인지 (대화는 여전히 같은 장소여야). 관계 지도와 **완전 별개** |
 | **외부 공간 (exterior)** | 완전 격리 장소. 그 안의 에이전트는 아무도 못 보고 못 들음 (씬 메시지도 안 감) |
-| **groups (그룹)** | 캐릭터 관계 그룹. "누구를 target할 수 있는가"의 서사적 가시성. zone과 무관 |
-| **관계 지도 (relationships)** | `{상대 key: 내가 그를 부르는 관계어}`. **각자 자기 시점** (김봉남→채민경 "아내", 채민경→김봉남 "남편"). 대칭 불필요. 비어 있으면 기능 미사용 |
-| **낯선 이 / stranger_N** | 인지 관계에 없는 상대를 만났을 때 부여되는 임시 ID (`stranger_1`, `stranger_2` …). 외모 묘사로 표시 |
+| **관계 지도 (relationships)** | `{상대 key: 내가 그를 부르는 관계어}`. **각자 자기 시점** (김봉남→채민경 "아내", 채민경→김봉남 "남편"). 대칭 불필요. 시나리오 전체가 비어 있으면 기능 미사용(전원 아는 사이). 하나라도 있으면 각자 명시한 상대만 아는 사이 — 소속·호칭·인지관계를 모두 표현한다 (구 `groups`는 제거됨) |
+| **낯선 이 / stranger_N** | 관계 지도에 없는 상대를 만났을 때 부여되는 임시 ID (`stranger_1`, `stranger_2` …). 외모 묘사로 표시 |
 | **공간 기반 인지 (perception_mode)** | `targeted` (기본) = 발화는 target 지목 상대에게만. `spatial` = ①같은 방 제3자 엿듣기 ②같은 zone 다른 방에 대사만 원거리 전달 ③혼잣말은 행동만 같은 방에 브로드캐스트 |
 | **씬 메시지 (`[씬]`)** | 환경 관찰 메시지: 도착/이탈, 외모 변화, 독백 행동, 만남 취소. `speaker="씬"` |
 | **만남 lock (`_meeting_intent`)** | `move_to`에 장소가 아닌 **사람**을 지목 → 그 사람을 따라감(추격/랑데부). 동석·다른 `move_to`·목표 이탈에서 해제 |
@@ -457,7 +456,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 | 용어 | 정의 |
 |---|---|
 | **디렉터 / system 에이전트 / 내레이터** | **셋 다 같은 것**. 내부 식별자는 `system`, 표시 이름은 기본 "내레이터" (변경 가능). 이야기 흐름을 감시하다 정체·반복 시 개입 |
-| **개입 (intervention)** | 디렉터의 **유일한** 개입 수단. `{targets: [...], message}` — 1..N명(`all`/`group:X`/ID 리스트)에게 상황·자극 메시지 주입. `system_intervention` 이벤트. 대상이 1명이면 사적 촉발, 여럿이면 공유 자극. 구 `world_event`(별도 세계 사건)는 여기로 통합됨 — 레거시 실행 재생·재출력에서만 `world_event` 이벤트가 보인다 |
+| **개입 (intervention)** | 디렉터의 **유일한** 개입 수단. `{targets: [...], message}` — 1..N명(`all`/ID 리스트)에게 상황·자극 메시지 주입. `system_intervention` 이벤트. 대상이 1명이면 사적 촉발, 여럿이면 공유 자극. 구 `world_event`(별도 세계 사건)는 여기로 통합됨 — 레거시 실행 재생·재출력에서만 `world_event` 이벤트가 보인다 |
 | **개입 규칙** | 완료된 행동·없던 사물·상태 변화를 만들지 말 것 (그건 에이전트가 행동으로). 뒤끝 없는 순간적 자극(천둥·사이렌·냄새)만. `[현재 시각]` 외 시각 지어내기 금지 |
 | **감독 노트 (director_note)** | 사용자가 쓰는 **불변** 서사 목표·결말 조건. 디렉터가 매 개입마다 참조 (페르소나보다 우선) |
 | **director_memo** | 디렉터가 **스스로** 갱신하는 진행 메모 (최근 N줄) |

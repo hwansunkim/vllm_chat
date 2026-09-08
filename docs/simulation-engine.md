@@ -137,7 +137,7 @@ _emit("simulation_end", {total_turns, edges_count, log_count, end_reason})
 규칙**을 쓰도록 한곳에 모았다. **부작용 없음** (이벤트 emit은 호출부 책임).
 
 ```
-known, strangers  = _compute_wave_targets(agent_key)     # 같은 장소 + 관계/그룹
+known, strangers  = _compute_wave_targets(agent_key)     # 같은 장소 + 관계 지도(knowledge)
 zone_awareness    = _compute_zone_awareness(agent_key)   # 같은 zone 다른 방 (인지만)
 
 ephemeral_msgs (메모리에 저장 안 함, 매 턴 재계산):
@@ -150,7 +150,7 @@ visible_agents = known + [stranger ID들]
 target_sections:
   · known/strangers 있음  → [아는 사람]/[처음 보는 사람] 섹션
   · location_mode(내 위치 설정됨)인데 아무도 없음 → <TARGETS> "(없음)"
-  · 위치 미사용(레거시)   → 전역 폴백 (_visible_targets + 그룹 섹션)
+  · 위치 미사용(레거시)   → 전역 폴백 (활성 에이전트 전원, 섹션 없이 flat)
 ```
 
 ### `_step_agent(agent_key, run_wave, disp_wave, turn, incoming)`
@@ -217,15 +217,14 @@ return {success: True, clean_content, action_note, targets}
 | 입력 | 해석 |
 |---|---|
 | `"self"` / `"system"` | 건너뜀 (혼잣말) |
-| `"all"` | 화자와 **같은 위치**의 활성 에이전트 (그룹 있으면 같은 그룹 ∩ 같은 위치) |
-| `"group:X"` | 그룹 X ∩ 같은 위치 |
+| `"all"` | 화자와 **같은 위치**의 활성 에이전트 전원 (아는 사이·낯선 이 구분 없이 — 같은 방이면 목소리가 닿는다) |
 | `"stranger_N"` | 화자 사전의 낯선 이 → 실제 key 변환 + 양방향 knowledge 갱신 ("이름은 만나서 안다") |
 | `"<key>"` / display_name | 정규화 후 같은 위치일 때만. 화자가 아직 "낯선 이"로만 아는 상대를 실명으로 부르면 폐기 (`_is_anonymous_to`) |
 
 - **외부 공간(exterior) 화자** → 항상 `[]` (아무에게도 전달 불가).
 - **위치 미설정** → 항상 같은 위치로 취급 (하위 호환).
 - **spatial 모드** → `<key>`/`stranger_N` **직접 타깃**에 한해 `_reachable`로 "같은 zone
-  다른 방"까지 확장 (벽 너머 목소리). `all`/`group:X`는 여전히 같은 방 한정.
+  다른 방"까지 확장 (벽 너머 목소리). `all`은 여전히 같은 방 한정.
   `_is_remote_target`이 짝 함수 — runner가 타깃마다 물어보고 원거리는 대사만 전달.
 - 위치 불일치로 폐기되는 경로는 `logger.debug`로 추적 (무성 폐기가 wave를 통째로
   비우는 원인).
@@ -337,6 +336,17 @@ output을 `Agent.get_system_message`로 매 턴.
 
 관계 지도의 dangling/자기참조/단방향은 `_sanitize_relationships`가 초기화 때 걸러내고
 같은 경고 채널로 낸다.
+
+### `_agent_knowledge` 시드 — 누가 누구를 아는가
+
+`__init__`에서 관계 지도로 결정된다 (구 `groups`는 제거됨). 계약 층과 같은 on/off 규칙:
+
+- **시나리오 어디에도 관계가 없으면** (기능 미사용) → 전원이 서로 아는 사이.
+  옛 "그룹 미설정 = 전원 인지" 기본값 그대로. `stranger_N` 체계가 발동하지 않는다.
+- **누군가 관계를 하나라도 명시하면** (기능 사용) → 각 에이전트는 **자기가 명시한
+  상대만** 아는 사이. 관계 목록에 없는 사람은 같은 방에서 만나도 `stranger_N`으로
+  보인다. 관계는 화자 방향뿐이라(`a→b`만 적으면 `b`는 `a`를 낯선 이로 봄) 익명성을
+  대칭으로 두려면 양쪽 다 적어야 한다.
 
 ---
 

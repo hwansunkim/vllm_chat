@@ -50,8 +50,8 @@
 ## 2. zone (인지 구역)
 
 **목적** — **대화 스코프 ≠ 인지 스코프.** 같은 zone의 다른 장소에 있는 사람은 "저기
-있구나"까지 알지만, 말을 걸려면 그 장소로 가야 한다. (`AgentConfig.groups`(캐릭터 관계
-그룹)와 **완전 별개** — zone은 순수 위치 개념.)
+있구나"까지 알지만, 말을 걸려면 그 장소로 가야 한다. (관계 지도와 **완전 별개** —
+zone은 순수 위치 개념.)
 
 **설정** — `LocationNode.zone` 문자열. 예: 안방·거실·부엌 → zone "우리집".
 
@@ -82,11 +82,11 @@
 |---|---|
 | 같은 방 + 직접 타깃 | 대사 + 행동 (`targeted`와 동일) |
 | **같은 zone 다른 방** + 직접 타깃 (`_is_remote_target`) | **대사만** (`action_note` 제거), `speaker`에 `", 멀리서"` |
-| 같은 방 + **제3자** (지목 안 됨) | 대사 + 행동을 `[화자→대상들]` 엿듣기 태그로 (관찰자 시점, 그룹 필터 없음 — 엿듣기는 물리적 사실) |
+| 같은 방 + **제3자** (지목 안 됨) | 대사 + 행동을 `[화자→대상들]` 엿듣기 태그로 (관찰자 시점, 인지 관계 필터 없음 — 엿듣기는 물리적 사실) |
 | 같은 방 + **독백** (`target=self/system`) | 대사 안 들림, **행동만** 씬 채널로 |
 
 `_resolve_targets`도 `spatial`일 때만 직접 타깃(`<key>`/`stranger_N`)의 도달 범위를
-`_reachable`로 "같은 zone 다른 방"까지 확장 (`all`/`group:X`는 여전히 같은 방).
+`_reachable`로 "같은 zone 다른 방"까지 확장 (`all`은 여전히 같은 방).
 
 **계약 블록** — 없음. `spatial`은 라우팅 동작만 바꾸고 프롬프트 문자열은 안 바꾼다
 (그래서 `ContractPreviewRequest`에도 없음).
@@ -100,6 +100,7 @@
 
 **설정** — 에이전트 카드의 관계 편집기. `AgentConfig.relationships` = `{상대 key:
 관계어}`. **각자 자기 시점** (김봉남→채민경 "아내", 채민경→김봉남 "남편") — 대칭 불필요.
+소속·호칭·인지관계를 한 필드로 표현한다 (구 `groups`는 제거됨).
 
 **엔진 동작**:
 
@@ -108,8 +109,12 @@
   - **자기 참조** → 제외
   - **단방향** (A→B는 있는데 B→A 없음) → 경고만 (B는 A를 낯선 이로 봄)
   - 사유는 `_verify_engine_contract()`가 다른 계약 경고와 같이 로그로.
-- `_agent_knowledge` 시드에 무조건 포함 — "아내"라고 계약에 써 놓고 같은 방에서
-  `stranger_1`로 보이는 모순 방지.
+- **`_agent_knowledge` 시드를 결정한다** (계약 층과 같은 on/off):
+  - 시나리오 전체가 비어 있으면(기능 미사용) → 전원이 서로 아는 사이. 옛 "그룹
+    미설정 = 전원 인지" 기본값 그대로.
+  - 하나라도 명시하면(기능 사용) → 각자 **자기가 명시한 상대만** 아는 사이. 관계
+    목록에 없는 사람은 같은 방에서 만나도 `stranger_N`으로 보인다. 관계는 화자
+    방향뿐이라 익명성을 대칭으로 두려면 양쪽 다 적어야 한다.
 - `<TARGETS>` 목록·`[이 자리의 사람들]`에 관계어 라벨 (`채민경 (ID: "chaemin", 아내)`).
 
 **계약 블록** — `build_relationship_contract` → `[아는 사람 (나와의 관계)]` (에이전트별,
@@ -239,7 +244,7 @@ fixed 모드엔 안 나옴. `turn_complete`·로그의 `time_str`이 실제 시�
   [`director-repetition-detection.md`](director-repetition-detection.md).
 - LLM 출력: `{ interventions[], director_memo, reason }`.
   - `interventions[]` — 각 항목 `{targets: [...], message}`. `_resolve_event_targets`로
-    `all`/`group:X`/ID 해석 → 대상 전원의 `current_wave`에 `[내레이터] {message}` 주입.
+    `all`/ID 해석 → 대상 전원의 `current_wave`에 `[내레이터] {message}` 주입.
     대상 1명이면 사적 촉발, 여럿이면 공유 자극. **구 `world_event`(별도 세계 사건 채널)는
     여기로 통합됨** — 디렉터가 채널을 고르는 분기가 사라지고 대상 수로 표현이 유도된다.
   - `director_memo` → 스스로 갱신하는 진행 메모 (최근 12줄, `_MEMO_MAX_LINES`).

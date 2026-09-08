@@ -200,7 +200,7 @@ class _LocationMixin:
 
         대화 범위(_compute_wave_targets)와는 별개다 — 여기 잡히는 사람들은
         "저기 있구나"라고 알 뿐, 말을 걸려면 move_to로 그 장소까지 가야 한다.
-        (LocationNode.zone은 위치 개념이며 _agent_groups(캐릭터 관계 그룹)와 무관.)
+        (LocationNode.zone은 위치 개념이며 관계 지도와 무관.)
 
         Returns (known_elsewhere: list[tuple[key, location]],
                  strangers_elsewhere: list[tuple[stranger_id, real_key, visual, location]])

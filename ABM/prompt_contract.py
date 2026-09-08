@@ -41,7 +41,7 @@ from __future__ import annotations
 #   <FIELD_HINTS>    extra_fields의 설명 라인
 #   <MOVE_TO_HINT>   move_to 의미 (위치 그래프/zone 유무에 따라 조건부)
 #   <TARGETS>        지목 가능한 시스템 ID 목록
-#   <TARGETS_FOOTER> all/self/group 단축 표기
+#   <TARGETS_FOOTER> all/self 단축 표기
 #
 # 하위 호환: 사용자가 **명시적으로** 넘긴 오버라이드 템플릿에는 `<MOVE_TO_HINT>`가
 # 없을 수 있다(구버전 프리즈 템플릿). 그 경우 치환이 그냥 no-op이 되고 템플릿에
@@ -378,18 +378,7 @@ def build_targets_block(
             lines.append(f'  - ID: "{t}"' + _target_label(t, key_to_alias, speaker_relationships))
         targets_block = ("\n".join(lines) + "\n") if lines else "  (없음)\n"
 
-    # 그룹이 2개 이상일 때 그룹별 단축 표기 추가 (브릿지 에이전트용)
-    named_sections = [
-        label for label, _ in (target_sections or [])
-        if label != "기타"
-    ]
-    if len(named_sections) >= 2:
-        group_shortcuts = " / ".join(
-            f'[{label}] 전체: "group:{label}"' for label in named_sections
-        )
-        targets_footer = f'  {group_shortcuts} / 모두에게: "all" / 혼잣말·독백·탄식 등: "self"\n'
-    else:
-        targets_footer = '  전체에게: "all" / 혼잣말·독백·탄식 등: "self"\n'
+    targets_footer = '  전체에게: "all" / 혼잣말·독백·탄식 등: "self"\n'
 
     return targets_block, targets_footer
 

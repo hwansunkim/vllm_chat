@@ -298,7 +298,7 @@ def render_markdown(
     log = [e for e in (shared_log or []) if "speaker" in e]
 
     raw_agents = config.get("agents") or []
-    agents = [{"icon": "🤖", "groups": [], "initial_active": True, **a} for a in raw_agents]
+    agents = [{"icon": "🤖", "initial_active": True, **a} for a in raw_agents]
     index = AgentIndex(agents)
 
     background = config.get("background") or ""
@@ -333,12 +333,11 @@ def render_markdown(
     md += "\n---\n\n"
 
     md += "## 등장인물\n\n"
-    md += "| 아이콘 | 이름 | ID | 그룹 | 초기 활성 |\n"
-    md += "|--------|------|----|------|-----------|\n"
+    md += "| 아이콘 | 이름 | ID | 초기 활성 |\n"
+    md += "|--------|------|----|-----------|\n"
     for a in agents:
-        groups = ", ".join(a.get("groups") or []) or "—"
         active = "✅" if a.get("initial_active") is not False else "—"
-        md += f"| {a.get('icon') or '🤖'} | {a.get('display_name') or a.get('name')} | `{a.get('name')}` | {groups} | {active} |\n"
+        md += f"| {a.get('icon') or '🤖'} | {a.get('display_name') or a.get('name')} | `{a.get('name')}` | {active} |\n"
     md += "\n"
 
     if background:
