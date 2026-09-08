@@ -146,6 +146,10 @@ def _stream_phase(kind: str, payload: dict | None = None) -> int:
 
 def _build_stream(log: list[dict], events: list[dict], include: frozenset) -> list[dict]:
     want = {t for key, types in _TOGGLE_EVENT_TYPES.items() if key in include for t in types}
+    # 시나리오 이벤트(system_message·agent_enter·agent_exit)는 작가가 심은 서사
+    # 비트라 토글과 무관하게 항상 싣는다. infect_agent scene_event 는 제외 —
+    # 같은 사실을 infection_update 가 이미 렌더한다(_fmt_scene_event 가 걸러낸다).
+    want.add("scene_event")
 
     items: list[dict] = []
     for entry in log:
@@ -220,6 +224,25 @@ def _fmt_intervention(data: dict) -> str:
 def _fmt_world_event(data: dict) -> str:
     # 레거시 실행 재출력 전용 (신규 실행은 system_intervention 만 낸다).
     return f"\n> **[🌍 세계 사건]** *{data.get('content')}*\n"
+
+
+def _fmt_scene_event(data: dict, index: AgentIndex) -> str:
+    """시나리오 이벤트(events.py: _execute_event 가 emit) 한 줄.
+
+    ``infect_agent`` 는 여기서 렌더하지 않는다 — 같은 사실을 ``infection_update``
+    ``cause="event"`` 가 이미 낸다(중복 방지).
+    """
+    sub = data.get("event_type")
+    msg = (data.get("message") or "").strip()
+    if sub == "system_message":
+        if not msg:
+            return ""
+        tg = data.get("targets") or []
+        who = ", ".join("전체" if t == "all" else index.label(t) for t in tg) or "전체"
+        return f"\n> **[📢 시스템]** → *{who}* : {msg}\n"
+    if sub in ("agent_enter", "agent_exit"):
+        return f"\n> **[🚪 씬]** *{msg}*\n" if msg else ""
+    return ""
 
 
 def _fmt_infection(data: dict, index: AgentIndex, disease_fallback: str) -> str:
@@ -406,6 +429,8 @@ def render_markdown(
             md += _fmt_intervention(payload)
         elif kind == "world_event":
             md += _fmt_world_event(payload)
+        elif kind == "scene_event":
+            md += _fmt_scene_event(payload, index)
         elif kind == "infection_update":
             md += _fmt_infection(payload, index, disease_fallback)
         elif kind == "meeting_update":

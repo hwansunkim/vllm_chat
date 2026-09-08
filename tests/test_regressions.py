@@ -6688,6 +6688,28 @@ class MarkdownStreamPhaseTests(unittest.TestCase):
                       "data": {"cause": "recovery"}}]
         self.assertEqual(self._stream(log, recovered), ["dialogue", "infection_update"])
 
+    def test_scenario_events_render_regardless_of_toggles(self):
+        # 시나리오 이벤트(system_message)는 작가가 심은 서사 비트 — 어느 토글이
+        # 꺼져 있어도 항상 스트림에 실리고, 대사보다 먼저 온다.
+        from ABM.export.markdown import _build_stream, _fmt_scene_event, AgentIndex
+        log = [{"wave": 3, "timestamp": 100.0, "speaker": "짱구", "content": "..."}]
+        events = [{"wave": 3, "timestamp": 100.0, "event_type": "scene_event",
+                   "data": {"event_type": "system_message",
+                            "message": "16:30. 태권도학원 갈 시간이다.",
+                            "targets": ["짱구"]}}]
+        kinds = [it["kind"] for it in _build_stream(log, events, frozenset())]
+        self.assertEqual(kinds, ["scene_event", "dialogue"])
+
+        idx = AgentIndex([{"name": "짱구", "display_name": "신짱구"}])
+        line = _fmt_scene_event(events[0]["data"], idx)
+        self.assertIn("📢 시스템", line)
+        self.assertIn("신짱구", line)
+        self.assertIn("태권도학원 갈 시간이다", line)
+
+        # infect_agent scene_event 는 infection_update 가 담당 → 빈 문자열.
+        self.assertEqual(
+            _fmt_scene_event({"event_type": "infect_agent", "message": "x"}, idx), "")
+
     def test_same_phase_tie_keeps_insertion_order(self):
         # 같은 phase 안의 동점(대사끼리, 이벤트끼리)은 인과관계가 없으므로
         # 안정 정렬의 삽입 순서(대사 전체 → 이벤트 전체)를 그대로 유지해도 된다 —

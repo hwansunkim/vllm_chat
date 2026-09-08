@@ -138,6 +138,8 @@ function buildStream(log, events, checks) {
   if (checks.intervention) { wantTypes.add('system_intervention'); wantTypes.add('world_event'); }
   if (checks.infection)    wantTypes.add('infection_update');
   if (checks.meeting)      wantTypes.add('meeting_update');
+  // 시나리오 이벤트는 작가가 심은 서사 비트라 토글과 무관하게 항상.
+  wantTypes.add('scene_event');
 
   // Normalise events: { wave, sort_key, kind, payload }
   const items = [];
@@ -207,6 +209,22 @@ function fmtIntervention(data) {
 function fmtWorldEvent(data) {
   // 레거시 실행 재출력 전용 (신규 실행은 system_intervention 만 낸다).
   return `\n> **[🌍 세계 사건]** *${data.content}*\n`;
+}
+
+function fmtSceneEvent(data) {
+  // 시나리오 이벤트. infect_agent 는 infection_update 가 렌더하므로 여기선 제외.
+  const sub = data.event_type;
+  const msg = (data.message || '').trim();
+  if (sub === 'system_message') {
+    if (!msg) return '';
+    const tg = data.targets || [];
+    const who = tg.map(t => t === 'all' ? '전체' : agentLabel(t)).join(', ') || '전체';
+    return `\n> **[📢 시스템]** → *${who}* : ${msg}\n`;
+  }
+  if (sub === 'agent_enter' || sub === 'agent_exit') {
+    return msg ? `\n> **[🚪 씬]** *${msg}*\n` : '';
+  }
+  return '';
 }
 
 /**
@@ -325,6 +343,7 @@ function _buildMarkdown(log, events, statusStr, checks) {
         case 'appearance_update':   md += fmtAppearance(item.payload); break;
         case 'system_intervention': md += fmtIntervention(item.payload); break;
         case 'world_event':         md += fmtWorldEvent(item.payload); break;
+        case 'scene_event':         md += fmtSceneEvent(item.payload); break;
         case 'infection_update':    md += fmtInfection(item.payload); break;
         case 'meeting_update':      md += fmtMeeting(item.payload); break;
       }
