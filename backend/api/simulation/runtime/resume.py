@@ -153,16 +153,20 @@ def resume_simulation(run_id: str):
             _sim["scenario_name"]  = scenario_name
             _sim["config_json"]    = config_json
 
-            # B9 fix: do NOT replay the original scenario events on resume.
-            # Resume picks up from ``saved_pending`` (the wave the previous
-            # run was paused at), so any events scheduled at earlier waves
-            # already fired. Passing them again would re-inject system
-            # messages and re-toggle agent enter/exit states.
+            # B9 fix: do NOT replay wave-triggered scenario events on resume.
+            # Resume picks up from ``saved_pending`` (the wave the previous run
+            # paused at), so wave-keyed events already fired; re-passing them
+            # would re-inject system messages and re-toggle enter/exit states.
+            # at_time(시계 시각) 이벤트는 예외 — run()이 이번 시작 시점에 이미 지난
+            # 시각을 "발동함"으로 표시하므로 다시 넘겨도 되고, 넘겨야 이어가기 중에도
+            # "짱구 태권도 16:00" 같은 예정 서사가 유지된다.
+            timed_only = [e for e in (cfg.events or [])
+                          if getattr(e, "at_time", "")]
             sim.run(
                 cfg.start_agent,
                 max_waves=cfg.max_waves,
                 step_delay=cfg.step_delay,
-                events=[],
+                events=[e.model_dump() for e in timed_only],
                 resume_wave=saved_pending,
                 # 재개 시 max_silence_waves 유실 방지 — cfg 는 이미 복원된
                 # SimStartConfig 라 필드가 존재한다.

@@ -852,6 +852,148 @@ class TimeClassifierCurrentTimeTests(unittest.TestCase):
     def test_block_is_omitted_when_empty(self):
         self.assertNotIn("[현재 시각]", self._run(""))
 
+    def test_placement_and_next_beat_blocks_pass_through(self):
+        from ABM.time_classifier import estimate_wave_minutes
+        cap = {}
+        def llm(messages, max_tokens=None, **kw):
+            cap["user"] = messages[-1]["content"]
+            cap["sys"]  = messages[0]["content"]
+            return json.dumps({"reason": "x", "minutes": 5}), "", {}
+        estimate_wave_minutes(
+            [{"speaker": "짱구", "content": "놀자", "action_note": ""}],
+            llm, current_time="화요일 오후 2시",
+            placement="여러 곳에 흩어져 있음 (거실 1명, 회사 1명)",
+            next_beat="16:00 (지금부터 47분 뒤)",
+        )
+        self.assertIn("[인물 배치] 여러 곳에 흩어져", cap["user"])
+        self.assertIn("[다음 예정 시각] 16:00 (지금부터 47분 뒤)", cap["user"])
+        self.assertIn("넘겨 점프하지 마십시오", cap["user"])
+        self.assertIn("대사 1줄", cap["user"])
+        # 앵커 문구 — 스텁 LLM들이 호출 종류 구분에 쓴다.
+        self.assertIn("시간 관찰자", cap["sys"])
+        self.assertIn("분 단위 정수", cap["sys"])
+
+    def test_optional_blocks_fold_when_absent(self):
+        from ABM.time_classifier import estimate_wave_minutes
+        cap = {}
+        def llm(messages, max_tokens=None, **kw):
+            cap["user"] = messages[-1]["content"]
+            return json.dumps({"reason": "x", "minutes": 5}), "", {}
+        estimate_wave_minutes(
+            [{"speaker": "a", "content": "안녕", "action_note": ""}], llm,
+        )
+        self.assertNotIn("[현재 시각]", cap["user"])
+        self.assertNotIn("[인물 배치]", cap["user"])
+        self.assertNotIn("[다음 예정 시각]", cap["user"])
+
+
+class TimedEventTests(unittest.TestCase):
+    """at_time(시계 시각) 트리거 이벤트 + 시간 추론이 예정 시각을 넘기지 않는지.
+
+    "짱구 태권도 16:00" 같은 예정 서사가, 앞쪽에서 다들 흩어졌다고 보고 시간을
+    크게 점프해버리면 통째로 스킵된다. at_time 이벤트는 (1) 시계가 그 시각에
+    도달한 첫 wave에 발동하고 (2) 시간 추론·클램프가 그 시각을 넘겨 점프하지
+    않도록 상한이 된다.
+    """
+
+    def _sim(self, events, *, start="14:00", est="category", ai_minutes=None,
+             elapsed_init=0):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        # 두 카테고리 다 min==max 라 경과분이 결정론적이다. 분류기 스텁은 늘 "gap".
+        cats = [{"id": "scene", "label": "장면", "min_minutes": 12, "max_minutes": 12},
+                {"id": "gap",   "label": "공백", "min_minutes": 300, "max_minutes": 300}]
+
+        def llm(messages, max_tokens=None, **kw):
+            sys = messages[0].get("content", "") if messages else ""
+            if "시간 관찰자" in sys:
+                if "분 단위 정수" in sys:
+                    if ai_minutes is None:
+                        return "not json", "", {}
+                    return json.dumps({"reason": "x", "minutes": ai_minutes}), "", {}
+                return json.dumps({"reason": "x", "category": "gap"}), "", {}
+            return json.dumps({"content": "...", "action_note": "", "target": "self",
+                               "move_to": None, "update_appearance": None}), "", {}
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self._events = events
+        agents = {k: Agent(k, f"너는 {k}다.", self._tmp.name, token_limit=4096)
+                  for k in ("a", "b")}
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] t"}], self._tmp.name,
+            llm=llm, time_mode="variable", time_categories=cats,
+            time_estimation_mode=est, sim_start_time=start,
+            elapsed_minutes_init=elapsed_init,
+        )
+        self._emitted = []
+        sim._emit = lambda t, d: self._emitted.append((t, d))
+        return sim
+
+    def _go(self, sim, *, max_waves=4):
+        sim.run("a", max_waves=max_waves, step_delay=0.0,
+                events=self._events, resume_wave={"a": [], "b": []})
+
+    def tearDown(self):
+        if getattr(self, "_tmp", None):
+            self._tmp.cleanup()
+
+    def _jumps(self):
+        return [d for t, d in self._emitted if t == "time_jump"]
+
+    def _mem(self, sim, key):
+        return [m.get("content", "") for m in sim.agents[key].memory]
+
+    def test_event_fires_when_clock_reaches_at_time_and_jump_is_capped(self):
+        sim = self._sim([{"at_time": "15:00", "type": "system_message",
+                          "message": "학원 갈 시간", "targets": ["a"]}])
+        self._go(sim, max_waves=4)
+        # 15:00(경과 60분)에 정확히 도달해 발동
+        self.assertIn("[시스템] 학원 갈 시간", self._mem(sim, "a"))
+        # wave 0: 300분을 원했지만 예정 이벤트 전까지 60분으로 캡
+        j = self._jumps()
+        self.assertEqual(j[0]["minutes"], 60)
+        self.assertIn("예정 이벤트", j[0]["clamp_reason"])
+
+    def test_continue_past_the_beat_does_not_refire_it(self):
+        # 이미 16:00(경과 120분)에서 이어가기 — 15:00 이벤트는 지난 것으로 본다.
+        sim = self._sim([{"at_time": "15:00", "type": "system_message",
+                          "message": "학원 갈 시간", "targets": ["a"]}],
+                        elapsed_init=120)
+        self._go(sim, max_waves=2)
+        self.assertNotIn("[시스템] 학원 갈 시간", self._mem(sim, "a"))
+
+    def test_at_time_before_start_rolls_to_next_day(self):
+        sim = self._sim([{"at_time": "09:00", "type": "system_message",
+                          "message": "x"}], start="14:00")
+        self._go(sim, max_waves=0)
+        self.assertEqual(sim._timed_events[0]["at"], (9 * 60) - (14 * 60) + 1440)
+
+    def test_ai_estimator_hi_is_capped_to_the_next_beat(self):
+        # LLM은 300분을 원하지만 14:30(경과 30분) 이벤트가 있어 hi=30으로 캡된다.
+        sim = self._sim([{"at_time": "14:30", "type": "system_message", "message": "b"}],
+                        est="ai", ai_minutes=300)
+        self._go(sim, max_waves=2)
+        j = self._jumps()
+        self.assertEqual(j[0]["minutes"], 30)      # 300 → hi 캡 30
+        self.assertEqual(j[0]["raw_minutes"], 30)  # estimate_wave_minutes 내부에서 이미 clamp
+
+    def test_no_timed_events_leaves_time_logic_untouched(self):
+        sim = self._sim([{"wave": 1, "type": "system_message", "message": "평범한 이벤트"}])
+        self._go(sim, max_waves=2)
+        self.assertEqual(sim._timed_events, [])
+        self.assertIn("[시스템] 평범한 이벤트", self._mem(sim, "a"))
+        # 예정 이벤트가 없으니 300분 점프가 그대로(동석/주간 캡도 위치 미설정이라 미적용)
+        self.assertEqual(self._jumps()[0]["minutes"], 300)
+
+    def test_at_time_schema_validation(self):
+        from backend.api.simulation.schemas import ScenarioEvent
+        self.assertEqual(ScenarioEvent(type="system_message", at_time="9:5").at_time, "09:05")
+        self.assertEqual(ScenarioEvent(type="system_message").at_time, "")   # 기본 = wave 트리거
+        for bad in ("16", "25:00", "12:99", "abc"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValidationError):
+                    ScenarioEvent(type="system_message", at_time=bad)
+
 
 class _ScriptedLLM:
     """에이전트별·호출순서별 응답을 미리 정해두는 스텁 LLM.

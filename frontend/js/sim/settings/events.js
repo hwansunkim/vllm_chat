@@ -32,6 +32,9 @@ function _renderTargetChips(idx, currentTargets) {
   }).join('');
 }
 
+// 이벤트 트리거: wave 번호 또는 시계 시각(at_time). at_time 이 있으면 그게 우선.
+const eventTrigger = ev => (ev.at_time ? 'time' : 'wave');
+
 export function renderScenarioEvents() {
   const list = document.getElementById('sim-events-list');
   list.innerHTML = '';
@@ -39,7 +42,13 @@ export function renderScenarioEvents() {
 
   const sorted = sim.events
     .map((e, i) => ({ ...e, _i: i }))
-    .sort((a, b) => a.wave - b.wave);
+    .sort((a, b) => {
+      const at = a.at_time || '', bt = b.at_time || '';
+      if (at && bt) return at.localeCompare(bt);
+      if (at) return 1;          // 시각 트리거는 wave 트리거 뒤에
+      if (bt) return -1;
+      return a.wave - b.wave;
+    });
 
   sorted.forEach(({ _i: idx }) => {
     const ev = sim.events[idx];
@@ -62,11 +71,18 @@ export function renderScenarioEvents() {
     // 모델이 꺼져 있으면 서버가 이 이벤트를 조용히 무시하므로 미리 알린다.
     const infectionOff  = isInfectEvent && !sim.infection_model?.enabled;
 
+    const trigger = eventTrigger(ev);
     row.innerHTML = `
       <div class="sim-event-top">
-        <span class="sim-event-wave-label">Wave</span>
+        <select class="sim-event-trigger-select" data-idx="${idx}" data-field="_trigger">
+          <option value="wave" ${trigger === 'wave' ? 'selected' : ''}>Wave</option>
+          <option value="time" ${trigger === 'time' ? 'selected' : ''}>시각</option>
+        </select>
+        ${trigger === 'time' ? `
+        <input class="sim-event-time-input" type="time"
+               data-idx="${idx}" data-field="at_time" value="${esc(ev.at_time || '16:00')}"/>` : `
         <input class="sim-event-wave-input" type="number" min="0" max="99"
-               data-idx="${idx}" data-field="wave" value="${ev.wave}"/>
+               data-idx="${idx}" data-field="wave" value="${ev.wave}"/>`}
         <select class="sim-event-type-select" data-idx="${idx}" data-field="type">
           ${Object.entries(EVENT_LABELS).map(([v, l]) =>
             `<option value="${v}" ${ev.type === v ? 'selected' : ''}>${l}</option>`
@@ -74,6 +90,12 @@ export function renderScenarioEvents() {
         </select>
         <button class="sim-event-del" data-idx="${idx}">✕</button>
       </div>
+      ${trigger === 'time' ? `
+      <div class="sim-event-hint">
+        시뮬레이션 시계가 이 시각에 도달한 첫 wave에 발동합니다. 시간 추론이 이 시각을
+        넘겨 점프하지 않습니다(예: “짱구 태권도 16:00”이 큰 시간 점프에 스킵되는 것 방지).
+        시간 모드가 켜져 있어야 의미가 있습니다.
+      </div>` : ''}
       ${infectionOff ? `
       <div class="sim-event-warn">
         ⚠ 감염병 모델이 꺼져 있어 이 이벤트는 실행되지 않습니다 — 위 “🦠 감염병 모델” 섹션에서 활성화하세요.
@@ -154,8 +176,18 @@ function _syncAgentSelection(idx) {
 function syncEventField(el) {
   const idx   = +el.dataset.idx;
   const field = el.dataset.field;
-  if (field === 'wave') {
+  if (field === '_trigger') {
+    // wave ↔ 시각 전환. 한쪽 값만 유효하도록 다른 쪽은 비운다.
+    if (el.value === 'time') {
+      sim.events[idx].at_time = sim.events[idx].at_time || '16:00';
+    } else {
+      sim.events[idx].at_time = '';
+    }
+    renderScenarioEvents();
+  } else if (field === 'wave') {
     sim.events[idx].wave = parseInt(el.value) || 0;
+  } else if (field === 'at_time') {
+    sim.events[idx].at_time = el.value;   // <input type="time"> → "HH:MM" 또는 ""
   } else if (field === 'type') {
     sim.events[idx].type = el.value;
     _syncAgentSelection(idx);

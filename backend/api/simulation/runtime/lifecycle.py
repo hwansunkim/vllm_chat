@@ -173,16 +173,18 @@ def continue_simulation(cfg: SimContinueConfig):
             # Use pending wave (agents targeted last but not yet responded) if available,
             # otherwise start fresh from cfg.start_agent.
             pending = getattr(sim_obj, "_pending_wave", None) or None
-            # B9와 동일한 이유로 이벤트를 재생하지 않는다: continue는 wave 0부터 다시
-            # 세므로, 원래 시나리오의 wave 3 이벤트(예: infect_agent 시드)가 이어서
-            # 실행할 때마다 다시 발동한다. SIR에서는 이미 감염/면역이라 무해하지만,
-            # SIS(재감염 가능) 모드에서는 회복해 S로 돌아간 환자 0번이 이어서 실행할
-            # 때마다 계속 재시드된다.
+            # B9와 동일한 이유로 wave 트리거 이벤트는 재생하지 않는다: continue는
+            # wave 0부터 다시 세므로 원래 시나리오의 wave 3 이벤트(예: infect_agent
+            # 시드)가 이어서 실행할 때마다 다시 발동한다.
+            # at_time(시계 시각) 이벤트는 예외 — run()이 이미 지난 시각을 "발동함"으로
+            # 표시하므로 재전달해도 안전하고, 넘겨야 이어가기 중에도 예정 서사가 유지된다.
+            timed_only = [e for e in (getattr(cfg, "events", None) or [])
+                          if getattr(e, "at_time", "")]
             sim_obj.run(
                 cfg.start_agent,
                 max_waves=cfg.max_waves,
                 step_delay=cfg.step_delay,
-                events=[],
+                events=[e.model_dump() for e in timed_only],
                 resume_wave=pending,
                 max_silence_waves=max_silence_waves,
                 target_duration_minutes=cfg.target_duration_minutes,

@@ -888,9 +888,17 @@
 }
 .sim-event-top { display: flex; align-items: center; gap: 6px; }
 .sim-event-wave-label { font-size: 10px; color: #94a3b8; flex-shrink: 0; }
+.sim-event-trigger-select {
+  font-size: 11px; padding: 4px 6px; flex-shrink: 0;
+  border: 1px solid #e2e8f0; border-radius: 4px; background: white; outline: none;
+}
 .sim-event-wave-input {
   width: 48px; font-size: 12px; padding: 4px 6px;
   border: 1px solid #e2e8f0; border-radius: 4px; text-align: center; outline: none;
+}
+.sim-event-time-input {
+  font-size: 12px; padding: 4px 6px; flex-shrink: 0;
+  border: 1px solid #e2e8f0; border-radius: 4px; outline: none;
 }
 .sim-event-type-select {
   flex: 1; font-size: 11px; padding: 4px 6px;

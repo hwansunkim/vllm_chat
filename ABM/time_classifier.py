@@ -8,57 +8,67 @@ from .llm import LLMCall
 
 logger = logging.getLogger(__name__)
 
+# ── 공통 방법론 (두 모드가 같은 판단 기준을 쓰도록 한곳에) ──────────────────────
+_METHOD_BLOCK = """\
+판단 재료:
+- 대사가 오가는 장면은 거의 실시간입니다. 짧은 대화 한 토막 1~3분, 길게 주고받아도
+  10분 안팎. 대사 줄 수가 곧 장면 길이의 가장 직접적인 신호입니다.
+- 행동 묘사(*설거지를 끝냈다*, *한숨 자고 일어났다*)나 대사 속 시간 표현
+  (*이따 봐*, *다음 날*, *한참 뒤*)이 있으면 그 길이를 우선 반영합니다.
+- 인물들이 한 공간에 모여 대화 중이면 시간을 압축하지 마십시오. 서로 떨어져
+  상호작용이 없을 때만 수십 분~몇 시간이 정당합니다(위 인물 배치 참고).
+- 큰 값을 고르면 그 사이 벌어졌을 다른 인물의 귀가·식사·마중·등원 장면이 통째로
+  사라집니다. 이 추정은 매 Wave 누적되고 되돌릴 수 없습니다. **의심스러우면 짧게.**"""
+
+
 _SYSTEM_PROMPT = (
     "당신은 멀티에이전트 시뮬레이션의 시간 관찰자입니다. "
-    "주어진 대화 장면을 보고 아래 카테고리 중 가장 적절한 것 하나를 고르세요. "
+    "한 장면(Wave)이 이야기 속에서 몇 분에 걸쳐 일어난 일인지 판단해, 주어진 "
+    "카테고리 중 가장 잘 맞는 것 하나를 고르는 것이 유일한 역할입니다. "
     "반드시 JSON으로만 응답하세요."
 )
 
 _USER_TEMPLATE = """\
-아래는 이번 Wave의 대화 장면입니다.
-{current_time_block}
-[대화 장면]
+아래는 이번 Wave의 장면입니다.
+{current_time_block}{placement_block}{next_beat_block}[장면] (대사 {turn_count}줄)
 {log_text}
 
 [카테고리]
 {category_list}
 
-큰 시간 경과를 고르면 이 시각 이후 다른 구성원이 귀가·등장하거나 함께 모이는
-장면(식사·귀가·마중 등)을 통째로 건너뛸 수 있습니다. 확실히 아무 일도 일어나지
-않는 한적한 장면이거나 밤(모두 취침)일 때만 큰 카테고리를 고르세요.
+{method_block}
 
-다음 JSON 형식으로 응답하세요:
+먼저 근거를 한 줄로 정리하고, 그다음 카테고리를 고르세요.
+다음 JSON 형식으로만 응답하세요:
 {{
-  "category": "<카테고리 id 중 하나>",
-  "reason": "한 줄 이유"
+  "reason": "무엇을 보고 이 카테고리라 판단했는지 한 줄",
+  "category": "<카테고리 id 중 하나>"
 }}"""
 
 
 _MINUTES_SYSTEM_PROMPT = (
     "당신은 멀티에이전트 시뮬레이션의 시간 관찰자입니다. "
-    "주어진 대화 장면이 실제로 몇 분에 걸쳐 일어났을지 분 단위 정수로 추론하세요. "
+    "한 장면(Wave)이 이야기 속에서 실제로 몇 분에 걸쳐 일어난 일인지 "
+    "분 단위 정수로 추정하는 것이 유일한 역할입니다. "
     "반드시 JSON으로만 응답하세요."
 )
 
 _MINUTES_USER_TEMPLATE = """\
-아래는 이번 Wave의 대화 장면입니다.
-{current_time_block}
-[대화 장면]
+아래는 이번 Wave의 장면입니다.
+{current_time_block}{placement_block}{next_beat_block}[장면] (대사 {turn_count}줄)
 {log_text}
 
-이 장면이 실제로 몇 분 동안 일어난 일인지 추론하세요. 답은 {lo}분 이상 {hi}분
-이하의 정수여야 합니다.
+{method_block}
 
-큰 시간 경과를 고르면 이 시각 이후 다른 구성원이 귀가·등장하거나 함께 모이는
-장면(식사·귀가·마중 등)을 통째로 건너뛸 수 있습니다. 확실히 아무 일도 일어나지
-않는 한적한 장면이거나 밤(모두 취침)일 때만 큰 값을 고르세요. 대화가 실제로
-오가는 장면이라면 대체로 짧은 값이 맞습니다.
-30분·60분 같은 라운드 넘버에 얽매이지 말고 장면 길이에 맞는 값을 쓰세요.
+이 장면이 이야기 속에서 몇 분 동안 일어난 일인지 추정하세요.
+- 먼저 근거를 한 줄로 정리하고, 그다음 숫자를 정하세요.
+- 답은 {lo}분 이상 {hi}분 이하의 정수. 30·60 같은 라운드 넘버에 얽매이지 마세요.
+- 확신이 없으면 짧은 쪽으로.
 
-다음 JSON 형식으로 응답하세요:
+다음 JSON 형식으로만 응답하세요:
 {{
-  "minutes": <정수>,
-  "reason": "한 줄 이유"
+  "reason": "무엇을 보고 몇 분이라 판단했는지 한 줄",
+  "minutes": <정수>
 }}"""
 
 
@@ -82,6 +92,22 @@ def _strip_fence(raw: str) -> str:
     return raw
 
 
+def _context_blocks(current_time: str, placement: str, next_beat: str) -> dict:
+    """프롬프트 템플릿의 선택적 컨텍스트 블록들을 조립한다.
+
+    각 블록은 값이 있을 때만 나타나고, 없으면 빈 문자열이라 템플릿이 그대로
+    접힌다(``[현재 시각]`` 이 원래 그랬던 것과 같은 방식).
+    """
+    return {
+        "current_time_block": f"[현재 시각] {current_time}\n" if current_time else "",
+        "placement_block":     f"[인물 배치] {placement}\n" if placement else "",
+        "next_beat_block": (
+            f"[다음 예정 시각] {next_beat} — 이 시각을 넘겨 점프하지 마십시오.\n"
+            if next_beat else ""
+        ),
+    }
+
+
 def estimate_wave_minutes(
     entries: list[dict],
     llm: LLMCall,
@@ -90,6 +116,8 @@ def estimate_wave_minutes(
     current_time: str = "",
     lo: int = 1,
     hi: int = 480,
+    placement: str = "",
+    next_beat: str = "",
 ) -> tuple[int, str] | None:
     """LLM에게 이번 wave의 경과 시간(분)을 **직접** 추론시킨다 (AI 모드).
 
@@ -117,10 +145,10 @@ def estimate_wave_minutes(
     lo = max(0, lo)
     hi = max(lo, hi)
 
-    current_time_block = f"\n[현재 시각]\n{current_time}\n" if current_time else ""
-
     user_msg = _MINUTES_USER_TEMPLATE.format(
-        current_time_block = current_time_block,
+        **_context_blocks(current_time, placement, next_beat),
+        method_block       = _METHOD_BLOCK,
+        turn_count         = len(entries),
         log_text           = _format_entries(entries, key_to_alias),
         lo                 = lo,
         hi                 = hi,
@@ -170,6 +198,8 @@ def classify_wave_time(
     key_to_alias: dict[str, str] | None = None,
     llm_max_tokens: int = 256,
     current_time: str = "",
+    placement: str = "",
+    next_beat: str = "",
 ) -> str | None:
     """Call LLM to classify the elapsed-time category of a single wave's scene.
 
@@ -179,23 +209,13 @@ def classify_wave_time(
     if not entries:
         return None
 
-    lines = []
-    for e in entries:
-        speaker     = (key_to_alias or {}).get(e.get("speaker", ""), e.get("speaker", ""))
-        content     = e.get("content", "")
-        action_note = e.get("action_note", "")
-        line        = f"{speaker}: {content}"
-        if action_note:
-            line += f"  *{action_note}*"
-        lines.append(line)
-
     category_list = "\n".join(f"- {c['id']}: {c.get('label', '')}" for c in categories)
 
-    current_time_block = f"\n[현재 시각]\n{current_time}\n" if current_time else ""
-
     user_msg = _USER_TEMPLATE.format(
-        current_time_block = current_time_block,
-        log_text           = "\n".join(lines),
+        **_context_blocks(current_time, placement, next_beat),
+        method_block       = _METHOD_BLOCK,
+        turn_count         = len(entries),
+        log_text           = _format_entries(entries, key_to_alias),
         category_list      = category_list,
     )
 

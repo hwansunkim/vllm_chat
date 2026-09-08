@@ -39,7 +39,15 @@ class AgentConfig(BaseModel):
 
 
 class ScenarioEvent(BaseModel):
-    wave:    int
+    # 트리거는 둘 중 하나:
+    #   - wave: N        — N번째 wave 시작 시 발동 (기본)
+    #   - at_time: "HH:MM" — 시뮬레이션 시계가 그 시각에 도달한 첫 wave에 발동.
+    #     시간 모드가 켜져 있을 때만 의미가 있고, 이때 시간 추론은 이 시각을 넘겨
+    #     점프하지 않는다("짱구 태권도 16:00" 같은 예정 서사가 큰 시간 점프에
+    #     통째로 스킵되는 것을 막는다). 시작 시각보다 이르거나 같으면 '다음 날
+    #     그 시각'으로 해석한다. at_time 이 있으면 wave 는 무시된다.
+    wave:    int       = 0
+    at_time: str       = ""
     # "system_message" | "agent_enter" | "agent_exit" | "update_appearance" | "infect_agent"
     type:    str
     message: str       = ""
@@ -49,6 +57,21 @@ class ScenarioEvent(BaseModel):
     #               message는 관전용 이벤트 피드에만 쓰이고 에이전트 메모리에는 주입되지 않는다
     #               (LLM은 증상 서사 텍스트로만 감염을 인지한다).
     agent:   str       = ""
+
+    @field_validator("at_time")
+    @classmethod
+    def _valid_at_time(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            return ""
+        try:
+            hh, mm = v.split(":")
+            h, m = int(hh), int(mm)
+        except (ValueError, AttributeError):
+            raise ValueError(f"at_time 은 'HH:MM' 형식이어야 합니다: {v!r}")
+        if not (0 <= h <= 23 and 0 <= m <= 59):
+            raise ValueError(f"at_time 시각 범위 오류: {v!r}")
+        return f"{h:02d}:{m:02d}"
 
 
 class LocationNode(BaseModel):

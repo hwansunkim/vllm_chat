@@ -6,6 +6,25 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 logger = logging.getLogger(__name__)
 
 
+def _clock_to_elapsed(at_time: str, sim_start_minutes: int) -> int | None:
+    """`"HH:MM"` → 시작 시점 기준 경과 분(다음 도래 시각).
+
+    시작 시각보다 이르거나 같으면 '다음 날 그 시각'으로 본다(+1440). 형식이
+    틀리면 None(호출부가 그 이벤트를 무시).
+    """
+    try:
+        hh, mm = str(at_time).strip().split(":")
+        abs_min = int(hh) * 60 + int(mm)
+    except (ValueError, AttributeError):
+        return None
+    if not (0 <= abs_min < 1440):
+        return None
+    delta = abs_min - int(sim_start_minutes)
+    if delta <= 0:
+        delta += 1440
+    return delta
+
+
 class _RunnerMixin:
     """시뮬레이션 실행 루프, 웨이브 요약, system 에이전트."""
 
@@ -31,10 +50,23 @@ class _RunnerMixin:
         시간 개념이 있으면 "침묵"은 종료 신호가 아니라 "건너뛰기" 신호이고,
         시간 개념이 없는 순수 대화 시나리오는 더 이상 쓰이지 않는다.
         """
+        # 이벤트 트리거는 wave 번호 또는 시계 시각(at_time) 둘 중 하나.
         events_by_wave: dict[int, list] = {}
+        self._timed_events: list[dict] = []
         for e in (events or []):
-            w = e.get("wave", 0) if isinstance(e, dict) else 0
-            events_by_wave.setdefault(w, []).append(e)
+            if not isinstance(e, dict):
+                events_by_wave.setdefault(0, []).append(e)
+                continue
+            at = _clock_to_elapsed(e.get("at_time", ""), self._sim_start_minutes)
+            if at is not None:
+                # 이번 run 시작 시점에 이미 지난 시각이면 발동한 것으로 간주한다
+                # (/continue·/resume 로 그 시각을 넘겨 이어가는 경우 — 되돌릴 수 없다).
+                self._timed_events.append({
+                    "at": at, "event": e, "fired": at <= self._elapsed_minutes,
+                })
+            else:
+                events_by_wave.setdefault(e.get("wave", 0), []).append(e)
+        self._timed_events.sort(key=lambda t: t["at"])
 
         current_wave: dict[str, list] = resume_wave if resume_wave else {start_agent: []}
         turn_counter  = 0
@@ -52,6 +84,12 @@ class _RunnerMixin:
         # 기준 자체가 없으므로 조용히 무시한다 — 에러가 아니라 "사용 안 함".
         # variable 모드는 time_per_wave와 무관하게 경과 시간을 누적하므로 항상 유효.
         time_enabled   = self._time_mode == "variable" or self._time_per_wave > 0
+        if self._timed_events and not time_enabled:
+            logger.warning(
+                f"at_time 이벤트 {len(self._timed_events)}건이 설정됐으나 시간 개념이 "
+                f"비활성(time_mode=fixed, time_per_wave=0)이라 시계가 흐르지 않아 "
+                f"영영 발동하지 않습니다."
+            )
         target_minutes = int(target_duration_minutes or 0)
         if target_minutes > 0 and not time_enabled:
             logger.info(
@@ -76,7 +114,20 @@ class _RunnerMixin:
                 end_reason = "stopped"
                 break
 
-            for event in events_by_wave.get(run_wave, []):
+            wave_events = list(events_by_wave.get(run_wave, []))
+            # 시계가 예정 시각에 도달한 at_time 이벤트도 이 wave에 발동한다.
+            for te in self._timed_events:
+                if not te["fired"] and self._elapsed_minutes >= te["at"]:
+                    te["fired"] = True
+                    ev = dict(te["event"])
+                    ev["wave"] = disp_wave     # infect_agent·피드 배치용
+                    wave_events.append(ev)
+                    logger.info(
+                        f"[W{disp_wave}] at_time 이벤트 발동 "
+                        f"({te['event'].get('at_time')}, 경과 {self._elapsed_minutes}분): "
+                        f"{te['event'].get('type')}"
+                    )
+            for event in wave_events:
                 ev_result = self._execute_event(event)
                 entrant   = ev_result.get("entrant")
                 if entrant and entrant not in current_wave:
@@ -638,11 +689,17 @@ class _RunnerMixin:
             # 귀가·등장하거나 함께 모이는 장면을 건너뛸 수 있으니 큰 카테고리는
             # 확실히 한적/야간일 때만" 이라는 판단을 LLM이 하도록.
             now_str = self._format_time_str(self._sim_start_minutes + self._elapsed_minutes)
+            beat = self._next_pending_beat()
+            next_beat = ""
+            if beat is not None:
+                next_beat = f"{beat[1]} (지금부터 {beat[0] - self._elapsed_minutes}분 뒤)"
             category_id = classify_wave_time(
                 entries, self._time_categories, self._llm,
                 key_to_alias=self._key_to_alias,
                 llm_max_tokens=min(self.llm_max_tokens, 256),
                 current_time=now_str,
+                placement=self._placement_summary(results),
+                next_beat=next_beat,
             )
             valid_ids = {c["id"] for c in self._time_categories}
             if category_id is None or category_id not in valid_ids:
@@ -687,6 +744,45 @@ class _RunnerMixin:
             lo, hi = hi, lo
         return random.randint(lo, hi)
 
+    def _next_pending_beat(self) -> tuple[int, str] | None:
+        """아직 발동하지 않은 at_time 이벤트 중 가장 이른 것 → ``(경과분, "HH:MM")``.
+
+        시간 추론(카테고리/AI)과 `_clamp_time_jump`가 이 시각을 **넘겨** 점프하지
+        않도록 하는 데 쓴다 — "짱구 태권도 16:00" 같은 예정 서사가 큰 시간 점프에
+        통째로 스킵되는 것을 막는다. 없으면 None.
+        """
+        pending = [
+            t for t in getattr(self, "_timed_events", [])
+            if not t["fired"] and t["at"] > self._elapsed_minutes
+        ]
+        if not pending:
+            return None
+        nxt = min(pending, key=lambda t: t["at"])
+        return nxt["at"], str(nxt["event"].get("at_time", ""))
+
+    def _placement_summary(self, results: dict) -> str:
+        """이번 장면 화자들이 함께 있는지 흩어져 있는지 한 줄 요약 (시간 추론 프롬프트용).
+
+        위치 미설정(레거시) 시나리오는 빈 문자열 → 프롬프트에서 블록 자체가 생략된다.
+        """
+        by_loc: dict[str, list[str]] = {}
+        for k, r in results.items():
+            if not (r.get("success") and (r.get("clean_content") or "").strip()):
+                continue
+            loc = self._agent_location.get(k, "")
+            if not loc:
+                continue
+            by_loc.setdefault(loc, []).append(self._key_to_alias.get(k, k))
+        if not by_loc:
+            return ""
+        if len(by_loc) == 1:
+            loc, names = next(iter(by_loc.items()))
+            if len(names) == 1:
+                return f"{names[0]} 혼자 {loc}에 있음 (상호작용 없음 — 시간 압축 가능)"
+            return f"{', '.join(names)} 모두 같은 곳({loc})에 함께 있음 (대화 중 — 압축 금지)"
+        parts = [f"{loc} {len(names)}명" for loc, names in by_loc.items()]
+        return f"여러 곳에 흩어져 있음 ({', '.join(parts)}) — 서로 상호작용 없으면 압축 가능"
+
     def _estimate_wave_minutes(self, wave_num: int, results: dict) -> tuple[int, str] | None:
         """AI 모드 — LLM에게 이번 wave의 경과 분을 직접 추론시킨다.
 
@@ -713,6 +809,15 @@ class _RunnerMixin:
             lo = min((int(c["min_minutes"]) for c in cats), default=1)
             hi = max((int(c["max_minutes"]) for c in cats), default=480)
             now_str = self._format_time_str(self._sim_start_minutes + self._elapsed_minutes)
+
+            next_beat = ""
+            beat = self._next_pending_beat()
+            if beat is not None:
+                beat_elapsed, beat_str = beat
+                room = beat_elapsed - self._elapsed_minutes
+                hi = min(hi, max(lo, room))
+                next_beat = f"{beat_str} (지금부터 {room}분 뒤)"
+
             return estimate_wave_minutes(
                 entries, self._llm,
                 key_to_alias=self._key_to_alias,
@@ -720,6 +825,8 @@ class _RunnerMixin:
                 current_time=now_str,
                 lo=lo,
                 hi=hi,
+                placement=self._placement_summary(results),
+                next_beat=next_beat,
             )
         except Exception as e:
             logger.warning(f"[W{wave_num}] AI 시간 추론 예외 — 카테고리 폴백: {e}")
@@ -734,6 +841,15 @@ class _RunnerMixin:
 
         반환: ``(clamped_jump, 사유_문자열 or None)``. 사유가 None이면 캡 미적용.
         """
+        # (0) 예정된 at_time 이벤트를 넘기지 않는다 — 가장 강한 상한. 시간 추론
+        #     프롬프트도 이 시각을 보지만(hi 캡 + next_beat), 카테고리 모드의 랜덤
+        #     추출이나 AI 추론 실패 폴백은 프롬프트를 안 타므로 여기서 못 박는다.
+        beat = self._next_pending_beat()
+        if beat is not None:
+            room = beat[0] - self._elapsed_minutes
+            if room >= 0 and raw_jump > room:
+                return room, f"예정 이벤트({beat[1]}) 전까지 {raw_jump}→{room}분"
+
         # 이번 wave에 실제 내용 있는 발화를 한 에이전트들의 현재(이동 반영 후) 위치.
         speaker_locs = [
             self._agent_location.get(k, "")

@@ -119,8 +119,10 @@ SSE 큐·stop_event 생성, swap_event_queue
 - `fold_elapsed_and_reset_waves(sim_obj)` — 시계 연속성.
 - **원래 실행의 `config_json`에서** `max_silence_waves` 복원
   (`SimContinueConfig`에는 없는 필드).
-- 이벤트는 **재생하지 않는다** (`events=[]`) — wave 0부터 다시 세므로 과거 wave의
-  이벤트가 매번 다시 발동한다. `resume_wave = sim_obj._pending_wave`.
+- **wave 트리거 이벤트는 재생하지 않는다** — wave 0부터 다시 세므로 과거 wave의
+  이벤트가 매번 다시 발동한다. **`at_time` 이벤트만** 재전달한다(이미 지난 시각은
+  `run()`이 "발동함"으로 처리 → 안전, 이어가기 중에도 예정 서사 유지).
+  `resume_wave = sim_obj._pending_wave`.
 - **감염 설정 등은 못 바꾼다** — `/start` 시점 config 스냅샷이 계속 유효.
 
 ### `POST /load/{run_id}` (`runtime/load.py`)

@@ -169,6 +169,11 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         # 넣지 않는다.
         self._solo_streak: dict[str, int] = {}
 
+        # at_time(시계 시각) 트리거 이벤트. run()이 events 인자에서 채운다:
+        # [{"at": 경과분, "event": dict, "fired": bool}]. 시간 추론·_clamp_time_jump가
+        # "다음 예정 시각을 넘겨 점프하지 않는다"에 쓴다.
+        self._timed_events: list[dict] = []
+
         # {에이전트 key: 직전 wave **시작 시점**(이동 적용 전) 위치}. 발화 라우팅의
         # 1-wave 대화 유예에 쓴다 — 지금은 다른 방이지만 직전 wave엔 같은 방이었던
         # 상대에게 "마지막 한마디"를 한 번 더 배달한다(방금 자리를 뜬 사람에게 답하는

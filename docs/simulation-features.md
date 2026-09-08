@@ -186,14 +186,19 @@ zone은 순수 위치 개념.)
 **엔진 동작** (`runner.py` + `time_classifier.py`):
 
 - `_current_elapsed_minutes` — 시각 계산 단일 진실 원천 ([`simulation-engine.md §10`](simulation-engine.md#10-시각-계산--_current_elapsed_minutes-단일-진실-원천)).
-- **variable — category 모드**: wave 끝에 `classify_wave_time`(LLM)이 대화 내용 + 현재
-  시각을 보고 카테고리 하나 선택 → 그 범위에서 `random.randint`. 실패 → `normal_scene`.
+- **variable — category 모드**: wave 끝에 `classify_wave_time`(LLM)이 카테고리 하나
+  선택 → 그 범위에서 `random.randint`. 실패 → `normal_scene`.
 - **variable — ai 모드**: `estimate_wave_minutes`(LLM)가 경과 분을 직접 추론 →
   `time_categories` 전체의 min~max로 clamp. 실패 → `normal_scene` 카테고리 폴백.
+- **시간 추론 프롬프트가 받는 컨텍스트** (`time_classifier.py`): `[현재 시각]`,
+  `[인물 배치]`(화자들이 함께 있나 흩어졌나 — `_placement_summary`),
+  `[다음 예정 시각]`(가장 이른 미발동 `at_time` 이벤트 — §9), 방법론 블록(대사는
+  거의 실시간·시간 표현 우선·의심스러우면 짧게), `reason` 먼저 `minutes` 나중.
 - **시간 점프 클램프** (`_clamp_time_jump`) — LLM이 고른 raw 경과 분을 엔진이
-  **결정론적으로** 상한:
-  - 실내 한 곳에 2명+ 동석 발화 중 → `max_scene_jump_minutes` (진행 중 장면 안 잘림)
-  - 밤(22~06시) 아니고 집에 남은 사람 있음 → `max_daytime_jump_minutes` (학원·저녁
+  **결정론적으로** 상한 (약한 모델 방어):
+  - (0) 아직 발동 안 한 `at_time` 이벤트 시각 → 그 전까지만 (§9 예정 서사 앵커)
+  - (1) 실내 한 곳에 2명+ 동석 발화 중 → `max_scene_jump_minutes` (진행 중 장면 안 잘림)
+  - (2) 밤(22~06시) 아니고 집에 남은 사람 있음 → `max_daytime_jump_minutes` (학원·저녁
     재집결 장면 안 건너뜀). 집이 완전히 비면 미적용.
 - **강제 재투입 시간 점프** (`mode: "idle"`) — **전원이 고립 독백 중(휴면)**이면,
   LLM 분류 대신 `idle_minutes_schedule`로 시간을 크게 건너뛴다 (회차가 늘수록 다음
@@ -320,9 +325,24 @@ disease_name}` — `cause` = `event`(시드) / `transmission`(전파) / `recover
 
 ## 9. 시나리오 이벤트 (`events`)
 
-**목적** — 지정한 wave에 자동 발생하는 사건. 실행 도중 상황 변경.
+**목적** — 지정한 시점에 자동 발생하는 사건. 실행 도중 상황 변경.
 
-**설정** — 설정 뷰 "시나리오 이벤트" 섹션. `ScenarioEvent {wave, type, message, targets, agent}`.
+**설정** — 설정 뷰 "시나리오 이벤트" 섹션. `ScenarioEvent {wave | at_time, type, message, targets, agent}`.
+
+**트리거** — 둘 중 하나:
+
+| 트리거 | 발동 |
+|---|---|
+| `wave: N` (기본) | N번째 wave 시작 시 |
+| `at_time: "HH:MM"` | 시뮬레이션 **시계**가 그 시각에 도달한 첫 wave. 시작 시각보다 이르거나 같으면 '다음 날 그 시각'. **시간 모드가 켜져 있어야** 의미 있음 (시계가 안 흐르면 영영 안 뜸) |
+
+**`at_time` — 예정 서사 앵커.** 시간 추론(카테고리/AI)과 `_clamp_time_jump`가
+아직 발동하지 않은 `at_time` 이벤트의 시각을 **넘겨 점프하지 않는다** — "짱구
+태권도 16:00" 같은 예정된 장면이 "다들 흩어졌으니 3시간 점프" 판단에 통째로
+스킵되는 것을 막는다. 추론 프롬프트에도 `[다음 예정 시각]`으로 노출되고,
+`estimate_wave_minutes`의 `hi`가 그 시각까지로 캡된다. `_next_pending_beat()`.
+이번 run 시작 시점에 이미 지난 시각은 "발동함"으로 처리 → `/continue`·`/resume`
+에서도 안전하게 재전달된다(wave 트리거 이벤트는 재생 안 됨).
 
 **엔진 동작** (`events.py: _execute_event`) — wave 루프 상단에서 실행:
 
