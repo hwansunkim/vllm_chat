@@ -38,16 +38,22 @@ class AgentConfig(BaseModel):
     max_tokens:         int | None = None
 
 
+_WEEKDAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
 class ScenarioEvent(BaseModel):
     # 트리거는 둘 중 하나:
     #   - wave: N        — N번째 wave 시작 시 발동 (기본)
     #   - at_time: "HH:MM" — 시뮬레이션 시계가 그 시각에 도달한 첫 wave에 발동.
     #     시간 모드가 켜져 있을 때만 의미가 있고, 이때 시간 추론은 이 시각을 넘겨
-    #     점프하지 않는다("짱구 태권도 16:00" 같은 예정 서사가 큰 시간 점프에
-    #     통째로 스킵되는 것을 막는다). 시작 시각보다 이르거나 같으면 '다음 날
-    #     그 시각'으로 해석한다. at_time 이 있으면 wave 는 무시된다.
+    #     점프하지 않는다("짱구 태권도 16:30" 같은 예정 서사가 큰 시간 점프에
+    #     통째로 스킵되는 것을 막는다). at_time 이 있으면 wave 는 무시된다.
+    #   - at_days: 요일 목록(["mon","wed","fri"] 등). 비었으면 매일. 있으면 해당
+    #     요일마다 반복 발동한다(하루 일과·학원 스케줄용). 여러 날 건너뛴 점프는
+    #     한 번만(가장 최근에 놓친 것) 발동한다 — 밀린 이벤트가 몰아치지 않는다.
     wave:    int       = 0
     at_time: str       = ""
+    at_days: list[str] = []
     # "system_message" | "agent_enter" | "agent_exit" | "update_appearance" | "infect_agent"
     type:    str
     message: str       = ""
@@ -72,6 +78,20 @@ class ScenarioEvent(BaseModel):
         if not (0 <= h <= 23 and 0 <= m <= 59):
             raise ValueError(f"at_time 시각 범위 오류: {v!r}")
         return f"{h:02d}:{m:02d}"
+
+    @field_validator("at_days")
+    @classmethod
+    def _valid_at_days(cls, v: list[str]) -> list[str]:
+        seen: list[str] = []
+        for d in (v or []):
+            d = str(d).strip().lower()
+            if d not in _WEEKDAY_KEYS:
+                raise ValueError(
+                    f"at_days 는 {_WEEKDAY_KEYS} 중에서 골라야 합니다: {d!r}"
+                )
+            if d not in seen:
+                seen.append(d)
+        return sorted(seen, key=_WEEKDAY_KEYS.index)
 
 
 class LocationNode(BaseModel):

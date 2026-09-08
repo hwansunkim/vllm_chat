@@ -170,8 +170,9 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         self._solo_streak: dict[str, int] = {}
 
         # at_time(시계 시각) 트리거 이벤트. run()이 events 인자에서 채운다:
-        # [{"at": 경과분, "event": dict, "fired": bool}]. 시간 추론·_clamp_time_jump가
-        # "다음 예정 시각을 넘겨 점프하지 않는다"에 쓴다.
+        # [{"hhmm": 자정기준분, "days": {요일idx}|None, "event": dict, "next_at": 경과분|None}].
+        # at_days 가 있으면 그 요일마다 반복 발동한다(하루 일과). 시간 추론·
+        # _clamp_time_jump 가 "다음 예정 시각(next_at)을 넘겨 점프하지 않는다"에 쓴다.
         self._timed_events: list[dict] = []
 
         # {에이전트 key: 직전 wave **시작 시점**(이동 적용 전) 위치}. 발화 라우팅의

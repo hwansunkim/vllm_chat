@@ -3,26 +3,42 @@ import time
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from ._constants import _WEEKDAY_KEYS
+
 logger = logging.getLogger(__name__)
 
 
-def _clock_to_elapsed(at_time: str, sim_start_minutes: int) -> int | None:
-    """`"HH:MM"` → 시작 시점 기준 경과 분(다음 도래 시각).
-
-    시작 시각보다 이르거나 같으면 '다음 날 그 시각'으로 본다(+1440). 형식이
-    틀리면 None(호출부가 그 이벤트를 무시).
-    """
+def _parse_hhmm(at_time: str) -> int | None:
+    """`"HH:MM"` → 자정 기준 분(0~1439). 형식이 틀리면 None."""
     try:
         hh, mm = str(at_time).strip().split(":")
-        abs_min = int(hh) * 60 + int(mm)
+        v = int(hh) * 60 + int(mm)
     except (ValueError, AttributeError):
         return None
-    if not (0 <= abs_min < 1440):
-        return None
-    delta = abs_min - int(sim_start_minutes)
-    if delta <= 0:
-        delta += 1440
-    return delta
+    return v if 0 <= v < 1440 else None
+
+
+def _beat_occurrence_after(
+    hhmm: int, days: set[int] | None, after_elapsed: int,
+    sim_start_minutes: int, start_weekday_idx: int,
+) -> int | None:
+    """시작 기준 경과분으로 표현한 `at_time` 이벤트의 다음 도래 시점.
+
+    `after_elapsed` **보다 큰** 경과분 중 벽시계가 `hhmm`이고(요일 필터 `days`가
+    있으면 그 요일인) 가장 이른 값. `days=None` 이면 매일. 14일치 시뮬레이션을
+    커버하도록 최대 16일 앞까지 훑고, 못 찾으면 None.
+    """
+    base_wall = sim_start_minutes + after_elapsed
+    base_day  = base_wall // 1440
+    for day_off in range(0, 17):
+        wall = (base_day + day_off) * 1440 + hhmm
+        t = wall - sim_start_minutes
+        if t <= after_elapsed:
+            continue
+        wd = (start_weekday_idx + wall // 1440) % 7
+        if days is None or wd in days:
+            return t
+    return None
 
 
 class _RunnerMixin:
@@ -51,22 +67,28 @@ class _RunnerMixin:
         시간 개념이 없는 순수 대화 시나리오는 더 이상 쓰이지 않는다.
         """
         # 이벤트 트리거는 wave 번호 또는 시계 시각(at_time) 둘 중 하나.
+        # at_time 이벤트는 at_days 가 있으면 그 요일마다 반복 발동한다(하루 일과).
         events_by_wave: dict[int, list] = {}
         self._timed_events: list[dict] = []
         for e in (events or []):
             if not isinstance(e, dict):
                 events_by_wave.setdefault(0, []).append(e)
                 continue
-            at = _clock_to_elapsed(e.get("at_time", ""), self._sim_start_minutes)
-            if at is not None:
-                # 이번 run 시작 시점에 이미 지난 시각이면 발동한 것으로 간주한다
-                # (/continue·/resume 로 그 시각을 넘겨 이어가는 경우 — 되돌릴 수 없다).
-                self._timed_events.append({
-                    "at": at, "event": e, "fired": at <= self._elapsed_minutes,
-                })
+            hhmm = _parse_hhmm(e.get("at_time", ""))
+            if hhmm is not None:
+                raw_days = [str(d).lower() for d in (e.get("at_days") or [])]
+                days = {_WEEKDAY_KEYS.index(d) for d in raw_days
+                        if d in _WEEKDAY_KEYS} or None
+                te = {"hhmm": hhmm, "days": days, "event": e}
+                # run 시작 시점보다 앞선 도래는 "이미 발동함"으로 본다(/continue·
+                # /resume 로 넘겨 이어가는 경우 — 되돌릴 수 없다).
+                te["next_at"] = _beat_occurrence_after(
+                    hhmm, days, self._elapsed_minutes - 1,
+                    self._sim_start_minutes, self._sim_start_weekday_idx,
+                )
+                self._timed_events.append(te)
             else:
                 events_by_wave.setdefault(e.get("wave", 0), []).append(e)
-        self._timed_events.sort(key=lambda t: t["at"])
 
         current_wave: dict[str, list] = resume_wave if resume_wave else {start_agent: []}
         turn_counter  = 0
@@ -116,9 +138,11 @@ class _RunnerMixin:
 
             wave_events = list(events_by_wave.get(run_wave, []))
             # 시계가 예정 시각에 도달한 at_time 이벤트도 이 wave에 발동한다.
+            # 여러 도래를 건너뛴 점프는 한 번만(가장 최근 것) 발동하고 다음 도래를
+            # 다시 계산한다 — 밀린 이벤트가 몰아치지 않는다.
             for te in self._timed_events:
-                if not te["fired"] and self._elapsed_minutes >= te["at"]:
-                    te["fired"] = True
+                na = te["next_at"]
+                if na is not None and self._elapsed_minutes >= na:
                     ev = dict(te["event"])
                     ev["wave"] = disp_wave     # infect_agent·피드 배치용
                     wave_events.append(ev)
@@ -126,6 +150,10 @@ class _RunnerMixin:
                         f"[W{disp_wave}] at_time 이벤트 발동 "
                         f"({te['event'].get('at_time')}, 경과 {self._elapsed_minutes}분): "
                         f"{te['event'].get('type')}"
+                    )
+                    te["next_at"] = _beat_occurrence_after(
+                        te["hhmm"], te["days"], self._elapsed_minutes,
+                        self._sim_start_minutes, self._sim_start_weekday_idx,
                     )
             for event in wave_events:
                 ev_result = self._execute_event(event)
@@ -753,12 +781,12 @@ class _RunnerMixin:
         """
         pending = [
             t for t in getattr(self, "_timed_events", [])
-            if not t["fired"] and t["at"] > self._elapsed_minutes
+            if t["next_at"] is not None and t["next_at"] > self._elapsed_minutes
         ]
         if not pending:
             return None
-        nxt = min(pending, key=lambda t: t["at"])
-        return nxt["at"], str(nxt["event"].get("at_time", ""))
+        nxt = min(pending, key=lambda t: t["next_at"])
+        return nxt["next_at"], str(nxt["event"].get("at_time", ""))
 
     def _placement_summary(self, results: dict) -> str:
         """이번 장면 화자들이 함께 있는지 흩어져 있는지 한 줄 요약 (시간 추론 프롬프트용).

@@ -14,6 +14,10 @@ const EVENT_LABELS = {
 // 에이전트 선택 드롭다운이 필요한 타입 (agent 필드를 쓴다).
 const AGENT_EVENT_TYPES = ['agent_enter', 'agent_exit', 'infect_agent'];
 
+// at_time 이벤트의 반복 요일 (at_days). 비었으면 매일.
+const WEEKDAYS = [['mon', '월'], ['tue', '화'], ['wed', '수'], ['thu', '목'],
+                  ['fri', '금'], ['sat', '토'], ['sun', '일']];
+
 // Build the ordered list of selectable targets for system_message events.
 function _buildTargetOptions() {
   const opts = [{ value: 'all', label: '전체', cls: 'evt-target-all' }];
@@ -91,10 +95,17 @@ export function renderScenarioEvents() {
         <button class="sim-event-del" data-idx="${idx}">✕</button>
       </div>
       ${trigger === 'time' ? `
+      <div class="sim-event-days-row" data-idx="${idx}">
+        <span class="sim-event-days-label">요일</span>
+        ${WEEKDAYS.map(([k, l]) => `
+          <span class="evt-day-chip${(ev.at_days || []).includes(k) ? ' selected' : ''}"
+                data-idx="${idx}" data-day="${k}">${l}</span>`).join('')}
+        <span class="sim-event-days-note">${(ev.at_days || []).length ? '' : '(비우면 매일)'}</span>
+      </div>
       <div class="sim-event-hint">
-        시뮬레이션 시계가 이 시각에 도달한 첫 wave에 발동합니다. 시간 추론이 이 시각을
-        넘겨 점프하지 않습니다(예: “짱구 태권도 16:00”이 큰 시간 점프에 스킵되는 것 방지).
-        시간 모드가 켜져 있어야 의미가 있습니다.
+        시뮬레이션 시계가 이 시각에 도달한 첫 wave에 발동합니다(요일 지정 시 그 요일마다
+        반복). 시간 추론이 이 시각을 넘겨 점프하지 않습니다 — 예: “짱구 태권도 16:30”이
+        큰 시간 점프에 스킵되는 것 방지. 시간 모드가 켜져 있어야 의미가 있습니다.
       </div>` : ''}
       ${infectionOff ? `
       <div class="sim-event-warn">
@@ -135,6 +146,20 @@ export function renderScenarioEvents() {
   list.querySelectorAll('.sim-event-del').forEach(el => {
     el.addEventListener('click', () => {
       sim.events.splice(+el.dataset.idx, 1);
+      renderScenarioEvents();
+    });
+  });
+
+  // 요일 칩 토글 (at_days)
+  list.querySelectorAll('.evt-day-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const idx = +chip.dataset.idx;
+      const day = chip.dataset.day;
+      const days = [...(sim.events[idx].at_days || [])];
+      const at = days.indexOf(day);
+      if (at >= 0) days.splice(at, 1); else days.push(day);
+      sim.events[idx].at_days = days.sort(
+        (a, b) => WEEKDAYS.findIndex(w => w[0] === a) - WEEKDAYS.findIndex(w => w[0] === b));
       renderScenarioEvents();
     });
   });
@@ -182,6 +207,7 @@ function syncEventField(el) {
       sim.events[idx].at_time = sim.events[idx].at_time || '16:00';
     } else {
       sim.events[idx].at_time = '';
+      sim.events[idx].at_days = [];
     }
     renderScenarioEvents();
   } else if (field === 'wave') {

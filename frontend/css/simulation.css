@@ -900,6 +900,20 @@
   font-size: 12px; padding: 4px 6px; flex-shrink: 0;
   border: 1px solid #e2e8f0; border-radius: 4px; outline: none;
 }
+.sim-event-days-row {
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  padding-left: 44px; margin-top: 4px;
+}
+.sim-event-days-label { font-size: 10px; color: #94a3b8; margin-right: 2px; }
+.sim-event-days-note  { font-size: 10px; color: #cbd5e1; }
+.evt-day-chip {
+  font-size: 11px; padding: 2px 7px; border-radius: 10px; cursor: pointer;
+  border: 1px solid #e2e8f0; color: #64748b; background: white; user-select: none;
+}
+.evt-day-chip:hover { border-color: #cbd5e1; }
+.evt-day-chip.selected {
+  background: #eef2ff; color: #4338ca; border-color: transparent; font-weight: 500;
+}
 .sim-event-type-select {
   flex: 1; font-size: 11px; padding: 4px 6px;
   border: 1px solid #e2e8f0; border-radius: 4px; background: white; outline: none;

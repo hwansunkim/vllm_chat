@@ -896,8 +896,8 @@ class TimedEventTests(unittest.TestCase):
     않도록 상한이 된다.
     """
 
-    def _sim(self, events, *, start="14:00", est="category", ai_minutes=None,
-             elapsed_init=0):
+    def _sim(self, events, *, start="14:00", weekday="mon", est="category",
+             ai_minutes=None, elapsed_init=0):
         from ABM.agent import Agent
         from ABM.simulation import Simulation
         # 두 카테고리 다 min==max 라 경과분이 결정론적이다. 분류기 스텁은 늘 "gap".
@@ -923,7 +923,7 @@ class TimedEventTests(unittest.TestCase):
             agents, [{"role": "user", "content": "[배경] t"}], self._tmp.name,
             llm=llm, time_mode="variable", time_categories=cats,
             time_estimation_mode=est, sim_start_time=start,
-            elapsed_minutes_init=elapsed_init,
+            sim_start_weekday=weekday, elapsed_minutes_init=elapsed_init,
         )
         self._emitted = []
         sim._emit = lambda t, d: self._emitted.append((t, d))
@@ -966,7 +966,21 @@ class TimedEventTests(unittest.TestCase):
         sim = self._sim([{"at_time": "09:00", "type": "system_message",
                           "message": "x"}], start="14:00")
         self._go(sim, max_waves=0)
-        self.assertEqual(sim._timed_events[0]["at"], (9 * 60) - (14 * 60) + 1440)
+        self.assertEqual(sim._timed_events[0]["next_at"], (9 * 60) - (14 * 60) + 1440)
+
+    def test_at_days_recurs_only_on_matching_weekdays(self):
+        # 월요일 05:50 시작. 짱구 태권도 = 월·수·금 16:30. 첫 도래는 그날(월) 16:30.
+        sim = self._sim([{"at_time": "16:30", "at_days": ["mon", "wed", "fri"],
+                          "type": "system_message", "message": "태권도", "targets": ["a"]}],
+                        start="05:50", weekday="mon")
+        self._go(sim, max_waves=0)
+        first = sim._timed_events[0]["next_at"]
+        self.assertEqual(first, (16 * 60 + 30) - (5 * 60 + 50))   # 월 16:30
+        # 그다음 도래는 수요일 16:30 (이틀 뒤)
+        from ABM.simulation.runner import _beat_occurrence_after
+        nxt = _beat_occurrence_after(16 * 60 + 30, {0, 2, 4}, first,
+                                     sim._sim_start_minutes, sim._sim_start_weekday_idx)
+        self.assertEqual(nxt - first, 2 * 1440)
 
     def test_ai_estimator_hi_is_capped_to_the_next_beat(self):
         # LLM은 300분을 원하지만 14:30(경과 30분) 이벤트가 있어 hi=30으로 캡된다.

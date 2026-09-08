@@ -450,7 +450,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 | **time_estimation_mode** | 가변 모드 내에서: `category` (LLM이 카테고리 선택 → 범위 내 랜덤) / `ai` (LLM이 경과 분 직접 추론, 카테고리 min~max로 clamp) |
 | **시간 카테고리 (time_categories)** | 가변 모드 분류 대상. `{id, label, min_minutes, max_minutes}`. 기본 4종 (식사·일반·혼자·취침) |
 | **시간 점프 클램프** | LLM이 고른 경과 분을 엔진이 결정론적으로 상한: (0) 미발동 `at_time` 이벤트 시각 전까지, (1) `max_scene_jump_minutes` 동석 장면, (2) `max_daytime_jump_minutes` 주간·재실자. 약한 모델이 예정 서사·재집결 장면을 건너뛰는 것 방지 |
-| **예정 서사 앵커 (`at_time` 이벤트)** | 시각 트리거 이벤트(§9). 시간 추론·클램프가 그 시각을 넘겨 점프하지 않아 "짱구 태권도 16:00"이 큰 시간 점프에 스킵되지 않는다. `_next_pending_beat()` / 추론 프롬프트 `[다음 예정 시각]` |
+| **예정 서사 앵커 (`at_time` 이벤트)** | 시각 트리거 이벤트(§9). `at_days` 로 요일 반복(하루 일과). 시간 추론·클램프가 그 시각을 넘겨 점프하지 않아 "짱구 태권도 16:30"이 큰 시간 점프에 스킵되지 않는다. `_beat_occurrence_after` / `_next_pending_beat()` / 추론 프롬프트 `[다음 예정 시각]` |
 | **인물 배치 요약 (`_placement_summary`)** | 시간 추론 프롬프트용 한 줄 — 이번 장면 화자들이 한 방에 함께(압축 금지)인지 흩어짐(압축 가능)인지 |
 | **강제 재투입 시간 (idle_minutes_schedule)** | 연속 침묵으로 전원 강제 재투입될 때 경과시킬 분. 침묵 회차가 늘수록 다음 값 |
 
