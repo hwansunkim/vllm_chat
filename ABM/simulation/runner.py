@@ -498,7 +498,19 @@ class _RunnerMixin:
                 has_content = any(r.get("success") for r in results.values())
                 if forced_silence_reinject:
                     idx  = min(silence_count, len(self._idle_minutes_schedule)) - 1
-                    jump = self._idle_minutes_schedule[idx]
+                    raw_jump = self._idle_minutes_schedule[idx]
+                    # 결정적 idle 점프도 예정 이벤트(at_time) 시각은 넘기지 않는다 —
+                    # "가족이 각자 나가 있는 낮"에 15:00 하교·16:30 학원이 통째로
+                    # 건너뛰어지던 버그. _clamp_time_jump 는 LLM 경로 전용이라 여기서
+                    # 따로 못 박는다.
+                    idle_clamp_reason: str | None = None
+                    jump = raw_jump
+                    beat = self._next_pending_beat()
+                    if beat is not None:
+                        room = beat[0] - self._elapsed_minutes
+                        if 0 <= room < jump:
+                            jump = room
+                            idle_clamp_reason = f"예정 이벤트({beat[1]}) 전까지 {raw_jump}→{room}분"
                     # 관전 텔레메트리 — 전원 휴면 강제 재투입으로 시간이 크게 건너뛰는
                     # 것을 피드에서 볼 수 있게 한다. 예전엔 이 점프가 조용히 일어나
                     # "왜 갑자기 3시간이 지났지?"가 됐다.
@@ -509,9 +521,9 @@ class _RunnerMixin:
                         "category_id":    None,
                         "category_label": None,
                         "reason":         "전원 휴면(고립 독백)",
-                        "raw_minutes":    jump,
+                        "raw_minutes":    raw_jump,
                         "minutes":        jump,
-                        "clamp_reason":   None,
+                        "clamp_reason":   idle_clamp_reason,
                         "end_time_str":   self._format_time_str(
                             self._sim_start_minutes + self._elapsed_minutes + jump
                         ),
@@ -527,8 +539,13 @@ class _RunnerMixin:
                     category_id:   str | None = None
                     ai_reason:     str | None = None
                     used_fallback: bool       = False
+                    # 이번 wave에 실제로 누군가 누군가에게 말이 닿았는가. 아니면
+                    # (다들 각자 독백) "진행 중인 대화 장면"이 아니므로 시간 추론이
+                    # 장면 보호 캡을 걸지 않는다 — 온 가족이 잠든 밤에도 45분씩만
+                    # 흐르던 버그.
+                    any_reached = any(reached_someone.values())
                     if self._time_estimation_mode == "ai":
-                        ai_result = self._estimate_wave_minutes(disp_wave, results)
+                        ai_result = self._estimate_wave_minutes(disp_wave, results, any_reached)
                         if ai_result is None:
                             # AI 추론 실패 — 카테고리 모드(normal_scene)로 조용히 폴백.
                             used_fallback = True
@@ -544,10 +561,10 @@ class _RunnerMixin:
                             jump_source = "ai"
                             logger.info(f"[W{disp_wave}] 시간 추론 모드=ai — {raw_jump}분")
                     else:
-                        category_id = self._classify_wave_time(disp_wave, results)
+                        category_id = self._classify_wave_time(disp_wave, results, any_reached)
                         raw_jump    = self._random_minutes_for_category(category_id)
                         jump_source = category_id
-                    jump, clamp_reason = self._clamp_time_jump(raw_jump, results)
+                    jump, clamp_reason = self._clamp_time_jump(raw_jump, results, any_reached)
                     if clamp_reason:
                         logger.info(f"[W{disp_wave}] 시간 점프 클램프({jump_source}): {clamp_reason}")
                     # 판정 결과를 관전용 텔레메트리로 노출한다(director_call 과 같은
@@ -699,7 +716,8 @@ class _RunnerMixin:
                     "action_note": "",
                 })
 
-    def _classify_wave_time(self, wave_num: int, results: dict) -> str:
+    def _classify_wave_time(self, wave_num: int, results: dict,
+                            any_reached: bool = True) -> str:
         """이번 wave의 발화 결과를 LLM으로 분류해 시간 경과 카테고리 id를 반환.
 
         절대 예외를 밖으로 던지지 않음 — 실패 시 "normal_scene"으로 폴백.
@@ -729,7 +747,7 @@ class _RunnerMixin:
                 key_to_alias=self._key_to_alias,
                 llm_max_tokens=min(self.llm_max_tokens, 256),
                 current_time=now_str,
-                placement=self._placement_summary(results),
+                placement=self._placement_summary(results, any_reached),
                 next_beat=next_beat,
             )
             valid_ids = {c["id"] for c in self._time_categories}
@@ -791,10 +809,12 @@ class _RunnerMixin:
         nxt = min(pending, key=lambda t: t["next_at"])
         return nxt["next_at"], str(nxt["event"].get("at_time", ""))
 
-    def _placement_summary(self, results: dict) -> str:
-        """이번 장면 화자들이 함께 있는지 흩어져 있는지 한 줄 요약 (시간 추론 프롬프트용).
+    def _placement_summary(self, results: dict, any_reached: bool = True) -> str:
+        """이번 장면 화자들의 위치·상호작용 한 줄 요약 (시간 추론 프롬프트용).
 
-        위치 미설정(레거시) 시나리오는 빈 문자열 → 프롬프트에서 블록 자체가 생략된다.
+        ``any_reached`` = 이번 wave에 누군가 누군가에게 말이 닿았는가. 같은 방에
+        있어도 아무도 말을 안 걸었으면(각자 독백·취침) "진행 중인 대화"가 아니므로
+        압축 여지를 열어준다. 위치 미설정(레거시)은 빈 문자열 → 블록 생략.
         """
         by_loc: dict[str, list[str]] = {}
         for k, r in results.items():
@@ -806,15 +826,19 @@ class _RunnerMixin:
             by_loc.setdefault(loc, []).append(self._key_to_alias.get(k, k))
         if not by_loc:
             return ""
+        quiet = " — 아무도 서로 말을 걸지 않았다(각자 독백/조용함). 장면 내용에 따라 압축 가능" \
+            if not any_reached else ""
         if len(by_loc) == 1:
             loc, names = next(iter(by_loc.items()))
             if len(names) == 1:
                 return f"{names[0]} 혼자 {loc}에 있음 (상호작용 없음 — 시간 압축 가능)"
-            return f"{', '.join(names)} 모두 같은 곳({loc})에 함께 있음 (대화 중 — 압축 금지)"
+            base = f"{', '.join(names)} 모두 같은 곳({loc})에 함께 있음"
+            return base + (quiet or " (대화가 오가는 중이면 압축 금지)")
         parts = [f"{loc} {len(names)}명" for loc, names in by_loc.items()]
         return f"여러 곳에 흩어져 있음 ({', '.join(parts)}) — 서로 상호작용 없으면 압축 가능"
 
-    def _estimate_wave_minutes(self, wave_num: int, results: dict) -> tuple[int, str] | None:
+    def _estimate_wave_minutes(self, wave_num: int, results: dict,
+                               any_reached: bool = True) -> tuple[int, str] | None:
         """AI 모드 — LLM에게 이번 wave의 경과 분을 직접 추론시킨다.
 
         sanity 범위는 두 모드가 같은 설정을 공유하도록 ``_time_categories`` 전체의
@@ -856,19 +880,24 @@ class _RunnerMixin:
                 current_time=now_str,
                 lo=lo,
                 hi=hi,
-                placement=self._placement_summary(results),
+                placement=self._placement_summary(results, any_reached),
                 next_beat=next_beat,
             )
         except Exception as e:
             logger.warning(f"[W{wave_num}] AI 시간 추론 예외 — 카테고리 폴백: {e}")
             return None
 
-    def _clamp_time_jump(self, raw_jump: int, results: dict) -> tuple[int, str | None]:
+    def _clamp_time_jump(self, raw_jump: int, results: dict,
+                         any_reached: bool = True) -> tuple[int, str | None]:
         """가변 시간 점프(분)를 벽시계·동석 상황 기준으로 결정론적으로 캡한다.
 
         LLM 분류기는 '장면의 질감'만 정하고, 실제 경과 분의 상한은 여기서 엔진이
         강제한다 — 약한 모델이 오후 한복판에서 최대 범위(예: 480분)를 골라 학원·
         퇴근·저녁 식사 같은 재집결 장면을 통째로 건너뛰는 것을 막는다.
+
+        ``any_reached`` = 이번 wave에 누군가 누군가에게 말이 닿았는가. 같은 방에
+        있어도 아무도 말을 안 걸었으면(각자 독백·취침) "진행 중인 대화 장면"이
+        아니므로 (1) 동석 캡을 걸지 않는다 — 온 가족이 잠든 밤에 45분씩만 흐르던 버그.
 
         반환: ``(clamped_jump, 사유_문자열 or None)``. 사유가 None이면 캡 미적용.
         """
@@ -892,9 +921,12 @@ class _RunnerMixin:
             if loc and loc not in self._exterior_locations
         ]
 
-        # (1) 실내 한 곳에 2명 이상이 함께 발화 중 = 진행 중인 장면. 강하게 캡.
+        # (1) 실내 한 곳에 2명 이상이 **서로 말을 주고받는 중** = 진행 중인 장면.
+        #     강하게 캡. 각자 독백만 하고 있으면(any_reached=False) 같은 방이어도
+        #     보호할 대화가 없다 — 취침 장면이 45분씩 갈리지 않도록.
         scene_cap = self._max_scene_jump_minutes
-        if scene_cap > 0 and len(interior_locs) != len(set(interior_locs)):
+        if (scene_cap > 0 and any_reached
+                and len(interior_locs) != len(set(interior_locs))):
             if raw_jump > scene_cap:
                 return scene_cap, f"동석 장면(실내 2인+) {raw_jump}→{scene_cap}분"
 

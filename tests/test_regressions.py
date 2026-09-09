@@ -670,6 +670,20 @@ class VariableTimeJumpClampTests(unittest.TestCase):
         jump, reason = sim._clamp_time_jump(400, results)
         self.assertEqual(jump, 180)  # 동석 아님 → 주간 캡만
 
+    def test_co_located_monologues_are_not_a_scene_when_nobody_reached(self):
+        # 온 가족이 한 방에서 각자 독백(취침)만 하면 보호할 대화가 없다 —
+        # 동석 캡을 걸지 않아 밤에 큰 시간 점프가 가능해야 한다. (any_reached=False)
+        sim = self._sim(start="23:30")   # 밤 → 주간 캡도 안 걸림
+        sim._agent_location = {"mom": "bedroom", "kid": "bedroom", "dad": "bedroom"}
+        jump, reason = sim._clamp_time_jump(400, self._spoke("mom", "kid", "dad"),
+                                           any_reached=False)
+        self.assertEqual(jump, 400)
+        self.assertIsNone(reason)
+        # 대화가 오갔으면(any_reached=True) 여전히 동석 캡.
+        jump2, reason2 = sim._clamp_time_jump(400, self._spoke("mom", "kid", "dad"),
+                                             any_reached=True)
+        self.assertEqual(jump2, 45)
+
 
 class TimeJumpEndTimeStrTests(unittest.TestCase):
     """`time_jump` 이벤트의 `end_time_str` (ABM/simulation/runner.py).
@@ -1005,6 +1019,33 @@ class TimedEventTests(unittest.TestCase):
         j = self._jumps()
         self.assertEqual(j[0]["minutes"], 30)      # 300 → hi 캡 30
         self.assertEqual(j[0]["raw_minutes"], 30)  # estimate_wave_minutes 내부에서 이미 clamp
+
+    def test_idle_forced_jump_also_respects_the_next_beat(self):
+        # 가족이 각자 흩어져 전원 휴면 → idle 스케줄 강제 점프도 예정 이벤트 시각은
+        # 넘기지 않아야 한다. (하교·학원이 "다들 나간 낮"에 통째로 건너뛰던 버그)
+        sim = self._sim([{"at_time": "15:00", "at_days": ["mon"], "type": "system_message",
+                          "message": "하교", "targets": ["a"]}], start="12:00", weekday="mon")
+        # a, b 를 서로 도달 불가한 위치로 — location_graph 없이도 위치만 다르면
+        # _has_reachable_partner 가 False 라 금방 휴면에 든다.
+        sim._agent_location = {"a": "회사", "b": "학교"}
+        sim._exterior_locations = {"회사", "학교"}
+        jumps = []
+        base = sim._emit
+        sim._emit = lambda t, d: (jumps.append((d.get("mode"), d.get("minutes"),
+                                                d.get("clamp_reason")))
+                                  if t == "time_jump" else base(t, d))
+        sim.run("a", max_waves=20, step_delay=0.0, events=self._events,
+                resume_wave={"a": [], "b": []})
+        idle = [(m, r) for (mode, m, r) in jumps if mode == "idle"]
+        self.assertTrue(idle, "idle 점프가 발생하지 않음")
+        # 15:00(경과 180분)을 넘긴 idle 점프가 없어야 한다.
+        elapsed = 0
+        for mode, mins, reason in jumps:
+            if elapsed < 180:
+                self.assertLessEqual(elapsed + mins, 180,
+                                     f"idle 점프가 15:00 을 넘김: {jumps}")
+            elapsed += mins
+        self.assertIn("[시스템] 하교", self._mem(sim, "a"))
 
     def test_no_timed_events_leaves_time_logic_untouched(self):
         sim = self._sim([{"wave": 1, "type": "system_message", "message": "평범한 이벤트"}])
