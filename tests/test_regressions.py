@@ -968,6 +968,21 @@ class TimedEventTests(unittest.TestCase):
         self._go(sim, max_waves=0)
         self.assertEqual(sim._timed_events[0]["next_at"], (9 * 60) - (14 * 60) + 1440)
 
+    def test_fired_events_carry_the_wave_they_fired_on(self):
+        # scene_event emit 에 wave 를 안 실으면 _emit 이 0 으로 기록해서 마크다운
+        # 내보내기가 모든 시나리오 이벤트를 Wave 0 에 몰아 버린다(실측 회귀).
+        sim = self._sim([{"at_time": "15:00", "type": "system_message",
+                          "message": "하교", "targets": ["a"]}])
+        seen = []
+        base = sim._emit
+        sim._emit = lambda t, d: (seen.append((t, d.get("wave"), d.get("event_type")))
+                                  if t == "scene_event" else base(t, d))
+        self._go(sim, max_waves=8)
+        fires = [w for (t, w, et) in seen if et == "system_message"]
+        self.assertTrue(fires, "이벤트가 발동하지 않음")
+        self.assertTrue(all(w and w > 0 for w in fires),
+                        f"이벤트가 Wave 0 으로 기록됨: {fires}")
+
     def test_at_days_recurs_only_on_matching_weekdays(self):
         # 월요일 05:50 시작. 짱구 태권도 = 월·수·금 16:30. 첫 도래는 그날(월) 16:30.
         sim = self._sim([{"at_time": "16:30", "at_days": ["mon", "wed", "fri"],

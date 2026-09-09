@@ -136,15 +136,18 @@ class _RunnerMixin:
                 end_reason = "stopped"
                 break
 
-            wave_events = list(events_by_wave.get(run_wave, []))
+            # wave 트리거 이벤트도 이 disp_wave 로 스탬프한다 — _execute_event 가
+            # 그 값을 emit 페이로드에 실어 DB·피드·마크다운이 이벤트를 올바른
+            # wave 에 배치한다(스탬프 안 하면 _emit 이 0 으로 기록).
+            wave_events = [{**e, "wave": disp_wave} if isinstance(e, dict) else e
+                           for e in events_by_wave.get(run_wave, [])]
             # 시계가 예정 시각에 도달한 at_time 이벤트도 이 wave에 발동한다.
             # 여러 도래를 건너뛴 점프는 한 번만(가장 최근 것) 발동하고 다음 도래를
             # 다시 계산한다 — 밀린 이벤트가 몰아치지 않는다.
             for te in self._timed_events:
                 na = te["next_at"]
                 if na is not None and self._elapsed_minutes >= na:
-                    ev = dict(te["event"])
-                    ev["wave"] = disp_wave     # infect_agent·피드 배치용
+                    ev = {**te["event"], "wave": disp_wave}
                     wave_events.append(ev)
                     logger.info(
                         f"[W{disp_wave}] at_time 이벤트 발동 "

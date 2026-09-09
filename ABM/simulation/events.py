@@ -7,11 +7,18 @@ class _EventsMixin:
     """시나리오 이벤트 실행 관련 메서드."""
 
     def _execute_event(self, event: dict) -> dict:
-        """시나리오 이벤트 실행. agent_enter 시 entrant 키 반환."""
+        """시나리오 이벤트 실행. agent_enter 시 entrant 키 반환.
+
+        ``event["wave"]`` 는 이 이벤트가 발동한 disp_wave — runner 가 wave 트리거·
+        at_time 트리거 모두 넣어준다. emit 페이로드에 실어야 DB·피드·마크다운
+        내보내기가 이벤트를 올바른 wave 에 배치한다(안 넣으면 `_emit` 이 0 으로
+        기록해 전부 Wave 0 에 몰린다).
+        """
         etype     = event.get("type", "")
         message   = event.get("message", "")
         targets   = event.get("targets", ["all"])
         agent_key = event.get("agent", "")
+        wave      = int(event.get("wave", 0) or 0)
         result    = {}
 
         if etype == "system_message":
@@ -23,6 +30,7 @@ class _EventsMixin:
                 })
             self._emit("scene_event", {
                 "event_type": "system_message",
+                "wave":       wave,
                 "message":    message,
                 "targets":    resolved,
             })
@@ -46,6 +54,7 @@ class _EventsMixin:
             })
             self._emit("scene_event", {
                 "event_type": "agent_enter",
+                "wave":       wave,
                 "agent":      agent_key,
                 "message":    inject_msg,
             })
@@ -66,6 +75,7 @@ class _EventsMixin:
                 })
             self._emit("scene_event", {
                 "event_type": "agent_exit",
+                "wave":       wave,
                 "agent":      agent_key,
                 "message":    exit_msg,
             })
@@ -82,10 +92,10 @@ class _EventsMixin:
             # 이벤트는 시작 시점에 실행되므로 "이번 wave에 감염됨"으로 기록한다.
             # message는 관전용 이벤트 피드에만 쓰이고 에이전트 메모리에는 넣지 않는다 —
             # LLM은 오직 증상 서사(_build_symptom_context)로만 자기 몸 상태를 인지한다.
-            wave = int(event.get("wave", 0) or 0)
             if self._set_infected(agent_key, wave, "event"):
                 self._emit("scene_event", {
                     "event_type": "infect_agent",
+                    "wave":       wave,
                     "agent":      agent_key,
                     "message":    message or f"{agent_key}이(가) 감염되었다.",
                     "observer_only": True,
@@ -99,7 +109,7 @@ class _EventsMixin:
             self._agent_visual[agent_key] = message
             display = self._key_to_alias.get(agent_key, agent_key)
             self._emit("appearance_update", {
-                "wave": 0, "agent": agent_key,
+                "wave": wave, "agent": agent_key,
                 "display_name": display,
                 "description":  message,
             })
