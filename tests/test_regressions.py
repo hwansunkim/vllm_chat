@@ -5886,6 +5886,42 @@ class IsolatedAgentDormancyTests(unittest.TestCase):
         self.assertEqual(sim._solo_streak.get("a", 0), 0)
         self.assertEqual(sim._solo_streak.get("b", 0), 0)
 
+    def test_co_located_agents_go_dormant_when_nobody_talks(self):
+        # 같은 방(안방)에 있어도 아무도 서로 말을 안 걸면(각자 독백=취침) 스트릭이
+        # 쌓여 휴면에 든다 → idle 시간 점프로 밤이 빠르게 지나간다. (밤에 45분씩만
+        # 흐르던 버그)
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(
+                tmp,
+                {"a": [{"content": "...", "target": "self"}],
+                 "b": [{"content": "...", "target": "self"}]},
+                locations={"a": "안방", "b": "안방"}, graph=self._GRAPH,
+                time_mode="variable", sim_start_time="23:00",
+            )
+            jumps = []
+            sim._emit = lambda t, d: (jumps.append(d["minutes"])
+                                      if t == "time_jump" else None)
+            sim.run("a", max_waves=10, step_delay=0.0, max_silence_waves=3,
+                    resume_wave={"a": [], "b": []})
+        self.assertGreaterEqual(sim._solo_streak.get("a", 0), 3)
+        self.assertTrue(any(j >= 60 for j in jumps), f"큰 점프가 없다: {jumps}")
+
+    def test_co_located_agents_stay_awake_while_actually_talking(self):
+        # 서로 말을 주고받는 동안엔 같은 방이면 휴면에 들지 않는다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(
+                tmp,
+                {"a": [{"content": "밥 먹자.", "target": "b"}],
+                 "b": [{"content": "그래.",   "target": "a"}]},
+                locations={"a": "안방", "b": "안방"}, graph=self._GRAPH,
+                time_mode="variable",
+            )
+            sim._emit = lambda t, d: None
+            sim.run("a", max_waves=8, step_delay=0.0, max_silence_waves=3,
+                    resume_wave={"a": [], "b": []})
+        self.assertEqual(sim._solo_streak.get("a", 0), 0)
+        self.assertEqual(sim._solo_streak.get("b", 0), 0)
+
     def test_director_prompt_lists_isolated_agents_and_carries_the_rule(self):
         from ABM.system_agent import run_system_agent, DEFAULT_SYSTEM_AGENT_PROMPT
         captured = {}

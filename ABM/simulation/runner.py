@@ -197,6 +197,10 @@ class _RunnerMixin:
                 "agents": list(current_wave.keys()),
             })
 
+            # 이번 wave 에 실제 incoming(누가 나에게 한 말/씬)을 받은 에이전트.
+            # 빈 리스트로 재투입된 경우는 제외 — 휴면 스트릭 리셋 판정에 쓴다.
+            got_incoming = {k for k, inc in current_wave.items() if inc}
+
             results: dict[str, dict] = {}
             with ThreadPoolExecutor(max_workers=len(current_wave)) as executor:
                 future_map = {
@@ -414,15 +418,27 @@ class _RunnerMixin:
             self._apply_infection_wave(run_wave, disp_wave)
 
             # ── 휴면(dormancy) 스트릭 갱신 ─────────────────────────────────────
-            # 이동이 모두 반영된 뒤의 위치 기준으로, "이번 wave 에 발화했으나
-            # 아무에게도 닿지 않았고(순수 혼잣말) 지금 같은 장소에 대화 상대도
-            # 없는" 에이전트의 연속 카운트를 올린다. 누군가에게 닿았거나 곁에
-            # 상대가 생기면 0으로 리셋(= 깨어남). 위치 미사용 레거시 시나리오는
-            # `_has_reachable_partner` 가 항상 True 라 스트릭이 절대 쌓이지 않는다.
+            # "이번 wave 에 발화했으나 실제 소통이 없었던(순수 혼잣말)" 에이전트의
+            # 연속 카운트를 올린다. 리셋(= 깨어남) 조건 중 하나라도:
+            #   - 내가 누군가에게 말이 닿았다 (reached_someone)
+            #   - 내가 이번 wave 에 누군가의 말/씬을 받았다 (got_incoming)
+            #   - 내 곁에 상대가 있다 (_has_reachable_partner) — 단 **위치를 쓰는**
+            #     시나리오라면 **이번 wave 에 방 어딘가에서 대화가 오갔을 때만**
+            #     (any_reached). 곁에 사람이 있어도 아무도 서로 말을 안 걸면 스트릭이
+            #     쌓인다 — 잠든 부부가 같은 방에 있다는 이유로 영영 안 깨어 max_waves
+            #     까지 45분씩 갈리던 버그. 순수 독백 wave 만 해당하므로 실제 대화가
+            #     오가는 장면(식사·수다)에는 영향이 없다.
+            # 위치 미사용(레거시) 시나리오는 `_has_reachable_partner` 가 항상 True 라
+            # 예전처럼 스트릭이 절대 쌓이지 않는다.
+            any_reached = any(reached_someone.values())
             for speaker_key, result in results.items():
                 if not result.get("success"):
                     continue
-                if reached_someone.get(speaker_key) or self._has_reachable_partner(speaker_key):
+                partner = self._has_reachable_partner(speaker_key)
+                if self._agent_location.get(speaker_key):
+                    partner = partner and any_reached
+                if (reached_someone.get(speaker_key)
+                        or speaker_key in got_incoming or partner):
                     self._solo_streak[speaker_key] = 0
                 else:
                     self._solo_streak[speaker_key] = self._solo_streak.get(speaker_key, 0) + 1
@@ -539,11 +555,10 @@ class _RunnerMixin:
                     category_id:   str | None = None
                     ai_reason:     str | None = None
                     used_fallback: bool       = False
-                    # 이번 wave에 실제로 누군가 누군가에게 말이 닿았는가. 아니면
-                    # (다들 각자 독백) "진행 중인 대화 장면"이 아니므로 시간 추론이
-                    # 장면 보호 캡을 걸지 않는다 — 온 가족이 잠든 밤에도 45분씩만
-                    # 흐르던 버그.
-                    any_reached = any(reached_someone.values())
+                    # `any_reached`(이번 wave에 실제로 누군가 누군가에게 말이 닿았나)는
+                    # 위 휴면 스트릭 블록에서 이미 계산됐다. 다들 각자 독백이면
+                    # "진행 중인 대화 장면"이 아니므로 시간 추론이 장면 보호 캡을
+                    # 걸지 않는다 — 온 가족이 잠든 밤에도 45분씩만 흐르던 버그.
                     if self._time_estimation_mode == "ai":
                         ai_result = self._estimate_wave_minutes(disp_wave, results, any_reached)
                         if ai_result is None:
