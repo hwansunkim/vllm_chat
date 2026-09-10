@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException
 from ....db.database import get_db
 from ..runner import fold_elapsed_and_reset_waves, finalize_run, swap_event_queue
 from ..schemas import SimContinueConfig, SimStartConfig
-from ..state import _sim, _sim_lock
+from ..state import _BUSY_STATES, _sim, _sim_lock
 from .llm_config import _make_agent_llm_map, _make_llm
 
 
@@ -42,11 +42,14 @@ def _lookup_scenario_name(scenario_id: str | None) -> str | None:
 
 @router.post("/start")
 def start_simulation(cfg: SimStartConfig):
-    # Atomic check-and-set so two concurrent /start requests can't both pass.
+    run_sim_id = str(uuid.uuid4())
+    # Atomic check-and-set so two concurrent /start requests can't both pass,
+    # and so a /stop 직후 아직 안 끝난 워커가 있는 동안(``stopping``)에는 못 들어온다.
     with _sim_lock:
-        if _sim["status"] == "running":
+        if _sim["status"] in _BUSY_STATES:
             raise HTTPException(409, "Simulation already running")
-        _sim["status"] = "running"
+        _sim["status"]     = "running"
+        _sim["run_sim_id"] = run_sim_id
         _sim["shared_log"] = []
         _sim["edges"] = []
         _sim["sim_obj"] = None
@@ -58,9 +61,8 @@ def start_simulation(cfg: SimStartConfig):
 
     def _run():
         # Defensive defaults so the except branch can never NameError on
-        # `db` / `run_sim_id` even if the very first imports fail.
+        # `db` even if the very first imports fail.
         db = None
-        run_sim_id = None
         sim = None
         try:
             from ABM.simulation.headless import run_config
@@ -70,7 +72,6 @@ def start_simulation(cfg: SimStartConfig):
             llm       = _make_llm(cfg.server_id, cfg.temperature)
             agent_llm = _make_agent_llm_map(cfg)
 
-            run_sim_id    = str(uuid.uuid4())
             db            = SimDB(os.path.join(LOG_DIR, "simulation.db"))
             scenario_name = _lookup_scenario_name(cfg.scenario_id)
             config_json   = cfg.model_dump_json()
@@ -113,25 +114,46 @@ def start_simulation(cfg: SimStartConfig):
 
 @router.post("/stop")
 def stop_simulation():
+    # 워커 스레드가 실제로 wave 루프를 빠져나올 때까지는 ``stopping`` 이다 —
+    # 그동안 /start·/continue·/resume 은 거부된다(_BUSY_STATES). 워커가
+    # finalize_run 에 도착하면 그때 ``stopped`` 로 확정한다. 이미 끝난
+    # (done/stopped/error/idle) 실행에 stop 이 와도 상태는 그대로 두고
+    # stop_event 만 세팅한다 — 안 그러면 되돌릴 워커가 없어 상태가 영영
+    # ``stopping`` 에 갇힌다.
     ev = _sim.get("stop_event")
     if ev:
         ev.set()
     with _sim_lock:
-        _sim["status"] = "stopped"
-    return {"status": "stopping"}
+        if _sim["status"] == "running":
+            _sim["status"] = "stopping"
+        t = _sim.get("thread")
+
+    # 워커가 현재 wave(대개 LLM 한 라운드)를 마치고 finalize_run 으로 빠져나올
+    # 때까지 잠깐 기다린다. 그 사이 finalize 가 상태를 stopped 로 확정하므로,
+    # 대부분의 경우 이 응답은 이미 최종 상태를 담는다 — 프론트가 곧바로
+    # "이어서 실행" 을 눌러도 409 가 안 난다. 타임아웃을 넘기면(긴 LLM 호출에
+    # 걸림) status 는 stopping 으로 남고 프론트가 /status 로 확정을 폴링한다.
+    if t is not None and t.is_alive():
+        t.join(timeout=15)
+
+    with _sim_lock:
+        status = _sim["status"]
+    return {"status": status}
 
 
 # ── /continue ─────────────────────────────────────────────────────────────────
 
 @router.post("/continue")
 def continue_simulation(cfg: SimContinueConfig):
+    run_sim_id = str(uuid.uuid4())
     with _sim_lock:
         if _sim["status"] not in ("done", "stopped"):
             raise HTTPException(409, "이어서 실행은 완료 또는 중지된 시뮬레이션에서만 가능합니다")
         sim_obj = _sim.get("sim_obj")
         if sim_obj is None:
             raise HTTPException(409, "이어서 실행할 시뮬레이션 상태가 없습니다")
-        _sim["status"] = "running"
+        _sim["status"]     = "running"
+        _sim["run_sim_id"] = run_sim_id
 
     eq      = queue.Queue()
     stop_ev = threading.Event()
@@ -139,9 +161,7 @@ def continue_simulation(cfg: SimContinueConfig):
 
     def _run():
         db = sim_obj._db
-        run_sim_id = None
         try:
-            run_sim_id    = str(uuid.uuid4())
             scenario_id   = _sim.get("scenario_id")
             scenario_name = _sim.get("scenario_name")
 

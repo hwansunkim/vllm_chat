@@ -9,7 +9,7 @@ from __future__ import annotations
 import queue
 import threading
 
-from .state import _sim, _sim_lock
+from .state import _sim, _sim_lock, is_current_run
 
 
 def swap_event_queue(new_queue: queue.Queue, new_stop_event: threading.Event,
@@ -89,13 +89,24 @@ def finalize_run(db, run_sim_id: str | None, stop_event: threading.Event,
     - On success: persist final status + log/edge state, mark _sim status.
     - On failure: emit an error event and best-effort finish_run('error').
     - Always: push the sentinel ``None`` so the SSE generator exits.
+
+    전역 ``_sim`` 쓰기(status·shared_log·edges)는 이 run 이 아직 현재 실행일
+    때만 한다. `/stop` 직후 새 실행이 슬롯을 차지한 뒤 이 (구) 실행이 wave 를
+    마저 돌다 여기 도착하는 경우, 전역을 건드리면 새 실행의 ``running`` 이
+    ``stopped`` 로 덮이고 로그가 뒤바뀐다. DB 영속화는 run id 로 키가 나뉘므로
+    소유권과 무관하게 그대로 수행한다.
     """
+    with _sim_lock:
+        owns_globals = is_current_run(run_sim_id)
     try:
         if error is None and sim_obj is not None:
-            _sim["shared_log"] = sim_obj.shared_log
-            _sim["edges"]      = sim_obj.edges
-            final_status       = "stopped" if stop_event.is_set() else "done"
-            _sim["status"]     = final_status
+            final_status = "stopped" if stop_event.is_set() else "done"
+            if owns_globals:
+                with _sim_lock:
+                    if is_current_run(run_sim_id):
+                        _sim["shared_log"] = sim_obj.shared_log
+                        _sim["edges"]      = sim_obj.edges
+                        _sim["status"]     = final_status
             if db is not None and run_sim_id:
                 try:
                     db.finish_run(
@@ -125,7 +136,10 @@ def finalize_run(db, run_sim_id: str | None, stop_event: threading.Event,
                 except Exception:
                     pass
         elif error is not None:
-            _sim["status"] = "error"
+            if owns_globals:
+                with _sim_lock:
+                    if is_current_run(run_sim_id):
+                        _sim["status"] = "error"
             try:
                 eq.put({"type": "error", "data": {"message": str(error)}})
             except Exception:

@@ -103,10 +103,15 @@
 3. async_extract_memories_from_turns(대상 턴들)     (LLM 호출)
      "나중에 참조할 새 정보 추출, type: fact/decision/pending, keywords 최대 5개"
      → [{"type": "fact", "content": "...", "keywords": [...]}, ...]  (없으면 [])
-4. save_memories(conn, 추출 결과)
+     ⚠ LLM 호출 실패·응답 잘림·형식 위반이면 MemoryExtractionError 를 던진다.
+        _maybe_archive 는 이 예외를 잡아 **아카이브를 통째로 건너뛰고 0 을 반환**한다
+        (원문은 archived=0 유지 → 다음 응답 때 재시도, 그 사이에도 최근 맥락으로 쓰임).
+        "새 정보 없음"(정상 빈 배열)과 반드시 구분된다.
+4. save_memories(conn, 추출 결과, commit=False)
      memories INSERT + 키워드별 memory_keywords INSERT (소문자)
 5. 대상 턴들 archived = 1
-6. 아카이브된 턴 수 반환 → done 이벤트의 archived_count
+6. 4·5 를 한 트랜잭션으로 커밋 (부분 상태 방지: "메모리만 저장 / 원문만 삭제" 없음)
+7. 아카이브된 턴 수 반환 → done 이벤트의 archived_count
 ```
 
 아카이브 이후 LLM에는 **최근 4개 active 턴 + 검색된 메모리**만 전달된다.

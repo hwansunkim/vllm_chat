@@ -2,13 +2,20 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from datetime import datetime
 
 from .. import config
 from ..core.agent import resolve_agent_mention, async_route_agent
 from ..core.memory import save_memories
-from ..llm.pipeline import async_extract_keywords, async_extract_memories_from_turns
+from ..llm.pipeline import (
+    MemoryExtractionError,
+    async_extract_keywords,
+    async_extract_memories_from_turns,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def get_active_turns(conn, conv_id: str) -> list[dict]:
@@ -95,9 +102,25 @@ async def _maybe_archive(conn, conv_id: str, context_pct: float, max_model_len: 
             f"SELECT role, content FROM turns WHERE id IN ({ph})", to_archive
         ).fetchall()
     ]
-    new_mems = await async_extract_memories_from_turns(archive_turns)
+
+    # 추출이 실패하면(LLM 다운·응답 잘림 등) 아카이브를 통째로 건너뛴다. 원문을
+    # 활성 상태로 남겨야 다음 응답 때 다시 시도되고, 그 사이에도 최근 맥락으로
+    # 계속 쓰인다. 실패를 무시하고 archived=1 로 넘기면 그 대화 구간이 이후 LLM
+    # 입력·RAG 검색에서 영영 사라진다.
+    try:
+        new_mems = await async_extract_memories_from_turns(archive_turns)
+    except MemoryExtractionError:
+        logger.warning(
+            "메모리 추출 실패 — conv=%s 아카이브를 건너뜁니다(원문 보존, 다음 기회 재시도)",
+            conv_id, exc_info=True,
+        )
+        return 0
+
+    # 메모리 저장 INSERT 와 원문 archived=1 UPDATE 를 한 트랜잭션으로 묶어 한 번에
+    # 커밋한다 — 중간에 죽어도 "메모리만 저장되고 원문은 그대로" 또는 그 반대의
+    # 부분 상태가 남지 않는다.
     if new_mems:
-        save_memories(conn, new_mems)
+        save_memories(conn, new_mems, commit=False)
     conn.executemany("UPDATE turns SET archived=1 WHERE id=?", [(i,) for i in to_archive])
     conn.commit()
     return len(to_archive)

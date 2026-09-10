@@ -7,7 +7,7 @@ import os
 from fastapi import APIRouter, HTTPException
 
 from ..schemas import SimStartConfig
-from ..state import _sim, _sim_lock, get_sim_db
+from ..state import _BUSY_STATES, _sim, _sim_lock, get_sim_db
 from .llm_config import _make_agent_llm_map, _make_llm
 
 
@@ -23,7 +23,7 @@ def load_simulation(run_id: str):
     로그 항목도 반환해 피드를 복원할 수 있게 한다.
     """
     with _sim_lock:
-        if _sim["status"] == "running":
+        if _sim["status"] in _BUSY_STATES:
             raise HTTPException(409, "Simulation already running")
         _sim["status"] = "loading"
 
@@ -163,6 +163,9 @@ def load_simulation(run_id: str):
             _sim["config_json"]    = config_json
             _sim["shared_log"]     = shared_log
             _sim["edges"]          = []
+            # 되살린 상태는 아직 어떤 run 스레드의 소유도 아니다 — 다음 /continue 가
+            # 자기 run id 를 새로 claim 한다. 이전 run 의 id 가 남아 있으면 안 된다.
+            _sim["run_sim_id"]     = None
             _sim["status"]         = "done"
 
         # 감염 상태는 이벤트 재생만으로는 복원할 수 없다 — 이 run 안에서 한 번도

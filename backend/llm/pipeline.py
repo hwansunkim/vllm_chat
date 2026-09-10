@@ -21,6 +21,16 @@ JSON 배열로만 응답하세요. 다른 텍스트 없이 JSON만 출력하세�
         return []
 
 
+class MemoryExtractionError(RuntimeError):
+    """메모리 추출 LLM 호출 또는 응답 파싱이 실패했음을 알린다.
+
+    "새 정보 없음"(정상적인 빈 결과)과 반드시 구분해야 한다 — 호출부가 이 예외를
+    보면 아카이브를 보류하고 원문을 활성 상태로 남겨 다음 기회에 재시도한다.
+    실패를 조용히 `[]` 로 삼키면 원문이 아카이브되면서 그 맥락이 이후 LLM 입력·
+    RAG 검색에서 영영 빠진다(장애가 기억 손실처럼 보인다).
+    """
+
+
 async def async_extract_memories_from_turns(turns: list[dict]) -> list[dict]:
     conversation = "\n".join(
         f"{m['role'].upper()}: {m['content']}" for m in turns
@@ -46,10 +56,19 @@ JSON 배열로만 응답하세요:
 ]"""
 
     try:
-        result = parse_json(await async_llm(prompt, max_tokens=1024), array=True)
-        return result if isinstance(result, list) else []
-    except Exception:
-        return []
+        raw = await async_llm(prompt, max_tokens=1024)
+    except Exception as e:  # LLM 서버 다운·타임아웃 등 — 조용히 삼키지 않는다.
+        raise MemoryExtractionError(f"메모리 추출 LLM 호출 실패: {e}") from e
+
+    result = parse_json(raw, array=True)
+    if not isinstance(result, list):
+        # 모델이 배열이 아닌 것을 반환 — 형식 위반이므로 실패로 취급.
+        raise MemoryExtractionError(f"메모리 추출 응답이 JSON 배열이 아닙니다: {raw[:200]!r}")
+    if not result and "[" in raw and "]" not in raw:
+        # 열린 대괄호만 있고 닫히지 않음 = max_tokens 로 잘린 응답. parse_json 은
+        # 이때 조용히 []( fallback )를 주므로 여기서 잡아야 한다.
+        raise MemoryExtractionError(f"메모리 추출 응답이 불완전합니다(잘림): {raw[:200]!r}")
+    return result
 
 
 def build_messages(

@@ -7,7 +7,15 @@ from datetime import datetime
 from .. import config
 
 
-def save_memories(conn: sqlite3.Connection, items: list[dict]) -> None:
+def save_memories(
+    conn: sqlite3.Connection, items: list[dict], *, commit: bool = True
+) -> None:
+    """추출된 메모리를 저장한다.
+
+    ``commit=False`` 면 커밋하지 않는다 — 호출부가 같은 트랜잭션에서 원문 아카이브
+    UPDATE 까지 묶어 한 번에 커밋해 "메모리는 저장됐는데 원문은 안 지워짐" 같은
+    부분 상태를 없앨 때 쓴다.
+    """
     now = datetime.now().isoformat()
     for item in items:
         mid = str(uuid.uuid4())
@@ -20,7 +28,8 @@ def save_memories(conn: sqlite3.Connection, items: list[dict]) -> None:
                 "INSERT INTO memory_keywords (memory_id, keyword) VALUES (?,?)",
                 (mid, kw.lower()),
             )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def retrieve_memories(

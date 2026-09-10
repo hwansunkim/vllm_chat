@@ -14,10 +14,14 @@ import { clearErrorLog, renderErrorIndicator } from './errors.js';
 export function setStatus(status) {
   sim.status = status;
   const badge  = document.getElementById('sim-status-badge');
-  const labels = { idle: '대기 중', running: '실행 중', done: '완료', stopped: '중지됨', error: '오류' };
+  const labels = { idle: '대기 중', running: '실행 중', stopping: '중지 중…',
+                   loading: '불러오는 중…', done: '완료', stopped: '중지됨', error: '오류' };
   badge.textContent = labels[status] || status;
   badge.className   = `sim-status-badge ${status}`;
-  document.getElementById('sim-start-btn').disabled    = status === 'running';
+  // 'stopping'/'loading' 은 워커가 아직 살아 있는 과도기 — 'running' 과 똑같이
+  // 새 실행·이어서 실행을 막는다(백엔드도 _BUSY_STATES 로 거부한다).
+  const busy = ['running', 'stopping', 'loading'].includes(status);
+  document.getElementById('sim-start-btn').disabled    = busy;
   document.getElementById('sim-continue-btn').disabled = !['done', 'stopped'].includes(status);
   document.getElementById('sim-stop-btn').disabled     = status !== 'running';
   // MD 내보내기 버튼: 대화 기록이 있을 때(done/stopped/running) 표시
@@ -104,12 +108,28 @@ export async function startSimulation() {
 }
 
 export async function stopSimulation() {
-  await fetch('/api/simulation/stop', { method: 'POST' });
-  setStatus('stopped');
+  const res  = await fetch('/api/simulation/stop', { method: 'POST' });
+  const data = await res.json().catch(() => ({ status: 'stopped' }));
+  // 백엔드는 워커가 현재 wave 를 마치고 종료할 때까지 기다렸다 실제 상태를 준다.
+  // 대개 'stopped'/'done' 이 바로 온다. 긴 LLM 호출에 걸려 'stopping' 이면
+  // /status 로 확정될 때까지 폴링한다 — 그동안 "이어서 실행" 은 비활성.
+  const terminal = ['done', 'stopped', 'error'];
+  setStatus(terminal.includes(data.status) ? data.status : 'stopping');
   // 시작되지 않을 wave 의 보류 카드를 삼키지 않는다 (sse.js 의 simulation_end 와 같은 이유).
   flushPendingWaveCards(null);
   removeTypingIndicator();
   disconnectSSE();
+
+  if (!terminal.includes(sim.status)) {
+    for (let i = 0; i < 20 && !terminal.includes(sim.status); i++) {
+      await new Promise(r => setTimeout(r, 1500));
+      try {
+        const s = await (await fetch('/api/simulation/status')).json();
+        if (terminal.includes(s.status)) { setStatus(s.status); break; }
+      } catch { /* 다음 폴링에서 재시도 */ }
+    }
+    if (!terminal.includes(sim.status)) setStatus('stopped');  // 최종 폴백
+  }
 }
 
 export async function continueSimulation() {

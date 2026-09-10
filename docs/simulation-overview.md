@@ -70,15 +70,18 @@ ABM/db/  (SimDB)              ← logs_graph/simulation.db
 
 ```python
 _sim = {
-  "status":        "idle",   # idle | loading | running | done | stopped | error
+  "status":        "idle",   # idle | loading | running | stopping | done | stopped | error
   "event_queue":   Queue,    # SSE 큐 (실행마다 교체)
   "stop_event":    Event,    # 외부 중지 신호
   "thread":        Thread,   # 실행 스레드
+  "run_sim_id":    "…",      # 현재 전역 상태의 소유자 run id — finalize_run 가 이 값과
+                             #   자기 run id 를 대조해 옛 실행의 전역 덮어쓰기를 막는다
   "sim_obj":       Simulation,   # 살아 있는 엔진 인스턴스 (/continue가 이어씀)
   "shared_log": [], "edges": [], "agents": {}, "background_log": [],
   "scenario_id": …, "scenario_name": …, "config_json": …,
 }
 _sim_lock = threading.Lock()   # status 원자적 전이 (동시 /start 방지)
+_BUSY_STATES = ("running", "stopping", "loading")   # 새 실행·재개·불러오기 거부 상태
 ```
 
 `runner.py`의 헬퍼:
@@ -87,7 +90,7 @@ _sim_lock = threading.Lock()   # status 원자적 전이 (동시 /start 방지)
 |---|---|
 | `swap_event_queue(new_q, new_stop)` | 새 SSE 큐 설치 전에 옛 큐에 `None` sentinel을 넣어, 옛 큐에 블록돼 있던 SSE 소비자를 깔끔히 종료 |
 | `fold_elapsed_and_reset_waves(sim)` | `/continue` 준비 — 총 경과 분을 `_elapsed_minutes`로 접고, `_wave_base += completed_waves`, `completed_waves = 0`, 감염 앵커 재기준화 |
-| `finalize_run(db, run_id, stop_ev, sim, eq, error=)` | 실행 스레드 종료 공통 처리 — 성공 시 `db.finish_run` + 에이전트 스냅샷 저장, 실패 시 `error` 이벤트 emit, 항상 `None` sentinel push |
+| `finalize_run(db, run_id, stop_ev, sim, eq, error=)` | 실행 스레드 종료 공통 처리 — 성공 시 `db.finish_run` + 에이전트 스냅샷 저장, 실패 시 `error` 이벤트 emit, 항상 `None` sentinel push. **전역 `_sim` 쓰기(status·shared_log·edges)는 `_sim["run_sim_id"] == run_id` 일 때만** — `/stop` 직후 새 실행이 슬롯을 차지한 뒤 도착한 옛 finalizer가 새 실행을 덮어쓰는 것을 막는다. DB 영속화는 run id 로 키가 나뉘므로 소유권과 무관하게 수행 |
 
 ---
 
@@ -96,12 +99,14 @@ _sim_lock = threading.Lock()   # status 원자적 전이 (동시 /start 방지)
 ### `POST /start` (`runtime/lifecycle.py`)
 
 ```
-_sim_lock: status "running"으로 원자적 flip (이미 running이면 409)
+run_sim_id = uuid4()
+_sim_lock: status "running"으로 원자적 flip + _sim["run_sim_id"] = run_sim_id
+           (status ∈ {running, stopping, loading} 이면 409 — _BUSY_STATES)
 SSE 큐·stop_event 생성, swap_event_queue
 데몬 스레드 시작:
     llm = _make_llm(cfg.server_id, cfg.temperature)     # 브릿지 동기 콜러블
     agent_llm = _make_agent_llm_map(cfg)                # 에이전트별 서버 오버라이드
-    run_sim_id = uuid4(); db.create_run(run_sim_id, …, config_json)
+    db.create_run(run_sim_id, …, config_json)
     headless.run_config(cfg, llm=, agent_llm=, db=, sim_id=, event_queue=, stop_event=,
                         on_sim_ready=<_sim 전역 채우기>)
     finalize_run(...)
@@ -110,7 +115,17 @@ SSE 큐·stop_event 생성, swap_event_queue
 
 ### `POST /stop`
 
-`stop_event.set()` + `status = "stopped"`. 루프가 다음 체크포인트에서 빠져나온다.
+`stop_event.set()` + `status "running" → "stopping"`. 그다음 워커 스레드를
+`join(timeout=15)` 로 잠깐 기다린다 — 대개 현재 wave(LLM 한 라운드) 안에
+빠져나오며 `finalize_run` 이 `status = "stopped"` 로 확정하므로, 응답은
+보통 최종 상태(`{"status": "stopped"}`)를 담는다.
+
+`stopping` 동안 `/start`·`/continue`·`/resume`·`/load` 는 409 로 거부된다
+(`_BUSY_STATES`). 이렇게 해야 옛 워커가 wave 를 마저 돌다 `finalize_run` 에
+도착해 새 실행의 전역 상태·로그를 덮어쓰는 사고가 안 난다. 긴 LLM 호출로
+타임아웃을 넘기면 `status` 는 `stopping` 으로 남고 프론트가 `/status` 로
+확정을 폴링한다. 이미 끝난(done/stopped/error) 실행에 stop 이 오면 상태는
+그대로 두고 `stop_event` 만 세팅한다.
 
 ### `POST /continue` (`SimContinueConfig`)
 

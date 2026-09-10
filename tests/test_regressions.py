@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -8083,6 +8084,264 @@ class SimulationAssemblyParityTests(unittest.TestCase):
 
         with self.assertRaises(ValidationError):
             SimStartConfig(**base, perception_mode="bogus")
+
+
+class MemoryExtractionFailureTests(unittest.IsolatedAsyncioTestCase):
+    """추출 실패(LLM 다운·응답 잘림)를 '새 정보 없음'과 구분한다.
+
+    예전엔 둘 다 `[]` 를 반환했고 `_maybe_archive` 는 결과와 무관하게 원문을
+    `archived=1` 로 바꿨다 — 장애가 나면 그 대화 구간이 이후 LLM 입력·RAG
+    검색에서 영영 사라졌다(외부 평가서 #3).
+    """
+
+    async def asyncSetUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.old_db_path = config.DB_PATH
+        config.DB_PATH = Path(self.tmpdir.name) / "memory.db"
+        conn = get_db()
+        init_tables(conn)
+        migrate_db(conn)
+        now = "2026-09-10T00:00:00"
+        conn.execute(
+            """INSERT INTO conversations
+               (id, title, system_prompt, agent_id, router_mode, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            ("c1", "t", "", None, 0, now, now),
+        )
+        for i in range(8):
+            conn.execute(
+                """INSERT INTO turns (id, conversation_id, role, content, created_at)
+                   VALUES (?,?,?,?,?)""",
+                (f"t{i}", "c1", "user" if i % 2 == 0 else "assistant",
+                 f"내용 {i}", f"2026-09-10T00:0{i}:00"),
+            )
+        conn.commit()
+        conn.close()
+        self.old_extract = _conv_helpers.async_extract_memories_from_turns
+
+    async def asyncTearDown(self):
+        _conv_helpers.async_extract_memories_from_turns = self.old_extract
+        config.DB_PATH = self.old_db_path
+        self.tmpdir.cleanup()
+
+    def _counts(self):
+        conn = get_db()
+        active = conn.execute(
+            "SELECT COUNT(*) FROM turns WHERE conversation_id='c1' AND archived=0"
+        ).fetchone()[0]
+        mems = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        conn.close()
+        return active, mems
+
+    async def test_extraction_failure_skips_archive_and_keeps_originals(self):
+        from backend.llm.pipeline import MemoryExtractionError
+
+        async def _boom(turns):
+            raise MemoryExtractionError("LLM 서버 다운")
+
+        _conv_helpers.async_extract_memories_from_turns = _boom
+        conn = get_db()
+        archived = await _conv_helpers._maybe_archive(conn, "c1", 0.9, 1000)
+        conn.close()
+
+        self.assertEqual(archived, 0)
+        active, mems = self._counts()
+        self.assertEqual(active, 8)   # 하나도 아카이브되지 않음
+        self.assertEqual(mems, 0)
+
+    async def test_successful_extraction_archives_and_saves_atomically(self):
+        async def _ok(turns):
+            return [{"type": "fact", "content": "핵심 사실", "keywords": ["사실"]}]
+
+        _conv_helpers.async_extract_memories_from_turns = _ok
+        conn = get_db()
+        archived = await _conv_helpers._maybe_archive(conn, "c1", 0.9, 1000)
+        conn.close()
+
+        self.assertEqual(archived, 4)   # 8 - KEEP_RECENT_TURNS(4)
+        active, mems = self._counts()
+        self.assertEqual(active, 4)
+        self.assertEqual(mems, 1)
+
+    async def test_genuine_empty_result_still_archives(self):
+        async def _empty(turns):
+            return []
+
+        _conv_helpers.async_extract_memories_from_turns = _empty
+        conn = get_db()
+        archived = await _conv_helpers._maybe_archive(conn, "c1", 0.9, 1000)
+        conn.close()
+
+        self.assertEqual(archived, 4)
+        active, mems = self._counts()
+        self.assertEqual(active, 4)
+        self.assertEqual(mems, 0)   # 저장할 메모리는 없지만 아카이브는 진행
+
+
+class MemoryExtractionPipelineTests(unittest.IsolatedAsyncioTestCase):
+    """`async_extract_memories_from_turns` 자체의 성공/실패 구분."""
+
+    async def test_llm_error_raises_not_swallowed(self):
+        from backend.llm import pipeline
+
+        async def _raise(*a, **k):
+            raise RuntimeError("connection refused")
+
+        old = pipeline.async_llm
+        pipeline.async_llm = _raise
+        try:
+            with self.assertRaises(pipeline.MemoryExtractionError):
+                await pipeline.async_extract_memories_from_turns(
+                    [{"role": "user", "content": "안녕"}]
+                )
+        finally:
+            pipeline.async_llm = old
+
+    async def test_truncated_array_raises(self):
+        from backend.llm import pipeline
+
+        async def _truncated(*a, **k):
+            return '[{"type": "fact", "content": "잘린'
+
+        old = pipeline.async_llm
+        pipeline.async_llm = _truncated
+        try:
+            with self.assertRaises(pipeline.MemoryExtractionError):
+                await pipeline.async_extract_memories_from_turns(
+                    [{"role": "user", "content": "안녕"}]
+                )
+        finally:
+            pipeline.async_llm = old
+
+    async def test_valid_empty_array_returns_empty_list(self):
+        from backend.llm import pipeline
+
+        async def _empty(*a, **k):
+            return "새로운 정보가 없습니다. []"
+
+        old = pipeline.async_llm
+        pipeline.async_llm = _empty
+        try:
+            self.assertEqual(
+                await pipeline.async_extract_memories_from_turns(
+                    [{"role": "user", "content": "안녕"}]
+                ),
+                [],
+            )
+        finally:
+            pipeline.async_llm = old
+
+
+class StopStartRaceTests(unittest.TestCase):
+    """`/stop` 직후 새 실행이 들어와도 이전 실행 finalizer 가 전역을 덮어쓰지
+    않는다 (외부 평가서 #2).
+    """
+
+    def setUp(self):
+        self._snap = dict(sim_runtime._sim)
+
+    def tearDown(self):
+        sim_runtime._sim.clear()
+        sim_runtime._sim.update(self._snap)
+
+    def test_finalize_run_skips_globals_when_another_run_owns_the_slot(self):
+        import queue as _q
+        from backend.api.simulation.runner import finalize_run
+
+        class _Sim:
+            shared_log = [{"speaker": "old"}]
+            edges = []
+            agents = {}
+            active_agents = set()
+            completed_waves = 3
+            _pending_wave = {}
+
+        sim_runtime._sim["status"]     = "running"
+        sim_runtime._sim["run_sim_id"] = "new-run"
+        sim_runtime._sim["shared_log"] = [{"speaker": "new"}]
+
+        ev = threading.Event()
+        ev.set()   # 이전 실행은 중지로 끝났다
+        finalize_run(None, "old-run", ev, _Sim(), _q.Queue())
+
+        # 새 실행의 전역이 그대로여야 한다
+        self.assertEqual(sim_runtime._sim["status"], "running")
+        self.assertEqual(sim_runtime._sim["shared_log"], [{"speaker": "new"}])
+
+    def test_finalize_run_writes_globals_when_it_still_owns_the_slot(self):
+        import queue as _q
+        from backend.api.simulation.runner import finalize_run
+
+        class _Sim:
+            shared_log = [{"speaker": "mine"}]
+            edges = []
+            agents = {}
+            active_agents = set()
+            completed_waves = 1
+            _pending_wave = {}
+
+        sim_runtime._sim["status"]     = "stopping"
+        sim_runtime._sim["run_sim_id"] = "my-run"
+        sim_runtime._sim["shared_log"] = []
+
+        ev = threading.Event()
+        ev.set()
+        finalize_run(None, "my-run", ev, _Sim(), _q.Queue())
+
+        self.assertEqual(sim_runtime._sim["status"], "stopped")
+        self.assertEqual(sim_runtime._sim["shared_log"], [{"speaker": "mine"}])
+
+    def test_stop_transitions_running_to_stopping_and_joins_worker(self):
+        from backend.api.simulation.runtime import lifecycle
+
+        started = threading.Event()
+        release = threading.Event()
+        observed = {}
+
+        def _worker():
+            started.set()
+            release.wait(2)
+            # 워커가 빠져나오며 상태를 확정한다 (finalize_run 흉내)
+            with sim_runtime._sim_lock:
+                observed["status_seen_by_worker"] = sim_runtime._sim["status"]
+                sim_runtime._sim["status"] = "stopped"
+
+        t = threading.Thread(target=_worker, daemon=True)
+        stop_ev = threading.Event()
+        sim_runtime._sim["status"]     = "running"
+        sim_runtime._sim["stop_event"] = stop_ev
+        sim_runtime._sim["thread"]     = t
+        t.start()
+        started.wait(1)
+
+        release.set()
+        resp = lifecycle.stop_simulation()
+
+        self.assertTrue(stop_ev.is_set())
+        self.assertEqual(observed["status_seen_by_worker"], "stopping")
+        self.assertEqual(resp["status"], "stopped")
+        self.assertFalse(t.is_alive())
+
+    def test_stop_on_finished_run_does_not_wedge_state(self):
+        from backend.api.simulation.runtime import lifecycle
+
+        sim_runtime._sim["status"]     = "done"
+        sim_runtime._sim["stop_event"] = threading.Event()
+        sim_runtime._sim["thread"]     = None
+
+        resp = lifecycle.stop_simulation()
+        self.assertEqual(sim_runtime._sim["status"], "done")
+        self.assertEqual(resp["status"], "done")
+
+    def test_busy_states_reject_new_start(self):
+        from fastapi import HTTPException
+        from backend.api.simulation.runtime import lifecycle
+
+        for busy in ("running", "stopping", "loading"):
+            sim_runtime._sim["status"] = busy
+            with self.assertRaises(HTTPException) as cm:
+                lifecycle.start_simulation(_sim_cfg(max_waves=1))
+            self.assertEqual(cm.exception.status_code, 409)
 
 
 if __name__ == "__main__":

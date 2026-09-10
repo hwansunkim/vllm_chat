@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException
 
 from ..runner import finalize_run, swap_event_queue
 from ..schemas import SimStartConfig
-from ..state import _sim, _sim_lock, get_sim_db
+from ..state import _BUSY_STATES, _sim, _sim_lock, get_sim_db
 from .llm_config import _make_agent_llm_map, _make_llm
 
 
@@ -21,10 +21,12 @@ router = APIRouter()
 @router.post("/resume/{run_id}")
 def resume_simulation(run_id: str):
     """과거 실행 상태를 복원해 이어서 실행."""
+    run_sim_id = str(uuid.uuid4())
     with _sim_lock:
-        if _sim["status"] == "running":
+        if _sim["status"] in _BUSY_STATES:
             raise HTTPException(409, "Simulation already running")
-        _sim["status"] = "running"
+        _sim["status"]     = "running"
+        _sim["run_sim_id"] = run_sim_id
 
     db = get_sim_db()
     run = db.get_run(run_id)
@@ -63,7 +65,6 @@ def resume_simulation(run_id: str):
 
     def _run():
         new_db     = None
-        run_sim_id = None
         sim = None
         try:
             from ABM.agent import Agent
@@ -74,7 +75,6 @@ def resume_simulation(run_id: str):
 
             llm       = _make_llm(cfg.server_id, cfg.temperature)
             agent_llm = _make_agent_llm_map(cfg)
-            run_sim_id    = str(uuid.uuid4())
             new_db        = SimDB(os.path.join(LOG_DIR, "simulation.db"))
             scenario_name = run.get("scenario_name")
             new_db.create_run(run_sim_id, run.get("scenario_id"), scenario_name, config_json,
