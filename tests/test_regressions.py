@@ -912,7 +912,8 @@ class TimedEventTests(unittest.TestCase):
     """
 
     def _sim(self, events, *, start="14:00", weekday="mon", est="category",
-             ai_minutes=None, elapsed_init=0):
+             ai_minutes=None, elapsed_init=0, time_mode="variable", time_per_wave=0,
+             wave_base_init=0, infection_model=None):
         from ABM.agent import Agent
         from ABM.simulation import Simulation
         # 두 카테고리 다 min==max 라 경과분이 결정론적이다. 분류기 스텁은 늘 "gap".
@@ -936,9 +937,11 @@ class TimedEventTests(unittest.TestCase):
                   for k in ("a", "b")}
         sim = Simulation(
             agents, [{"role": "user", "content": "[배경] t"}], self._tmp.name,
-            llm=llm, time_mode="variable", time_categories=cats,
-            time_estimation_mode=est, sim_start_time=start,
+            llm=llm, time_mode=time_mode, time_categories=cats,
+            time_per_wave=time_per_wave, time_estimation_mode=est, sim_start_time=start,
             sim_start_weekday=weekday, elapsed_minutes_init=elapsed_init,
+            wave_base_init=wave_base_init,
+            infection_model=infection_model,
         )
         self._emitted = []
         sim._emit = lambda t, d: self._emitted.append((t, d))
@@ -1064,6 +1067,46 @@ class TimedEventTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 with self.assertRaises(ValidationError):
                     ScenarioEvent(type="system_message", at_time=bad)
+
+    def test_fixed_mode_fires_at_time_event_as_the_clock_advances(self):
+        # fixed 모드: _elapsed_minutes 는 run 내내 고정이고 벽시계는
+        # run_wave*time_per_wave 로 흐른다. 예전엔 at_time 판정이 _elapsed_minutes
+        # 를 직접 봐서 fixed 모드에서 영영 발동하지 않았다(평가서 #1).
+        sim = self._sim([{"at_time": "09:30", "type": "system_message",
+                          "message": "학원", "targets": ["a"]}],
+                        start="09:00", time_mode="fixed", time_per_wave=30)
+        self._go(sim, max_waves=4)
+        self.assertIn("[시스템] 학원", self._mem(sim, "a"))
+
+    def test_exited_agent_is_dropped_from_the_wave_it_exits_on(self):
+        # agent_exit 는 active_agents/_pending_wave 에서만 지운다 — current_wave
+        # 를 그대로 두면 이미 나간 인물이 그 wave 에 계속 발화한다(평가서 #4).
+        sim = self._sim([{"wave": 0, "type": "agent_exit", "agent": "b"}])
+        starts = []
+        base = sim._emit
+        sim._emit = lambda t, d: (starts.append(sorted(d.get("agents", [])))
+                                  if t == "wave_start" else base(t, d))
+        self._go(sim, max_waves=1)
+        self.assertEqual(starts[0], ["a"])   # b 는 wave 0 에서 이미 퇴장
+
+    def test_event_infection_anchor_is_not_double_counted_on_fixed_resume(self):
+        # fixed 모드 이어가기: elapsed=150(=09:00+2.5h), wave_base=5.
+        # at_time=11:30 감염 이벤트는 재개 첫 wave 에 발동하고, 감염 시각은
+        # 실제 경과 150분이어야 한다 — 예전엔 _set_infected 가 disp_wave(=5)를
+        # _current_elapsed_minutes 에 넘겨 150 + 5*30 = 300 으로 밀렸다(평가서 #5).
+        model = {"enabled": True, "disease_name": "열",
+                 "transmission_probability": 0.0,
+                 "symptom_stages": [{"id": "s", "label": "s", "min_minutes": 0,
+                                     "max_minutes": 999, "symptom_text": "..."}],
+                 "recovery_min_minutes": 0, "recovery_max_minutes": 0,
+                 "immune_after_recovery": True}
+        sim = self._sim([{"at_time": "11:30", "type": "infect_agent", "agent": "a",
+                          "message": "환자 0"}],
+                        start="09:00", time_mode="fixed", time_per_wave=30,
+                        elapsed_init=150, wave_base_init=5, infection_model=model)
+        self._go(sim, max_waves=1)
+        self.assertEqual(sim._agent_infection["a"]["status"], "I")
+        self.assertEqual(sim._agent_infection["a"]["infected_at_minutes"], 150)
 
 
 class _ScriptedLLM:

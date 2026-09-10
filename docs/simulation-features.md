@@ -348,7 +348,7 @@ disease_name}` — `cause` = `event`(시드) / `transmission`(전파) / `recover
 | 트리거 | 발동 |
 |---|---|
 | `wave: N` (기본) | N번째 wave 시작 시 |
-| `at_time: "HH:MM"` (+ `at_days`) | 시뮬레이션 **시계**가 그 시각에 도달한 첫 wave. `at_days`(`["mon","wed","fri"]` 등)가 있으면 그 요일마다 **반복** 발동(하루 일과·학원 스케줄), 비었으면 매일. 여러 도래를 건너뛴 큰 점프는 **한 번만**(가장 최근 놓친 것) 발동. **시간 모드가 켜져 있어야** 의미 있음 |
+| `at_time: "HH:MM"` (+ `at_days`) | 시뮬레이션 **시계**가 그 시각에 도달한 첫 wave (`now_elapsed = _current_elapsed_minutes(run_wave)` 로 판정 — fixed·variable 모두). `at_days`(`["mon","wed","fri"]` 등)가 있으면 그 요일마다 **반복** 발동(하루 일과·학원 스케줄), 비었으면 매일. 여러 도래를 건너뛴 큰 점프는 **한 번만**(가장 최근 놓친 것) 발동. **시간 모드가 켜져 있어야** 의미 있음 |
 
 **`at_time` — 예정 서사 앵커.** 시간 추론(카테고리/AI)과 `_clamp_time_jump`가
 아직 발동하지 않은 `at_time` 이벤트의 시각을 **넘겨 점프하지 않는다** — "짱구
@@ -364,8 +364,8 @@ disease_name}` — `cause` = `event`(시드) / `transmission`(전파) / `recover
 |---|---|
 | `system_message` | `targets`의 memory에 `[시스템] {message}` 주입 |
 | `agent_enter` | `active_agents.add(agent)`, 알림 주입, `current_wave`에 추가 (`entrant`) |
-| `agent_exit` | `active_agents.discard(agent)`, `_pending_wave`에서 제거, 알림 주입 |
-| `infect_agent` | `_set_infected(agent, wave, "event")` — 환자 0번 시드 (감염 모델 꺼져 있으면 무시). `message`는 관전용, memory엔 안 감 |
+| `agent_exit` | `active_agents.discard(agent)`, `_pending_wave`에서 제거, 알림 주입. 이벤트 실행 후 `current_wave`를 `active_agents`로 필터 → 나간 인물은 **그 wave부터** 발화 안 함 |
+| `infect_agent` | `_set_infected(agent, wave, "event", at_minutes=…)` — 환자 0번 시드 (감염 모델 꺼져 있으면 무시). 시각 앵커는 runner가 스탬프한 `at_minutes`(= `_current_elapsed_minutes(run_wave)`); disp_wave를 환산하면 재개 후 fixed 모드에서 두 번 세어 밀린다. `message`는 관전용, memory엔 안 감 |
 | `update_appearance` | `_agent_visual[agent] = message`, 같은 장소 사람들에게 씬 메시지 (아는 사이면 실명, 아니면 `stranger_N`) |
 
 **이벤트** — `scene_event {event_type, message, targets, agent, observer_only}`.

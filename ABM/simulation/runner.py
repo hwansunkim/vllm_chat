@@ -18,6 +18,20 @@ def _parse_hhmm(at_time: str) -> int | None:
     return v if 0 <= v < 1440 else None
 
 
+def _stamp_event(e, disp_wave: int, at_minutes: int):
+    """시나리오 이벤트에 발동 wave·경과분을 새겨 넣는다.
+
+    ``wave`` (disp_wave) 는 emit·영속화용 — 안 넣으면 `_emit` 이 0 으로 기록해
+    이벤트가 전부 Wave 0 에 몰린다. ``at_minutes`` 는 이벤트 감염의 시각 앵커
+    전용 — disp_wave 를 `_current_elapsed_minutes` 에 넘기면 재개 후 fixed
+    모드에서 누적분을 두 번 세어 앵커가 미래로 밀린다. dict 가 아닌 이벤트
+    (레거시)는 그대로 통과.
+    """
+    if not isinstance(e, dict):
+        return e
+    return {**e, "wave": disp_wave, "at_minutes": at_minutes}
+
+
 def _beat_occurrence_after(
     hhmm: int, days: set[int] | None, after_elapsed: int,
     sim_start_minutes: int, start_weekday_idx: int,
@@ -83,7 +97,7 @@ class _RunnerMixin:
                 # run 시작 시점보다 앞선 도래는 "이미 발동함"으로 본다(/continue·
                 # /resume 로 넘겨 이어가는 경우 — 되돌릴 수 없다).
                 te["next_at"] = _beat_occurrence_after(
-                    hhmm, days, self._elapsed_minutes - 1,
+                    hhmm, days, self._current_elapsed_minutes(0) - 1,
                     self._sim_start_minutes, self._sim_start_weekday_idx,
                 )
                 self._timed_events.append(te)
@@ -136,26 +150,31 @@ class _RunnerMixin:
                 end_reason = "stopped"
                 break
 
-            # wave 트리거 이벤트도 이 disp_wave 로 스탬프한다 — _execute_event 가
-            # 그 값을 emit 페이로드에 실어 DB·피드·마크다운이 이벤트를 올바른
-            # wave 에 배치한다(스탬프 안 하면 _emit 이 0 으로 기록).
-            wave_events = [{**e, "wave": disp_wave} if isinstance(e, dict) else e
+            # 이번 wave **시작 시점**의 실제 경과 분(벽시계). variable 모드는
+            # `_elapsed_minutes`(누적)와 같고, fixed 모드는
+            # `_elapsed_minutes + run_wave*time_per_wave` 로 wave 마다 흐른다.
+            # `_elapsed_minutes` 는 fixed 모드에서 run 내내 고정이라, at_time
+            # 이벤트 판정·이벤트 감염 시각 앵커에 직접 쓰면 시계가 안 흐른다.
+            now_elapsed = self._current_elapsed_minutes(run_wave)
+
+            # 이벤트에 발동 wave(disp_wave)·경과분(now_elapsed)을 새긴다 — 자세한
+            # 이유는 _stamp_event docstring.
+            wave_events = [_stamp_event(e, disp_wave, now_elapsed)
                            for e in events_by_wave.get(run_wave, [])]
             # 시계가 예정 시각에 도달한 at_time 이벤트도 이 wave에 발동한다.
             # 여러 도래를 건너뛴 점프는 한 번만(가장 최근 것) 발동하고 다음 도래를
             # 다시 계산한다 — 밀린 이벤트가 몰아치지 않는다.
             for te in self._timed_events:
                 na = te["next_at"]
-                if na is not None and self._elapsed_minutes >= na:
-                    ev = {**te["event"], "wave": disp_wave}
-                    wave_events.append(ev)
+                if na is not None and now_elapsed >= na:
+                    wave_events.append(_stamp_event(te["event"], disp_wave, now_elapsed))
                     logger.info(
                         f"[W{disp_wave}] at_time 이벤트 발동 "
-                        f"({te['event'].get('at_time')}, 경과 {self._elapsed_minutes}분): "
+                        f"({te['event'].get('at_time')}, 경과 {now_elapsed}분): "
                         f"{te['event'].get('type')}"
                     )
                     te["next_at"] = _beat_occurrence_after(
-                        te["hhmm"], te["days"], self._elapsed_minutes,
+                        te["hhmm"], te["days"], now_elapsed,
                         self._sim_start_minutes, self._sim_start_weekday_idx,
                     )
             for event in wave_events:
@@ -163,6 +182,13 @@ class _RunnerMixin:
                 entrant   = ev_result.get("entrant")
                 if entrant and entrant not in current_wave:
                     current_wave[entrant] = []
+
+            # 퇴장(agent_exit)이 이번 wave 참가자를 비활성으로 만들었으면 이번 wave
+            # 발화 목록에서도 뺀다 — active_agents/_pending_wave 에서만 지우고
+            # current_wave 를 그대로 두면 이미 나간 인물이 이 wave 에 계속 발화해
+            # 로그·다른 인물 맥락에 남는다. 전원 퇴장이면 아래 no_agents 로 종료.
+            current_wave = {k: v for k, v in current_wave.items()
+                            if k in self.active_agents}
 
             if not current_wave:
                 # 직전 루프가 종료 사유를 이미 세팅했으면(no_progress 등) 존중하고,

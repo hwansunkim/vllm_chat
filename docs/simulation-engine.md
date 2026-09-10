@@ -45,10 +45,18 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 `for run_wave in range(max_waves)` 안에서:
 
 ```
-disp_wave = _wave_base + run_wave
+disp_wave   = _wave_base + run_wave
+now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시계.
+              fixed 모드에서 _elapsed_minutes 는 run 내내 고정이므로 at_time
+              판정·이벤트 감염 앵커는 반드시 이 값을 써야 시계가 흐른다.
 
  1. stop_event 확인 → "stopped"
- 2. 이번 wave의 시나리오 이벤트 실행 (_execute_event) — agent_enter면 current_wave에 추가
+ 2. 이번 wave의 시나리오 이벤트 실행 (_execute_event):
+       - wave 트리거 + 시계가 next_at 에 도달한 at_time 트리거를 모은다
+         (now_elapsed 로 판정; disp_wave·now_elapsed 를 event 에 스탬프)
+       - agent_enter면 current_wave에 추가
+       - 이벤트 실행 후 current_wave 를 active_agents 로 필터 — agent_exit 가
+         이번 wave 참가자를 비활성으로 만들면 그 인물은 이 wave 에 발화하지 않는다
  3. current_wave 비었으면 종료 (직전 루프가 no_progress 세팅했으면 존중, 아니면 "no_agents")
  4. 디렉터 (disp_wave > 0 이고 disp_wave % interval == 0)
        _run_system_agent(disp_wave, current_wave) → 개입/세계사건을 current_wave에 주입
@@ -378,7 +386,8 @@ output을 `Agent.get_system_message`로 매 턴.
 
 ## 10. 시각 계산 — `_current_elapsed_minutes` (단일 진실 원천)
 
-에이전트 프롬프트의 `[현재 시각]`, 감염 진행 판정, 목표 기간 판정이 **모두 이 함수**를
+에이전트 프롬프트의 `[현재 시각]`, 감염 진행 판정, 목표 기간 판정, **`at_time`
+이벤트 발동 판정, 이벤트 감염(`infect_agent`)의 시각 앵커**가 **모두 이 함수**를
 쓴다 — 갈라지면 "프롬프트 시계와 병의 진행이 어긋난다".
 
 ```
@@ -386,6 +395,13 @@ variable 모드          → _elapsed_minutes                       (LLM 분류 
 fixed + time_per_wave>0 → _elapsed_minutes + wave * time_per_wave
 시간 개념 비활성         → _elapsed_minutes (보통 0)             → 감염자 첫 단계 고정
 ```
+
+`wave` 인자는 **per-run 카운터(`run_wave`)** 여야 한다. `disp_wave`(= `_wave_base +
+run_wave`)를 넘기면 `/continue`·`/resume` 후 fixed 모드에서 이미 `_elapsed_minutes`
+에 접힌 이전 run 경과를 `_wave_base * time_per_wave` 만큼 **두 번** 세어 시계가
+미래로 밀린다. 이벤트 감염이 disp_wave 를 넘겨 증상·회복이 지연되던 버그가 이것
+(runner 가 이벤트에 `at_minutes = _current_elapsed_minutes(run_wave)` 를 스탬프해
+`_set_infected` 에 직접 넘기는 것으로 수정).
 
 `_elapsed_minutes`는 두 모드 모두 **이전 run들의 누적 경과**를 담는 자리
 (`elapsed_minutes_init`으로 복원, `/continue`가 리셋 전에 이번 run 경과를 접어 넣음).

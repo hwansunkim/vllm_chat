@@ -13,13 +13,19 @@ class _EventsMixin:
         at_time 트리거 모두 넣어준다. emit 페이로드에 실어야 DB·피드·마크다운
         내보내기가 이벤트를 올바른 wave 에 배치한다(안 넣으면 `_emit` 이 0 으로
         기록해 전부 Wave 0 에 몰린다).
+
+        ``event["at_minutes"]`` 는 이 wave 시작 시점의 실제 경과 분 — 이벤트
+        감염의 시각 앵커 전용이다. `_set_infected(wave)` 에 disp_wave 를 넘겨
+        `_current_elapsed_minutes` 로 환산하면 재개 후 fixed 모드에서 누적분을
+        두 번 세어 감염 시각이 미래로 밀린다(증상·회복 단계가 지연).
         """
-        etype     = event.get("type", "")
-        message   = event.get("message", "")
-        targets   = event.get("targets", ["all"])
-        agent_key = event.get("agent", "")
-        wave      = int(event.get("wave", 0) or 0)
-        result    = {}
+        etype      = event.get("type", "")
+        message    = event.get("message", "")
+        targets    = event.get("targets", ["all"])
+        agent_key  = event.get("agent", "")
+        wave       = int(event.get("wave", 0) or 0)
+        at_minutes = event.get("at_minutes")
+        result     = {}
 
         if etype == "system_message":
             resolved = self._resolve_event_targets(targets)
@@ -92,7 +98,7 @@ class _EventsMixin:
             # 이벤트는 시작 시점에 실행되므로 "이번 wave에 감염됨"으로 기록한다.
             # message는 관전용 이벤트 피드에만 쓰이고 에이전트 메모리에는 넣지 않는다 —
             # LLM은 오직 증상 서사(_build_symptom_context)로만 자기 몸 상태를 인지한다.
-            if self._set_infected(agent_key, wave, "event"):
+            if self._set_infected(agent_key, wave, "event", at_minutes=at_minutes):
                 self._emit("scene_event", {
                     "event_type": "infect_agent",
                     "wave":       wave,
