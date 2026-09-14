@@ -102,17 +102,25 @@ def format_full_memory(
     memory: dict,
     key_to_alias: dict[str, str] | None = None,
     token_budget: int | None = None,
+    now_elapsed: int = 0,
 ) -> str | None:
     """`SimDB.get_full_memory()` 결과를 프롬프트용 블록으로 포맷.
 
-    `ABM.memory_compressor.build_memory_block()`과 같은 레이아웃이지만, 인터뷰는
-    회고가 목적이라 에피소드를 최근 10건으로 자르지 않고 전부 싣는다.
+    `ABM.memory_compressor.build_memory_block()`과 같은 "방금"/"며칠 전, 어렴풋한
+    기억" 두 버킷 레이아웃을 쓰지만, `bucket_episodes(..., cap=False)`라 인터뷰는
+    회고가 목적이라 오래된 사건도 개수 제한 없이 전부 싣는다(라이브 시뮬레이션
+    경로만 오래된 사건을 중요도 상위 몇 개로 뭉뚱그린다).
+
+    `now_elapsed`(이 run 종료 시점의 절대 경과분, `simulation_runs.elapsed_minutes`)를
+    "지금"으로 삼아 각 사건이 얼마나 오래됐는지 계산한다 — 인터뷰는 사후 조회라
+    "지금 이 순간"이 없으므로 run이 끝난 시점을 기준으로 고정한다.
 
     `token_budget` 을 주면 그 안에 들어가도록 오래된 에피소드 → 오래된 사실
     순으로 덜어낸다(자기 상태·인물 관계는 짧고 회고 가치가 높아 유지).
     긴 run 에서는 이 블록만으로 수천 토큰이 되므로 상한이 필요하다.
     """
     from ABM.agent import _estimate_tokens
+    from ABM.memory_compressor import bucket_episodes
 
     episodes      = memory.get("episodes") or []
     facts         = memory.get("facts") or []
@@ -127,11 +135,21 @@ def format_full_memory(
     fact_lines = [
         f"  - {f['fact']} (확신 {int(float(f['confidence']) * 100)}%)" for f in facts
     ]
-    ep_lines = [
-        f"  - (Wave {ep['wave']}) {ep['event']} [중요도 {ep['importance']}]" for ep in episodes
-    ]
 
-    def render(f_lines: list[str], e_lines: list[str],
+    def episode_section(eps: list[dict]) -> list[str]:
+        recent_lines, distant_lines, _ = bucket_episodes(eps, now_elapsed, cap=False)
+        if not (recent_lines or distant_lines):
+            return []
+        lines = ["■ 경험한 사건:"]
+        if recent_lines:
+            lines.append("  마지막 무렵 있었던 일:")
+            lines.extend(recent_lines)
+        if distant_lines:
+            lines.append("  그보다 며칠 전, 어렴풋한 기억:")
+            lines.extend(distant_lines)
+        return lines
+
+    def render(f_lines: list[str], eps: list[dict],
                f_omitted: int = 0, e_omitted: int = 0) -> str:
         lines = ["[나의 기억 요약]"]
         if self_state:
@@ -146,31 +164,34 @@ def format_full_memory(
             for r in relationships:
                 display = alias.get(r["target_key"], r["target_key"])
                 lines.append(f"  - {display}: {r['stance']} — {r['reason']}")
-        if e_lines or e_omitted:
-            lines.append("■ 경험한 사건:")
+        section = episode_section(eps)
+        if section or e_omitted:
+            if not section:
+                lines.append("■ 경험한 사건:")
+            lines.extend(section)
             if e_omitted:
-                lines.append(f"  - ... (오래된 사건 {e_omitted}건 생략) ...")
-            lines.extend(e_lines)
+                lines.append(f"  - ... (그 이전 사건 {e_omitted}건 생략) ...")
         return "\n".join(lines)
 
-    text = render(fact_lines, ep_lines)
+    text = render(fact_lines, episodes)
     if token_budget is None or _estimate_tokens(text) <= token_budget:
         return text
 
-    # 예산 초과 — 오래된 에피소드부터, 그래도 넘치면 오래된 사실부터 덜어낸다.
+    # 예산 초과 — 오래된 에피소드부터(episodes는 elapsed_minutes 오름차순이라
+    # 앞을 자르는 게 곧 "오래된 것부터"), 그래도 넘치면 오래된 사실부터 덜어낸다.
     e_start, f_start = 0, 0
-    while e_start < len(ep_lines):
+    while e_start < len(episodes):
         e_start += 1
-        text = render(fact_lines, ep_lines[e_start:], 0, e_start)
+        text = render(fact_lines, episodes[e_start:], 0, e_start)
         if _estimate_tokens(text) <= token_budget:
             break
     while _estimate_tokens(text) > token_budget and f_start < len(fact_lines):
         f_start += 1
-        text = render(fact_lines[f_start:], ep_lines[e_start:], f_start, e_start)
+        text = render(fact_lines[f_start:], episodes[e_start:], f_start, e_start)
 
     logger.warning(
         "인터뷰 기억 요약이 토큰 예산(%d)을 초과해 사건 %d/%d건·사실 %d/%d건을 생략했습니다.",
-        token_budget, e_start, len(ep_lines), f_start, len(fact_lines),
+        token_budget, e_start, len(episodes), f_start, len(fact_lines),
     )
     return text
 
@@ -328,6 +349,7 @@ def build_interview_messages(
     cfg: SimStartConfig,
     db,
     token_limit: int | None = None,
+    now_elapsed: int = 0,
 ) -> list[dict]:
     """인터뷰 프롬프트 메시지 배열을 조립한다.
 
@@ -339,6 +361,9 @@ def build_interview_messages(
 
     `token_limit` 을 주면 그 값을, 없으면 `cfg.token_limit` 을 프롬프트 상한으로
     삼는다. 어느 모드든 상한을 실제로 지키도록 오래된 항목부터 잘라낸다.
+
+    `now_elapsed`(이 run이 끝난 시점의 절대 경과분)는 기억 요약의 "방금"/"며칠
+    전" 판정 기준 — 호출부가 `db.get_run(run_id)["elapsed_minutes"]`를 넘긴다.
     """
     from ABM.agent import Agent, _msg_tokens
     from ABM.config import LOG_DIR
@@ -388,6 +413,7 @@ def build_interview_messages(
     # 메모리 테이블은 sim_id 로 키가 잡히고, 실행에서는 sim_id == run_id 다.
     agent._memory_block = format_full_memory(
         db.get_full_memory(run_id, agent_key), key_to_alias, token_budget=memory_budget,
+        now_elapsed=now_elapsed,
     ) if memory_budget > 0 else None
 
     if mode == "memory_only":

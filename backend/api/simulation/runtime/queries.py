@@ -43,6 +43,10 @@ def get_agent_context(name: str):
         location_name     = ctx["location_name"]
         situation_targets = ctx["situation_targets"]
         ephemeral_msgs    = ctx["ephemeral_msgs"]
+        # 실행 경로(_step_agent)와 같은 이유로 "지금" 기준 최신 기억 블록을
+        # 매번 새로 렌더링한다 — 캐시된 값을 읽으면 컨텍스트 탭이 몇 wave
+        # 전의 "방금"/"며칠 전" 라벨을 그대로 보여준다.
+        mem_block         = sim_obj._fresh_memory_block(name, sim_obj._current_elapsed_minutes())
     else:
         visible_names     = [k for k in agents if k != name]
         key_to_alias      = {}
@@ -50,13 +54,14 @@ def get_agent_context(name: str):
         location_name     = ""
         situation_targets = False
         ephemeral_msgs    = None
+        mem_block         = None
     messages   = agent.build_messages(
         bg_log, visible_names, key_to_alias, target_sections,
-        location_name, situation_targets, ephemeral_msgs,
+        location_name, situation_targets, ephemeral_msgs, mem_block,
     )
     est_tokens = agent.estimate_context_tokens(
         bg_log, visible_names, key_to_alias, target_sections,
-        location_name, situation_targets, ephemeral_msgs,
+        location_name, situation_targets, ephemeral_msgs, mem_block,
     )
     prompt_tokens = agent._last_prompt_tokens if agent._last_prompt_tokens is not None else est_tokens
     return {

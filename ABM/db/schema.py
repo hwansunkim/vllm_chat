@@ -21,6 +21,11 @@ CREATE TABLE IF NOT EXISTS episodic_memory (
     sim_id       TEXT    NOT NULL,
     agent_key    TEXT    NOT NULL,
     wave         INTEGER,
+    -- 시뮬레이션 시작부터의 절대 경과분. 이 압축 배치가 실제로 일어난 시점을
+    -- 코드가 못박은 값이다(LLM이 "몇 번째 wave"인지 지어내던 `wave`와 달리
+    -- 사후 환산이 필요 없다) — build_memory_block()의 "방금/며칠 전" recency
+    -- 판정이 이 값을 쓴다. `wave`는 옛 행 호환용으로 남겨둔다.
+    elapsed_minutes INTEGER,
     event        TEXT    NOT NULL,
     participants TEXT,
     importance   INTEGER DEFAULT 3,
@@ -34,6 +39,10 @@ CREATE TABLE IF NOT EXISTS semantic_memory (
     fact            TEXT    NOT NULL,
     confidence      REAL    NOT NULL DEFAULT 1.0,
     source_wave     INTEGER,
+    -- episodic_memory.elapsed_minutes와 같은 이유. 지금은 렌더링에 안 쓰지만
+    -- (사실은 "지속되는 참"이라 recency 라벨을 안 붙인다) 스키마를 맞춰
+    -- 나중에 필요해지면 마이그레이션 없이 바로 쓸 수 있게 해둔다.
+    elapsed_minutes INTEGER,
     prev_fact       TEXT,
     prev_confidence REAL,
     updated_at      REAL    NOT NULL
@@ -201,6 +210,17 @@ def migrate(conn: sqlite3.Connection) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_simevents_run ON sim_events(run_id, id);
         """)
+
+    # episodic_memory/semantic_memory에 elapsed_minutes 컬럼이 없는 기존 DB용 마이그레이션.
+    # 기존 행은 NULL로 남는다 — 옛 `wave` 값은 배치 전체에 같은 숫자가 찍히는 버그가
+    # 있었으므로 그걸로 역산 백필하지 않는다(build_memory_block이 NULL을 "아주 오래된
+    # 기억"으로 안전하게 취급한다).
+    ep_cols = {r[1] for r in conn.execute("PRAGMA table_info(episodic_memory)").fetchall()}
+    if "elapsed_minutes" not in ep_cols:
+        conn.execute("ALTER TABLE episodic_memory ADD COLUMN elapsed_minutes INTEGER")
+    sem_cols = {r[1] for r in conn.execute("PRAGMA table_info(semantic_memory)").fetchall()}
+    if "elapsed_minutes" not in sem_cols:
+        conn.execute("ALTER TABLE semantic_memory ADD COLUMN elapsed_minutes INTEGER")
 
     # interview_log 테이블이 없는 기존 DB를 위한 마이그레이션
     if "interview_log" not in tables:

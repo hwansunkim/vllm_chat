@@ -33,7 +33,7 @@ class _EventsMixin:
                 self.agents[name].add_to_memory({
                     "role":    "user",
                     "content": f"[시스템] {message}",
-                })
+                }, elapsed_minutes=at_minutes)
             self._emit("scene_event", {
                 "event_type": "system_message",
                 "wave":       wave,
@@ -53,11 +53,11 @@ class _EventsMixin:
                     self.agents[name].add_to_memory({
                         "role":    "user",
                         "content": f"[시스템] {inject_msg}",
-                    })
+                    }, elapsed_minutes=at_minutes)
             self.agents[agent_key].add_to_memory({
                 "role":    "user",
                 "content": f"[시스템] {inject_msg}",
-            })
+            }, elapsed_minutes=at_minutes)
             self._emit("scene_event", {
                 "event_type": "agent_enter",
                 "wave":       wave,
@@ -78,7 +78,7 @@ class _EventsMixin:
                 self.agents[name].add_to_memory({
                     "role":    "user",
                     "content": f"[시스템] {exit_msg}",
-                })
+                }, elapsed_minutes=at_minutes)
             self._emit("scene_event", {
                 "event_type": "agent_exit",
                 "wave":       wave,
@@ -137,7 +137,7 @@ class _EventsMixin:
                         "content": self._appearance_scene_msg(
                             agent_key, name, display, message
                         ),
-                    })
+                    }, elapsed_minutes=at_minutes)
             logger.info(f"[외모 변경] {agent_key}: {message}")
 
         return result

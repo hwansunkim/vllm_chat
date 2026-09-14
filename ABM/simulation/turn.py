@@ -22,6 +22,7 @@ class _TurnMixin:
         turn:        int,
         est_tokens:  int,
         time_str:    str | None = None,
+        elapsed_minutes: int | None = None,
     ) -> dict:
         """Parse the LLM response, update memory/log/edges, emit events, persist to DB.
 
@@ -52,7 +53,7 @@ class _TurnMixin:
         agent.add_to_memory({
             "role":    "assistant",
             "content": json.dumps(parsed, ensure_ascii=False),
-        })
+        }, elapsed_minutes=elapsed_minutes)
         agent.add_to_log(
             content=clean_content, reasoning=reasoning,
             extra=meta, targets=parsed_targets,

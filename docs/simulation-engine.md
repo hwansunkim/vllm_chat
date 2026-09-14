@@ -244,29 +244,88 @@ return {success: True, clean_content, action_note, targets}
 
 ---
 
-## 6. 메모리 압축
+## 6. 메모리 압축 — 시간 인식 재설계(2026-09)
 
-에이전트 `memory`(개인 컨텍스트)가 커지면 **구조화 DB 메모리**로 델타 압축.
+에이전트 `memory`(개인 컨텍스트)가 커지면 **구조화 DB 메모리**로 델타 압축한다.
+구버전(시간·공간 모델 이전)은 원문에 시각 정보가 전혀 없어 압축 LLM이 "언제 있던
+일인지" 알 방법이 없었다 — 그 결과 (1) 한 압축 배치의 모든 사건이 같은 wave
+번호로 뭉개지고, (2) "오늘 저녁 메뉴는 X" 처럼 매일 바뀌는 것까지 영구 사실로
+쌓이고, (3) `[나의 기억 요약]`이 방금 일어난 일과 며칠 전 일을 구분 없이 같은
+글머리로 나열해 에이전트에게 전부 "지금 생생한 지식"처럼 읽혔다. 지금은 3층
+구조로 시간 거리를 명시적으로 다룬다.
+
+### 층 1 — 원천에 절대 시간 새기기
+
+`Agent.add_to_memory(message, elapsed_minutes=None)` — 메시지가 memory에 들어가는
+**모든** 지점(`_inject_incoming`, 본인 응답 append, 시나리오 이벤트 주입)이 그
+순간의 `_current_elapsed_minutes(run_wave)`를 같이 새긴다. wave 번호가 아니라
+절대 경과분을 쓰는 이유는 이벤트 감염 앵커(§9)와 같다 — wave는 fixed 모드·재개
+후 사후 환산이 꼬이지만 절대 경과분은 그럴 일이 없다. `elapsed_minutes`는
+`Agent.memory`의 내부 표현에만 있고, `build_messages()`가 LLM 호출 직전에
+`role`/`content`만 남기고 벗겨낸다(OpenAI 호환 API에 알 수 없는 필드가 안 나가게).
+
+### 층 2 — 압축: 요일 구획 + 결정론적 시각 앵커 + 사실/사건 경계
 
 ```
 트리거 (_maybe_compress, step.py):
     _db 있음  AND  _sim_id 있음  AND  len(memory) >= _COMPRESSION_MIN_MSGS (4)
     AND  est_tokens / token_limit >= _COMPRESSION_THRESHOLD (0.70)
+    (est_tokens는 이번 턴의 memory_block도 포함해서 잰다 — _fresh_memory_block)
 
 compress() (ABM/memory_compressor.py):
-    기존 구조화 메모리 (episodes/facts/relationships/self_state) + 새 raw 메시지
-      → LLM (system: "기억 정리 도우미", JSON만)
+    원문을 요일·오전/오후 구획으로 묶어 나열 (_format_messages, 각 메시지의
+      elapsed_minutes로 판정 — "--- 화요일 오후 ---" 같은 헤더)
+    기존 구조화 메모리 + 위 원문 → LLM (system: "기억 정리 도우미", JSON만)
       → { episodes[], facts[], relationships[], self_state }
+      - episodes에 "wave"를 묻지 않는다 — LLM이 준 값(있어도)은 무시
+      - facts에는 "계속 참인 것"만(성격·취향·습관·지속 관계), 그날 한정 정보는
+        episodes로 적으라고 명시 지시 (반복되는 "오늘 메뉴" 류가 fact로 승격돼
+        모순되게 쌓이던 문제의 원인 차단)
+      - "오늘"/"어제" 금지, 구획 헤더의 요일을 직접 적으라고 지시
     db.save_messages (raw 아카이브) + db.log_compression
-    db.upsert_episodes / upsert_facts / upsert_relationships / upsert_self_state
-    → agent._memory_block = build_memory_block(...)   ("[나의 기억 요약]" 블록)
+    db.upsert_episodes / upsert_facts  ← elapsed_minutes = now_elapsed(이 압축이
+      일어난 시점, **코드가 못박음** — 배치 전체가 같은 값이지만 최소 "실제
+      이 근처에 있었던 일"이라는 정확도는 보장된다. 배치 단위 오차(±압축 주기)는
+      recency 버킷(층 3) 판정에는 충분)
+    db.upsert_relationships / upsert_self_state (wave 그대로, 시각 라벨 없음)
     → agent.memory.clear()
 
 실패 시 → 압축 안 하고 trim_to_token_limit 폴백 (오래된 memory부터 pop)
 ```
 
+### 층 3 — 렌더링: "지금" 기준 recency 버킷 (캐시 안 함)
+
+`build_memory_block(sim_id, agent_key, db, now_elapsed=...)`가 매 턴 **새로**
+호출된다(`step.py::_fresh_memory_block`) — 압축 시점에 캐싱하면 "방금"이 시간이
+흘러도 영원히 "방금"으로 굳는다. 호출 시점의 `now_elapsed`와 각 사건의
+`elapsed_minutes` 차이(`_days_ago`, 1440분=1일)로 사건을 두 버킷으로 나눈다:
+
+```
+■ 경험한 사건:
+  방금 있었던 일:              ← 0~1일 전, 있는 그대로(_RECENT_EPISODE_SHOW_MAX=10)
+    - ...
+  며칠 전, 어렴풋한 기억:       ← 2일 이상 전 (또는 elapsed_minutes 없는 옛 행)
+    - ...                     ← 중요도 상위 _OLD_EPISODE_SHOW_MAX(3)개만
+    - (그 밖에도 며칠 전 사소한 일 N건은 가물가물하다)   ← 나머지는 개수만
+```
+
+같은 사건도 시간이 지나면 "방금" → "며칠 전"으로 자연스럽게 넘어간다. facts/
+relationships/self_state는 "계속 참인 것"이라 recency 라벨을 안 붙인다(층 2가
+그날 한정 정보를 애초에 episodes로 유도하므로).
+
+인터뷰(`backend/api/simulation/interview.py::format_full_memory`)는 같은
+`bucket_episodes()`를 쓰되 `cap=False`로 — 회고는 완전성이 목적이라 "예전" 버킷도
+개수 제한 없이 전부 보여준다("마지막 무렵 있었던 일" / "그보다 며칠 전, 어렴풋한
+기억"). `now_elapsed`는 run 종료 시점의 총 경과분(`simulation_runs.elapsed_minutes`).
+
+`/resume`·`/load`는 옛 run의 `sim_id`로 `build_memory_block()`을 한 번 호출해
+`agent._memory_block`에 캐시해 둔다 — 새 run_id 아래 첫 압축이 일어나기 전까지의
+다리 역할(구조화 메모리는 sim_id별로 격리돼 있어, 새 run_id로는 옛 기억을 못
+읽는다). `build_messages(..., memory_block=None)`이면 이 캐시로 자동 폴백한다.
+
 `agent.build_messages()` 순서:
-`[system] + background_log + [_memory_block?] + agent.memory + [ephemeral_msgs]`
+`[system] + background_log + [memory_block?] + agent.memory + [ephemeral_msgs]`
+(`memory_block` 인자를 주면 그걸, 생략하면 `self._memory_block`으로 폴백)
 
 구조화 메모리 테이블 (`episodic_memory`, `semantic_memory`, `relationship_memory` +
 `relationship_history`, `agent_self_state`, `compression_log`) → [`database.md`](database.md).

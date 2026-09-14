@@ -76,6 +76,7 @@ def create_agent_interview(run_id: str, name: str, body: InterviewRequest):
     try:
         messages = build_interview_messages(
             run_id, name, body.question, body.mode, cfg, db, token_limit=token_limit,
+            now_elapsed=run.get("elapsed_minutes") or 0,
         )
     except KeyError:
         raise HTTPException(404, f"Agent '{name}' not found in run {run_id}")

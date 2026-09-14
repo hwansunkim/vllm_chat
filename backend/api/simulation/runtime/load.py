@@ -77,7 +77,10 @@ def load_simulation(run_id: str):
             )
             if a.name in snapshots:
                 agent.memory = list(snapshots[a.name])
-            block = build_memory_block(run_id, a.name, db, key_to_alias=key_to_alias)
+            block = build_memory_block(
+                run_id, a.name, db, key_to_alias=key_to_alias,
+                now_elapsed=run.get("elapsed_minutes") or 0,
+            )
             if block:
                 agent._memory_block = block
             agents[a.name] = agent

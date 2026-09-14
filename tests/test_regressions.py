@@ -8387,5 +8387,297 @@ class StopStartRaceTests(unittest.TestCase):
             self.assertEqual(cm.exception.status_code, 409)
 
 
+class AgentMemoryTimeTaggingTests(unittest.TestCase):
+    """`add_to_memory`가 elapsed_minutes를 새기고, `build_messages`가 LLM에는
+    role/content만 내보낸다 (2026-09 기억 시스템 재설계 — 층 1).
+    """
+
+    def _agent(self, tmp, token_limit=4096):
+        from ABM.agent import Agent
+        return Agent("a", "너는 a다.", tmp, token_limit=token_limit)
+
+    def test_elapsed_minutes_does_not_leak_into_llm_messages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            agent.add_to_memory({"role": "user", "content": "안녕"}, elapsed_minutes=123)
+
+            msgs = agent.build_messages([], [])
+            mem_msgs = [m for m in msgs if m.get("content") == "안녕"]
+            self.assertEqual(len(mem_msgs), 1)
+            self.assertEqual(set(mem_msgs[0].keys()), {"role", "content"})
+            # 내부 표현에는 남아 있다 — 압축이 "언제였는지" 알아야 하므로.
+            self.assertEqual(agent.memory[-1]["elapsed_minutes"], 123)
+
+    def test_add_to_memory_without_elapsed_minutes_omits_the_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            agent.add_to_memory({"role": "assistant", "content": "x"})
+            self.assertNotIn("elapsed_minutes", agent.memory[-1])
+
+    def test_memory_block_override_takes_precedence_over_cached_field(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            agent._memory_block = "옛 캐시"
+            msgs = agent.build_messages([], [], memory_block="새 블록")
+            contents = [m.get("content") for m in msgs]
+            self.assertIn("새 블록", contents)
+            self.assertNotIn("옛 캐시", contents)
+
+    def test_memory_block_falls_back_to_cached_field_when_omitted(self):
+        # 인터뷰 경로(턴 루프 밖, 한 번 세팅해 재사용)가 기대하는 동작 —
+        # memory_block 인자를 안 주면 self._memory_block을 그대로 쓴다.
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = self._agent(tmp)
+            agent._memory_block = "옛 캐시"
+            msgs = agent.build_messages([], [])
+            self.assertIn("옛 캐시", [m.get("content") for m in msgs])
+
+
+class MemoryCompressorRecencyTests(unittest.TestCase):
+    """`build_memory_block()`의 "방금"/"며칠 전, 어렴풋한 기억" recency 버킷.
+
+    같은 사건이라도 "지금"(now_elapsed)이 얼마나 지났느냐에 따라 라벨이
+    달라져야 한다 — 이게 이번 재개설계의 핵심("압축 시점에 굳는 게 아니라
+    매번 다시 렌더링되는 시간 거리").
+    """
+
+    def _db(self, tmp):
+        from ABM.db import SimDB
+        return SimDB(os.path.join(tmp, "sim.db"))
+
+    def test_episode_moves_from_recent_to_distant_as_time_passes(self):
+        from ABM.memory_compressor import build_memory_block
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            db.upsert_episodes("s1", "a", [{"event": "축구 골을 넣었다", "importance": 3}],
+                               wave=5, elapsed_minutes=100)
+
+            just_after = build_memory_block("s1", "a", db, now_elapsed=100)
+            self.assertIn("방금 있었던 일", just_after)
+            self.assertIn("축구 골을 넣었다", just_after)
+            self.assertNotIn("며칠 전", just_after)
+
+            three_days_later = build_memory_block("s1", "a", db, now_elapsed=100 + 3 * 1440)
+            self.assertIn("며칠 전, 어렴풋한 기억", three_days_later)
+            self.assertIn("축구 골을 넣었다", three_days_later)
+            self.assertNotIn("방금 있었던 일", three_days_later)
+
+    def test_distant_bucket_caps_by_importance_and_reports_omitted_count(self):
+        from ABM.memory_compressor import build_memory_block
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            trivial = [{"event": f"사소한 일 {i}", "importance": 1} for i in range(5)]
+            important = [{"event": "중요한 일", "importance": 5}]
+            db.upsert_episodes("s1", "a", trivial + important, wave=1, elapsed_minutes=0)
+
+            block = build_memory_block("s1", "a", db, now_elapsed=5 * 1440)
+            self.assertIn("중요한 일", block)          # 중요도 높은 건 뭉뚱그림에서 살아남는다
+            self.assertIn("3건은 가물가물하다", block)  # 6개 중 상위 3개만 보이고 나머지 3개는 생략
+
+    def test_no_structured_memory_yet_returns_none(self):
+        from ABM.memory_compressor import build_memory_block
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            self.assertIsNone(build_memory_block("s1", "a", db, now_elapsed=0))
+
+    def test_bucket_episodes_uncapped_shows_everything_for_interview(self):
+        # 인터뷰(backend/api/simulation/interview.py)는 회고가 목적이라 오래된
+        # 사건도 개수 제한 없이 전부 보여준다 — cap=False.
+        from ABM.memory_compressor import bucket_episodes
+        eps = [{"event": f"일 {i}", "importance": 1, "elapsed_minutes": 0} for i in range(10)]
+        recent, distant, omitted = bucket_episodes(eps, now_elapsed=10 * 1440, cap=False)
+        self.assertEqual(recent, [])
+        self.assertEqual(len(distant), 10)
+        self.assertEqual(omitted, 0)
+
+    def test_legacy_episodes_without_elapsed_minutes_are_treated_as_distant(self):
+        # 이 기능 이전에 압축된 옛 행은 elapsed_minutes가 NULL — "예전"으로
+        # 안전하게 취급한다(못 보게 하는 대신 뭉뚱그려서라도 보여준다).
+        from ABM.memory_compressor import bucket_episodes
+        eps = [{"event": "옛날 일", "importance": 3, "elapsed_minutes": None}]
+        recent, distant, omitted = bucket_episodes(eps, now_elapsed=0)
+        self.assertEqual(recent, [])
+        self.assertEqual(len(distant), 1)
+
+
+class MemoryCompressorPromptTests(unittest.TestCase):
+    """압축 원문의 요일 구획 헤더 + episode/fact 시각 앵커의 결정론적 스탬핑.
+
+    외부 평가서가 지적한 "episode wave 오염"(한 압축 배치의 모든 사건이 같은
+    wave로 찍힘)의 근본 원인은 원문에 시각 정보가 아예 없어 LLM이 알 방법이
+    없었던 것 — 이제 원문에 요일 구획이 붙고, 실제 저장값은 LLM에 묻지 않고
+    코드가 못박는다.
+    """
+
+    def test_format_messages_groups_by_day_period_and_changes_on_day_rollover(self):
+        from ABM.memory_compressor import _format_messages
+        msgs = [
+            {"role": "user",      "content": "A", "elapsed_minutes": 10},
+            {"role": "assistant", "content": "B", "elapsed_minutes": 15},   # 같은 구획 — 헤더 안 반복
+            {"role": "user",      "content": "C", "elapsed_minutes": 1500},  # 다음날 오전 — 새 헤더
+        ]
+        text = _format_messages(msgs, sim_start_minutes=0, start_weekday_idx=0)
+        headers = [line for line in text.split("\n") if line.startswith("---")]
+        self.assertEqual(headers, ["--- 월요일 오전 ---", "--- 화요일 오전 ---"])
+
+    def test_messages_without_elapsed_minutes_get_no_header(self):
+        from ABM.memory_compressor import _format_messages
+        msgs = [{"role": "user", "content": "A"}]
+        text = _format_messages(msgs, sim_start_minutes=0, start_weekday_idx=0)
+        self.assertNotIn("---", text)
+        self.assertIn("[수신] A", text)
+
+    def test_compress_stamps_now_elapsed_on_every_episode_ignoring_llm_wave_guess(self):
+        from ABM.db import SimDB
+        from ABM.memory_compressor import compress
+
+        captured = {}
+
+        def fake_llm(messages, max_tokens=None, **kw):
+            captured["prompt"] = messages[-1]["content"]
+            return json.dumps({
+                "episodes": [
+                    {"event": "아침을 먹었다", "importance": 2},
+                    # LLM이 wave를 지어내도(옛 스키마 흔적·환각) 무시돼야 한다.
+                    {"event": "학교에 갔다", "importance": 3, "wave": 999},
+                ],
+                "facts": [], "relationships": [], "self_state": "평온함",
+            }), "", {}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SimDB(os.path.join(tmp, "sim.db"))
+            messages = [
+                {"role": "user",      "content": "학교 가야지", "elapsed_minutes": 500},
+                {"role": "assistant", "content": "네",          "elapsed_minutes": 500},
+            ]
+            compress(
+                agent_name="a", agent_key="a", sim_id="s1", messages=messages, wave=7,
+                db=db, llm=fake_llm,
+                sim_start_minutes=350, start_weekday_idx=0, now_elapsed=520,
+            )
+
+        episodes = db.get_episodes("s1", "a")
+        self.assertEqual(len(episodes), 2)
+        for ep in episodes:
+            self.assertEqual(ep["elapsed_minutes"], 520)   # LLM이 준 999가 아니라 now_elapsed
+        self.assertIn("월요일", captured["prompt"])          # 요일 구획 헤더가 실제로 붙었다
+
+    def test_compress_stamps_facts_with_now_elapsed_too(self):
+        from ABM.db import SimDB
+        from ABM.memory_compressor import compress
+
+        def fake_llm(messages, max_tokens=None, **kw):
+            return json.dumps({
+                "episodes": [], "relationships": [], "self_state": "평온함",
+                "facts": [{"fact": "매운 음식을 좋아한다", "confidence": 0.9}],
+            }), "", {}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SimDB(os.path.join(tmp, "sim.db"))
+            messages = [{"role": "user", "content": "x", "elapsed_minutes": 200}]
+            compress(
+                agent_name="a", agent_key="a", sim_id="s1", messages=messages, wave=2,
+                db=db, llm=fake_llm, now_elapsed=200,
+            )
+
+        row = db._conn().execute(
+            "SELECT elapsed_minutes FROM semantic_memory WHERE sim_id='s1' AND agent_key='a'"
+        ).fetchone()
+        self.assertEqual(row["elapsed_minutes"], 200)
+
+
+class MemoryDbMigrationTests(unittest.TestCase):
+    """`episodic_memory`/`semantic_memory`에 `elapsed_minutes` 컬럼이 없는 기존
+    DB 파일도(이 기능 이전에 생성됨) 안전하게 추가 마이그레이션된다.
+    """
+
+    def test_migrate_adds_elapsed_minutes_to_pre_existing_tables(self):
+        import sqlite3
+        from ABM.db.schema import SCHEMA, migrate
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "old.db")
+            conn = sqlite3.connect(path)
+            conn.executescript(SCHEMA)   # 다른 테이블은 이미 최신 스키마
+            # episodic_memory/semantic_memory만 이 기능 이전 버전으로 되돌려
+            # "옛 DB 파일" 상황을 재현한다.
+            conn.executescript("""
+                DROP TABLE episodic_memory;
+                CREATE TABLE episodic_memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, sim_id TEXT, agent_key TEXT,
+                    wave INTEGER, event TEXT NOT NULL, participants TEXT,
+                    importance INTEGER DEFAULT 3, created_at REAL NOT NULL
+                );
+                DROP TABLE semantic_memory;
+                CREATE TABLE semantic_memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, sim_id TEXT, agent_key TEXT,
+                    fact TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 1.0,
+                    source_wave INTEGER, prev_fact TEXT, prev_confidence REAL,
+                    updated_at REAL NOT NULL
+                );
+            """)
+            conn.commit()
+
+            migrate(conn)
+
+            ep_cols  = {r[1] for r in conn.execute("PRAGMA table_info(episodic_memory)").fetchall()}
+            sem_cols = {r[1] for r in conn.execute("PRAGMA table_info(semantic_memory)").fetchall()}
+            self.assertIn("elapsed_minutes", ep_cols)
+            self.assertIn("elapsed_minutes", sem_cols)
+            conn.close()
+
+
+class MemoryCompressionIntegrationTests(unittest.TestCase):
+    """실제 wave 루프(Simulation.run)를 통해 압축이 일어날 때도 elapsed_minutes가
+    벽시계 기준으로 정확히 꽂히는지 — 단위 테스트가 아니라 실제 배선 확인.
+    """
+
+    def _sim(self, tmp, token_limit=900):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        from ABM.db import SimDB
+
+        cats = [{"id": "scene", "label": "장면", "min_minutes": 30, "max_minutes": 30}]
+
+        def llm(messages, max_tokens=None, **kw):
+            sys_text = messages[0].get("content", "") if messages else ""
+            if "기억 정리 도우미" in sys_text:
+                return json.dumps({
+                    "episodes": [{"event": "가족과 대화를 나눴다", "importance": 3}],
+                    "facts": [], "relationships": [], "self_state": "평온함",
+                }), "", {}
+            if "시간 관찰자" in sys_text:
+                return json.dumps({"category": "scene", "reason": "x"}), "", {}
+            return json.dumps({
+                "content": "안녕하세요 오늘도 좋은 하루입니다 다들 잘 지내고 있나요",
+                "action_note": "웃으며 손을 흔든다", "target": "all",
+                "move_to": None, "update_appearance": None,
+            }), "", {}
+
+        db = SimDB(os.path.join(tmp, "sim.db"))
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=token_limit) for k in ("a", "b")}
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] t"}], tmp,
+            llm=llm, time_mode="variable", time_categories=cats,
+            sim_start_time="09:00", db=db, sim_id="s1",
+        )
+        sim._emit = lambda t, d: None
+        return sim, db
+
+    def test_compressed_episode_elapsed_minutes_tracks_the_wave_clock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, db = self._sim(tmp)
+            sim.run("a", max_waves=20, step_delay=0.0, resume_wave={"a": [], "b": []})
+
+            episodes = db.get_episodes("s1", "a") + db.get_episodes("s1", "b")
+            self.assertTrue(episodes, "압축이 한 번도 안 일어남 — token_limit 조정 필요")
+            for ep in episodes:
+                self.assertIsNotNone(ep["elapsed_minutes"])
+                # 카테고리가 min=max=30분 고정이라 경과분은 항상 30의 배수다.
+                # wave 번호를 그대로 찍었다면(옛 버그) 이 불변식이 broken이다.
+                self.assertEqual(ep["elapsed_minutes"] % 30, 0)
+                self.assertGreater(ep["elapsed_minutes"], 20)   # wave 수(≤20)보다 훨씬 큼
+
+
 if __name__ == "__main__":
     unittest.main()

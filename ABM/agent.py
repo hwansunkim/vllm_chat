@@ -145,8 +145,23 @@ class Agent:
             ),
         }
 
-    def add_to_memory(self, message: dict):
+    def add_to_memory(self, message: dict, elapsed_minutes: int | None = None):
+        """`memory`에 한 턴을 추가한다.
+
+        `elapsed_minutes`(절대 경과분, `_current_elapsed_minutes(run_wave)`)를 주면
+        메시지에 같이 새긴다 — 메모리 압축이 "이 대화가 언제 있었던 일인지"를 알아야
+        에피소드/사실에 올바른 시점을 매길 수 있다(구버전은 이 정보가 아예 없어서
+        압축이 wave 번호를 임의로 지어내거나 하나로 뭉갰다). wave 번호가 아니라
+        elapsed_minutes를 쓰는 이유는 감염 이벤트 앵커와 같다 — wave는 fixed
+        모드·재개 후 사후 환산이 꼬이지만 그 순간의 절대 경과분은 그럴 일이 없다.
+
+        `role`/`content` 외의 추가 키(`elapsed_minutes` 포함)는 `build_messages()`가
+        LLM 호출 직전에 벗겨낸다 — 그대로 내보내면 OpenAI 호환 API에 알 수 없는
+        필드가 실려 나간다.
+        """
         self._total_added += 1
+        if elapsed_minutes is not None:
+            message = {**message, "elapsed_minutes": elapsed_minutes}
         self.memory.append(message)
 
     def estimate_context_tokens(
@@ -158,11 +173,12 @@ class Agent:
         location_name: str = "",
         situation_targets: bool = False,
         ephemeral_msgs: list[dict] | None = None,
+        memory_block: str | None = None,
     ) -> int:
         """Estimate total prompt tokens for the next LLM call."""
         msgs = self.build_messages(
             background_log, available_targets, key_to_alias, target_sections,
-            location_name, situation_targets, ephemeral_msgs,
+            location_name, situation_targets, ephemeral_msgs, memory_block,
         )
         return sum(_msg_tokens(m) for m in msgs)
 
@@ -175,12 +191,13 @@ class Agent:
         location_name: str = "",
         situation_targets: bool = False,
         ephemeral_msgs: list[dict] | None = None,
+        memory_block: str | None = None,
     ):
         """Remove oldest memory messages until estimated tokens fit within _token_limit."""
         while self.memory:
             if self.estimate_context_tokens(
                 background_log, available_targets, key_to_alias, target_sections,
-                location_name, situation_targets, ephemeral_msgs,
+                location_name, situation_targets, ephemeral_msgs, memory_block,
             ) <= self._token_limit:
                 break
             self.memory.pop(0)
@@ -190,7 +207,7 @@ class Agent:
         if not self.memory:
             est = self.estimate_context_tokens(
                 background_log, available_targets, key_to_alias, target_sections,
-                location_name, situation_targets, ephemeral_msgs,
+                location_name, situation_targets, ephemeral_msgs, memory_block,
             )
             if est > self._token_limit:
                 logger.warning(
@@ -208,12 +225,24 @@ class Agent:
         location_name: str = "",
         situation_targets: bool = False,
         ephemeral_msgs: list[dict] | None = None,
+        memory_block: str | None = None,
     ) -> list:
-        """[system] + background_log + [memory_block?] + agent memory + [ephemeral_msgs]"""
+        """[system] + background_log + [memory_block?] + agent memory + [ephemeral_msgs]
+
+        `memory_block`을 명시하면 그걸 쓰고(라이브 시뮬레이션 경로 — 매 턴 현재 시각
+        기준으로 새로 렌더링해 "방금 vs 며칠 전"이 실시간으로 갱신됨), 생략하면
+        `self._memory_block`(캐시된 값)로 폴백한다 — 인터뷰처럼 turn 루프 밖에서
+        한 번 세팅해두고 재사용하는 경로용.
+
+        `self.memory`의 각 항목은 `role`/`content` 외에 `elapsed_minutes` 같은
+        내부용 부가 키를 가질 수 있다(`add_to_memory` 참고) — LLM에는 `role`/
+        `content`만 나가야 하므로 여기서 벗겨낸다.
+        """
         msgs = [self.get_system_message(available_targets, key_to_alias, target_sections, location_name, situation_targets)] + background_log
-        if self._memory_block:
-            msgs.append({"role": "user", "content": self._memory_block})
-        msgs.extend(self.memory)
+        block = memory_block if memory_block is not None else self._memory_block
+        if block:
+            msgs.append({"role": "user", "content": block})
+        msgs.extend({"role": m["role"], "content": m["content"]} for m in self.memory)
         if ephemeral_msgs:
             msgs.extend(ephemeral_msgs)
         return msgs

@@ -10,29 +10,62 @@ logger = logging.getLogger(__name__)
 class _StepMixin:
     """에이전트 단일 스텝 — LLM 호출 헬퍼 및 _step_agent."""
 
-    def _compress_agent(self, agent: Agent, agent_key: str, wave: int):
-        """Compress agent.memory into structured DB memory, then clear memory."""
+    def _compress_agent(self, agent: Agent, agent_key: str, wave: int, now_elapsed: int):
+        """Compress agent.memory into structured DB memory, then clear memory.
+
+        `now_elapsed`(이 압축이 일어난 시점의 절대 경과분)를 이번 배치에서 뽑아낸
+        모든 episode/fact의 시점으로 못박는다 — LLM에게 "몇 번째 wave였는지"를
+        묻지 않는다(물어봐도 알 방법이 없어 예전엔 배치 전체가 disp_wave 하나로
+        뭉개졌다). `agent.memory`의 각 메시지는 이미 자기 `elapsed_minutes`를
+        갖고 있으므로(`add_to_memory`) 압축 프롬프트가 "언제 있었던 대화인지"를
+        요일 단위로 보여줄 수 있다.
+        """
         from ..memory_compressor import compress
         self._emit("compression_start", {"agent": agent_key, "wave": wave, "msg_count": len(agent.memory)})
         new_block = compress(
-            agent_name     = agent.name,
-            agent_key      = agent_key,
-            sim_id         = self._sim_id,
-            messages       = list(agent.memory),
-            wave           = wave,
-            db             = self._db,
-            llm            = self._llm_for(agent_key),
-            key_to_alias   = self._key_to_alias,
-            llm_max_tokens = self.llm_max_tokens,
+            agent_name         = agent.name,
+            agent_key          = agent_key,
+            sim_id             = self._sim_id,
+            messages           = list(agent.memory),
+            wave               = wave,
+            db                 = self._db,
+            llm                = self._llm_for(agent_key),
+            key_to_alias       = self._key_to_alias,
+            llm_max_tokens     = self.llm_max_tokens,
+            sim_start_minutes  = self._sim_start_minutes,
+            start_weekday_idx  = self._sim_start_weekday_idx,
+            now_elapsed        = now_elapsed,
         )
         if new_block is not None:
-            agent._memory_block = new_block
+            # agent._memory_block에는 캐시하지 않는다 — 라이브 시뮬레이션 경로는
+            # 매 턴 `_fresh_memory_block()`으로 "지금" 기준 최신 블록을 다시
+            # 렌더링한다(방금 압축한 것이든 훨씬 전에 압축한 것이든 "며칠 전"
+            # 표현이 시간이 흐를수록 갱신되도록). `_memory_block` 필드 자체는
+            # 인터뷰 경로(turn 루프 밖, 한 번 세팅해 재사용) 전용으로 남겨둔다.
             agent.memory.clear()
             self._emit("compression_done", {"agent": agent_key, "wave": wave})
         else:
             logger.warning(f"[{agent_key}] 압축 실패 — 기존 메모리 유지, 강제 트림으로 폴백")
 
-    def _inject_incoming(self, agent: Agent, incoming: list[dict]) -> list[dict]:
+    def _fresh_memory_block(self, agent_key: str, now_elapsed: int) -> str | None:
+        """이 에이전트의 구조화 기억을 "지금" 기준으로 새로 렌더링.
+
+        캐시하지 않고 매 턴 호출한다 — 압축이 언제 일어났든, 사건이 얼마나
+        오래됐는지("방금"/"며칠 전")는 압축 시점이 아니라 **지금** 경과분 기준으로
+        판정해야 시간이 흐르는 동안 라벨이 계속 갱신된다. DB가 없거나(no-DB
+        시나리오·헤드리스 테스트) 아직 압축된 기억이 없으면 None.
+        """
+        if self._db is None or self._sim_id is None:
+            return None
+        from ..memory_compressor import build_memory_block
+        return build_memory_block(
+            self._sim_id, agent_key, self._db,
+            key_to_alias=self._key_to_alias, now_elapsed=now_elapsed,
+        )
+
+    def _inject_incoming(
+        self, agent: Agent, incoming: list[dict], elapsed_minutes: int | None = None,
+    ) -> list[dict]:
         """Inject incoming utterances into the agent's memory.
 
         Returns the list of formatted user messages that were appended, so the
@@ -55,7 +88,7 @@ class _StepMixin:
             for msg in incoming
         ]
         for msg in incoming_msgs:
-            agent.add_to_memory(msg)
+            agent.add_to_memory(msg, elapsed_minutes=elapsed_minutes)
         return incoming_msgs
 
     def _maybe_compress(
@@ -63,10 +96,12 @@ class _StepMixin:
         agent:             Agent,
         agent_key:         str,
         wave:              int,
+        now_elapsed:       int,
         other_agents:      list[str],
         target_sections:   list[tuple[str, list[str]]] | None = None,
         situation_targets: bool = False,
         ephemeral_msgs:    list[dict] | None = None,
+        memory_block:      str | None = None,
     ) -> None:
         """Trigger structured-memory compression if context is approaching the token limit."""
         if (
@@ -78,9 +113,10 @@ class _StepMixin:
         est = agent.estimate_context_tokens(
             self.background_log, other_agents, self._key_to_alias, target_sections,
             situation_targets=situation_targets, ephemeral_msgs=ephemeral_msgs,
+            memory_block=memory_block,
         )
         if est / agent._token_limit >= _COMPRESSION_THRESHOLD:
-            self._compress_agent(agent, agent_key, wave)
+            self._compress_agent(agent, agent_key, wave, now_elapsed)
 
     def _call_llm_for_agent_msgs(
         self,
@@ -115,6 +151,7 @@ class _StepMixin:
         location_name:     str             = "",
         situation_targets: bool            = False,
         ephemeral_msgs:    list[dict] | None = None,
+        memory_block:      str | None = None,
     ) -> tuple[str | None, str, dict, str | None]:
         """한자 등 외국어가 섞인 응답을 최대 max_retries회 재시도로 교정."""
         CORRECTION_MSG = (
@@ -127,7 +164,7 @@ class _StepMixin:
         for attempt in range(1, max_retries + 1):
             fix_msgs = agent.build_messages(
                 self.background_log, visible_agents, alias, target_sections,
-                location_name, situation_targets, ephemeral_msgs,
+                location_name, situation_targets, ephemeral_msgs, memory_block,
             )
             fix_msgs.append({"role": "assistant", "content": current_bad})
             fix_msgs.append({"role": "user",      "content": CORRECTION_MSG})
@@ -260,7 +297,12 @@ class _StepMixin:
             return {"success": False, "agent_key": agent_key}
 
         active_agent  = self.agents[agent_key]
-        incoming_msgs = self._inject_incoming(active_agent, incoming)
+        # 이번 wave **시작 시점**의 실제 경과분 — incoming 주입·압축·본인 발화가
+        # 전부 같은 값을 쓴다(한 wave 안에서는 시간이 안 흐른다). 시간 개념
+        # 비활성 시나리오에서도 `_current_elapsed_minutes`가 안전한 기본값(보통 0)을
+        # 준다.
+        now_elapsed   = self._current_elapsed_minutes(run_wave)
+        incoming_msgs = self._inject_incoming(active_agent, incoming, now_elapsed)
 
         ctx             = self._assemble_agent_prompt(agent_key, run_wave)
         visible_agents  = ctx["visible_agents"]
@@ -290,17 +332,22 @@ class _StepMixin:
             })
 
         self._maybe_compress(
-            active_agent, agent_key, disp_wave, visible_agents, target_sections,
+            active_agent, agent_key, disp_wave, now_elapsed, visible_agents, target_sections,
             sit_targets, ephemeral_msgs,
+            memory_block=self._fresh_memory_block(agent_key, now_elapsed),
         )
+
+        # 압축이 방금 이 턴에서 일어났을 수 있으므로(위) 새로 하나 더 읽는다 —
+        # 압축 직후의 최신 구조화 기억을 이번 턴의 실제 LLM 호출에 반영한다.
+        mem_block = self._fresh_memory_block(agent_key, now_elapsed)
 
         active_agent.trim_to_token_limit(
             self.background_log, visible_agents, extended_alias, target_sections,
-            my_loc, sit_targets, ephemeral_msgs,
+            my_loc, sit_targets, ephemeral_msgs, mem_block,
         )
         est_tokens = active_agent.estimate_context_tokens(
             self.background_log, visible_agents, extended_alias, target_sections,
-            my_loc, sit_targets, ephemeral_msgs,
+            my_loc, sit_targets, ephemeral_msgs, mem_block,
         )
 
         self._emit("turn_start", {
@@ -314,7 +361,7 @@ class _StepMixin:
 
         call_messages = active_agent.build_messages(
             self.background_log, visible_agents, extended_alias, target_sections,
-            my_loc, sit_targets, ephemeral_msgs,
+            my_loc, sit_targets, ephemeral_msgs, mem_block,
         )
 
         content, reasoning, usage, error = self._call_llm_for_agent_msgs(
@@ -337,6 +384,7 @@ class _StepMixin:
                 max_retries=self._lang_fix_retries,
                 key_to_alias=extended_alias, location_name=my_loc,
                 situation_targets=sit_targets, ephemeral_msgs=ephemeral_msgs,
+                memory_block=mem_block,
             )
             if error is not None:
                 self._emit("turn_error", {
@@ -350,7 +398,7 @@ class _StepMixin:
         extras = parse_json_extras(content)
         result = self._apply_turn_result(
             active_agent, agent_key, content, reasoning, usage, disp_wave, turn, est_tokens,
-            time_str=time_str,
+            time_str=time_str, elapsed_minutes=now_elapsed,
         )
         if not result.get("success"):
             # 파싱 불가 — _apply_turn_result 가 이미 turn_error 를 emit 했다. LLM

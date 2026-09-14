@@ -39,7 +39,9 @@ _PERSIST_EVENTS: frozenset[str] = frozenset({
 # 시작 요일 키(프론트/스키마와 동일) → 표시 라벨. 인덱스 = 월요일 기준 0~6.
 # 정의는 `_constants.py` 에 있다 — 마크다운 내보내기(ABM/export/labels.py)가 엔진
 # 전체를 import 하지 않고도 같은 라벨을 쓰기 위함. 이름은 여기서도 그대로 노출한다.
-from ._constants import _WEEKDAY_KEYS, _WEEKDAY_LABELS, _DIRECTOR_DIGEST_WAVES  # noqa: F401
+from ._constants import (  # noqa: F401
+    _WEEKDAY_KEYS, _WEEKDAY_LABELS, _DIRECTOR_DIGEST_WAVES, format_sim_time,
+)
 
 _DEFAULT_TIME_CATEGORIES: list[dict] = [
     {"id": "meal_or_brief",     "label": "식사·짧은 용무 등 스킵되듯 지나가는 장면", "min_minutes": 5,   "max_minutes": 10},
@@ -684,11 +686,8 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         자정 롤오버마다 요일을 순환시킨다. fixed 모드(sim_start_minutes + wave*time_per_wave)와
         variable 모드(sim_start_minutes + elapsed_minutes) 모두 같은 '총 경과 분'을 넘기므로
         이 계산 하나가 양쪽 모드를 모두 커버한다.
+
+        실제 로직은 `_constants.format_sim_time`(프리 함수) — `ABM/memory_compressor.py`
+        처럼 `Simulation` 인스턴스 없이 같은 라벨이 필요한 곳도 그걸 직접 쓴다.
         """
-        day_offset, minute_of_day = divmod(total_min, 24 * 60)
-        weekday = _WEEKDAY_LABELS[(self._sim_start_weekday_idx + day_offset) % 7]
-        hour, minute = divmod(minute_of_day, 60)
-        if hour < 12:
-            return f"{weekday} 오전 {hour}시 {minute:02d}분"
-        display_hour = hour if hour == 12 else hour - 12
-        return f"{weekday} 오후 {display_hour}시 {minute:02d}분"
+        return format_sim_time(total_min, self._sim_start_weekday_idx)

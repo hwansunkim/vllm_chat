@@ -7,6 +7,35 @@ from difflib import SequenceMatcher
 _WEEKDAY_KEYS: tuple[str, ...] = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 _WEEKDAY_LABELS: tuple[str, ...] = ("월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일")
 
+
+def format_sim_time(total_min: int, start_weekday_idx: int) -> str:
+    """총 분(시작 시각 + 경과분) → '요일 + 오전/오후 N시 M분'.
+
+    `core.py::Simulation._format_time_str`의 로직을 프리(free) 함수로 옮긴 것 —
+    `ABM/memory_compressor.py`처럼 `Simulation` 인스턴스 없이(엔진 import 없이)도
+    같은 라벨을 만들어야 하는 곳에서 쓴다. 메서드는 이 함수에 위임한다.
+    """
+    day_offset, minute_of_day = divmod(total_min, 24 * 60)
+    weekday = _WEEKDAY_LABELS[(start_weekday_idx + day_offset) % 7]
+    hour, minute = divmod(minute_of_day, 60)
+    if hour < 12:
+        return f"{weekday} 오전 {hour}시 {minute:02d}분"
+    display_hour = hour if hour == 12 else hour - 12
+    return f"{weekday} 오후 {display_hour}시 {minute:02d}분"
+
+
+def format_sim_day_period(total_min: int, start_weekday_idx: int) -> str:
+    """총 분 → '요일 오전'/'요일 오후' (분 단위 생략).
+
+    메모리 압축 원문에 붙이는 구획 헤더용 — 압축 LLM이 "이 대화가 어느 날
+    있었던 일인지" 판단하는 데는 이 정도 해상도면 충분하고, 분까지 보이면
+    거의 매 줄마다 헤더가 바뀌어 오히려 구획이 무의미해진다.
+    """
+    day_offset, minute_of_day = divmod(total_min, 24 * 60)
+    weekday = _WEEKDAY_LABELS[(start_weekday_idx + day_offset) % 7]
+    period  = "오전" if minute_of_day < 12 * 60 else "오후"
+    return f"{weekday} {period}"
+
 # CJK Unified (U+4E00-U+9FFF) / Extension-A (U+3400-U+4DBF) / Compatibility Ideographs (U+F900-U+FAFF).
 # 코드포인트 이스케이프로 명시: 리터럴 한자를 쓰면 육안으로 구별 안 되는 호환 문자(예:
 # U+F900 대 정준 형태 U+8C48)가 복붙 과정에서 섞여 들어가 범위가 어긋나기 쉽다 —

@@ -20,6 +20,7 @@ class SemanticMixin:
         agent_key: str,
         facts: list[dict],
         wave: int,
+        elapsed_minutes: int | None = None,
     ):
         conn = self._conn()
         now  = time.time()
@@ -47,9 +48,10 @@ class SemanticMixin:
                 if new_conf > old_conf + CONFIDENCE_UPDATE_THRESHOLD or prev_fact:
                     conn.execute(
                         "UPDATE semantic_memory "
-                        "SET fact=?, confidence=?, source_wave=?, "
+                        "SET fact=?, confidence=?, source_wave=?, elapsed_minutes=?, "
                         "prev_fact=?, prev_confidence=?, updated_at=? WHERE id=?",
-                        (new_fact, new_conf, wave, prev_fact, prev_conf, now, old["id"]),
+                        (new_fact, new_conf, wave, elapsed_minutes,
+                         prev_fact, prev_conf, now, old["id"]),
                     )
                 elif new_conf < old_conf - CONFIDENCE_UPDATE_THRESHOLD:
                     # Contradicting evidence — lower confidence, note uncertainty.
@@ -62,10 +64,10 @@ class SemanticMixin:
             else:
                 conn.execute(
                     "INSERT INTO semantic_memory "
-                    "(sim_id, agent_key, fact, confidence, source_wave, "
+                    "(sim_id, agent_key, fact, confidence, source_wave, elapsed_minutes, "
                     "prev_fact, prev_confidence, updated_at) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
-                    (sim_id, agent_key, new_fact, new_conf, wave,
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    (sim_id, agent_key, new_fact, new_conf, wave, elapsed_minutes,
                      prev_fact, prev_conf, now),
                 )
 

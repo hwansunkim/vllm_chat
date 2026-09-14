@@ -213,13 +213,19 @@ LLM으로 델타 압축해 아래 테이블을 upsert하고 raw는 `messages`에
 
 ### `episodic_memory`
 
-`id` PK · `sim_id` · `agent_key` · `wave` · `event`(사건 요약) · `participants` ·
-`importance`(1-5, 기본 3) · `created_at`. 인덱스 `idx_ep_sim_agent`.
+`id` PK · `sim_id` · `agent_key` · `wave`(레거시, 하위 호환용) · `elapsed_minutes`
+(이 압축 배치가 실제로 일어난 절대 경과분 — `build_memory_block()`의 "방금"/
+"며칠 전" recency 판정이 이 값을 쓴다. 개별 사건이 아니라 **배치 단위**로 코드가
+못박은 값이다; 이 기능 이전 행은 NULL → "예전"으로 안전하게 취급) · `event`(사건 요약) ·
+`participants` · `importance`(1-5, 기본 3) · `created_at`. 인덱스 `idx_ep_sim_agent`.
 
 ### `semantic_memory` (사실/믿음)
 
-`id` PK · `sim_id` · `agent_key` · `fact` · `confidence`(0-1) · `source_wave` ·
-`prev_fact` · `prev_confidence` (믿음 변경 이력) · `updated_at`. 인덱스 `idx_sem_sim_agent`.
+`id` PK · `sim_id` · `agent_key` · `fact` · `confidence`(0-1) · `source_wave`(레거시) ·
+`elapsed_minutes`(episodic_memory와 같은 값 — 지금은 렌더링에 안 쓴다. 사실은
+"지속되는 참"이라 recency 라벨을 안 붙이므로. 나중에 필요해지면 마이그레이션
+없이 바로 쓸 수 있게 스키마만 맞춰둠) · `prev_fact` · `prev_confidence`
+(믿음 변경 이력) · `updated_at`. 인덱스 `idx_sem_sim_agent`.
 
 ### `relationship_memory` (현재 인물 관계)
 

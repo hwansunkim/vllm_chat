@@ -95,7 +95,14 @@ def resume_simulation(run_id: str):
                 )
                 if a.name in snapshots:
                     agent.memory = list(snapshots[a.name])
-                block = build_memory_block(run_id, a.name, db, key_to_alias=key_to_alias)
+                # 이 시점엔 sim._sim_id 가 아직 이번 재개의 새 run_id 로 안 바뀌어 있어
+                # 라이브 경로(_fresh_memory_block)가 옛 run 의 구조화 기억을 못 본다 —
+                # 여기서 옛 run_id 로 한 번 직접 읽어 캐시해둔다(다음 압축이 새 run_id
+                # 아래 일어나기 전까지의 다리 역할). "지금"은 옛 run 이 끝난 시점.
+                block = build_memory_block(
+                    run_id, a.name, db, key_to_alias=key_to_alias,
+                    now_elapsed=run.get("elapsed_minutes") or 0,
+                )
                 if block:
                     agent._memory_block = block
                 agents[a.name] = agent
