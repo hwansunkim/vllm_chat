@@ -49,7 +49,7 @@ _COMPRESSION_PROMPT = """\
 [기존 구조화 기억]
 {existing_memory}
 
-[새로 경험한 대화 — "---" 구획은 그 대화가 있었던 요일·시간대입니다]
+[새로 경험한 대화 — "---" 구획은 그 대화가 있었던 일차·요일·시간대입니다]
 {messages_text}
 
 반드시 아래 JSON 형식으로만 응답하세요:
@@ -74,7 +74,9 @@ _COMPRESSION_PROMPT = """\
   것)은 facts가 아니라 episodes로 적으세요. facts에 매번 다른 값이 쌓이면
   "화요일엔 X, 수요일엔 Y" 식으로 모순돼 보입니다.
 - facts/episodes에 "오늘"·"어제"·"이번 주" 같은 상대적 시간 표현을 쓰지 마세요.
-  위 구획 헤더의 요일을 보고 "화요일 저녁 메뉴는..." 처럼 직접 요일을 적으세요.
+  위 구획 헤더의 일차·요일을 보고 "9일차 화요일 저녁 메뉴는..." 처럼 **일차를
+  포함해서** 적으세요. 요일만 적으면(예: "화요일") 몇 주가 지나면 어느 화요일인지
+  구분이 안 돼 기억이 혼선됩니다.
 - relationships: 변화가 있는 관계만 (변화 없으면 제외)
 - self_state: 항상 포함 (기존과 동일해도)
 """
@@ -96,12 +98,14 @@ def _days_ago(now_elapsed: int, episode_elapsed: int | None) -> int | None:
     return max(0, (now_elapsed - episode_elapsed) // 1440)
 
 
-def _episode_line(ep: dict) -> str:
-    return f"    - {ep['event']} [중요도 {ep['importance']}]"
+def _episode_line(ep: dict, *, with_importance: bool = True) -> str:
+    if with_importance:
+        return f"    - {ep['event']} [중요도 {ep['importance']}]"
+    return f"    - {ep['event']}"
 
 
 def bucket_episodes(
-    episodes: list[dict], now_elapsed: int, *, cap: bool = True,
+    episodes: list[dict], now_elapsed: int, *, cap: bool = True, with_importance: bool = True,
 ) -> tuple[list[str], list[str], int]:
     """사건들을 "방금"/"예전" 두 버킷으로 나눠 렌더링 줄을 만든다.
 
@@ -110,6 +114,15 @@ def bucket_episodes(
     나머지는 개수만 알린다 — 실제 기억처럼 오래될수록 세부가 흐려지고
     뭉뚱그려지는 걸 흉내낸다. `cap=False`(인터뷰 경로 — 회고는 완전성이
     목적이라 항목을 버리지 않는다)면 두 버킷으로 나누기만 하고 전부 보여준다.
+
+    `with_importance=False`는 압축 프롬프트의 "기존 구조화 기억" 재진술
+    (`_format_existing`) 전용이다 — 사용자에게 보이는 최종 블록에는 항상
+    `[중요도 N]` 접미사를 붙이지만(with_importance=True, 기본값), 그 접미사가
+    붙은 문장을 압축 LLM에게 "기존 기억"으로 다시 보여주면 LLM이 새로 쓰는
+    `event` 문장에도 똑같은 "[중요도 N]" 텍스트를 그대로 따라 적는 사례가
+    관찰됐다(실측 — 두 번째 압축부터 이벤트 문장 끝에 중요도 태그가 중복으로
+    박힘). 압축 프롬프트의 "기존과 중복 제외" 판단에는 중요도 숫자가 필요
+    없으므로, 그 입력에서만 아예 빼서 흉내낼 텍스트를 안 보여준다.
 
     Returns (recent_lines, distant_lines, distant_omitted_count).
     """
@@ -121,8 +134,8 @@ def bucket_episodes(
 
     if not cap:
         return (
-            [_episode_line(e) for e in recent],
-            [_episode_line(e) for e in distant],
+            [_episode_line(e, with_importance=with_importance) for e in recent],
+            [_episode_line(e, with_importance=with_importance) for e in distant],
             0,
         )
 
@@ -134,16 +147,20 @@ def bucket_episodes(
     shown.sort(key=lambda e: e.get("elapsed_minutes") if e.get("elapsed_minutes") is not None else -1)
 
     return (
-        [_episode_line(e) for e in recent],
-        [_episode_line(e) for e in shown],
+        [_episode_line(e, with_importance=with_importance) for e in recent],
+        [_episode_line(e, with_importance=with_importance) for e in shown],
         omitted,
     )
 
 
-def _render_episode_section(episodes: list[dict], now_elapsed: int) -> list[str]:
+def _render_episode_section(
+    episodes: list[dict], now_elapsed: int, *, with_importance: bool = True,
+) -> list[str]:
     if not episodes:
         return []
-    recent_lines, distant_lines, omitted = bucket_episodes(episodes, now_elapsed)
+    recent_lines, distant_lines, omitted = bucket_episodes(
+        episodes, now_elapsed, with_importance=with_importance,
+    )
     if not (recent_lines or distant_lines or omitted):
         return []
     lines = ["■ 경험한 사건:"]
@@ -182,17 +199,23 @@ def _format_existing(
         for r in relationships:
             lines.append(f"  - {r['target_key']}: {r['stance']} — {r['reason']}")
 
-    lines.extend(_render_episode_section(episodes, now_elapsed))
+    # with_importance=False — 이 텍스트는 압축 LLM에게 "기존 기억"으로 보여주는
+    # 입력이다. 접미사를 붙여서 보여주면 LLM이 새로 쓰는 event 문장에도 같은
+    # "[중요도 N]" 텍스트를 그대로 따라 적는다(bucket_episodes 문서 참고).
+    lines.extend(_render_episode_section(episodes, now_elapsed, with_importance=False))
 
     return "\n".join(lines) if lines else "없음 (첫 번째 압축)"
 
 
 def _format_messages(messages: list[dict], sim_start_minutes: int, start_weekday_idx: int) -> str:
-    """원문을 요일·오전/오후 구획으로 나눠 나열한다.
+    """원문을 일차·요일·오전/오후 구획으로 나눠 나열한다.
 
     분 단위까지 보이면 거의 매 줄 헤더가 바뀌어 구획이 무의미해지므로
-    `format_sim_day_period`(요일 + 오전/오후만)로 굵게 묶는다 — 압축 LLM이
-    "이 대화가 대략 언제였는지" 판단하는 데는 이 정도 해상도면 충분하다.
+    `format_sim_day_period`(일차 + 요일 + 오전/오후만)로 굵게 묶는다 — 압축 LLM이
+    "이 대화가 대략 언제였는지" 판단하는 데는 이 정도 해상도면 충분하다. 일차를
+    포함하는 이유는 요일만으로는 일주일이 지나면 반복돼("화요일"이 이번 주인지
+    저번 주인지 구분 불가) 압축 LLM이 그 모호한 라벨을 그대로 옮겨 적으면
+    몇 주 뒤 같은 요일 문구가 다시 나와 기억이 혼선되기 때문이다.
     `elapsed_minutes`가 없는 메시지(이 기능 이전 경로·레거시)는 헤더 없이 그냥 나열.
     """
     lines: list[str] = []

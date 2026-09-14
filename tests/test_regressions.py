@@ -8518,7 +8518,52 @@ class MemoryCompressorPromptTests(unittest.TestCase):
         ]
         text = _format_messages(msgs, sim_start_minutes=0, start_weekday_idx=0)
         headers = [line for line in text.split("\n") if line.startswith("---")]
-        self.assertEqual(headers, ["--- 월요일 오전 ---", "--- 화요일 오전 ---"])
+        self.assertEqual(headers, ["--- 1일차 월요일 오전 ---", "--- 2일차 화요일 오전 ---"])
+
+    def test_format_sim_day_period_counts_days_from_sim_start(self):
+        from ABM.simulation._constants import format_sim_day_period
+        self.assertEqual(format_sim_day_period(0, start_weekday_idx=0), "1일차 월요일 오전")
+        self.assertEqual(format_sim_day_period(13 * 60, start_weekday_idx=0), "1일차 월요일 오후")
+        self.assertEqual(format_sim_day_period(1 * 1440, start_weekday_idx=0), "2일차 화요일 오전")
+        self.assertEqual(format_sim_day_period(8 * 1440, start_weekday_idx=0), "9일차 화요일 오전")
+
+    def test_day_period_header_disambiguates_the_same_weekday_across_weeks(self):
+        # 요일만 쓰면 일주일이 지난 뒤의 같은 요일이 똑같은 라벨이 된다 —
+        # 압축 LLM이 그 라벨을 그대로 옮겨 적으면(예: "화요일 저녁 메뉴는...")
+        # 몇 주 뒤 같은 문구가 다시 나와 기억이 혼선된다. 일차를 앞에 붙여
+        # 절대 안 겹치게 한다.
+        from ABM.memory_compressor import _format_messages
+        this_tuesday = {"role": "user", "content": "A", "elapsed_minutes": 1 * 1440}   # 2일차 화요일
+        next_tuesday = {"role": "user", "content": "B", "elapsed_minutes": 8 * 1440}   # 9일차 화요일
+        text = _format_messages([this_tuesday, next_tuesday], sim_start_minutes=0, start_weekday_idx=0)
+        headers = [line for line in text.split("\n") if line.startswith("---")]
+        self.assertEqual(headers, ["--- 2일차 화요일 오전 ---", "--- 9일차 화요일 오전 ---"])
+        self.assertNotEqual(headers[0], headers[1])   # 둘 다 "화요일"이지만 라벨은 달라야 한다
+
+    def test_existing_memory_recap_omits_importance_suffix_to_avoid_llm_echo(self):
+        # 실측 버그: build_memory_block()의 "[중요도 N]" 접미사가 붙은 문장을
+        # 압축 LLM에게 "기존 기억"으로 그대로 보여주면, 두 번째 압축부터 LLM이
+        # 새로 쓰는 event 문장 끝에도 똑같은 "[중요도 N]" 텍스트를 따라 적는
+        # 사례가 실제 시뮬레이션 결과에서 나왔다("... [중요도 2] [중요도 2]").
+        # "기존과 중복 제외" 판단에는 중요도 숫자가 필요 없으므로 이 입력에서는
+        # 아예 안 보여준다.
+        from ABM.memory_compressor import _format_existing
+        episodes = [{"event": "축구 골을 넣었다", "importance": 4, "elapsed_minutes": 0}]
+        text = _format_existing(episodes, [], [], None, now_elapsed=0)
+        self.assertIn("축구 골을 넣었다", text)
+        self.assertNotIn("중요도", text)
+
+    def test_build_memory_block_still_shows_importance_to_the_agent(self):
+        # 최종 사용자(에이전트)에게 보이는 블록에는 여전히 중요도가 붙는다 —
+        # 위 테스트는 "압축 LLM 입력"에서만 뺀 것이지 최종 렌더링을 바꾼 게 아니다.
+        from ABM.db import SimDB
+        from ABM.memory_compressor import build_memory_block
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SimDB(os.path.join(tmp, "sim.db"))
+            db.upsert_episodes("s1", "a", [{"event": "축구 골을 넣었다", "importance": 4}],
+                               wave=1, elapsed_minutes=0)
+            block = build_memory_block("s1", "a", db, now_elapsed=0)
+        self.assertIn("[중요도 4]", block)
 
     def test_messages_without_elapsed_minutes_get_no_header(self):
         from ABM.memory_compressor import _format_messages

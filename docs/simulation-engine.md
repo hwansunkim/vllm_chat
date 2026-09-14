@@ -264,7 +264,7 @@ return {success: True, clean_content, action_note, targets}
 `Agent.memory`의 내부 표현에만 있고, `build_messages()`가 LLM 호출 직전에
 `role`/`content`만 남기고 벗겨낸다(OpenAI 호환 API에 알 수 없는 필드가 안 나가게).
 
-### 층 2 — 압축: 요일 구획 + 결정론적 시각 앵커 + 사실/사건 경계
+### 층 2 — 압축: 일차·요일 구획 + 결정론적 시각 앵커 + 사실/사건 경계
 
 ```
 트리거 (_maybe_compress, step.py):
@@ -273,15 +273,27 @@ return {success: True, clean_content, action_note, targets}
     (est_tokens는 이번 턴의 memory_block도 포함해서 잰다 — _fresh_memory_block)
 
 compress() (ABM/memory_compressor.py):
-    원문을 요일·오전/오후 구획으로 묶어 나열 (_format_messages, 각 메시지의
-      elapsed_minutes로 판정 — "--- 화요일 오후 ---" 같은 헤더)
+    원문을 일차·요일·오전/오후 구획으로 묶어 나열 (_format_messages, 각 메시지의
+      elapsed_minutes로 판정 — "--- 9일차 화요일 오후 ---" 같은 헤더).
+      요일만 쓰면(_constants.format_sim_day_period) 일주일이 지난 뒤 같은 요일이
+      똑같은 라벨이 돼(예: 1일차 화요일과 8일차 화요일이 둘 다 "화요일") 압축
+      LLM이 그 라벨을 그대로 옮겨 적을 때 몇 주 뒤 같은 문구가 다시 나와 기억이
+      혼선된다 — 시뮬레이션 시작일부터 센 절대 일차를 앞에 붙여 절대 안 겹치게
+      한다. 요일은 그대로 남긴다(이 세계의 일과가 요일 단위라 맥락 유지용).
+    기존 구조화 메모리 재진술 (_format_existing) — episode에 [중요도 N] 접미사를
+      **안 붙인다**(with_importance=False). 최종 사용자 블록엔 붙이는데 그 텍스트를
+      그대로 "기존 기억"으로 LLM에게 다시 보여주면 LLM이 새로 쓰는 event 문장
+      끝에도 똑같은 "[중요도 N]"을 따라 적는 사례가 실측됐다(두 번째 압축부터
+      중복 태그). "기존과 중복 제외" 판단에는 중요도 숫자가 필요 없어 이 입력
+      에서만 뺀다.
     기존 구조화 메모리 + 위 원문 → LLM (system: "기억 정리 도우미", JSON만)
       → { episodes[], facts[], relationships[], self_state }
       - episodes에 "wave"를 묻지 않는다 — LLM이 준 값(있어도)은 무시
       - facts에는 "계속 참인 것"만(성격·취향·습관·지속 관계), 그날 한정 정보는
         episodes로 적으라고 명시 지시 (반복되는 "오늘 메뉴" 류가 fact로 승격돼
         모순되게 쌓이던 문제의 원인 차단)
-      - "오늘"/"어제" 금지, 구획 헤더의 요일을 직접 적으라고 지시
+      - "오늘"/"어제" 금지, 구획 헤더의 **일차·요일**을 직접 적으라고 지시
+        (예: "9일차 화요일 저녁 메뉴는...")
     db.save_messages (raw 아카이브) + db.log_compression
     db.upsert_episodes / upsert_facts  ← elapsed_minutes = now_elapsed(이 압축이
       일어난 시점, **코드가 못박음** — 배치 전체가 같은 값이지만 최소 "실제

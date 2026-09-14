@@ -25,16 +25,24 @@ def format_sim_time(total_min: int, start_weekday_idx: int) -> str:
 
 
 def format_sim_day_period(total_min: int, start_weekday_idx: int) -> str:
-    """총 분 → '요일 오전'/'요일 오후' (분 단위 생략).
+    """총 분 → 'N일차 요일 오전'/'N일차 요일 오후' (분 단위 생략).
 
     메모리 압축 원문에 붙이는 구획 헤더용 — 압축 LLM이 "이 대화가 어느 날
     있었던 일인지" 판단하는 데는 이 정도 해상도면 충분하고, 분까지 보이면
     거의 매 줄마다 헤더가 바뀌어 오히려 구획이 무의미해진다.
+
+    요일만 쓰면 시뮬레이션이 일주일을 넘기는 순간 "화요일"이 이번 주 화요일인지
+    저번 주 화요일인지 구분이 안 된다 — 압축 LLM이 그 모호한 라벨을 그대로
+    episode/fact 문장에 옮겨 적으면(예: "화요일 저녁 메뉴는...") 몇 주 뒤 같은
+    문구가 또 나와 기억이 혼선된다. 시뮬레이션 시작일부터 센 절대 일차(1일차,
+    2일차, ...)를 앞에 붙여 몇 주가 지나도 절대 안 겹치게 한다. 요일은 그대로
+    남겨둔다 — 이 세계의 일과가 요일 단위(월·수·금 태권도 등)라 압축 LLM이
+    사건의 요일 맥락을 계속 참고할 수 있어야 한다.
     """
     day_offset, minute_of_day = divmod(total_min, 24 * 60)
     weekday = _WEEKDAY_LABELS[(start_weekday_idx + day_offset) % 7]
     period  = "오전" if minute_of_day < 12 * 60 else "오후"
-    return f"{weekday} {period}"
+    return f"{day_offset + 1}일차 {weekday} {period}"
 
 # CJK Unified (U+4E00-U+9FFF) / Extension-A (U+3400-U+4DBF) / Compatibility Ideographs (U+F900-U+FAFF).
 # 코드포인트 이스케이프로 명시: 리터럴 한자를 쓰면 육안으로 구별 안 되는 호환 문자(예:
