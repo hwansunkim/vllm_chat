@@ -497,16 +497,26 @@ function zoneClusterForce(strength, repelStrength) {
  * 지도를 처음부터 다시 그린다.
  * 시뮬레이션 시작 / 뷰 진입 / 리플레이 로드 시점에 호출 (관계 그래프의 initD3Graph와 같은 지점).
  */
-export function initLocationMap() {
+/**
+ * @param {Object|null} overrideLocations - agent name -> 실제(복원된) 위치.
+ *   /resume·/load는 시나리오 설정의 초기 위치가 아니라 저장된 실제 위치로
+ *   지도를 세워야 한다 — 안 그러면 "이어서 했더니 위치가 리셋된 것처럼
+ *   보이는" 문제가 생긴다(한 번도 안 움직인 에이전트는 agent_move가 안
+ *   와서 초기 위치인 채로 안 고쳐짐). 없으면(새 /start) 기존처럼
+ *   sim.agents[i].location을 쓴다.
+ */
+export function initLocationMap(overrideLocations = null) {
   const graph = Array.isArray(sim.location_graph) ? sim.location_graph : [];
   _signature = graphSignature();
   _mapData   = buildData(graph);
 
-  // 초기 위치는 에이전트 설정의 location. 그래프에 없는 값은 미배치로 둔다.
+  // 초기 위치는 에이전트 설정의 location(override가 있으면 그쪽 우선).
+  // 그래프에 없는 값은 미배치로 둔다.
   _agentLoc = {};
   _meetingIntent = {};   // 새 실행 = 진행 중인 만남 없음
   for (const a of (sim.agents || [])) {
-    if (a.location && _mapData.nodeMap[a.location]) _agentLoc[a.name] = a.location;
+    const loc = (overrideLocations && overrideLocations[a.name]) || a.location;
+    if (loc && _mapData.nodeMap[loc]) _agentLoc[a.name] = loc;
   }
 
   _userZoomed = false;
@@ -890,8 +900,9 @@ function fitToView() {
  * 탭 진입 시 호출. 설정 화면에서 장소 구성이 바뀌었으면 통째로 다시 그리고,
  * 아니면 (숨겨져 있는 동안 잴 수 없었던) 실제 패널 크기만 반영한다.
  */
-export function ensureLocationMap() {
-  if (graphSignature() !== _signature) { initLocationMap(); return; }
+/** @param {Object|null} overrideLocations - initLocationMap()과 같은 의미. */
+export function ensureLocationMap(overrideLocations = null) {
+  if (graphSignature() !== _signature) { initLocationMap(overrideLocations); return; }
   refreshMapSize();
 }
 

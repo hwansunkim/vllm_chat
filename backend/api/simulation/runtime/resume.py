@@ -153,6 +153,22 @@ def resume_simulation(run_id: str):
             # 저장된 런타임 상태(이동한 위치, 바뀐 외모, 인지관계)를 시나리오 초기값 위에 덮어씀.
             # 저장된 상태가 없는 구버전 실행은 위 초기값을 그대로 유지한다.
             sim.restore_agent_state(saved_states)
+
+            # 프론트의 initLocationMap()/renderAgentCards()는 이 시점에 아직 SSE가
+            # 연결 전이라 시나리오 설정의 초기 위치로 지도·카드를 그려둔다 — 그
+            # 상태에서 에이전트가 한 번도 안 움직이면 agent_move 가 안 와서 초기
+            # 위치인 채로 안 고쳐진다("이어서 했더니 위치가 리셋된 것처럼 보임").
+            # 큐는 스레드 시작 전에 이미 설치돼 있어(swap_event_queue) SSE 연결이
+            # 이 시점보다 늦어도 유실되지 않는다 — queue.Queue라 순서대로 쌓인다.
+            # UI 동기화용 곁가지라 실패해도 재개 자체를 막으면 안 된다(best-effort).
+            try:
+                sim._emit("agent_positions_sync", {
+                    "wave": prior_cum,
+                    "locations": dict(getattr(sim, "_agent_location", {}) or {}),
+                })
+            except Exception:
+                pass
+
             _sim["agents"]         = sim.agents
             _sim["background_log"] = sim.background_log
             _sim["sim_obj"]        = sim

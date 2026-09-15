@@ -3109,7 +3109,7 @@ class ResumeContinueWaveBaseTests(unittest.TestCase):
         import ABM.memory_compressor as abm_mc
         from backend.api.simulation.runtime import resume as resume_mod
 
-        calls = {"create_run": None, "run": None, "sim_kwargs": None}
+        calls = {"create_run": None, "run": None, "sim_kwargs": None, "emitted": []}
 
         class FakeAgent:
             def __init__(self, *a, **k):
@@ -3126,9 +3126,14 @@ class ResumeContinueWaveBaseTests(unittest.TestCase):
                 self.completed_waves = 0
                 self._pending_wave  = None
                 self.active_agents  = set()
+                # 재개된 위치 — agent_positions_sync 가 이 값을 그대로 실어 보내는지
+                # 검증하는 테스트용(LoadResumeLocationSyncTests 참고).
+                self._agent_location = {"a": "부엌"}
             def restore_agent_state(self, s):        pass
             def export_agent_state(self):            return {}
             def _current_elapsed_minutes(self, w=0): return 0
+            def _emit(self, t, d):
+                calls["emitted"].append((t, d))
             def run(self, *a, **k):
                 calls["run"] = {"args": a, "kwargs": k}
 
@@ -3199,6 +3204,79 @@ class ResumeContinueWaveBaseTests(unittest.TestCase):
         self.assertEqual(calls["run"]["kwargs"].get("max_silence_waves"), 9)
         # 폐기된 플래그는 더 이상 넘기지 않는다.
         self.assertNotIn("early_stop_enabled", calls["run"]["kwargs"])
+
+    def test_resume_emits_agent_positions_sync_before_running(self):
+        # 프론트는 /resume 응답만으로는 복원된 위치를 알 수 없다(비동기 스레드라
+        # 이 시점엔 아직 구성 전) — SSE로 한 번 더 알려줘야 "이어서 했더니 위치가
+        # 리셋된 것처럼 보이는" 문제가 안 생긴다. run() 시작 *전*에 나가야 한다.
+        resp, calls = self._run_resume(self._run_row(self._cfg()))
+        synced = [d for t, d in calls["emitted"] if t == "agent_positions_sync"]
+        self.assertEqual(len(synced), 1)
+        self.assertEqual(synced[0]["locations"], {"a": "부엌"})
+        # run() 이 실제로 호출됐다는 것 자체가 emit 실패로 재개가 막히지 않았다는 뜻.
+        self.assertIsNotNone(calls["run"])
+
+    def test_resume_survives_sim_object_without_emit_or_location(self):
+        # agent_positions_sync 는 UI 동기화용 곁가지다 — sim_obj 가 (구버전/테스트
+        # 더블 등의 이유로) _emit 이나 _agent_location 이 없어도 재개 자체가
+        # 실패하면 안 된다.
+        from unittest import mock
+        import ABM.agent as abm_agent
+        import ABM.simulation as abm_simulation
+        import ABM.db as abm_db
+        import ABM.memory_compressor as abm_mc
+        from backend.api.simulation.runtime import resume as resume_mod
+
+        calls = {"run": None}
+
+        class FakeAgent:
+            def __init__(self, *a, **k):
+                self.memory = []
+                self._memory_block = None
+
+        class BareFakeSim:
+            def __init__(self, *a, **k):
+                self.agents          = {}
+                self.background_log  = []
+                self.shared_log      = []
+                self.edges           = []
+                self.completed_waves = 0
+                self._pending_wave   = None
+                self.active_agents   = set()
+                # 의도적으로 _emit, _agent_location 을 안 둔다.
+            def restore_agent_state(self, s):        pass
+            def export_agent_state(self):            return {}
+            def _current_elapsed_minutes(self, w=0): return 0
+            def run(self, *a, **k):
+                calls["run"] = {"args": a, "kwargs": k}
+
+        class FakeDB:
+            def create_run(self, *a, **k):           pass
+            def finish_run(self, *a, **k):           pass
+            def save_agent_snapshots(self, *a, **k): pass
+            def get_run(self, rid):                  return self._run_row
+            def get_agent_snapshots(self, rid):      return {}
+            def get_agent_states(self, rid):         return {}
+
+        fake_db = FakeDB()
+        fake_db._run_row = self._run_row(self._cfg())
+        sim_runtime._sim["status"]      = "idle"
+        sim_runtime._sim["event_queue"] = None
+
+        with mock.patch.object(resume_mod, "get_sim_db", lambda: fake_db), \
+             mock.patch.object(resume_mod, "_make_llm", lambda *a, **k: None), \
+             mock.patch.object(resume_mod, "_make_agent_llm_map", lambda *a, **k: {}), \
+             mock.patch.object(abm_agent, "Agent", FakeAgent), \
+             mock.patch.object(abm_simulation, "Simulation", BareFakeSim), \
+             mock.patch.object(abm_db, "SimDB", lambda *a, **k: fake_db), \
+             mock.patch.object(abm_mc, "build_memory_block", lambda *a, **k: None):
+            resume_mod.resume_simulation("prev-run")
+            t = sim_runtime._sim.get("thread")
+            if t is not None:
+                t.join(timeout=5)
+                self.assertFalse(t.is_alive(), "resume thread hung")
+
+        self.assertIsNotNone(calls["run"], "누락된 _emit/_agent_location 때문에 재개 자체가 막혔다")
 
     def test_resume_forwards_the_relationship_map(self):
         # /start 에선 관계 계약이 붙고 /resume 에선 조용히 사라지는 비일관을 막는다.
@@ -5601,6 +5679,75 @@ class RelationshipRestorePathTests(unittest.TestCase):
         )
         _, cap = self._load(cfg)
         self.assertEqual(cap.get("agent_relationships"), {"a": {}})
+
+
+class LoadLocationSyncTests(unittest.TestCase):
+    """`/load` 응답에 복원된 위치를 실어 보낸다.
+
+    /load 는 스레드 없이 이 요청 안에서 restore_agent_state()까지 끝나 있으므로
+    응답에 곧바로 실을 수 있다 — 안 실으면 프론트의 initLocationMap()/
+    renderAgentCards()가 시나리오 설정의 초기 위치로 지도·카드를 그려
+    "불러왔더니 위치가 리셋된 것처럼 보이는" 문제가 생긴다.
+    """
+
+    def _load(self, cfg, *, agent_location=None):
+        from unittest import mock
+        import ABM.agent as abm_agent
+        import ABM.simulation as abm_simulation
+        import ABM.db as abm_db
+        import ABM.memory_compressor as abm_mc
+        from backend.api.simulation.runtime import load as load_mod
+
+        class FakeAgent:
+            def __init__(self, *a, **k):
+                self.memory = []
+                self._memory_block = None
+
+        class FakeSim:
+            def __init__(self, *a, **k):
+                self.agents           = {}
+                self.background_log   = []
+                self.shared_log       = []
+                self._pending_wave    = None
+                self._agent_infection = {}
+                if agent_location is not None:
+                    self._agent_location = dict(agent_location)
+            def restore_agent_state(self, s): pass
+
+        class FakeDB:
+            def get_run(self, rid):
+                return {"config_json": cfg.model_dump_json(), "start_wave": 0,
+                        "total_waves": 0, "scenario_id": "scn",
+                        "scenario_name": "시나리오", "active_agents_json": None,
+                        "pending_wave_json": None, "elapsed_minutes": 0}
+            def get_agent_snapshots(self, rid): return {}
+            def get_agent_states(self, rid):    return {}
+            def get_run_log(self, rid):         return []
+
+        sim_runtime._sim["status"] = "idle"
+        with mock.patch.object(load_mod, "get_sim_db", lambda: FakeDB()), \
+             mock.patch.object(load_mod, "_make_llm", lambda *a, **k: None), \
+             mock.patch.object(load_mod, "_make_agent_llm_map", lambda *a, **k: {}), \
+             mock.patch.object(abm_agent, "Agent", FakeAgent), \
+             mock.patch.object(abm_simulation, "Simulation", FakeSim), \
+             mock.patch.object(abm_db, "SimDB", lambda *a, **k: None), \
+             mock.patch.object(abm_mc, "build_memory_block", lambda *a, **k: None):
+            return load_mod.load_simulation("prev-run")
+
+    def _cfg(self):
+        return SimStartConfig(
+            agents=[AgentConfig(name="a", system_prompt="너는 a다.", location="거실")],
+            background="테스트", start_agent="a",
+        )
+
+    def test_load_response_includes_restored_agent_locations(self):
+        resp = self._load(self._cfg(), agent_location={"a": "부엌"})
+        self.assertEqual(resp["agent_locations"], {"a": "부엌"})
+
+    def test_load_response_defaults_to_empty_when_sim_lacks_location_attr(self):
+        # 구버전/테스트 더블처럼 _agent_location 자체가 없어도 500 이 나면 안 된다.
+        resp = self._load(self._cfg(), agent_location=None)
+        self.assertEqual(resp["agent_locations"], {})
 
 
 class RelationshipOptOutTests(unittest.TestCase):

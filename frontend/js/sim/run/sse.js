@@ -127,6 +127,20 @@ export function connectSSE() {
     moveAgentOnMap(d.agent, d.to);
   });
 
+  // /resume 직후 한 번만 온다 — 저장된 실제 위치로 지도·카드를 맞춘다.
+  // initLocationMap()/renderAgentCards()는 시나리오 설정의 초기 위치로 먼저
+  // 그려두는데(재개 run은 그 사이 SSE가 연결되기 전이라 실제 위치를 아직 모른다),
+  // 에이전트가 그 뒤로 한 번도 안 움직이면 agent_move가 안 와서 초기 위치인 채로
+  // 영영 안 고쳐졌다 — "이어서 했더니 위치가 초기 상태로 돌아간 것처럼 보이는" 버그.
+  // agent_move와 같은 갱신 함수를 재사용하되 이동한 게 아니므로 피드 카드는 안 남긴다.
+  es.addEventListener('agent_positions_sync', e => {
+    const d = JSON.parse(e.data);
+    for (const [agent, loc] of Object.entries(d.locations || {})) {
+      updateAgentLocation(agent, loc);
+      moveAgentOnMap(agent, loc);
+    }
+  });
+
   // 만남 lock(_meeting_intent)의 생성/해소. "누가 누구를 만나러 이동 중"을 노출한다.
   // move_to에 사람을 지목하는 시나리오에서만 발생하며, 그 외에는 이벤트가 0건이다.
   es.addEventListener('meeting_update', e => {

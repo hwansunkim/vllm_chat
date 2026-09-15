@@ -144,14 +144,27 @@ SSE 큐·stop_event 생성, swap_event_queue
 
 과거 실행을 **메모리에 복원하되 실행하지 않는다**. `config_json` + 에이전트 스냅샷
 (memory·`state_json`) + `simulation_log`로 `Simulation` 재조립 → `status = "done"`.
-프론트가 "이어서" 버튼으로 계속할 수 있는 상태. `{ log, infection, start_wave }` 반환
-(피드·감염 뱃지 복원용).
+프론트가 "이어서" 버튼으로 계속할 수 있는 상태. `{ log, infection, start_wave,
+agent_locations }` 반환(피드·감염 뱃지·위치 복원용). `agent_locations`는
+`sim_obj._agent_location`을 그대로 실은 것 — 감염 스냅샷과 같은 이유다: 프론트의
+`initLocationMap()`/`renderAgentCards()`는 기본적으로 시나리오 설정의 초기 위치를
+쓰는데, 그러면 "불러왔더니 위치가 리셋된 것처럼 보이는" 문제가 생긴다. `/load`는
+스레드 없이 이 요청 안에서 이미 복원이 끝나 있어 응답에 바로 실을 수 있다.
 
 ### `POST /resume/{run_id}` (`runtime/resume.py`)
 
 `/load`와 같은 재조립 + **바로 스레드 실행**. `wave_base_init = prior_cum`
 (직전 run들의 누적 wave), `elapsed_minutes_init`, `restore_agent_state`,
 `resume_wave = saved_pending`. `max_silence_waves`는 복원된 `SimStartConfig`에서.
+
+`/load`와 달리 조립이 **백그라운드 스레드**(비동기)에서 일어나 HTTP 응답 시점엔
+아직 위치가 준비돼 있지 않다 — 그래서 `restore_agent_state()` 직후 `run()` 시작
+*전에* `agent_positions_sync` SSE 이벤트(`{wave, locations}`)를 한 번 내보낸다.
+프론트는 `agent_move`와 같은 갱신 함수(`updateAgentLocation`/`moveAgentOnMap`)로
+반영하되 피드 카드는 안 남긴다(실제 이동이 아니라 동기화이므로). 큐는 스레드
+시작 전에 이미 설치돼 있어(`swap_event_queue`) SSE 연결이 이 시점보다 늦어도
+유실되지 않는다. UI 동기화용 곁가지라 `sim._emit`/`_agent_location`이 없어도
+(구버전 객체 등) 예외를 삼키고 재개 자체는 계속 진행한다.
 
 > `/load`·`/resume` 조립 코드가 `headless.run_config`의 `Simulation(...)` 인자를
 > 손으로 복제하고 있다. 새 엔진 인자를 추가하면 **세 곳**(headless, load, resume)을

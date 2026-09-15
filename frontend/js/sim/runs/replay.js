@@ -258,10 +258,13 @@ export async function openRunReplay(runId, runNum) {
       // 시나리오 설정 반영 (sim.* 상태 업데이트)
       applyScenario({ id: run.scenario_id, name: run.scenario_name || '', config: parsedConfig });
 
-      // 에이전트 카드 · 그래프 · 위치 지도 초기화
-      renderAgentCards();
+      // 에이전트 카드 · 그래프 · 위치 지도 초기화 — 시나리오 설정의 초기 위치가
+      // 아니라 이 run이 저장한 실제 위치로 세운다(data.agent_locations). 안 그러면
+      // "불러왔더니 위치가 리셋된 것처럼 보이는" 문제가 생긴다 — /load는 스레드
+      // 없이 이 응답 안에서 이미 복원이 끝나 있으므로 곧바로 쓸 수 있다.
+      renderAgentCards(data.agent_locations);
       initD3Graph();
-      initLocationMap();
+      initLocationMap(data.agent_locations);
 
       // 과거 대화 피드 복원
       renderHistoricalFeed(data.log);

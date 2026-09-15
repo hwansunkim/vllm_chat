@@ -13,7 +13,13 @@ import { openAgentContext } from '../context.js';
 let _cardLoc   = {};
 let _meetingOf = {};
 
-export function renderAgentCards() {
+/**
+ * @param {Object|null} overrideLocations - agent name -> 실제(복원된) 위치.
+ *   /resume·/load처럼 시나리오 설정의 초기 위치가 아니라 저장된 실제 위치로
+ *   시작해야 하는 경로가 넘긴다. 없으면(새 /start) sim.agents[i].location을
+ *   그대로 쓴다 — 새 실행은 설정의 초기 위치가 곧 실제 위치이므로 옳다.
+ */
+export function renderAgentCards(overrideLocations = null) {
   sim.agentEmotions  = {};
   sim.agentInfection = {};
   _cardLoc   = {};
@@ -39,9 +45,10 @@ export function renderAgentCards() {
     }).join('');
     // 초기 위치도 만남 뱃지의 "이미 같은 곳" 판정에 쓰이므로 함께 기록해둔다
     // (한 번도 안 움직인 두 사람이 처음부터 같은 방에 있는 경우).
-    if (agent.location) _cardLoc[agent.name] = agent.location;
-    const locHtml = agent.location
-      ? `<span class="sim-card-location" id="simc-loc-${esc(agent.name)}">📍 ${esc(agent.location)}</span>`
+    const initialLoc = (overrideLocations && overrideLocations[agent.name]) || agent.location;
+    if (initialLoc) _cardLoc[agent.name] = initialLoc;
+    const locHtml = initialLoc
+      ? `<span class="sim-card-location" id="simc-loc-${esc(agent.name)}">📍 ${esc(initialLoc)}</span>`
       : `<span class="sim-card-location sim-hidden" id="simc-loc-${esc(agent.name)}"></span>`;
 
     card.innerHTML = `
@@ -192,4 +199,16 @@ function refreshMeetingBadges() {
 /** Lookup the live card element by agent name, handling special characters. */
 export function getCardEl(name) {
   return document.getElementById(`simc-${CSS.escape(name)}`);
+}
+
+/**
+ * 지금까지 파악된 각 에이전트의 실제 위치 스냅샷(agent name -> location).
+ * `renderAgentCards()`를 다시 부르기 **직전**에 떠서 그 호출의
+ * `overrideLocations`로 되돌려주는 용도 — 설정 화면을 열었다 닫을 때처럼
+ * 카드를 다시 그려야 하지만 실행 중인(또는 중지된) 시뮬레이션의 실제 위치는
+ * 잃으면 안 되는 경우에 쓴다. 새 이름의 에이전트는 여기 없으므로 호출부의
+ * 기본 폴백(`agent.location`)으로 자연히 넘어간다.
+ */
+export function getCurrentCardLocations() {
+  return { ..._cardLoc };
 }

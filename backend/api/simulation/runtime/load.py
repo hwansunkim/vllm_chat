@@ -187,8 +187,16 @@ def load_simulation(run_id: str):
         # 프론트가 피드 divider 초기화·리플레이 메타 표시에 쓸 수 있다(선택).
         start_wave = (run.get("start_wave") or 0) + (run.get("total_waves") or 0)
 
+        # 위치도 감염 상태와 같은 이유로 그대로 실어준다 — 프론트의
+        # initLocationMap()/renderAgentCards()는 기본적으로 시나리오 설정의 초기
+        # 위치를 쓰는데, 그러면 "불러오기 했더니 위치가 리셋된 것처럼 보이는" 문제가
+        # 생긴다. /resume(스레드로 비동기 진행)은 SSE agent_positions_sync 로 같은
+        # 문제를 풀지만, /load 는 스레드 없이 이 요청 안에서 이미 복원이 끝나 있으니
+        # 응답에 바로 실어줄 수 있다.
+        agent_locations = dict(getattr(sim_obj, "_agent_location", {}) or {})
+
         return {"status": "loaded", "log": log_entries, "infection": infection_snapshot,
-                "start_wave": start_wave}
+                "start_wave": start_wave, "agent_locations": agent_locations}
 
     except Exception as e:
         with _sim_lock:
