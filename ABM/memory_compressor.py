@@ -176,6 +176,35 @@ def _render_episode_section(
 
 
 # ---------------------------------------------------------------------------
+# 사실(facts) 표시 상한 — episodes와 달리 기존엔 상한이 전혀 없었다
+# ---------------------------------------------------------------------------
+
+_FACT_SHOW_MAX = 15   # 확신 높은 순 상위 개수. 나머지는 개수만 알린다.
+
+
+def _fact_lines(facts: list[dict]) -> list[str]:
+    """확신 높은 순으로 최대 `_FACT_SHOW_MAX`개만 줄로 만들고, 나머지는 생략 안내.
+
+    `facts`는 `SimDB.get_facts()`가 이미 confidence DESC로 정렬해 돌려준다 —
+    episodic_memory(사건)는 recency 버킷으로 상한이 있었지만(방금 최대 10개,
+    예전 최대 3개) semantic_memory(사실)는 상한이 아예 없었다. 압축 사이클이
+    쌓일수록(장기 시뮬레이션) 사실 목록이 끝없이 자라 `[나의 기억 요약]`이
+    무한정 커지고, 그만큼 실제 대화를 담을 자리(`agent.memory`)가 줄어든다 —
+    심하면 `trim_to_token_limit`이 대화 원문을 전부 비워도 사실 목록 하나만으로
+    token_limit을 넘겨 LLM 호출 자체가 실패할 수 있었다.
+    """
+    shown   = facts[:_FACT_SHOW_MAX]
+    omitted = max(0, len(facts) - len(shown))
+    lines = [
+        f"  - {f['fact']} (확신 {int(float(f['confidence']) * 100)}%)"
+        for f in shown
+    ]
+    if omitted:
+        lines.append(f"  - (그 밖에 확신이 흐릿한 사실 {omitted}건은 생략)")
+    return lines
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
@@ -190,9 +219,7 @@ def _format_existing(
 
     if facts:
         lines.append("알고 있는 사실:")
-        for f in facts:
-            pct = int(float(f["confidence"]) * 100)
-            lines.append(f"  - {f['fact']} (확신 {pct}%)")
+        lines.extend(_fact_lines(facts))
 
     if relationships:
         lines.append("인물 관계:")
@@ -276,9 +303,7 @@ def build_memory_block(
 
     if facts:
         lines.append("■ 알고 있는 사실:")
-        for f in facts:
-            pct = int(float(f["confidence"]) * 100)
-            lines.append(f"  - {f['fact']} (확신 {pct}%)")
+        lines.extend(_fact_lines(facts))
 
     if relationships:
         lines.append("■ 인물 관계:")
@@ -365,3 +390,108 @@ def compress(
     )
 
     return build_memory_block(sim_id, agent_key, db, key_to_alias, now_elapsed)
+
+
+# ---------------------------------------------------------------------------
+# 2차 기억 정리(consolidation) — "반복되면 깊어지고, 한 번뿐이면 옅어진다"
+# ---------------------------------------------------------------------------
+#
+# 1차 압축(compress())은 새 대화 조각 하나만 보고 매번 독립적으로 판단하므로
+# "이 사실이 전체 기억에서 몇 번째 반복인지"를 알 방법이 없다 — 그래서 표현만
+# 바뀐 같은 이야기가 별개 행으로 계속 쌓였다(실측: "고등학생이며 수학 학원" /
+# "학생이며 수학 학원"). 2차 정리는 그 에이전트의 전체 사실을 다시 조망하며:
+#   - 여러 사실이 사실상 같은 이야기를 반복/뒷받침하면 확신을 높이고(강화 —
+#     사람이 반복 노출된 정보를 더 오래 기억하는 것과 같은 원리)
+#   - 한 번만 언급되고 이후 전혀 뒷받침되지 않은 사소한 사실은 확신을 낮춘다
+#     (쇠퇴).
+# 행을 지우거나 병합하지 않는다 — 점수(confidence)만 바꾸고, 이미 있는 표시
+# 상한(`_fact_lines`, 상위 `_FACT_SHOW_MAX`개)이 낮아진 확신을 보고 자연히
+# 걸러내게 둔다. 그래서 되돌릴 수 있고(다음 정리 때 다시 오를 수 있음), 잘못
+# 병합해 원문을 잃어버릴 위험이 없다. 트리거는
+# `ABM/simulation/step.py::_maybe_consolidate_facts`(1차 압축 N번마다 한 번).
+
+_CONSOLIDATION_SYSTEM = (
+    "당신은 기억 정리 도우미입니다. 쌓인 사실들을 검토해 확신도를 재평가하세요. "
+    "반드시 JSON만 출력하고 다른 텍스트는 절대 출력하지 마세요."
+)
+
+_CONSOLIDATION_PROMPT = """\
+{agent_name}에 대해 지금까지 쌓인 사실 목록입니다. 각 줄 앞의 id로 지칭하세요.
+
+{facts_text}
+
+이 목록을 검토해 확신도를 재평가하세요:
+- 서로 다른 표현이지만 같은 내용을 반복하거나 뒷받침하는 사실이 여럿 있으면
+  ("반복 확인된 사실") — 그 사실들 각각의 확신을 원래보다 높이세요(0.1~0.2 상향,
+  최대 1.0).
+- 딱 한 번만 언급되고 다른 어떤 사실로도 뒷받침되지 않는 사소한 사실은 —
+  확신을 낮추세요(0.1~0.2 하향, 최소 0.1).
+- 이미 충분히 높거나(0.9 이상) 이미 낮은(0.3 이하) 사실, 또는 바꿀 필요가
+  없는 사실은 결과에 포함하지 마세요.
+- 사실 문장 자체는 바꾸지 마세요 — 이번엔 확신도만 재평가합니다.
+
+반드시 아래 JSON 형식으로만 응답하세요:
+{{
+  "adjustments": [
+    {{"id": <int>, "new_confidence": <0.0-1.0>, "reason": "<한 줄 이유>"}}
+  ]
+}}
+바꿀 사실이 없으면 "adjustments": [] 로 응답하세요.
+"""
+
+_CONSOLIDATION_MIN_FACTS = 4   # 이보다 적으면 정리할 게 없다고 보고 건너뛴다
+
+
+def consolidate_facts(
+    agent_name: str,
+    agent_key: str,
+    sim_id: str,
+    db: SimDB,
+    llm: LLMCall,
+    llm_max_tokens: int = 8192,
+) -> int:
+    """전체 사실을 다시 훑어 확신도를 강화/쇠퇴시킨다(2차 정리).
+
+    행을 지우거나 합치지 않는다 — 점수만 바꾸고 나머지는 `_fact_lines`의
+    표시 상한에 맡긴다. 반환값은 실제로 반영된 조정 건수(관전/테스트용).
+    """
+    facts = db.get_all_facts(sim_id, agent_key)
+    if len(facts) < _CONSOLIDATION_MIN_FACTS:
+        return 0
+
+    facts_text = "\n".join(
+        f"[id={f['id']}] {f['fact']} (확신 {int(float(f['confidence']) * 100)}%)"
+        for f in facts
+    )
+    prompt = _CONSOLIDATION_PROMPT.format(agent_name=agent_name, facts_text=facts_text)
+
+    try:
+        raw, _, _ = llm(
+            [
+                {"role": "system", "content": _CONSOLIDATION_SYSTEM},
+                {"role": "user",   "content": prompt},
+            ],
+            max_tokens=llm_max_tokens,
+        )
+        data = _parse_compression_result(raw)
+    except Exception as exc:
+        logger.error(f"[{agent_key}] 2차 기억 정리 LLM 실패: {exc}")
+        return 0
+
+    valid_ids = {f["id"] for f in facts}
+    applied = 0
+    for adj in (data.get("adjustments") or []):
+        try:
+            fid  = int(adj["id"])
+            conf = max(0.0, min(1.0, float(adj["new_confidence"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if fid not in valid_ids:
+            continue
+        db.update_fact_confidence(fid, conf)
+        applied += 1
+
+    logger.info(
+        f"[{agent_key}] 2차 기억 정리 완료 — 사실 {len(facts)}개 중 {applied}건 확신 재평가"
+    )
+    return applied

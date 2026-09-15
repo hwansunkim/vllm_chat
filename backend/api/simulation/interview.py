@@ -157,7 +157,7 @@ def format_full_memory(
         if f_lines or f_omitted:
             lines.append("■ 알고 있는 사실:")
             if f_omitted:
-                lines.append(f"  - ... (오래된 사실 {f_omitted}건 생략) ...")
+                lines.append(f"  - ... (확신이 낮은 사실 {f_omitted}건 생략) ...")
             lines.extend(f_lines)
         if relationships:
             lines.append("■ 인물 관계:")
@@ -178,7 +178,10 @@ def format_full_memory(
         return text
 
     # 예산 초과 — 오래된 에피소드부터(episodes는 elapsed_minutes 오름차순이라
-    # 앞을 자르는 게 곧 "오래된 것부터"), 그래도 넘치면 오래된 사실부터 덜어낸다.
+    # 앞을 자르는 게 곧 "오래된 것부터"), 그래도 넘치면 확신이 낮은 사실부터
+    # 덜어낸다. fact_lines는 get_facts()가 이미 confidence **내림차순**으로
+    # 정렬해 준 것이므로, 앞을 자르면 거꾸로 가장 확신 높은 것부터 없어진다 —
+    # 반드시 **뒤**(꼬리, 확신 낮은 쪽)를 잘라야 한다.
     e_start, f_start = 0, 0
     while e_start < len(episodes):
         e_start += 1
@@ -187,7 +190,8 @@ def format_full_memory(
             break
     while _estimate_tokens(text) > token_budget and f_start < len(fact_lines):
         f_start += 1
-        text = render(fact_lines[f_start:], episodes[e_start:], f_start, e_start)
+        kept = fact_lines[:len(fact_lines) - f_start] if f_start else fact_lines
+        text = render(kept, episodes[e_start:], f_start, e_start)
 
     logger.warning(
         "인터뷰 기억 요약이 토큰 예산(%d)을 초과해 사건 %d/%d건·사실 %d/%d건을 생략했습니다.",

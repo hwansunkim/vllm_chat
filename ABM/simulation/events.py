@@ -7,7 +7,9 @@ class _EventsMixin:
     """시나리오 이벤트 실행 관련 메서드."""
 
     def _execute_event(self, event: dict) -> dict:
-        """시나리오 이벤트 실행. agent_enter 시 entrant 키 반환.
+        """시나리오 이벤트 실행. agent_enter 시 entrant 키, system_message 시
+        notified 키(알림 받은 활성 에이전트 목록) 반환 — 둘 다 runner 가 이번
+        wave의 current_wave 에 강제로 끼워 넣는 데 쓴다.
 
         ``event["wave"]`` 는 이 이벤트가 발동한 disp_wave — runner 가 wave 트리거·
         at_time 트리거 모두 넣어준다. emit 페이로드에 실어야 DB·피드·마크다운
@@ -18,6 +20,18 @@ class _EventsMixin:
         감염의 시각 앵커 전용이다. `_set_infected(wave)` 에 disp_wave 를 넘겨
         `_current_elapsed_minutes` 로 환산하면 재개 후 fixed 모드에서 누적분을
         두 번 세어 감염 시각이 미래로 밀린다(증상·회복 단계가 지연).
+
+        `system_message`의 ``notified``: `add_to_memory`는 대상의 `memory`에
+        메시지를 얹을 뿐, 그 대상이 **이번 wave에 실제로 턴을 받는다는 보장은
+        없다** — current_wave(이번 wave 발화 후보)는 지난 wave의 라우팅으로 이미
+        정해져 있어서, 알림을 받은 에이전트가 마침 그 목록에 없으면 "16:30.
+        태권도학원 갈 시간이다" 같은 예정 알림이 memory에 조용히 쌓이기만 하고
+        그가 자연히 다시 초대될 때까지(누가 그를 부르거나, 전원 휴면 강제
+        재투입이 오거나) 반응이 미뤄질 수 있다. `agent_enter`가 이미 `entrant`로
+        강제 편입을 하고 있으니, 같은 원칙을 `system_message`에도 적용한다 —
+        시각을 알려주는 시스템이 "이 사실을 알렸다"면 "그 사실을 안 사람이 이번
+        wave에 반응할 기회"까지 같이 보장해야 실제 발화 시점이 예정 시각 근처에
+        머문다.
         """
         etype      = event.get("type", "")
         message    = event.get("message", "")
@@ -41,6 +55,7 @@ class _EventsMixin:
                 "targets":    resolved,
             })
             logger.info(f"[시스템 메시지] → {resolved}: {message}")
+            result["notified"] = resolved
 
         elif etype == "agent_enter":
             if not agent_key or agent_key not in self.agents:

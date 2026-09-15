@@ -182,6 +182,13 @@ class _RunnerMixin:
                 entrant   = ev_result.get("entrant")
                 if entrant and entrant not in current_wave:
                     current_wave[entrant] = []
+                # system_message로 알림을 받은 사람은 이번 wave에 발화 후보로
+                # 강제 편입한다 — 안 그러면 "16:30. 학원 갈 시간이다" 가
+                # memory에는 들어갔지만 current_wave(지난 wave 라우팅으로 이미
+                # 확정됨)에 없어서, 자연히 다시 초대될 때까지 반응이 미뤄진다.
+                # 이미 라우팅으로 받은 incoming이 있으면 그대로 유지(setdefault).
+                for notified_key in ev_result.get("notified", []):
+                    current_wave.setdefault(notified_key, [])
 
             # 퇴장(agent_exit)이 이번 wave 참가자를 비활성으로 만들었으면 이번 wave
             # 발화 목록에서도 뺀다 — active_agents/_pending_wave 에서만 지우고

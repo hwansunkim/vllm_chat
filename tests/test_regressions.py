@@ -2,6 +2,7 @@ import ast
 import asyncio
 import json
 import os
+import re
 import sqlite3
 import tempfile
 import threading
@@ -971,6 +972,30 @@ class TimedEventTests(unittest.TestCase):
         j = self._jumps()
         self.assertEqual(j[0]["minutes"], 60)
         self.assertIn("예정 이벤트", j[0]["clamp_reason"])
+
+    def test_system_message_notification_forces_target_into_this_waves_turn(self):
+        # "b"는 시작 current_wave에 전혀 없다(라우팅으로 초대된 적 없음) — a만
+        # 시작한다. at_time 알림이 "b"에게 뜨면 memory에 조용히 쌓이기만 하는 게
+        # 아니라 **같은 wave**에 실제 발화 기회를 강제로 받아야 한다 — 안 그러면
+        # "16:30. 학원 갈 시간이다" 가 그가 자연히 다시 초대될 때까지(누가 부르거나
+        # 전원 휴면 강제 재투입이 올 때까지) 반응 없이 미뤄진다.
+        sim = self._sim([{"at_time": "14:30", "type": "system_message",
+                          "message": "학원 갈 시간", "targets": ["b"]}], start="14:30")
+        starts, completes = [], []
+        base = sim._emit
+        def _capture(t, d):
+            if t == "wave_start":
+                starts.append(sorted(d.get("agents", [])))
+            elif t == "turn_complete":
+                completes.append(d.get("speaker"))
+            else:
+                base(t, d)
+        sim._emit = _capture
+        sim.run("a", max_waves=1, step_delay=0.0, events=self._events, resume_wave={"a": []})
+
+        self.assertIn("[시스템] 학원 갈 시간", self._mem(sim, "b"))
+        self.assertIn("b", starts[0])          # 같은 wave의 발화 후보 명단에 강제 편입
+        self.assertIn("b", completes)          # 실제로 턴을 받아 응답했다
 
     def test_continue_past_the_beat_does_not_refire_it(self):
         # 이미 16:00(경과 120분)에서 이어가기 — 15:00 이벤트는 지난 것으로 본다.
@@ -8498,6 +8523,276 @@ class MemoryCompressorRecencyTests(unittest.TestCase):
         recent, distant, omitted = bucket_episodes(eps, now_elapsed=0)
         self.assertEqual(recent, [])
         self.assertEqual(len(distant), 1)
+
+
+class MemoryFactCapTests(unittest.TestCase):
+    """`semantic_memory`(사실)는 episodes와 달리 표시 상한이 아예 없었다.
+
+    장기 시뮬레이션에서 압축 사이클이 쌓일수록 "■ 알고 있는 사실:" 목록이
+    끝없이 자라 `[나의 기억 요약]`이 무한정 커지고, 그만큼 실제 대화(agent.memory)
+    가 들어갈 자리가 줄어든다 — 심하면 trim_to_token_limit이 대화 원문을 전부
+    비워도 사실 목록 하나만으로 token_limit을 넘겨 LLM 호출이 실패할 수 있었다.
+    """
+
+    def _db(self, tmp):
+        from ABM.db import SimDB
+        return SimDB(os.path.join(tmp, "sim.db"))
+
+    def _facts(self, n):
+        return [{"fact": f"사실 {i}", "confidence": 1.0 - i * 0.01} for i in range(n)]
+
+    def test_build_memory_block_caps_facts_and_keeps_highest_confidence(self):
+        from ABM.memory_compressor import build_memory_block, _FACT_SHOW_MAX
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            for f in self._facts(_FACT_SHOW_MAX + 5):
+                db.upsert_facts("s1", "a", [f], wave=0, elapsed_minutes=0)
+            block = build_memory_block("s1", "a", db, now_elapsed=0)
+
+        self.assertIn("사실 0", block)                    # 확신 가장 높은 것 유지
+        self.assertNotIn(f"사실 {_FACT_SHOW_MAX + 4}", block)  # 확신 가장 낮은 것은 생략
+        self.assertIn("5건은 생략", block)
+
+    def test_fact_count_within_cap_shows_everything_without_omission_note(self):
+        from ABM.memory_compressor import build_memory_block, _FACT_SHOW_MAX
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            for f in self._facts(_FACT_SHOW_MAX):
+                db.upsert_facts("s1", "a", [f], wave=0, elapsed_minutes=0)
+            block = build_memory_block("s1", "a", db, now_elapsed=0)
+
+        self.assertIn(f"사실 {_FACT_SHOW_MAX - 1}", block)
+        self.assertNotIn("생략", block)
+
+    def test_compression_recap_also_caps_facts_shown_to_the_llm(self):
+        # _format_existing() — 압축 LLM에게 "기존 기억"으로 보여주는 입력도
+        # 상한이 있어야 한다. 안 그러면 압축 프롬프트 자체가 시뮬레이션이
+        # 길어질수록 끝없이 커진다.
+        from ABM.db import SimDB
+        from ABM.memory_compressor import compress, _FACT_SHOW_MAX
+
+        captured = {}
+
+        def fake_llm(messages, max_tokens=None, **kw):
+            captured["prompt"] = messages[-1]["content"]
+            return json.dumps({
+                "episodes": [], "facts": [], "relationships": [], "self_state": "평온함",
+            }), "", {}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SimDB(os.path.join(tmp, "sim.db"))
+            for i in range(_FACT_SHOW_MAX + 3):
+                db.upsert_facts("s1", "a", [{"fact": f"사실 {i}", "confidence": 1.0 - i * 0.01}],
+                                wave=0, elapsed_minutes=0)
+            compress(
+                agent_name="a", agent_key="a", sim_id="s1",
+                messages=[{"role": "user", "content": "x", "elapsed_minutes": 0}],
+                wave=1, db=db, llm=fake_llm,
+            )
+
+        self.assertIn("사실 0", captured["prompt"])
+        self.assertNotIn(f"사실 {_FACT_SHOW_MAX + 2}", captured["prompt"])
+        self.assertIn("3건은 생략", captured["prompt"])
+
+
+class MemoryConsolidationTests(unittest.TestCase):
+    """2차 기억 정리(consolidate_facts) — "반복되면 깊어지고, 한 번뿐이면
+    옅어진다". 1차 압축은 새 대화 조각 하나만 보고 판단해 표현만 바뀐 같은
+    사실이 별개 행으로 계속 쌓이는 문제가 있었다 — 2차 정리는 전체 사실을
+    다시 조망해 반복 확인된 건 확신을 올리고(강화), 한 번뿐이고 안 뒷받침된
+    사소한 건 확신을 낮춘다(쇠퇴). 행은 지우지 않고 점수만 바꾼다.
+    """
+
+    def _db(self, tmp):
+        from ABM.db import SimDB
+        return SimDB(os.path.join(tmp, "sim.db"))
+
+    def test_consolidate_facts_applies_reinforcement_and_decay_by_id(self):
+        from ABM.memory_compressor import consolidate_facts
+
+        def fake_llm(messages, max_tokens=None, **kw):
+            prompt = messages[-1]["content"]
+            # id는 프롬프트에 실제로 찍힌 걸 그대로 재사용 — DB가 배정한 값을
+            # 미리 알 수 없으므로 프롬프트에서 읽어 되돌려준다.
+            ids = [int(m) for m in re.findall(r"\[id=(\d+)\]", prompt)]
+            reinforced_id, decayed_id = ids[0], ids[1]
+            return json.dumps({
+                "adjustments": [
+                    {"id": reinforced_id, "new_confidence": 0.95, "reason": "반복 확인"},
+                    {"id": decayed_id,    "new_confidence": 0.15, "reason": "한 번뿐"},
+                ],
+            }), "", {}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            db.upsert_facts("s1", "a", [{"fact": "반복해서 확인된 사실", "confidence": 0.6}],
+                            wave=0)
+            db.upsert_facts("s1", "a", [{"fact": "한 번만 언급된 사소한 사실", "confidence": 0.5}],
+                            wave=0)
+            # _CONSOLIDATION_MIN_FACTS(4) 미만이면 통째로 스킵되므로 채워둔다.
+            db.upsert_facts("s1", "a", [{"fact": "다른 사실 1", "confidence": 0.5}], wave=0)
+            db.upsert_facts("s1", "a", [{"fact": "다른 사실 2", "confidence": 0.5}], wave=0)
+
+            applied = consolidate_facts("a", "a", "s1", db, fake_llm)
+
+            facts = {f["fact"]: f["confidence"] for f in db.get_all_facts("s1", "a")}
+
+        self.assertEqual(applied, 2)
+        self.assertAlmostEqual(facts["반복해서 확인된 사실"], 0.95)
+        self.assertAlmostEqual(facts["한 번만 언급된 사소한 사실"], 0.15)
+
+    def test_consolidate_facts_ignores_unknown_ids_and_clamps_confidence(self):
+        from ABM.memory_compressor import consolidate_facts
+
+        def fake_llm(messages, max_tokens=None, **kw):
+            return json.dumps({
+                "adjustments": [
+                    {"id": 999999, "new_confidence": 0.9},   # 존재하지 않는 id — 무시
+                    {"id": 1,      "new_confidence": 1.7},    # 범위 밖 — 1.0으로 클램프
+                ],
+            }), "", {}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            db.upsert_facts("s1", "a", [{"fact": "사실 A", "confidence": 0.5}], wave=0)
+            db.upsert_facts("s1", "a", [{"fact": "사실 B", "confidence": 0.5}], wave=0)
+            db.upsert_facts("s1", "a", [{"fact": "사실 C", "confidence": 0.5}], wave=0)
+            db.upsert_facts("s1", "a", [{"fact": "사실 D", "confidence": 0.5}], wave=0)
+            applied = consolidate_facts("a", "a", "s1", db, fake_llm)
+            facts = db.get_all_facts("s1", "a")
+
+        self.assertEqual(applied, 1)   # 존재하는 id 하나만 반영(999999는 무시)
+        by_fact = {f["fact"]: f["confidence"] for f in facts}
+        self.assertEqual(by_fact["사실 A"], 1.0)   # id=1(삽입 순서상 "사실 A") → 1.0으로 클램프
+        self.assertEqual(by_fact["사실 B"], 0.5)   # 안 건드린 것들은 그대로
+        self.assertEqual(by_fact["사실 C"], 0.5)
+        self.assertEqual(by_fact["사실 D"], 0.5)
+
+    def test_consolidate_facts_skips_when_too_few_facts(self):
+        from ABM.memory_compressor import consolidate_facts
+
+        called = []
+
+        def fake_llm(messages, max_tokens=None, **kw):
+            called.append(1)
+            return json.dumps({"adjustments": []}), "", {}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            db.upsert_facts("s1", "a", [{"fact": "사실 하나뿐", "confidence": 0.5}], wave=0)
+            applied = consolidate_facts("a", "a", "s1", db, fake_llm)
+
+        self.assertEqual(applied, 0)
+        self.assertEqual(called, [])   # LLM 호출 자체가 스킵돼야 한다
+
+    def test_consolidate_facts_does_not_delete_rows_on_decay(self):
+        # 쇠퇴는 확신만 낮추지, 행을 지우지 않는다 — 표시 상한이 알아서 가린다.
+        from ABM.memory_compressor import consolidate_facts
+
+        def fake_llm(messages, max_tokens=None, **kw):
+            fid = int(re.search(r"\[id=(\d+)\]", messages[-1]["content"]).group(1))
+            return json.dumps({"adjustments": [{"id": fid, "new_confidence": 0.1}]}), "", {}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            db.upsert_facts("s1", "a", [{"fact": "사소한 사실", "confidence": 0.5}], wave=0)
+            db.upsert_facts("s1", "a", [{"fact": "다른 사실 1", "confidence": 0.5}], wave=0)
+            db.upsert_facts("s1", "a", [{"fact": "다른 사실 2", "confidence": 0.5}], wave=0)
+            db.upsert_facts("s1", "a", [{"fact": "다른 사실 3", "confidence": 0.5}], wave=0)
+            applied = consolidate_facts("a", "a", "s1", db, fake_llm)
+            facts = db.get_all_facts("s1", "a")
+
+        self.assertEqual(applied, 1)      # 실제로 조정이 적용됐는지(스킵 아님) 확인
+        self.assertEqual(len(facts), 4)   # 행 수는 그대로
+
+    def test_count_compressions_tracks_per_agent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            self.assertEqual(db.count_compressions("s1", "a"), 0)
+            db.log_compression("s1", "a", msg_count=5, wave=1)
+            db.log_compression("s1", "a", msg_count=5, wave=2)
+            db.log_compression("s1", "b", msg_count=5, wave=1)   # 다른 에이전트는 안 섞임
+            self.assertEqual(db.count_compressions("s1", "a"), 2)
+            self.assertEqual(db.count_compressions("s1", "b"), 1)
+
+    def test_maybe_consolidate_triggers_every_nth_compression(self):
+        from ABM.simulation._constants import _CONSOLIDATION_EVERY_N_COMPRESSIONS
+
+        class _FakeAgent:
+            name = "a"
+
+        class _FakeDB:
+            def __init__(self):
+                self.counts = {}
+            def count_compressions(self, sim_id, agent_key):
+                return self.counts.get(agent_key, 0)
+            def get_all_facts(self, sim_id, agent_key):
+                return []   # _CONSOLIDATION_MIN_FACTS 미만 — consolidate_facts가 바로 스킵
+
+        class _Sim:
+            from ABM.simulation.step import _StepMixin
+            _maybe_consolidate_facts = _StepMixin._maybe_consolidate_facts
+
+            def __init__(self):
+                self._db = _FakeDB()
+                self._sim_id = "s1"
+                self.llm_max_tokens = 512
+                self.emitted = []
+            def _emit(self, t, d):
+                self.emitted.append((t, d))
+            def _llm_for(self, key):
+                return lambda messages, max_tokens=None, **kw: (
+                    json.dumps({"adjustments": []}), "", {},
+                )
+
+        sim = _Sim()
+        fired_at = []
+        for n in range(1, _CONSOLIDATION_EVERY_N_COMPRESSIONS * 2 + 1):
+            sim._db.counts["a"] = n
+            sim.emitted.clear()
+            sim._maybe_consolidate_facts(_FakeAgent(), "a", wave=n)
+            if any(t == "consolidation_start" for t, _ in sim.emitted):
+                fired_at.append(n)
+
+        self.assertEqual(
+            fired_at,
+            [_CONSOLIDATION_EVERY_N_COMPRESSIONS, _CONSOLIDATION_EVERY_N_COMPRESSIONS * 2],
+        )
+
+
+class InterviewMemoryFactTrimTests(unittest.TestCase):
+    """`format_full_memory()`(인터뷰 회고 블록)의 예산 초과 시 사실 정리 방향.
+
+    `get_facts()`는 confidence **내림차순**으로 정렬해 돌려준다. 예산이 부족해
+    사실을 덜어낼 때 앞을 자르면 거꾸로 가장 확신 높은 것부터 없어진다 —
+    "확신이 낮은 것부터 생략"이라는 의도와 정반대였다.
+    """
+
+    def test_low_confidence_facts_are_dropped_first_under_tight_budget(self):
+        # 이름에 "확신"이라는 단어를 넣지 않는다 — 생략 안내 문구 자체가
+        # "확신이 낮은 사실 N건 생략"이라 부분 문자열 매칭이 안내 문구와
+        # 헷갈릴 수 있다. 대신 순서로만 구분되는 고유한 이름을 쓴다.
+        from backend.api.simulation.interview import format_full_memory
+
+        facts = [
+            {"fact": "코코아를 좋아한다", "confidence": 0.99},
+            {"fact": "액션가면을 좋아한다", "confidence": 0.7},
+            {"fact": "닌자 흉내를 즐긴다", "confidence": 0.3},
+        ]
+        memory = {"episodes": [], "facts": facts, "relationships": [], "self_state": ""}
+
+        full = format_full_memory(memory)
+        for f in facts:
+            self.assertIn(f["fact"], full)
+
+        # 하나도 못 들어갈 만큼 빡빡한 예산 — 그래도 남는 게 있다면 반드시
+        # 확신이 가장 높은 것이어야 한다("코코아를 좋아한다"가 먼저 밀려나면
+        # 방향이 거꾸로 된 것이다).
+        from ABM.agent import _estimate_tokens
+        budget = _estimate_tokens(full) - 1
+        trimmed = format_full_memory(memory, token_budget=budget)
+        self.assertIn("코코아를 좋아한다", trimmed)
+        self.assertNotIn("닌자 흉내를 즐긴다", trimmed)
 
 
 class MemoryCompressorPromptTests(unittest.TestCase):

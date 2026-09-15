@@ -2,7 +2,10 @@ import logging
 
 from ..agent import Agent
 from ..parser import parse_json_extras
-from ._constants import _COMPRESSION_THRESHOLD, _COMPRESSION_MIN_MSGS, _has_foreign_chars
+from ._constants import (
+    _COMPRESSION_THRESHOLD, _COMPRESSION_MIN_MSGS, _has_foreign_chars,
+    _CONSOLIDATION_EVERY_N_COMPRESSIONS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +47,34 @@ class _StepMixin:
             # 인터뷰 경로(turn 루프 밖, 한 번 세팅해 재사용) 전용으로 남겨둔다.
             agent.memory.clear()
             self._emit("compression_done", {"agent": agent_key, "wave": wave})
+            self._maybe_consolidate_facts(agent, agent_key, wave)
         else:
             logger.warning(f"[{agent_key}] 압축 실패 — 기존 메모리 유지, 강제 트림으로 폴백")
+
+    def _maybe_consolidate_facts(self, agent: Agent, agent_key: str, wave: int) -> None:
+        """1차 압축이 `_CONSOLIDATION_EVERY_N_COMPRESSIONS`번 쌓일 때마다 2차
+        기억 정리(consolidate_facts)를 한 번 돌린다.
+
+        1차 압축은 새 대화 조각 하나만 보고 판단해서 "이 사실이 전체 기억에서
+        몇 번째 반복인지" 알 방법이 없다 — 표현만 바뀐 같은 이야기가 별개 행으로
+        계속 쌓이는 원인이었다(실측: "고등학생이며 수학 학원" / "학생이며 수학
+        학원"). 2차 정리는 전체 사실을 다시 조망해 반복 확인된 건 확신을
+        올리고(강화) 한 번뿐이고 안 뒷받침된 사소한 건 확신을 낮춘다(쇠퇴) —
+        `ABM/memory_compressor.py::consolidate_facts` 문서 참고. 행을 지우지
+        않고 점수만 바꾸므로 실패해도 되돌릴 수 있다.
+        """
+        if self._db is None or self._sim_id is None:
+            return
+        count = self._db.count_compressions(self._sim_id, agent_key)
+        if count <= 0 or count % _CONSOLIDATION_EVERY_N_COMPRESSIONS != 0:
+            return
+        from ..memory_compressor import consolidate_facts
+        self._emit("consolidation_start", {"agent": agent_key, "wave": wave, "compression_count": count})
+        applied = consolidate_facts(
+            agent.name, agent_key, self._sim_id, self._db,
+            self._llm_for(agent_key), llm_max_tokens=self.llm_max_tokens,
+        )
+        self._emit("consolidation_done", {"agent": agent_key, "wave": wave, "adjusted": applied})
 
     def _fresh_memory_block(self, agent_key: str, now_elapsed: int) -> str | None:
         """이 에이전트의 구조화 기억을 "지금" 기준으로 새로 렌더링.

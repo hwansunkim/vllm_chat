@@ -362,8 +362,8 @@ disease_name}` — `cause` = `event`(시드) / `transmission`(전파) / `recover
 
 | type | 동작 |
 |---|---|
-| `system_message` | `targets`의 memory에 `[시스템] {message}` 주입 |
-| `agent_enter` | `active_agents.add(agent)`, 알림 주입, `current_wave`에 추가 (`entrant`) |
+| `system_message` | `targets`의 memory에 `[시스템] {message}` 주입 + **이번 wave의 `current_wave`에 강제 편입**(`notified`). 안 그러면 "16:30. 학원 갈 시간이다" 가 memory에는 들어가도 지난 wave 라우팅으로 이미 정해진 이번 wave 발화 후보 목록엔 없어서, 그 사람이 자연히 다시 초대될 때까지(누가 부르거나 전원 휴면 강제 재투입) 반응이 미뤄질 수 있었다 — 예정 알림은 그 즉시 반응 기회를 보장해야 실제 발화 시점이 예정 시각 근처에 머문다 |
+| `agent_enter` | `active_agents.add(agent)`, 알림 주입, `current_wave`에 추가 (`entrant`) — `system_message`의 `notified`와 같은 강제 편입 메커니즘 |
 | `agent_exit` | `active_agents.discard(agent)`, `_pending_wave`에서 제거, 알림 주입. 이벤트 실행 후 `current_wave`를 `active_agents`로 필터 → 나간 인물은 **그 wave부터** 발화 안 함 |
 | `infect_agent` | `_set_infected(agent, wave, "event", at_minutes=…)` — 환자 0번 시드 (감염 모델 꺼져 있으면 무시). 시각 앵커는 runner가 스탬프한 `at_minutes`(= `_current_elapsed_minutes(run_wave)`); disp_wave를 환산하면 재개 후 fixed 모드에서 두 번 세어 밀린다. `message`는 관전용, memory엔 안 감 |
 | `update_appearance` | `_agent_visual[agent] = message`, 같은 장소 사람들에게 씬 메시지 (아는 사이면 실명, 아니면 `stranger_N`) |

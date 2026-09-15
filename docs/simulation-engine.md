@@ -54,7 +54,12 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
  2. 이번 wave의 시나리오 이벤트 실행 (_execute_event):
        - wave 트리거 + 시계가 next_at 에 도달한 at_time 트리거를 모은다
          (now_elapsed 로 판정; disp_wave·now_elapsed 를 event 에 스탬프)
-       - agent_enter면 current_wave에 추가
+       - agent_enter면 current_wave에 추가(entrant), system_message면 알림
+         받은 대상도 강제 추가(notified) — 알림이 memory에는 들어가도
+         current_wave(지난 wave 라우팅으로 이미 확정)에 없으면 그 wave엔
+         반응 없이 넘어가고, 자연히 다시 초대될 때까지 미뤄질 수 있었다.
+         "정해진 시각에 정해진 사람이 반응한다"를 보장하려면 알림 자체가
+         이번 wave 발화 기회를 같이 만들어야 한다
        - 이벤트 실행 후 current_wave 를 active_agents 로 필터 — agent_exit 가
          이번 wave 참가자를 비활성으로 만들면 그 인물은 이 wave 에 발화하지 않는다
  3. current_wave 비었으면 종료 (직전 루프가 no_progress 세팅했으면 존중, 아니면 "no_agents")
@@ -325,6 +330,16 @@ compress() (ABM/memory_compressor.py):
 relationships/self_state는 "계속 참인 것"이라 recency 라벨을 안 붙인다(층 2가
 그날 한정 정보를 애초에 episodes로 유도하므로).
 
+**사실(facts)도 표시 상한이 있다** (`_fact_lines`, `_FACT_SHOW_MAX=15`) — episodes와
+달리 처음엔 상한이 전혀 없었다. 장기 시뮬레이션에서 압축 사이클이 쌓일수록
+"■ 알고 있는 사실:" 목록이 끝없이 자라 `[나의 기억 요약]`이 무한정 커지고, 그만큼
+실제 대화(`agent.memory`)가 들어갈 자리가 줄어드는 문제가 실측됐다 — 심하면
+`trim_to_token_limit`이 대화 원문을 전부 비워도 사실 목록 하나만으로 token_limit을
+넘겨 LLM 호출 자체가 실패할 수 있었다. `get_facts()`가 이미 confidence 내림차순으로
+주므로 상위 `_FACT_SHOW_MAX`개만 보여주고 나머지는 "확신이 흐릿한 사실 N건은 생략"으로
+개수만 알린다. 압축 프롬프트의 "기존 기억" 재진술(`_format_existing`)도 같은
+헬퍼를 써서 상한을 공유한다(안 그러면 압축 프롬프트 자체가 끝없이 커진다).
+
 인터뷰(`backend/api/simulation/interview.py::format_full_memory`)는 같은
 `bucket_episodes()`를 쓰되 `cap=False`로 — 회고는 완전성이 목적이라 "예전" 버킷도
 개수 제한 없이 전부 보여준다("마지막 무렵 있었던 일" / "그보다 며칠 전, 어렴풋한
@@ -342,6 +357,41 @@ relationships/self_state는 "계속 참인 것"이라 recency 라벨을 안 붙�
 구조화 메모리 테이블 (`episodic_memory`, `semantic_memory`, `relationship_memory` +
 `relationship_history`, `agent_self_state`, `compression_log`) → [`database.md`](database.md).
 `GET /agents/{name}/memory`가 `db.get_full_memory(sim_id, agent_key)`로 4개를 묶어 반환.
+
+### 2차 기억 정리(consolidation) — "반복되면 깊어지고, 한 번뿐이면 옅어진다"
+
+1차 압축은 새 대화 조각 하나만 보고 매번 독립적으로 판단해서 "이 사실이 전체
+기억에서 몇 번째 반복인지" 알 방법이 없다 — 표현만 바뀐 같은 이야기가 별개
+행으로 계속 쌓이는 원인이었다(실측: "고등학생이며 수학 학원" / "학생이며 수학
+학원"). 2차 정리는 그 에이전트의 **전체 사실**을 다시 조망해:
+
+```
+트리거 (_maybe_consolidate_facts, step.py):
+    1차 압축이 성공할 때마다 db.count_compressions(sim_id, agent_key)로 누적
+    압축 횟수를 세고, _CONSOLIDATION_EVERY_N_COMPRESSIONS(3)의 배수일 때만
+    한 번 더 실행
+
+consolidate_facts() (ABM/memory_compressor.py):
+    db.get_all_facts(sim_id, agent_key)  ← 상한 없이 id 포함 전체 조회
+    len < _CONSOLIDATION_MIN_FACTS(4)면 스킵(정리할 게 없음)
+    id를 매긴 전체 목록 → LLM (system: "기억 정리 도우미")
+      → { adjustments: [{id, new_confidence, reason}] }
+      - 서로 다른 표현이지만 반복/뒷받침되는 사실 → 확신 상향(강화)
+      - 한 번만 언급되고 안 뒷받침된 사소한 사실 → 확신 하향(쇠퇴)
+      - 사실 문장 자체는 안 바꾼다 — 이번엔 확신도만 재평가
+    유효한 id만(존재하지 않는 id는 무시) db.update_fact_confidence(id, conf)
+      — conf는 [0,1]로 클램프
+```
+
+**행을 지우거나 병합하지 않는다** — 점수(confidence)만 바꾸고, 이미 있는 표시
+상한(`_fact_lines`, 상위 `_FACT_SHOW_MAX`개)이 낮아진 확신을 보고 자연히
+걸러내게 둔다. 그래서 되돌릴 수 있고(다음 정리 때 다시 오를 수 있음), LLM이
+실수로 판단을 잘못해도 원문(raw messages 아카이브)이나 다른 사실을 잃어버릴
+위험이 없다 — 사람의 기억 응고(consolidation)가 세부를 지우는 게 아니라
+중요한 것의 흔적을 강화하고 그렇지 않은 것을 옅어지게만 하는 것과 같은 원칙.
+
+`consolidation_start`/`consolidation_done` 이벤트가 emit된다(`compression_start`/
+`compression_done`과 같은 성격 — 관전용 로그, 피드·마크다운 내보내기엔 안 나감).
 
 ---
 

@@ -155,3 +155,10 @@ def _recent_activity_digest(
 
 _COMPRESSION_THRESHOLD = 0.70   # trigger compression at this fraction of token_limit
 _COMPRESSION_MIN_MSGS  = 4      # don't compress until agent has at least this many memory entries
+
+# 2차 기억 정리(consolidation) — 1차 압축(원문→구조화 기억)이 이만큼 쌓일 때마다
+# 한 번, 그 에이전트의 전체 사실을 다시 검토해 반복 확인된 것은 확신을 올리고
+# (강화) 한 번뿐이고 안 뒷받침된 사소한 것은 확신을 낮춘다(쇠퇴) — 실제 삭제는
+# 안 하고 점수만 바꾼다. `_fact_lines`의 상위 N개 표시 상한이 그 점수를 보고
+# 알아서 걸러낸다. `ABM/memory_compressor.py::consolidate_facts` 가 실행부.
+_CONSOLIDATION_EVERY_N_COMPRESSIONS = 3
