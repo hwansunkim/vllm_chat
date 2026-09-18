@@ -9,6 +9,33 @@ from ._constants import (
 class _SystemMixin:
     """system 에이전트(디렉터) 실행 — 개입 주입 + director_memo 갱신."""
 
+    def _director_placement_summary(self) -> str:
+        """활성 에이전트 전원의 "지금 누가 어디 있는지"를 장소별로 그룹핑한 요약.
+
+        디렉터가 물리적으로 지각 불가능한 자극(다른 방·외부에 있는 사람에게
+        실내 냄새·소리를 보내는 등)을 만들지 않도록 주는 최소한의 월드 상태다.
+        개별 에이전트의 사적 기억·관계·감정은 **의도적으로 포함하지 않는다** —
+        디렉터는 "밖에서 관찰 가능한 것"만 아는 서술자여야 하고(정보 누출
+        방지), 사적 컨텍스트까지 주면 에이전트 수만큼 비용이 곱해진다.
+
+        위치 미사용(레거시) 시나리오는 전원 위치가 빈 문자열이라 자동으로
+        빈 문자열을 반환 — 호출부가 이를 보고 [에이전트 위치] 섹션 자체를
+        생략한다(없는 개념을 프롬프트에 억지로 넣지 않는다).
+        """
+        by_loc: dict[str, list[str]] = {}
+        for key in sorted(self.active_agents):
+            loc = self._agent_location.get(key, "")
+            if not loc:
+                continue
+            by_loc.setdefault(loc, []).append(self._key_to_alias.get(key, key))
+        if not by_loc:
+            return ""
+        lines = []
+        for loc, names in by_loc.items():
+            tag = " (외부)" if loc in self._exterior_locations else ""
+            lines.append(f"  {loc}{tag}: {', '.join(names)}")
+        return "\n".join(lines)
+
     def _run_system_agent(self, wave_num: int, current_wave: dict) -> dict:
         """디렉터를 실행해 개입 메시지를 주입. 수정된 current_wave 반환.
 
@@ -80,6 +107,7 @@ class _SystemMixin:
             wave                 = wave_num,
             current_time_str     = current_time_str,
             recent_activity      = recent_activity,
+            placement_summary    = self._director_placement_summary(),
             active_agents        = {k: self._key_to_alias.get(k, k) for k in self.active_agents},
             silent_agents        = silent,
             isolated_agents      = isolated,

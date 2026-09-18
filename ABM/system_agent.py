@@ -33,6 +33,7 @@ _USER_TEMPLATE = """\
 [현재 Wave: {wave}]
 
 {current_time_section}\
+{placement_section}\
 {director_note_section}\
 {director_memo_section}\
 {recent_activity_section}\
@@ -76,6 +77,11 @@ _USER_TEMPLATE = """\
 - **시각·시계·시간을 임의로 지어내지 말 것.** 위 [현재 시각]만을 참조하십시오.
   [현재 시각] 섹션이 없다면 이 세계에는 시간 개념이 없는 것이므로 시각을 아예 언급하지 마십시오.
   "벽시계가 N시를 알린다" 같은 표현은 [현재 시각]과 정확히 일치할 때만 쓸 수 있습니다.
+- **자극은 대상이 실제로 있는 곳에서 지각 가능해야 합니다.** 위 [에이전트 위치]를
+  참조해, 다른 곳(외부 포함)에 있는 사람에게 그 자리에서 느낄 수 없는 자극(다른
+  방의 냄새·소리 등)을 보내지 마십시오. 같은 곳에 있는 사람들에게는 공유 자극을
+  줄 수 있습니다. [에이전트 위치] 섹션이 없다면 위치 개념이 없는 시나리오이므로
+  이 제약은 적용되지 않습니다.
 - **완료된 행동·없던 사물·물리적 상태 변화를 만들어내지 마십시오.** 당신이 주는 것은
   '무엇이 일어났다'가 아니라 '무엇이 느껴진다 / 보인다 / 들린다'입니다. 사물의 존재
   (없던 음식이 놓여 있다), 특정 인물의 완료된 행동(누가 요리를 마쳤다), 상태 변화는
@@ -101,6 +107,7 @@ def run_system_agent(
     llm_max_tokens: int = 16384,
     current_time_str: str = "",
     recent_activity: str = "",
+    placement_summary: str = "",
     repeat_threshold_pct: int = 65,
 ) -> dict | None:
     """Run the system agent LLM call.
@@ -118,6 +125,15 @@ def run_system_agent(
     발화를 wave별로 나열한 문자열이다. 어휘 유사도(`repetition_info`)로는 못 잡는
     "표현만 바꿔 같은 화제를 맴도는" 주제 반복을 디렉터가 직접 읽고 판단하게 한다.
     비어 있으면 섹션을 생략한다.
+
+    ``placement_summary`` 는 활성 에이전트 전원의 "지금 누가 어디 있는지"를
+    장소별로 그룹핑한 문자열(`_SystemMixin._director_placement_summary()`).
+    디렉터가 다른 방·외부에 있는 사람에게 그 자리에서 지각 불가능한 자극(냄새·
+    소리 등)을 보내는 걸 막는 최소한의 월드 상태다 — 개별 에이전트의 사적
+    기억·관계·감정 상태는 **의도적으로 주지 않는다**. 디렉터는 "관찰 가능한
+    것"만 아는 외부 서술자여야 하고(정보 누출 방지), 에이전트 수만큼 압축
+    메모리 블록 전체를 매 개입마다 붙이면 비용도 감당이 안 된다. 비어 있으면
+    섹션을 생략한다(위치 미사용 레거시 시나리오).
     """
     alias = key_to_alias or {}
 
@@ -153,6 +169,10 @@ def run_system_agent(
         f"[현재 시각]\n{current_time_str.strip()}\n\n"
         if (current_time_str or "").strip() else ""
     )
+    placement_section = (
+        f"[에이전트 위치]\n{placement_summary.strip()}\n\n"
+        if (placement_summary or "").strip() else ""
+    )
     recent_activity_section = (
         f"[최근 활동 — 마지막 몇 wave의 발화]\n{recent_activity.strip()}\n\n"
         if (recent_activity or "").strip() else ""
@@ -161,6 +181,7 @@ def run_system_agent(
     user_msg = _USER_TEMPLATE.format(
         wave                    = wave,
         current_time_section    = current_time_section,
+        placement_section       = placement_section,
         recent_activity_section = recent_activity_section,
         director_note_section   = director_note_section,
         director_memo_section   = director_memo_section,

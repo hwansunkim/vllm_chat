@@ -141,6 +141,18 @@ class _RunnerMixin:
         elapsed_baseline = self._elapsed_minutes
         end_reason = "max_waves"
 
+        # 이번 run() 호출 전체가 재사용하는 스레드풀. 예전엔 wave마다
+        # `with ThreadPoolExecutor(...) as executor:`로 새로 만들어 매번 새 OS
+        # 스레드를 띄웠는데, `ABM/db/conn.py`가 스레드마다 sqlite 커넥션을 캐싱해두고
+        # 절대 닫지 않는 구조라 그 새 스레드들이 죽어도 커넥션(=파일 디스크립터)이
+        # 조용히 새고 있었다. 수백~수천 wave가 누적되면 결국 프로세스의 FD 한도를
+        # 넘겨 "unable to open database file"/"Too many open files"로 죽는다
+        # (에이전트 로그 json open()까지 실패할 정도로 — sqlite만의 문제가 아니라
+        # 프로세스 전체 FD 고갈). 에이전트 로스터는 run() 내내 고정이므로 그 크기를
+        # 상한으로 풀 하나만 만들어 재사용한다 — 어떤 wave도 활성 에이전트 수보다
+        # 많은 동시 작업을 submit하지 않는다.
+        self._turn_executor = ThreadPoolExecutor(max_workers=max(1, len(self.agents)))
+
         for run_wave in range(max_waves):
             # per-run 카운터(run_wave)는 시간/감염/목표기간 계산 전용이다.
             # emit·영속화(피드 뱃지, DB wave 컬럼, 요약 구간)에는 이전 run들의 누적을
@@ -235,23 +247,24 @@ class _RunnerMixin:
             got_incoming = {k for k, inc in current_wave.items() if inc}
 
             results: dict[str, dict] = {}
-            with ThreadPoolExecutor(max_workers=len(current_wave)) as executor:
-                future_map = {
-                    executor.submit(
-                        self._step_agent, agent_key, run_wave, disp_wave,
-                        turn_counter + i, incoming,
-                    ): agent_key
-                    for i, (agent_key, incoming) in enumerate(current_wave.items())
-                }
-                for future in as_completed(future_map):
-                    agent_key = future_map[future]
-                    try:
-                        results[agent_key] = future.result()
-                    except Exception as e:
-                        logger.error(f"Wave {disp_wave} agent {agent_key} 예외: {e}")
-                        results[agent_key] = {"success": False, "agent_key": agent_key}
-                    if self._stop_event.is_set():
-                        break
+            # 풀 자체는 위에서 run() 전체용으로 한 번만 만든 걸 재사용한다(wave마다
+            # 새로 만들지 않음 — 이유는 위 주석).
+            future_map = {
+                self._turn_executor.submit(
+                    self._step_agent, agent_key, run_wave, disp_wave,
+                    turn_counter + i, incoming,
+                ): agent_key
+                for i, (agent_key, incoming) in enumerate(current_wave.items())
+            }
+            for future in as_completed(future_map):
+                agent_key = future_map[future]
+                try:
+                    results[agent_key] = future.result()
+                except Exception as e:
+                    logger.error(f"Wave {disp_wave} agent {agent_key} 예외: {e}")
+                    results[agent_key] = {"success": False, "agent_key": agent_key}
+                if self._stop_event.is_set():
+                    break
 
             if self._stop_event.is_set():
                 end_reason = "stopped"
@@ -679,6 +692,10 @@ class _RunnerMixin:
                 while elapsed < step_delay and not self._stop_event.is_set():
                     time.sleep(interval)
                     elapsed += interval
+
+        # 정상 종료 경로 — 여기 도착 못 하고 run()이 예외로 빠져나가는 경우의
+        # 대비책은 finalize_run()의 방어적 shutdown(backend/api/simulation/runner.py).
+        self._turn_executor.shutdown(wait=True)
 
         self._pending_wave = current_wave
         self._save_edges()

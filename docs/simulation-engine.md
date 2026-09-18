@@ -67,9 +67,19 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
        _run_system_agent(disp_wave, current_wave) → 개입/세계사건을 current_wave에 주입
        ※ wave 루프 상단에서 돈다 — emit·반응 wave·표시 시각이 일치하도록
  5. _emit("wave_start", {wave, agents})
- 6. ThreadPoolExecutor(max_workers=len(current_wave)):
+ 6. self._turn_executor.submit(...) × len(current_wave):
        각 (agent_key, incoming) → _step_agent(agent_key, run_wave, disp_wave, turn, incoming)
        as_completed 순서로 results 수집 (LLM 지연에 따라 매번 다름)
+       ※ _turn_executor 는 run() 진입 시 한 번만 만든 ThreadPoolExecutor
+         (max_workers=len(self.agents), 로스터 상한) 를 wave 마다 재사용한다.
+         예전엔 wave 마다 `with ThreadPoolExecutor(...) as executor:` 로 매번
+         새 스레드를 띄웠는데, ABM/db/conn.py 가 스레드별 sqlite 커넥션을 캐싱만
+         하고 절대 닫지 않아 장기 실행(수백~수천 wave)에서 파일 디스크립터가
+         서서히 새다가 "unable to open database file"/"Too many open files"로
+         죽는 원인이었다. run() 정상 종료 시 루프 뒤에서 명시적으로 shutdown 하고,
+         run() 이 예외로 빠져나가는 경로는 finalize_run()
+         (backend/api/simulation/runner.py) 이 `sim._turn_executor` 를
+         getattr 로 방어적으로 한 번 더 닫아 대비한다.
  7. stop_event 확인 → "stopped"
  8. results = {k: results[k] for k in sorted(results)}   ← 키순 정규화 (이벤트 emit 결정론)
  9. completed_waves = run_wave + 1

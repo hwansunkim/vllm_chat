@@ -565,6 +565,57 @@ class TargetDurationTests(unittest.TestCase):
         self.assertEqual(cfg.max_daytime_jump_minutes, 90)
 
 
+class TurnExecutorReuseTests(unittest.TestCase):
+    """wave마다 스레드풀을 새로 만들지 않고 run() 전체가 하나를 재사용하는지
+    (ABM/simulation/runner.py::_RunnerMixin.run).
+
+    예전엔 wave마다 `with ThreadPoolExecutor(...) as executor:`로 새 스레드를
+    띄웠는데, ABM/db/conn.py가 스레드별 sqlite 커넥션을 캐싱하고 절대 닫지
+    않는 구조라 장기 실행(수백~수천 wave)에서 파일 디스크립터가 고갈돼
+    "unable to open database file"로 죽는 원인이었다.
+    """
+
+    def _llm(self):
+        def llm(messages, max_tokens=None, **kw):
+            return json.dumps({
+                "content": "안녕.", "action_note": "", "target": "all",
+                "move_to": None, "update_appearance": None,
+            }), "", {}
+        return llm
+
+    def test_single_pool_reused_across_waves_and_shut_down(self):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        from ABM.simulation import runner as runner_mod
+
+        created = []
+        real_executor_cls = runner_mod.ThreadPoolExecutor
+
+        class CountingExecutor(real_executor_cls):
+            def __init__(self, *a, **kw):
+                created.append(self)
+                super().__init__(*a, **kw)
+
+        runner_mod.ThreadPoolExecutor = CountingExecutor
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                agent = Agent("a", "너는 a다.", tmp, token_limit=4096)
+                sim = Simulation(
+                    {"a": agent}, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+                    llm=self._llm(),
+                )
+                sim._emit = lambda t, d: None
+                sim.run("a", max_waves=5, step_delay=0.0)
+        finally:
+            runner_mod.ThreadPoolExecutor = real_executor_cls
+
+        # 5 wave를 돌았지만 풀은 run() 전체에서 딱 하나만 만들어졌어야 한다 —
+        # wave마다 새로 만드는 회귀가 생기면 여기서 5개가 잡힌다.
+        self.assertEqual(len(created), 1)
+        # 정상 종료했으면 그 풀도 명시적으로 닫혀 있어야 한다(스레드/커넥션 방치 방지).
+        self.assertTrue(created[0]._shutdown)
+
+
 class VariableTimeJumpClampTests(unittest.TestCase):
     """가변 시간 점프의 결정론적 상한 (_RunnerMixin._clamp_time_jump).
 
@@ -6157,6 +6208,104 @@ class IsolatedAgentDormancyTests(unittest.TestCase):
         self.assertIn("[고립된 에이전트", captured["user"])
         self.assertIn('ID: "a"', captured["user"].split("[고립된 에이전트")[1].split("[반복")[0])
         self.assertIn("억지로 발화시키지 마십시오", captured["user"])
+
+
+class DirectorPlacementAwarenessTests(unittest.TestCase):
+    """디렉터 프롬프트에 에이전트 위치를 넘겨 물리적으로 말이 안 되는 자극을
+    막는다 (ABM/simulation/system.py::_SystemMixin._director_placement_summary).
+
+    배경: 디렉터가 위치를 전혀 모른 채 개입해, 동네에 나가 있는 에이전트에게
+    "찌개 냄새가 방 안까지 스며든다" 같은 실내 전용 자극을 보내는 사고가 실제
+    시나리오에서 관측됐다. 개별 에이전트의 사적 기억·관계까지는 주지 않고
+    "누가 어디 있는지"(장소별 그룹핑 + 외부 여부)만 최소한으로 준다.
+    """
+
+    _GRAPH = [
+        {"name": "거실",   "connects_to": ["동네"], "zone": "우리집"},
+        {"name": "동생방", "connects_to": ["거실"], "zone": "우리집"},
+        {"name": "동네",   "connects_to": ["거실"], "is_exterior": True},
+    ]
+
+    def _make_llm(self):
+        return lambda *a, **kw: (json.dumps({
+            "content": "...", "action_note": "", "target": "self",
+            "move_to": None, "update_appearance": None,
+        }), "", {})
+
+    def test_placement_summary_groups_by_location_and_flags_exterior(self):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192)
+                      for k in ("a", "b", "c")}
+            sim = Simulation(
+                agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+                llm=self._make_llm(),
+                agent_locations={"a": "거실", "b": "거실", "c": "동네"},
+                location_graph=self._GRAPH,
+            )
+            summary = sim._director_placement_summary()
+
+        self.assertIn("거실: a, b", summary)
+        self.assertIn("동네 (외부): c", summary)
+
+    def test_placement_summary_empty_for_legacy_no_location_scenario(self):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in ("a", "b")}
+            sim = Simulation(
+                agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+                llm=self._make_llm(),
+            )
+            self.assertEqual(sim._director_placement_summary(), "")
+
+    def test_director_prompt_carries_placement_and_the_locality_rule(self):
+        llm = _DirectorLLM()
+        with tempfile.TemporaryDirectory() as tmp:
+            from ABM.agent import Agent
+            from ABM.simulation import Simulation
+            agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in ("a", "c")}
+            sim = Simulation(
+                agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+                llm=llm,
+                agent_locations={"a": "거실", "c": "동네"},
+                location_graph=self._GRAPH,
+                system_agent={"enabled": True, "intervention_interval": 1,
+                              "silence_threshold": 99, "display_name": "내레이터"},
+            )
+            sim._emit = lambda *a, **k: None
+            sim._last_spoke_wave = {k: 9 for k in agents}
+            sim._run_system_agent(10, {k: [] for k in agents})
+
+        prompt = llm.director_calls[-1]
+        self.assertIn("[에이전트 위치]", prompt)
+        self.assertIn("동네 (외부): c", prompt)
+        self.assertIn("실제로 있는 곳에서 지각 가능해야", prompt)
+
+    def test_placement_section_omitted_when_summary_is_empty(self):
+        from ABM.system_agent import run_system_agent
+        captured = {}
+
+        def llm(messages, max_tokens=None, **kw):
+            captured["user"] = messages[1]["content"]
+            return json.dumps({"interventions": [],
+                               "director_memo": "", "reason": ""}), "", {}
+
+        run_system_agent(
+            system_prompt="", wave=1,
+            active_agents={"a": "가온"}, silent_agents=[], silence_threshold=3,
+            repetition_info={}, director_note="", director_memo="",
+            key_to_alias={"a": "가온"}, llm=llm,
+            placement_summary="",
+        )
+        # 규칙 문구 자체는 "[에이전트 위치] 섹션이 없다면..."처럼 그 이름을
+        # 언급하므로, 여기서는 실제 섹션 블록([활성 에이전트] 앞부분)에만
+        # 나타나지 않는지를 본다.
+        before_agents = captured["user"].split("[활성 에이전트]")[0]
+        self.assertNotIn("[에이전트 위치]", before_agents)
 
 
 class DirectorRepetitionDetectionTests(unittest.TestCase):

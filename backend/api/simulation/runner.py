@@ -96,6 +96,19 @@ def finalize_run(db, run_sim_id: str | None, stop_event: threading.Event,
     ``stopped`` 로 덮이고 로그가 뒤바뀐다. DB 영속화는 run id 로 키가 나뉘므로
     소유권과 무관하게 그대로 수행한다.
     """
+    # run() 은 자기 소유의 스레드풀(_turn_executor)을 정상 종료 시 직접 닫지만,
+    # run() 자체가 예외로 빠져나가면(= error != None) 그 shutdown 줄에 못 도착한다.
+    # 여기가 모든 호출부(headless/lifecycle/resume)가 성공·실패 양쪽 다 정확히
+    # 한 번씩 거치는 지점이라 이 자리에서 한 번 더 닫아준다 — 이미 정상 종료로
+    # 닫힌 풀이면 아무 효과 없는 idempotent 호출이다. 구버전/목 sim 객체는
+    # 애초에 이 속성이 없으므로 getattr 로 조용히 건너뛴다.
+    executor = getattr(sim_obj, "_turn_executor", None)
+    if executor is not None:
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+
     with _sim_lock:
         owns_globals = is_current_run(run_sim_id)
     try:

@@ -273,6 +273,16 @@ fixed 모드엔 안 나옴. `turn_complete`·로그의 `time_str`이 실제 시�
 - **반복 감지 D2** — 디렉터가 `_recent_activity_digest`(최근 `digest_waves` wave 원문)를
   직접 읽고 표현을 바꿔가며 같은 화제를 맴도는 주제 반복 판단. 심층:
   [`director-repetition-detection.md`](director-repetition-detection.md).
+- **위치 인지** — `_director_placement_summary()`가 활성 에이전트 전원의 "누가
+  어디 있는지"를 장소별로 그룹핑한 한 줄 요약(`거실: 봉미선, 신영식` / `동네
+  (외부): 신짱아`)을 `[에이전트 위치]` 섹션으로 넘긴다. 개별 에이전트의 사적
+  기억·관계까지는 **의도적으로 주지 않는다** — 디렉터는 "관찰 가능한 것"만
+  아는 외부 서술자여야 하고(정보 누출 방지), 에이전트 수만큼 압축 메모리를
+  매 개입마다 붙이면 비용도 감당이 안 된다. 프롬프트 규칙이 이 위치 정보를
+  근거로 "대상이 실제로 있는 곳에서 지각 가능한 자극만" 보내도록 강제한다 —
+  이게 없으면 동네에 나가 있는 에이전트에게 "찌개 냄새가 방 안까지 스며든다"
+  같은 실내 전용 자극이 가는 사고가 생긴다(실제 관측됨). 위치 미사용(레거시)
+  시나리오는 요약이 빈 문자열이라 섹션 자체가 생략되고 이 제약도 적용 안 됨.
 - LLM 출력: `{ interventions[], director_memo, reason }`.
   - `interventions[]` — 각 항목 `{targets: [...], message}`. `_resolve_event_targets`로
     `all`/ID 해석 → 대상 전원의 `current_wave`에 `[내레이터] {message}` 주입.
