@@ -233,17 +233,20 @@ class _StepMixin:
         # 시각 정보 ephemeral 주입
         # 시각 계산은 `_current_elapsed_minutes`(core.py)에 단일화돼 있다 — 감염 진행
         # 판정도 같은 헬퍼를 쓰므로 프롬프트 속 시계와 병의 진행이 항상 일치한다.
+        # 항상 계산해둔다 — [현재 시각] 줄은 시간 개념이 꺼져 있으면 안 보여줘도,
+        # 자기 상태(상황 컨텍스트의 남은 시간)는 그 값이 필요하다.
+        now_elapsed = self._current_elapsed_minutes(wave)
         ephemeral_msgs: list[dict] = []
         time_str: str | None = None
         if self._time_mode == "variable" or self._time_per_wave > 0:
-            time_str = self._format_time_str(
-                self._sim_start_minutes + self._current_elapsed_minutes(wave)
-            )
+            time_str = self._format_time_str(self._sim_start_minutes + now_elapsed)
         if time_str is not None:
             ephemeral_msgs.append({"role": "user", "content": f"[현재 시각: {time_str}]"})
 
         # 상황 컨텍스트는 메모리에 저장하지 않고 매 호출 시 ephemeral로 주입 (중복 누적 방지)
-        situation_text = self._build_situation_context(agent_key, known, strangers, zone_awareness)
+        situation_text = self._build_situation_context(
+            agent_key, known, strangers, zone_awareness, now_elapsed,
+        )
         if situation_text:
             ephemeral_msgs.append({"role": "user", "content": situation_text})
 

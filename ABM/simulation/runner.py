@@ -448,6 +448,31 @@ class _RunnerMixin:
                     continue
                 category_id = result.get("enter_state")
                 if not category_id:
+                    # enter_state가 없다 = "이 상태를 유지하지 않겠다"는 뜻으로
+                    # 본다. 지금 자기-선언형(수면·개인 용무) 상태 중이었다면
+                    # 그 자리에서 바로 해제한다 — 사용자 설계 결정: 잠긴
+                    # 에이전트가 턴을 받는 경로는 직접 지목·예약 이벤트·디렉터
+                    # 개입뿐이라(순수 휴면 재투입에서는 이미 제외됨), 턴을
+                    # 받았다는 것 자체가 이미 "누군가/뭔가 개입했다"는 뜻이고,
+                    # 그때 상태를 유지할지는 그 순간의 판단에 맡기는 게 자연
+                    # 스럽다(예: 엄마가 깨우면 실제로 일어나 세수하러 감).
+                    # traveling은 에이전트가 선택하지 않는 상태라 이 판단과
+                    # 무관하다(원래도 여기서 안 건드림). 애초에 상태가 없던
+                    # 평범한 에이전트(가장 흔한 경우)는 조용히 넘어간다.
+                    st = self._agent_active_status(speaker_key, now_elapsed)
+                    if st is not None and st.get("state") != "traveling":
+                        del self._agent_status[speaker_key]
+                        logger.info(
+                            f"[W{disp_wave}] {speaker_key} 상태 해제(재선언 없음): "
+                            f"{st.get('state')}"
+                        )
+                        self._emit("agent_status_change", {
+                            "wave":         disp_wave,
+                            "agent":        speaker_key,
+                            "display_name": self._key_to_alias.get(speaker_key, speaker_key),
+                            "action":       "clear",
+                            "state":        st.get("state"),
+                        })
                     continue
                 minutes = self._enter_state(speaker_key, now_elapsed, category_id=category_id)
                 if minutes is not None:

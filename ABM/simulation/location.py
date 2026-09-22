@@ -250,14 +250,43 @@ class _LocationMixin:
         known:     list[str],
         strangers: list[tuple],
         zone_awareness: tuple | None = None,
+        now_elapsed: int | None = None,
     ) -> str | None:
-        """현재 위치·이동 가능 장소·동석자 정보를 내러티브 user 메시지로 구성."""
+        """현재 위치·이동 가능 장소·동석자 정보를 내러티브 user 메시지로 구성.
+
+        ``now_elapsed``를 주면 자기 자신의 활성 상태(수면·개인 용무 — traveling은
+        제외)도 한 줄 노출한다. 예전엔 에이전트 본인도 자기가 언제까지 그
+        상태여야 하는지 알 방법이 없어서, 상태를 유지할지 끝낼지를 판단할
+        근거 자체가 없었다(외부 리뷰가 지적한 "조기 완료 서술과 엔진 상태
+        불일치"의 근본 원인). 이 줄이 곧 `enter_state` 재선언 여부를 스스로
+        판단할 근거가 된다 — 계약 규칙(`build_state_hint`)과 짝을 이룬다.
+        traveling은 빼는 이유는 두 가지: (1) 이미 아래 "이동 중" 줄이 다른
+        형태(경로 hop 수)로 노출되고, (2) traveling은 애초에 `_same_room`이
+        누구의 개입도 막아버려 본인이 "유지할지 끝낼지" 판단할 여지가 없는
+        순수 엔진·시간 제어 상태이기 때문이다(수면·개인 용무와 다른 점).
+        """
         my_loc = self._agent_location.get(agent_key, "")
         if not my_loc:
             return None
 
         is_exterior = my_loc in self._exterior_locations
         lines = ["[현재 상황]", f"현재 위치: {my_loc}"]
+
+        if now_elapsed is not None:
+            own_status = self._agent_active_status(agent_key, now_elapsed)
+            if own_status and own_status.get("state") != "traveling":
+                cat   = self._resolve_state_category(own_status.get("state"))
+                label = (cat or {}).get("label") or own_status.get("state")
+                remaining = max(0, own_status["until_elapsed"] - now_elapsed)
+                until_str = self._format_time_str(
+                    self._sim_start_minutes + own_status["until_elapsed"]
+                )
+                lines.append(
+                    f"※ 당신은 지금 '{label}' 상태입니다 (약 {remaining}분 뒤 "
+                    f"{until_str}에 자연히 끝날 예정). 이 상태를 계속 유지하려면 "
+                    f"이번 턴에도 enter_state를 다시 선택하세요 — 선택하지 않으면 "
+                    f"이 상태에서 벗어난 것으로 처리됩니다."
+                )
 
         if is_exterior:
             lines.append("※ 이곳은 시뮬레이션 경계 밖의 공허한 공간입니다.")

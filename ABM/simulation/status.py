@@ -99,11 +99,20 @@ class _StatusMixin:
 
         `**extra`는 상태 dict에 그대로 병합된다(예: traveling의 `arrival_location`).
         반환값은 실제로 부여된 지속 분(디버그/테스트 편의용) — 호출부가 굳이
-        쓰지 않아도 된다.
+        쓰지 않아도 된다. **재선언은 타이머를 갱신하지 않는다** — 아직 안 끝난
+        같은 상태를 다시 선언했다면(개입으로 턴을 받았지만 "계속 유지"를
+        선택한 경우) 이미 진행 중인 타이머를 그대로 이어간다(사용자 설계:
+        "이전 타이머가 남아 있는 상태에서... 타이머 변경 없이 이어서 진행").
+        타이머가 실제로 끝난 뒤(또는 애초에 상태가 없었을 때) 다시 진입하는
+        경우에만 새로 뽑는다 — 이 경우도 반환값은 None(변경 없음)이라 호출부가
+        "enter" 이벤트를 새로 emit하지 않는다(진짜 변화가 없으므로).
         """
         if category_id is not None:
             cat = self._resolve_state_category(category_id)
             if cat is None:
+                return None
+            current = self._agent_active_status(key, now_elapsed)
+            if current is not None and current.get("state") == cat["id"]:
                 return None
             lo, hi = int(cat["min_minutes"]), int(cat["max_minutes"])
             minutes = random.randint(lo, hi) if lo < hi else lo

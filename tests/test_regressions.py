@@ -6236,6 +6236,56 @@ class AgentStatusUnitTests(unittest.TestCase):
             self.assertEqual(sim._agent_status["a"],
                              {"state": "sleep", "until_elapsed": 1300})
 
+    def test_enter_state_redeclare_of_same_active_state_keeps_the_existing_timer(self):
+        # 사용자 설계: "이전 타이머가 남아 있는 상태에서 누군가에 의해 상태가
+        # 해지될 수 있을 때 판단을 다시 하는 것으로, 타이머 변경 없이 이어서
+        # 진행" — 같은 상태를 다시 선언해도(개입으로 턴을 받았지만 "계속
+        # 유지"를 택한 경우) 이미 진행 중인 타이머는 그대로다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, state_categories=[
+                {"id": "sleep", "label": "수면", "min_minutes": 300, "max_minutes": 300},
+            ])
+            sim._enter_state("a", 1000, category_id="sleep")
+            self.assertEqual(sim._agent_status["a"]["until_elapsed"], 1300)
+
+            # 아직 안 끝난 시점(1000~1300 사이)에 같은 카테고리를 다시 선언 —
+            # 새로 뽑지 않고 반환값 None(변경 없음), 타이머도 그대로.
+            result = sim._enter_state("a", 1050, category_id="sleep")
+            self.assertIsNone(result)
+            self.assertEqual(sim._agent_status["a"]["until_elapsed"], 1300)
+
+    def test_enter_state_redeclare_after_expiry_draws_a_fresh_timer(self):
+        # 타이머가 실제로 끝난 뒤(또는 애초에 상태가 없었을 때) 다시 진입하는
+        # 경우는 새로 뽑아야 한다 — "타이머가 끝나서 그 때 다시 같이 상태에
+        # 진입한다고 하면 그 때 다시 타이머를 뽑으면 될거 같아".
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, state_categories=[
+                {"id": "sleep", "label": "수면", "min_minutes": 300, "max_minutes": 300},
+            ])
+            sim._enter_state("a", 1000, category_id="sleep")
+            self.assertEqual(sim._agent_status["a"]["until_elapsed"], 1300)
+
+            # 1300 시점(경계 = 이미 만료)에 다시 선언 — 새 타이머를 뽑는다.
+            result = sim._enter_state("a", 1300, category_id="sleep")
+            self.assertEqual(result, 300)
+            self.assertEqual(sim._agent_status["a"]["until_elapsed"], 1600)
+
+    def test_enter_state_redeclare_with_a_different_category_is_a_real_transition(self):
+        # 같은 상태 유지가 아니라 다른 상태로 전환하는 경우는 재선언이 아니라
+        # 진짜 전환이다 — 기존처럼 새 타이머를 뽑아야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, state_categories=[
+                {"id": "sleep", "label": "수면", "min_minutes": 300, "max_minutes": 300},
+                {"id": "busy",  "label": "용무", "min_minutes": 20,  "max_minutes": 20},
+            ])
+            sim._enter_state("a", 1000, category_id="sleep")
+            self.assertEqual(sim._agent_status["a"]["until_elapsed"], 1300)
+
+            result = sim._enter_state("a", 1050, category_id="busy")
+            self.assertEqual(result, 20)
+            self.assertEqual(sim._agent_status["a"],
+                             {"state": "busy", "until_elapsed": 1070})
+
     def test_enter_state_self_declared_returns_none_when_categories_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(tmp, state_categories=[])
@@ -6628,6 +6678,29 @@ class SelfDeclaredStateTests(unittest.TestCase):
         from ABM.simulation.core import _PERSIST_EVENTS
         self.assertIn("agent_status_change", _PERSIST_EVENTS)
 
+    def test_redeclaring_the_same_active_state_does_not_re_emit_enter(self):
+        # 타이머가 안 바뀌면(재선언) 실제 변화가 없으므로 "enter" 이벤트도 다시
+        # 나가면 안 된다 — 매번 개입받을 때마다 카드/피드에 새 진입 카드가
+        # 스팸처럼 찍히는 걸 막는다. 아직 한참 안 끝난 상태를 직접 구성해
+        # (전원 재투입의 "가장 이른 해제 시점까지 점프"가 경계에 걸리는 걸
+        # 피해) 재선언 하나만 결정론적으로 본다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                {"a": [{"content": "으응... 조금만 더...", "target": "self",
+                        "enter_state": "sleep"}]},
+                state_categories=[{"id": "sleep", "label": "수면",
+                                   "min_minutes": 300, "max_minutes": 300}],
+            )
+            sim._agent_status["a"] = {"state": "sleep", "until_elapsed": 9999}
+            emitted = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            sim.run("a", max_waves=1, step_delay=0.0, resume_wave={"a": []})
+
+        changes = [d for t, d in emitted if t == "agent_status_change"]
+        self.assertEqual(changes, [], f"재선언인데 이벤트가 나감: {changes}")
+        self.assertEqual(sim._agent_status["a"]["until_elapsed"], 9999)  # 타이머 그대로
+
     def test_state_clear_emits_agent_status_change_event(self):
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(tmp, {"a": [{"content": "...", "target": "self"}]})
@@ -6831,6 +6904,101 @@ class SelfDeclaredStateTests(unittest.TestCase):
         # 위 test_same_room_direct_message_to_sleeping_agent_still_delivered가
         # 직접 타깃은 여전히 전달됨을 이미 검증한다 — 여기서는 방송만 다르게
         # 취급되는지가 초점이다.
+
+    def test_own_status_is_exposed_in_situation_context_for_sleep_busy_not_traveling(self):
+        # 사용자 설계: 상태를 유지할지 스스로 판단하려면 먼저 자기 상태(라벨·
+        # 남은 시간)를 알아야 한다 — [현재 상황]에 한 줄 노출한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp, {"a": [{"content": "...", "target": "self"}]}, {"a": "거실"},
+                location_graph=[{"name": "거실", "connects_to": []}],
+                state_categories=[{"id": "sleep", "label": "수면",
+                                   "min_minutes": 300, "max_minutes": 300}],
+            )
+            sim._agent_status["a"] = {"state": "sleep", "until_elapsed": 50}
+            text = sim._build_situation_context("a", [], [], None, now_elapsed=20)
+        self.assertIn("당신은 지금 '수면' 상태", text)
+        self.assertIn("30분", text)  # 50 - 20 = 30분 남음
+
+        # traveling은 이 줄에서 제외된다 — (1) 별도 "이동 중" 줄이 이미 있고,
+        # (2) 개입 자체가 불가능한 순수 엔진 제어 상태라 유지/해제 판단 여지가 없다.
+        with tempfile.TemporaryDirectory() as tmp2:
+            sim2 = self._sim(
+                tmp2, {"a": [{"content": "...", "target": "self"}]}, {"a": "거실"},
+                location_graph=[{"name": "거실", "connects_to": []}],
+            )
+            sim2._agent_status["a"] = {"state": "traveling", "until_elapsed": 50,
+                                       "arrival_location": "거실"}
+            text2 = sim2._build_situation_context("a", [], [], None, now_elapsed=20)
+        self.assertNotIn("당신은 지금", text2)
+
+    def test_own_status_line_is_omitted_when_now_elapsed_not_given(self):
+        # 호출부가 now_elapsed를 안 주면(기존 테스트 호출부 호환) 조용히 생략된다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp, {"a": [{"content": "...", "target": "self"}]}, {"a": "거실"},
+                location_graph=[{"name": "거실", "connects_to": []}],
+                state_categories=[{"id": "sleep", "label": "수면",
+                                   "min_minutes": 300, "max_minutes": 300}],
+            )
+            sim._agent_status["a"] = {"state": "sleep", "until_elapsed": 50}
+            text = sim._build_situation_context("a", [], [], None)
+        self.assertNotIn("당신은 지금", text)
+
+    def test_no_enter_state_clears_a_self_declared_status_immediately(self):
+        # 사용자 설계 결정: 잠긴 상태에서 턴을 받는다는 것 자체가 이미 누군가/뭔가
+        # 개입했다는 뜻이다(순수 휴면 재투입에서는 애초에 제외됨) — 이번 턴에
+        # enter_state를 다시 선언하지 않으면 그 자리에서 즉시 해제한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                {"a": [{"content": "안녕히 주무셨어요.", "target": "self"}]},  # enter_state 없음
+                {"a": "거실"},
+                location_graph=[{"name": "거실", "connects_to": []}],
+                state_categories=[{"id": "sleep", "label": "수면",
+                                   "min_minutes": 300, "max_minutes": 300}],
+            )
+            sim._agent_status["a"] = {"state": "sleep", "until_elapsed": 9999}
+            emitted = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            sim.run("a", max_waves=1, step_delay=0.0, resume_wave={"a": []})
+
+        self.assertNotIn("a", sim._agent_status)
+        clears = [d for t, d in emitted if t == "agent_status_change" and d.get("action") == "clear"]
+        self.assertTrue(any(c["agent"] == "a" and c["state"] == "sleep" for c in clears))
+
+    def test_no_enter_state_is_a_noop_for_an_agent_with_no_active_status(self):
+        # 가장 흔한 경우(상태 자체가 없던 평범한 에이전트)는 아무 일도 없어야 한다
+        # — 매 턴 clear 이벤트가 스푸리어스하게 나가면 안 된다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp, {"a": [{"content": "그냥 평범한 하루.", "target": "self"}]},
+                {"a": "거실"}, location_graph=[{"name": "거실", "connects_to": []}],
+            )
+            emitted = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            sim.run("a", max_waves=1, step_delay=0.0, resume_wave={"a": []})
+
+        clears = [d for t, d in emitted if t == "agent_status_change" and d.get("action") == "clear"]
+        self.assertEqual(clears, [])
+
+    def test_no_enter_state_does_not_clear_traveling_engine_controls_it_alone(self):
+        # traveling은 애초에 (1) _same_room이 개입 자체를 막고, (2) 순수
+        # 엔진·시간 제어라 이 규칙과 무관해야 한다. 유일한 활성 에이전트가
+        # 이동 중인 극단 경우(Phase 2 "전원 이동 중" 폴백)로 실제 턴을 받게
+        # 만들어, enter_state 없이 응답해도 traveling 상태가 그대로인지 확인한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp, {"a": [{"content": "...", "target": "self"}]}, {"a": "거실"},
+                location_graph=[{"name": "거실", "connects_to": []}],
+            )
+            sim._agent_status["a"] = {"state": "traveling", "until_elapsed": 9999,
+                                       "arrival_location": "거실"}
+            sim._emit = lambda t, d: None
+            sim.run("a", max_waves=1, step_delay=0.0, resume_wave={"a": []})
+
+        self.assertIn("a", sim._agent_status)
+        self.assertEqual(sim._agent_status["a"]["state"], "traveling")
 
 
 class AgentContextStatusFieldTests(unittest.TestCase):
@@ -10158,7 +10326,11 @@ class MemoryCompressionIntegrationTests(unittest.TestCase):
     벽시계 기준으로 정확히 꽂히는지 — 단위 테스트가 아니라 실제 배선 확인.
     """
 
-    def _sim(self, tmp, token_limit=900):
+    # 900이었으나 enter_state 계약 힌트(build_state_hint)가 "상태 중 개입 시
+    # 유지/해제 판단" 규칙을 얻으며 기본 state_categories가 켜진 시스템 프롬프트가
+    # 커져, 메모리가 거의 비어 있어도(len=1) 900을 넘겨 트림만 반복하고 압축까지
+    # 못 가는 현상이 생겼다 — 압축이 실제로 몇 차례 일어날 여유를 주도록 올림.
+    def _sim(self, tmp, token_limit=1200):
         from ABM.agent import Agent
         from ABM.simulation import Simulation
         from ABM.db import SimDB
