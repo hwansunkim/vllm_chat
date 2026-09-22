@@ -737,6 +737,50 @@ class VariableTimeJumpClampTests(unittest.TestCase):
                                              any_reached=True)
         self.assertEqual(jump2, 45)
 
+    def test_state_cap_wins_even_when_a_later_checked_event_cap_is_looser(self):
+        # 외부 리뷰 Finding 4 — 예전엔 예정 이벤트 캡이 먼저 걸리면 그 자리에서
+        # 바로 반환해, 뒤에 있는(하지만 더 짧은) 상태 해제 캡이 무시됐다. 여기서는
+        # 예정 이벤트가 60분 뒤(느슨함), 상태 해제가 10분 뒤(더 급함) — 실제로
+        # 더 짧은 쪽(상태 해제)이 이겨야 한다.
+        sim = self._sim(start="10:00")
+        sim._agent_location = {"mom": "office", "kid": "school", "dad": "office"}
+        sim._next_pending_beat = lambda: (sim._elapsed_minutes + 60, "16:30 학원")
+        sim._agent_status["mom"] = {"state": "busy", "until_elapsed": sim._elapsed_minutes + 10}
+        jump, reason = sim._clamp_time_jump(120, self._spoke("mom"))
+        self.assertEqual(jump, 10)
+        self.assertIn("상태 해제", reason)
+
+    def test_event_cap_wins_when_it_is_the_tighter_one(self):
+        # 반대 방향도 확인 — 예정 이벤트(10분 뒤)가 상태 해제(60분 뒤)보다
+        # 급하면 예정 이벤트가 이겨야 한다(둘 다 확인해야 min() 통합이 방향과
+        # 무관하게 옳다는 게 검증된다).
+        sim = self._sim(start="10:00")
+        sim._agent_location = {"mom": "office", "kid": "school", "dad": "office"}
+        sim._next_pending_beat = lambda: (sim._elapsed_minutes + 10, "10:10 알림")
+        sim._agent_status["mom"] = {"state": "busy", "until_elapsed": sim._elapsed_minutes + 60}
+        jump, reason = sim._clamp_time_jump(120, self._spoke("mom"))
+        self.assertEqual(jump, 10)
+        self.assertIn("예정 이벤트", reason)
+
+    def test_target_duration_deadline_caps_the_jump(self):
+        # 새로 추가된 캡 — 목표 기간(target_duration_minutes) 마감을 넘겨
+        # 점프하지 않는다. 실제 실행에서 2,880분 목표가 2,995분에야 종료된
+        # 초과분(115분)의 원인이었다.
+        sim = self._sim(start="10:00")
+        sim._agent_location = {"mom": "office", "kid": "school", "dad": "office"}
+        sim._target_deadline_elapsed = sim._elapsed_minutes + 20
+        jump, reason = sim._clamp_time_jump(120, self._spoke("mom"))
+        self.assertEqual(jump, 20)
+        self.assertIn("목표 기간", reason)
+
+    def test_target_duration_deadline_is_a_noop_when_not_set(self):
+        sim = self._sim(start="10:00")
+        sim._agent_location = {"mom": "office", "kid": "school", "dad": "office"}
+        self.assertIsNone(sim._target_deadline_elapsed)
+        jump, reason = sim._clamp_time_jump(120, self._spoke("mom"))
+        self.assertEqual(jump, 120)
+        self.assertIsNone(reason)
+
 
 class TimeJumpEndTimeStrTests(unittest.TestCase):
     """`time_jump` 이벤트의 `end_time_str` (ABM/simulation/runner.py).
@@ -6369,6 +6413,48 @@ class ZoneTravelStateTests(unittest.TestCase):
         got = [e for e in sim.edges if e["source"] == "b" and e["target"] == "a"]
         self.assertFalse(got, "아직 도착 전인 a가 b의 직접 타깃을 받으면 안 된다")
 
+    def test_scheduled_notify_does_not_force_a_turn_on_a_still_traveling_agent(self):
+        # 외부 리뷰 Finding 1/6: 예약 이벤트(system_message)의 notified 강제
+        # 편입은 next_wave의 hold 처리와 별개 경로라, 이동 중인데도 그 wave에
+        # 바로 턴을 받아 "이미 도착한 것처럼" 서술하는 구멍이 있었다(실제
+        # 실행 W82: 이동 중인 신짱구에게 "18:00 학원 끝났다" 알림이 그대로
+        # 꽂혀 그 wave에 귀가 서사를 실행함). 도착 전까지는 이 강제 편입도
+        # 막혀야 한다 — 단, memory 전달(사실 자체)은 이 필터와 무관하게
+        # 그대로 이뤄져야 한다(도착 후 자연스럽게 반응할 근거가 남아야 함).
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                {"a": [{"content": "학원 끝나서 집에 왔어요!", "target": "self"}],
+                 "b": [{"content": "...", "target": "self"}]},
+                {"a": "거실", "b": "거실"},
+                zone_travel_min=999, zone_travel_max=999,  # 절대 안 풀리게
+            )
+            # 이동을 실제로 트리거하는 wave 없이, 이미 이동 중인 상태를 직접
+            # 구성한다 — 시간 판정/재투입 점프의 타이밍 불확실성을 배제하고
+            # "notify 강제 편입"이라는 이 기능 하나만 결정론적으로 검증한다.
+            sim._agent_status["a"] = {
+                "state": "traveling", "until_elapsed": 999,
+                "arrival_location": "거실", "pending_arrival_announcement": True,
+            }
+            sim._emit = lambda t, d: None
+            sim.run(
+                "b", max_waves=1, step_delay=0.0,
+                events=[{"wave": 0, "type": "system_message",
+                        "message": "18:00. 학원이 끝났다.", "targets": ["a"]}],
+                resume_wave={"b": []},
+            )
+
+        # a는 여전히 이동 중이므로 이번 wave에 턴을 받으면 안 된다.
+        a_spoke = [e for e in sim.shared_log if e.get("speaker") == "a"]
+        self.assertEqual(a_spoke, [], f"이동 중인데 턴을 받음: {a_spoke}")
+        # 그러나 알림 자체(사실)는 memory에 그대로 전달돼야 한다 — 도착 후
+        # 자연스럽게 반응할 근거가 남는다.
+        mem = [m.get("content", "") for m in sim.agents["a"].memory]
+        self.assertTrue(any("18:00. 학원이 끝났다." in c for c in mem),
+                        f"알림 자체가 memory에 안 남음: {mem}")
+        # 상태 자체는 그대로 유지(막 만들어둔 값 그대로).
+        self.assertIn("a", sim._agent_status)
+
     def test_direct_message_blocked_during_travel_even_via_1wave_grace(self):
         # 외부 리뷰에서 코드 재현으로 확인된 구멍: 직전 wave 시작 시점엔 같은
         # 방이었다가(1-wave 유예 조건 성립) 바로 그 wave에 zone 경계를 넘어
@@ -6629,6 +6715,67 @@ class SelfDeclaredStateTests(unittest.TestCase):
         self.assertTrue(idle_jumps)
         self.assertEqual(idle_jumps[0]["minutes"], 50)  # busy(50) < sleep(500)
         self.assertEqual(idle_jumps[0]["reason"], "전원 상태(수면·이동 등) 해제 대기")
+
+    def test_state_locked_reinject_wakes_only_the_earliest_clearing_agent(self):
+        # 실제 실행(v11)에서 확인된 문제: 전원이 상태로 묶이면 옛 코드는 활성
+        # 에이전트 전원을 무조건 재투입해, 아직 해제 시점이 안 된 에이전트까지
+        # 거의 같은 잠꼬대를 반복 재선언하게 만들었다(신짱구/신짱아가 같은 밤
+        # 여러 번 "드르렁... 슛... 골!!!"류를 재선언). 이제는 가장 먼저 풀리는
+        # 한 명(busy, 50분)만 다시 초대해야 하고, 아직 안 풀린 쪽(sleep, 500분)은
+        # 이번엔 재투입되면 안 된다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                {"a": [{"content": "잔다.", "target": "self", "enter_state": "sleep"},
+                       {"content": "...", "target": "self"}],
+                 "b": [{"content": "일 본다.", "target": "self", "enter_state": "busy"},
+                       {"content": "...", "target": "self"}]},
+                {"a": "안방", "b": "거실"},
+                location_graph=[
+                    {"name": "안방", "connects_to": ["거실"]},
+                    {"name": "거실", "connects_to": ["안방"]},
+                ],
+                state_categories=[
+                    {"id": "sleep", "label": "수면", "min_minutes": 500, "max_minutes": 500},
+                    {"id": "busy",  "label": "용무", "min_minutes": 50,  "max_minutes": 50},
+                ],
+            )
+            sim._emit = lambda t, d: None
+            sim.run("a", max_waves=2, step_delay=0.0, resume_wave={"a": [], "b": []})
+
+        # wave 0에서 둘 다 상태 선언, wave 1에서 실제로 턴을 받은 사람만 본다
+        # (`_pending_wave`는 wave 1 *다음*을 위해 다시 계산된 값이라 이 시점엔
+        # 이미 기존 wakeable 필터가 자연히 a를 걸러내므로 fix 유무를 구분 못
+        # 한다 — 대신 wave 1에 실제로 말을 한 사람이 누구였는지로 검증한다).
+        wave1_speakers = {e.get("speaker") for e in sim.shared_log if e.get("wave") == 1}
+        self.assertEqual(wave1_speakers, {"b"},
+                         f"아직 안 풀린 a까지 재투입됨: {wave1_speakers}")
+        # a는 500분짜리라 50분만 지난 시점엔 아직 상태 중이어야 한다.
+        self.assertIn("a", sim._agent_status)
+
+    def test_state_locked_reinject_falls_back_to_everyone_when_nobody_is_state_locked(self):
+        # state_categories를 아예 안 쓰는(또는 상태가 하나도 안 걸린) 시나리오는
+        # state_locked가 항상 빈 집합이라, 순수 고립(대화 상대 없음) 케이스의
+        # 기존 "전원 재투입" 동작이 그대로 보존돼야 한다 — 회귀 없음 보증.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                {"a": [{"content": "혼잣말.", "target": "self"}],
+                 "b": [{"content": "혼잣말.", "target": "self"}]},
+                {"a": "안방", "b": "거실"},
+                location_graph=[
+                    {"name": "안방", "connects_to": ["거실"]},
+                    {"name": "거실", "connects_to": ["안방"]},
+                ],
+            )
+            sim._emit = lambda t, d: None
+            # max_silence_waves=1 → 첫 독백 한 번만으로 바로 dormant_cap을 넘겨
+            # "전원 휴면"(내 새 코드가 손댄 else 분기)에 확실히 들어가게 한다.
+            sim.run("a", max_waves=2, step_delay=0.0, max_silence_waves=1,
+                    resume_wave={"a": [], "b": []})
+
+        self.assertIn("a", sim._pending_wave)
+        self.assertIn("b", sim._pending_wave)
 
     def test_clamp_time_jump_respects_earliest_state_clear_not_just_forced_silence(self):
         # 외부 리뷰 Finding 3: 완전한 침묵(forced_silence_reinject)이 아니라

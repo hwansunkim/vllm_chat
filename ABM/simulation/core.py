@@ -234,6 +234,11 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         self._max_scene_jump_minutes:   int = max(0, int(max_scene_jump_minutes))
         self._max_daytime_jump_minutes: int = max(0, int(max_daytime_jump_minutes))
         self._elapsed_minutes: int = elapsed_minutes_init
+        # 이번 run() 호출의 목표 기간 마감(절대 경과분). run()이 매 호출마다
+        # 새로 계산해 넣는다 — _clamp_time_jump가 다른 캡들과 함께 min()으로
+        # 참조한다(목표 기간을 넘겨 점프하는 것도 다른 캡 초과와 같은 문제라
+        # 같은 방식으로 막는다). run() 밖에서는 목표 기간이 없으므로 None.
+        self._target_deadline_elapsed: int | None = None
 
         # 에이전트 상태(수면·이동 등) 설정. `_StatusMixin`이 소비한다.
         # `[]`(빈 리스트, None 아님)면 자기-선언형 상태(enter_state) 기능이 완전히

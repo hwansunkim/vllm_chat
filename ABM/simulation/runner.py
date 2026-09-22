@@ -139,6 +139,12 @@ class _RunnerMixin:
         # `_elapsed_minutes`는 두 모드 모두 '이전 run들의 누적'이므로 이게 곧
         # 이번 run 시작 시점의 총 경과다(fixed는 wave 0 = 아직 0분 진행).
         elapsed_baseline = self._elapsed_minutes
+        # _clamp_time_jump가 다른 캡들과 함께 min()으로 참조할 수 있도록 절대
+        # 경과분(마감 시각)으로 저장해둔다 — target_minutes(상대값)는 이 함수
+        # 지역 변수라 그 밖에서 못 본다.
+        self._target_deadline_elapsed = (
+            elapsed_baseline + target_minutes if target_minutes > 0 else None
+        )
         end_reason = "max_waves"
 
         # 이번 run() 호출 전체가 재사용하는 스레드풀. 예전엔 wave마다
@@ -236,6 +242,35 @@ class _RunnerMixin:
                         logger.info(f"[W{disp_wave}] system 에이전트 완료, current_wave={list(current_wave.keys())}")
                     except Exception as e:
                         logger.error(f"[W{disp_wave}] system 에이전트 예외: {e}", exc_info=True)
+
+            # ── 이동 중 강제 편입 차단 — 공통 관문 ────────────────────────────
+            # 방금 위 두 블록(예약 이벤트의 entrant/notified, 디렉터 개입)은 둘 다
+            # traveling 체크 없이 current_wave에 직접 꽂는다 — next_wave 구성
+            # 시점의 hold 처리(아래, scene_injections/routed → next_wave)로는 못
+            # 막는 구멍이었다(외부 리뷰 Finding 1/6: 이동 중인데 "18:00 학원
+            # 끝났다" 알림이 그대로 꽂혀, 그 wave에 아직 도착 안 한 집에서 활동
+            # 하는 서사가 실제로 나옴 — W82 재현). 새 주입 경로가 또 생겨도 이
+            # 한 곳만 지키면 되도록, 실제 LLM 호출(turn_executor.submit) 바로
+            # 직전에 한 번 더 공통으로 거른다. 메시지 자체는 이미
+            # `_execute_event`/디렉터가 각자 memory에 직접 적어뒀으므로(이 필터와
+            # 무관하게 항상 전달됨), 여기서 막는 건 오직 "이번 wave에 턴을 받아
+            # 즉시 반응하는 것"뿐이다 — 도착 후 자연스러운 계기(직접 부름·휴면
+            # 재투입 등)에 반응한다.
+            travelers = {k for k in current_wave if self._agent_traveling(k, now_elapsed)}
+            if travelers and len(travelers) < len(current_wave):
+                for key in travelers:
+                    self._hold_incoming(key, current_wave.pop(key))
+            elif travelers:
+                # 활성 에이전트 전원이 하필 이 순간 동시에 이동 중인 극단적
+                # 경우 — current_wave를 완전히 비우면 no_agents 오판정
+                # (`if not current_wave` 가드는 이미 위에서 지나간 뒤라 여기선
+                # 안 걸리지만, 다음 wave 조립이 빈 채로 시작해 no_progress
+                # 오탐지로 이어질 수 있다). 이 희귀 케이스는 옛 동작(그대로
+                # 진행)으로 폴백한다 — 완벽히 막기보다 진행 불가를 피한다.
+                logger.warning(
+                    f"[W{disp_wave}] 활성 에이전트 전원이 이동 중 — traveling "
+                    f"필터를 건너뜀(전체 보류 시 진행 불가 위험): {sorted(travelers)}"
+                )
 
             self._emit("wave_start", {
                 "wave":   disp_wave,
@@ -634,13 +669,43 @@ class _RunnerMixin:
                     next_wave = {k: [] for k in wakeable}
                 else:
                     # 전원 휴면 — 같은 독백을 재생하는 대신 시간을 크게 흘려보내고
-                    # (가변 모드는 idle 스케줄) 전원을 한 번 깨운다. 새 시각을 보고
-                    # 재회할지 각자 판단하게 한다. 이게 없으면 '모두 흩어진 하루'가
-                    # 조각 점프로 max_waves 까지 갈린다.
+                    # (가변 모드는 idle 스케줄) 다시 초대한다. 새 시각을 보고 재회할지
+                    # 각자 판단하게 한다. 이게 없으면 '모두 흩어진 하루'가 조각 점프로
+                    # max_waves 까지 갈린다.
+                    #
+                    # 예전엔 여기서 활성 에이전트 **전원**을 무조건 재투입했는데,
+                    # 그중 상태(수면·이동 등)로 묶여 아직 해제 시점이 안 된 에이전트
+                    # 까지 매번 강제로 턴을 받아 거의 똑같은 잠꼬대를 반복하는 게
+                    # 실측으로 확인됐다(v11 실행 재현 — 신짱구/신짱아가 같은 밤
+                    # 3~4번 연속으로 "드르렁... 슛... 골!!!"류를 재선언). 상태로
+                    # 묶여 있다는 건 아직 시간이 덜 지났다는 뜻이라 지금 깨워도 얻을
+                    # 게 없다 — 그중 **가장 먼저 풀리는 한 명만** 다시 초대해 그
+                    # 행동으로 자연스럽게 이어지는지 지켜보고, 나머지는 각자의 해제
+                    # 시점에 다음 wave 상단의 만료 처리(`_expire_agent_states`)로
+                    # 자연히 합류하게 둔다. 상태 없이 순수하게 고립된(대화 상대가
+                    # 없어 dormant_cap을 넘긴) 에이전트는 이 문제와 무관하므로
+                    # 그대로 재투입한다 — state_categories 자체를 안 쓰는 시나리오는
+                    # state_locked가 항상 빈 집합이라 기존 동작과 완전히 같다.
                     silence_count += 1
                     forced_silence_reinject = True
-                    logger.info(f"[W{disp_wave}] 전원 휴면 — 시간 점프 + 전원 재투입 #{silence_count}")
-                    next_wave = {k: [] for k in sorted(self.active_agents)}
+                    state_locked = {
+                        k for k in self.active_agents
+                        if self._agent_active_status(k, now_elapsed) is not None
+                    }
+                    reinject = sorted(self.active_agents - state_locked)
+                    if state_locked:
+                        wake_key = min(
+                            state_locked,
+                            key=lambda k: self._agent_active_status(k, now_elapsed)["until_elapsed"],
+                        )
+                        reinject.append(wake_key)
+                        logger.info(
+                            f"[W{disp_wave}] 전원 휴면(상태 {len(state_locked)}명 묶임) — "
+                            f"시간 점프 + {wake_key} 우선 재투입 #{silence_count}"
+                        )
+                    else:
+                        logger.info(f"[W{disp_wave}] 전원 휴면 — 시간 점프 + 전원 재투입 #{silence_count}")
+                    next_wave = {k: [] for k in reinject}
             else:
                 silence_count = 0
 
@@ -1097,32 +1162,50 @@ class _RunnerMixin:
 
         ``any_reached`` = 이번 wave에 누군가 누군가에게 말이 닿았는가. 같은 방에
         있어도 아무도 말을 안 걸었으면(각자 독백·취침) "진행 중인 대화 장면"이
-        아니므로 (1) 동석 캡을 걸지 않는다 — 온 가족이 잠든 밤에 45분씩만 흐르던 버그.
+        아니므로 동석 캡을 걸지 않는다 — 온 가족이 잠든 밤에 45분씩만 흐르던 버그.
+
+        적용 가능한 상한을 전부 (분, 사유) 후보로 모아 마지막에 **한 번에**
+        min()을 취한다 — 예전엔 우선순위 순서(예정 이벤트 → 상태 해제 → 동석 →
+        주간)로 **먼저 걸리는 조건에서 바로 반환**했는데, 그러면 뒤에 있는 캡이
+        실제로 더 짧아도 무시된다. 실제 실행에서 확인된 버그(외부 리뷰 Finding 4):
+        상태 해제가 10분 뒤인데 예정 이벤트가 60분 뒤라 예정 이벤트 캡이 먼저
+        걸려 60분이 그대로 통과, 정작 더 급한 상태 해제 시점을 넘겨버렸다.
 
         반환: ``(clamped_jump, 사유_문자열 or None)``. 사유가 None이면 캡 미적용.
         """
-        # (0) 예정된 at_time 이벤트를 넘기지 않는다 — 가장 강한 상한. 시간 추론
-        #     프롬프트도 이 시각을 보지만(hi 캡 + next_beat), 카테고리 모드의 랜덤
-        #     추출이나 AI 추론 실패 폴백은 프롬프트를 안 타므로 여기서 못 박는다.
+        limits: list[tuple[int, str]] = []
+
+        # 예정된 at_time 이벤트를 넘기지 않는다. 시간 추론 프롬프트도 이 시각을
+        # 보지만(hi 캡 + next_beat), 카테고리 모드의 랜덤 추출이나 AI 추론 실패
+        # 폴백은 프롬프트를 안 타므로 여기서 못 박는다.
         beat = self._next_pending_beat()
         if beat is not None:
             room = beat[0] - self._elapsed_minutes
-            if room >= 0 and raw_jump > room:
-                return room, f"예정 이벤트({beat[1]}) 전까지 {raw_jump}→{room}분"
+            if room >= 0:
+                limits.append((room, f"예정 이벤트({beat[1]})"))
 
-        # (0.5) 가장 이른 상태(수면·이동 등) 해제 시점도 (0)과 같은 원칙으로
-        # 넘기지 않는다. 짧은 개인 용무(예: busy 10~30분)가 곧 끝나 돌아와야
-        # 하는 사람이 있는데, 다른 누군가의 "깊은 잠에 빠졌다" 같은 무성 독백
-        # 하나만 보고 LLM이 몇 시간을 통째로 점프시키면 그 활동 완료·복귀
-        # 서사가 그대로 묻힌다 — 실제 실행에서 확인된 버그(리뷰 3번: 씻으러 간
-        # 사람이 자기 방으로 돌아오지 못한 채 밤을 넘김). `forced_silence_reinject`
-        # 경로(전원 침묵)는 이 함수를 안 타므로 run()이 `_earliest_status_clear`를
+        # 가장 이른 상태(수면·이동 등) 해제 시점도 같은 원칙으로 넘기지 않는다.
+        # 짧은 개인 용무(예: busy 10~30분)가 곧 끝나 돌아와야 하는 사람이
+        # 있는데, 다른 누군가의 "깊은 잠에 빠졌다" 같은 무성 독백 하나만 보고
+        # LLM이 몇 시간을 통째로 점프시키면 그 활동 완료·복귀 서사가 그대로
+        # 묻힌다 — 실제 실행에서 확인된 버그(리뷰 3번: 씻으러 간 사람이 자기
+        # 방으로 돌아오지 못한 채 밤을 넘김). `forced_silence_reinject` 경로
+        # (전원 침묵)는 이 함수를 안 타므로 run()이 `_earliest_status_clear`를
         # 직접 쓰지만, 이 경로(LLM이 실제로 뭔가 판단한 경우)는 여기서 막아야 한다.
         state_wake_at = self._earliest_status_clear(self.active_agents, self._elapsed_minutes)
         if state_wake_at is not None:
             room = state_wake_at - self._elapsed_minutes
-            if room >= 0 and raw_jump > room:
-                return room, f"상태 해제 시점(그 뒤 {raw_jump}→{room}분)"
+            if room >= 0:
+                limits.append((room, "상태 해제 시점"))
+
+        # 목표 기간(target_duration_minutes) 마감도 같은 방식으로 넘기지 않는다
+        # — 예전엔 이 캡이 아예 없어서, 목표를 이미 다 채운 뒤에도 자유 점프가
+        # 목표를 몇 시간 더 지나쳐야 다음 wave의 "목표 기간 도달" 체크가 뒤늦게
+        # 걸렸다(실제 실행에서 2,880분 목표가 2,995분에서야 종료).
+        if self._target_deadline_elapsed is not None:
+            room = self._target_deadline_elapsed - self._elapsed_minutes
+            if room >= 0:
+                limits.append((room, "목표 기간 종료"))
 
         # 이번 wave에 실제 내용 있는 발화를 한 에이전트들의 현재(이동 반영 후) 위치.
         speaker_locs = [
@@ -1135,24 +1218,28 @@ class _RunnerMixin:
             if loc and loc not in self._exterior_locations
         ]
 
-        # (1) 실내 한 곳에 2명 이상이 **서로 말을 주고받는 중** = 진행 중인 장면.
-        #     강하게 캡. 각자 독백만 하고 있으면(any_reached=False) 같은 방이어도
-        #     보호할 대화가 없다 — 취침 장면이 45분씩 갈리지 않도록.
+        # 실내 한 곳에 2명 이상이 **서로 말을 주고받는 중** = 진행 중인 장면.
+        # 강하게 캡. 각자 독백만 하고 있으면(any_reached=False) 같은 방이어도
+        # 보호할 대화가 없다 — 취침 장면이 45분씩 갈리지 않도록.
         scene_cap = self._max_scene_jump_minutes
         if (scene_cap > 0 and any_reached
                 and len(interior_locs) != len(set(interior_locs))):
-            if raw_jump > scene_cap:
-                return scene_cap, f"동석 장면(실내 2인+) {raw_jump}→{scene_cap}분"
+            limits.append((scene_cap, "동석 장면(실내 2인+)"))
 
-        # (2) 밤(22~06시)이 아니고 집에 남아 있는 사람이 있으면 주간 상한 적용.
-        #     모두 외부(회사·학교·학원)로 나가 집이 완전히 빈 낮은 캡하지 않는다
-        #     — 그때는 건너뛸 재집결 장면 자체가 없다.
+        # 밤(22~06시)이 아니고 집에 남아 있는 사람이 있으면 주간 상한 적용.
+        # 모두 외부(회사·학교·학원)로 나가 집이 완전히 빈 낮은 캡하지 않는다
+        # — 그때는 건너뛸 재집결 장면 자체가 없다.
         daytime_cap = self._max_daytime_jump_minutes
         now_hour = ((self._sim_start_minutes + self._elapsed_minutes) % 1440) // 60
         is_night = now_hour >= 22 or now_hour < 6
         if daytime_cap > 0 and not is_night and interior_locs:
-            if raw_jump > daytime_cap:
-                return daytime_cap, f"주간·재실자 있음 {raw_jump}→{daytime_cap}분"
+            limits.append((daytime_cap, "주간·재실자 있음"))
 
+        if not limits:
+            return raw_jump, None
+
+        cap_minutes, cap_reason = min(limits, key=lambda t: t[0])
+        if raw_jump > cap_minutes:
+            return cap_minutes, f"{cap_reason} {raw_jump}→{cap_minutes}분"
         return raw_jump, None
 
