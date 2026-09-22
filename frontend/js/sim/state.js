@@ -19,6 +19,17 @@ export const DEFAULT_TIME_CATEGORIES = [
 ];
 export const DEFAULT_IDLE_MINUTES_SCHEDULE = [60, 120, 180];
 
+// ── 에이전트 상태(수면·개인 용무) 기본값 (백엔드 SimStartConfig 기본값과 동일하게 유지) ──
+// id는 화면에 안 보이는 순수 내부 키다(time_categories와 같은 규칙) — 사용자는
+// label·min_minutes·max_minutes만 편집한다. 이동(zone 경계) 상태는 에이전트가
+// 고르는 게 아니라 엔진이 자동으로 적용하므로 여기 포함되지 않는다(zoneTravel*).
+export const DEFAULT_STATE_CATEGORIES = [
+  { id: 'sleep', label: '수면 — 상대가 알고도 말 걸지 않는 한 반응 없음', min_minutes: 300, max_minutes: 540 },
+  { id: 'busy',  label: '자리를 비우고 하는 개인적인 일(씻기 등)',       min_minutes: 10,  max_minutes: 30  },
+];
+export const DEFAULT_ZONE_TRAVEL_MIN_MINUTES = 10;
+export const DEFAULT_ZONE_TRAVEL_MAX_MINUTES = 20;
+
 // ── 요일 (백엔드 SimStartConfig.sim_start_weekday Literal과 정확히 동일해야 함) ──
 // 이 7개 소문자 코드 외의 값을 보내면 API가 422를 반환한다.
 export const WEEKDAY_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -279,6 +290,19 @@ export function infectionBadge(status, cause) {
 }
 
 /**
+ * agent_status_change 이벤트 → 카드 뱃지. action='clear'거나 알 수 없는 state면
+ * 표시할 게 없다(null) — 그 자리에서 뱃지를 지운다는 신호로 호출부가 해석한다.
+ * traveling만 고정 아이콘/라벨을 쓰고, 나머지(자기-선언형 카테고리)는 서버가
+ * 함께 보낸 label을 그대로 쓴다 — 카테고리 id는 사용자가 설정 화면에서 마음대로
+ * 바꾸는 값이라 프론트가 라벨 텍스트를 새로 짓지 않는다.
+ */
+export function agentStatusBadge(d) {
+  if (!d || d.action !== 'enter') return null;
+  if (d.state === 'traveling') return { icon: '🚶', label: '이동 중', cls: 'traveling' };
+  return { icon: '💤', label: d.label || d.state || '상태', cls: 'busy' };
+}
+
+/**
  * meeting_update 이벤트 → 관전자 시점 한 줄 서술. 표시할 게 없으면 null.
  * 피드 카드(run/feed.js)와 마크다운 내보내기(export/markdown.js)가 같은 문구를 쓰도록
  * 여기 한 곳에서만 만든다 (infectionBadge와 같은 위치·같은 이유).
@@ -356,6 +380,13 @@ export const sim = {
   // 전원 휴면 시 idle 시간 점프 스케줄 인덱스. 대화가 시들해지는 것만으로는
   // 시뮬레이션이 끝나지 않는다(종료: max_waves / target_duration / no_agents / no_progress).
   max_silence_waves:  3,
+  // 에이전트 상태(수면·이동 등) — 재투입(휴면 처리)이 상태를 모른 채 무조건
+  // 다시 초대해서 이미 잠든 에이전트가 잠꼬대를 반복하거나 zone 경계 이동이
+  // 순간이동처럼 보이는 문제를 막는다. []면(생략과 다름) 자기-선언형 상태
+  // 기능 자체가 꺼진다.
+  state_categories: DEFAULT_STATE_CATEGORIES.map(c => ({ ...c })),
+  zone_travel_min_minutes: DEFAULT_ZONE_TRAVEL_MIN_MINUTES,
+  zone_travel_max_minutes: DEFAULT_ZONE_TRAVEL_MAX_MINUTES,
   server_id:        null,   // null = 기본 서버, string = 특정 서버 ID
   temperature:      0.7,    // 시뮬레이션 전체 기본 샘플링 온도 (0.0~2.0). 에이전트별로 오버라이드 가능
   system_agent: {

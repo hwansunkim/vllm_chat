@@ -117,11 +117,13 @@ def parse_json_response(
 
 
 def parse_json_extras(content: str) -> dict:
-    """Extract move_to and update_appearance from LLM response without breaking existing API."""
+    """Extract move_to/update_appearance/enter_state from the LLM response
+    without breaking existing API."""
     data = _extract_first_json_object(content)
     if data is None:
         return {}
     return {
         "move_to":           (data.get("move_to") or "").strip() or None,
         "update_appearance": (data.get("update_appearance") or "").strip() or None,
+        "enter_state":       (data.get("enter_state") or "").strip() or None,
     }

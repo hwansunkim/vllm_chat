@@ -34,14 +34,22 @@ class _TargetsMixin:
         turn.py(`_apply_turn_result`의 관계 그래프 edge 생성)가 둘 다 이 형태를
         기대하므로 절대 바꾸지 말 것.
         """
+        now         = self._current_elapsed_minutes(self.completed_waves)
         speaker_loc = self._agent_location.get(speaker_key, "")
-        if speaker_loc in self._exterior_locations:
-            return []  # 외부 공간 화자 — 메시지 전달 불가
+        if speaker_loc in self._exterior_locations or self._agent_traveling(speaker_key, now):
+            return []  # 외부 공간 화자, 또는 화자 본인이 이동 중 — 메시지 전달 불가
 
         resolved    = []
 
         def _same_loc(key: str) -> bool:
-            """위치 시스템 활성 시 같은 위치인지 확인. 위치 미설정이면 항상 True."""
+            """위치 시스템 활성 시 같은 위치인지 확인. 위치 미설정이면 항상 True.
+
+            `traveling` 중인 상대는 raw 위치가 이미 목적지를 가리켜도 아직 그
+            방에 없는 것과 같다 — `_same_room`과 같은 원칙(둘 중 하나라도 이동
+            중이면 같은 방 아님)의 화자 시점 버전이다.
+            """
+            if self._agent_traveling(key, now):
+                return False
             if not speaker_loc:
                 return True
             other_loc = self._agent_location.get(key, "")
@@ -75,8 +83,18 @@ class _TargetsMixin:
             elif t_s.lower() == "all":
                 # "모두"는 유예 없이 **같은 방 한정**이다 — 방금 나간 사람에게까지
                 # 방송을 밀어 넣을 이유가 없다(직접 타깃만 마지막 한마디를 받는다).
+                #
+                # 정책: 수면·개인 용무(sleep/busy) 중인 사람은 **방송에서도** 뺀다.
+                # "같은 방 사람이 상태를 알고도 의도적으로 말을 건다"는 예외는
+                # 그 사람을 콕 집어 부르는 직접 타깃(_can_address, 아래 else 분기)
+                # 에만 해당한다 — 전체를 향한 말은 그 상태의 상대를 겨냥한 게
+                # 아니라서 "알고도 깨웠다"는 전제가 성립하지 않는다. traveling은
+                # 이미 _same_loc()이 걸러주므로 여기서는 sleep/busy만 추가로 본다.
                 candidates = (k for k in self.active_agents if k != speaker_key)
-                resolved.extend(k for k in candidates if _same_loc(k))
+                resolved.extend(
+                    k for k in candidates
+                    if _same_loc(k) and not self._agent_unavailable(k, now)
+                )
             elif t_s.startswith("stranger_"):
                 # stranger_N ID는 같은 장소에서뿐 아니라 같은 zone의 다른 장소를
                 # 인지할 때도 발급된다. 대화 가능 범위는 어디까지나 "같은 방"이므로
@@ -109,7 +127,20 @@ class _TargetsMixin:
         위치 미설정(레거시)은 어느 한쪽이라도 비어 있으면 "같은 방"으로 본다 —
         `_resolve_targets._same_loc`과 같은 하위 호환 규칙. 외부 공간(exterior)이
         한쪽이라도 끼면 격리가 우선이라 False.
+
+        둘 중 누구라도 지금 `traveling`(zone 경계 이동 중) 상태면 무조건 False —
+        raw 위치(`_agent_location`)는 hop 적용 즉시 목적지로 바뀌지만, 실제로는
+        아직 이동 시간이 남아 있어 그 방에 없는 것과 같다. 이 가드 하나로 양방향이
+        같이 풀린다: 이동 중인 쪽은 남을 못 보고(엿듣기·인지 억제), 이미 그 방에
+        있는 쪽도 raw 위치만 보고 그를 "도착한 것"으로 오인해 타깃하지 않는다 —
+        예: 딸이 하교 중이라 `_agent_location`은 이미 "거실"이어도, 실제로 도착할
+        때까지는 거실에 있는 다른 가족이 그녀를 타깃할 수 없다. `sleep`/`busy`는
+        물리적으로 그 자리에 있는 것이므로 이 가드와 무관하다 — 같은 방 사람이
+        (자고 있음을) 알면서 말을 걸면 정상적으로 전달돼야 한다.
         """
+        now = self._current_elapsed_minutes(self.completed_waves)
+        if self._agent_traveling(a, now) or self._agent_traveling(b, now):
+            return False
         la = self._agent_location.get(a, "")
         lb = self._agent_location.get(b, "")
         if la in self._exterior_locations or lb in self._exterior_locations:
@@ -126,7 +157,17 @@ class _TargetsMixin:
 
         외부 공간(exterior)은 **지금이든 직전이든** 한쪽이라도 끼면 격리가 우선이라
         False. 직전 위치를 모르면(재개 첫 wave 등) 유예 없음.
+
+        **`traveling` 우선 검사** — `_can_address()`가 이 함수를 `_same_loc()`보다
+        먼저 확인하므로(순서는 그 함수 docstring 참고), 여기서 걸러주지 않으면
+        `_same_loc()`의 traveling 가드가 아예 호출되지 않고 그냥 통과해버린다.
+        정확히 "직전 wave에 같은 방이었다가 방금 zone 경계를 넘어 이동을 시작한"
+        경우가 이 유예의 트리거 조건과 겹쳐서, 막 이동을 시작한 상대에게도 마지막
+        한마디가 전달되는 구멍이 있었다(리뷰에서 코드 재현으로 확인됨).
         """
+        now = self._current_elapsed_minutes(self.completed_waves)
+        if self._agent_traveling(a, now) or self._agent_traveling(b, now):
+            return False
         if (self._agent_location.get(a, "") in self._exterior_locations
                 or self._agent_location.get(b, "") in self._exterior_locations):
             return False

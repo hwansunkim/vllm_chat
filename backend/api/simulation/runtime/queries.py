@@ -64,6 +64,25 @@ def get_agent_context(name: str):
         location_name, situation_targets, ephemeral_msgs, mem_block,
     )
     prompt_tokens = agent._last_prompt_tokens if agent._last_prompt_tokens is not None else est_tokens
+
+    # 상태(수면·이동 등) — 리뷰에서 지적된 감사 공백(Markdown/DB 어디에도 상태
+    # 진입값이 없다)을 메꾸는 세 경로 중 하나. 실행 중 sim_obj가 있을 때만
+    # 의미가 있고, 없거나(과거 실행 재생 등) 상태가 없으면 null.
+    status = None
+    if sim_obj is not None and name in sim_obj.agents:
+        now = sim_obj._current_elapsed_minutes(sim_obj.completed_waves)
+        st = sim_obj._agent_active_status(name, now)
+        if st is not None:
+            cat = sim_obj._resolve_state_category(st.get("state"))
+            status = {
+                "state":            st.get("state"),
+                "label":            (cat or {}).get("label"),
+                "remaining_minutes": max(0, st.get("until_elapsed", now) - now),
+                "until_time_str":   sim_obj._format_time_str(
+                    sim_obj._sim_start_minutes + st.get("until_elapsed", now)
+                ),
+            }
+
     return {
         "name":           name,
         "memory_size":    len(agent.memory),
@@ -72,6 +91,7 @@ def get_agent_context(name: str):
         "est_tokens":     est_tokens,
         "token_limit":    agent._token_limit,
         "messages":       messages,
+        "status":         status,
     }
 
 

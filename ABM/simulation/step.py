@@ -437,6 +437,7 @@ class _StepMixin:
             return {"success": False, "agent_key": agent_key}
         result["move_to"]            = extras.get("move_to")
         result["update_appearance"]  = extras.get("update_appearance")
+        result["enter_state"]        = extras.get("enter_state")
         result["time_str"]           = time_str
         # 이 턴이 실제로 성공했을 때만 회복 안내 플래그를 내린다. LLM 실패로
         # 위에서 롤백됐다면 이 줄에 도달하지 않으므로, 안내는 다음 성공한 턴에

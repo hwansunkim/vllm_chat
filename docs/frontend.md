@@ -83,6 +83,7 @@ body
 | 위치 | `location_graph[]`, `perception_mode` (`targeted`\|`spatial`) |
 | 시간 | `time_mode`, `time_per_wave`, `time_categories[]`, `time_estimation_mode`, `idle_minutes_schedule[]`, `max_scene_jump_minutes`, `max_daytime_jump_minutes`, `sim_start_time`, `sim_start_weekday` |
 | 휴면 | `max_silence_waves` (고립 휴면 기준) |
+| 에이전트 상태 | `state_categories[]`(수면·개인 용무, []=off), `zone_travel_min_minutes`, `zone_travel_max_minutes`(zone 경계 이동 소요 시간) |
 | LLM | `server_id`, `temperature`, `token_limit`, `llm_max_tokens`, `lang_fix_*` |
 | 하위 모델 | `system_agent{}`, `infection_model{}` |
 | 런타임 | `eventSource`, `scenarios[]`, `agentEmotions{}`, `agentInfection{}`, `errorLog[]` |
@@ -237,6 +238,7 @@ startSimulation() (run/control.js)
 | `meeting_update` | 만남 카드 🤝 (문구는 `state.js:meetingNarration`) | 카드 "→ 목표" 뱃지, 지도 점선 |
 | `infection_update` | 감염 카드 🦠 | 카드 뱃지, 그래프 노드 색, 지도 아바타 |
 | `appearance_update` | 외모 카드 🪞 | — |
+| `agent_status_change` | 상태 카드 (💤 진입 / 🚶 이동 / 🌅 해제) | 카드 상태 뱃지(`cards.js::updateAgentStatus`), 컨텍스트 탭 자동 새로고침 |
 | `time_jump` | 시간 판정 한 줄 (⏱ 카테고리/AI/클램프) | — |
 | `simulation_end` | "완료 \| 총 N턴 \| 사유" | 진행 바 100%, 연결 종료 |
 | `error` | — | 연결 오류 누적, 상태 `error` |
@@ -252,7 +254,7 @@ startSimulation() (run/control.js)
 |---|---|---|
 | 관계 그래프 (`#sim-tab-graph`) | `sim/graph/d3.js` | D3 force 그래프. 노드=에이전트, 엣지=발화(감정색). 감염 노드 강조 |
 | 위치 지도 (`#sim-tab-map`) | `sim/map/d3.js` | `location_graph`를 노드-링크로 그리고 에이전트 아바타를 위치에 배치·이동. 만남 추격선 |
-| 컨텍스트 (`#sim-tab-context`) | `sim/context.js` | `GET /api/simulation/agents/{name}/context` → 그 에이전트가 실제로 받는 프롬프트 메시지 열 + 토큰 배너. 에이전트 카드 클릭으로 진입 |
+| 컨텍스트 (`#sim-tab-context`) | `sim/context.js` | `GET /api/simulation/agents/{name}/context` → 그 에이전트가 실제로 받는 프롬프트 메시지 열 + 토큰 배너 + 상태 배너(`status` 필드, 수면·이동 중이면 표시·만료 시 자연히 사라짐). 에이전트 카드 클릭으로 진입 |
 
 탭 전환은 `context.js:switchTab()`. `TAB_PANES` 맵에 항목을 추가하면 탭이 늘어난다.
 
@@ -274,6 +276,11 @@ startSimulation() (run/control.js)
 - 내보낼 요소는 **내보내기 옵션 모달**(`#sim-export-modal`)에서 체크박스로 토글
   (시간 구분·지문·이동·외모·내레이터 개입·감염·만남). "개입" 토글이 구 실행의
   `world_event`까지 함께 제어한다.
+- `scene_event`와 `agent_status_change`(상태 진입/해제)는 토글과 무관하게 항상
+  포함된다 — 전자는 작가가 심은 서사 비트, 후자는 "언제 잠들어서 언제 깼는지"를
+  내보낸 기록만으로 감사할 수 있어야 한다는 요구 때문. `infection_update`처럼
+  이중 emit(해제=대사 전, 진입=대사 후) 규칙이 있어 두 구현의 `_stream_phase`가
+  `action` 필드로 갈라 처리한다([simulation-features.md §7](simulation-features.md)).
 - **위치 이력 CSV** (`sim/export/csv.js`) — wave별 에이전트 위치. 감염병 접촉 분석용.
 
 ---
@@ -339,6 +346,6 @@ startSimulation() (run/control.js)
 | `map/d3.js` | 인스펙터 위치 지도 탭 (951줄) |
 | `runs/history.js` · `runs/replay.js` · `runs/interview.js` | 과거 실행 |
 | `settings/page.js` | 설정 뷰 오케스트레이션 (`renderSettingsPage` / `readConfigFromUI`) |
-| `settings/*.js` | 섹션별 렌더/수집 (agents, events, location-graph, system-agent, infection-config, time-categories, contract-preview, output-fields, target-duration, temperature, server-select, sections, textareas …) |
+| `settings/*.js` | 섹션별 렌더/수집 (agents, events, location-graph, system-agent, infection-config, time-categories, state-categories, contract-preview, output-fields, target-duration, temperature, server-select, sections, textareas …) |
 | `export/markdown.js` · `export/csv.js` | 내보내기 (프론트 포매터) |
 | `utils/download.js` · `utils/json.js` · `utils/time.js` | 소형 헬퍼 |

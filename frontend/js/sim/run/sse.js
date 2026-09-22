@@ -7,10 +7,10 @@ import {
   addTypingIndicator, removeTypingIndicator,
   updateWaveIndicator, addDirectorCallCard, addInterventionCard, addWorldEventCard,
   addMovementCard, addAppearanceCard, addSituationCard, applyWaveTimeStr,
-  addInfectionCard, addMeetingCard, addTimeJumpCard, flushPendingWaveCards,
+  addInfectionCard, addMeetingCard, addTimeJumpCard, addStatusCard, flushPendingWaveCards,
 } from './feed.js';
 import { updateAgentCard, updateAgentLocation, updateAgentInfection,
-         updateAgentMeetingBadge, getCardEl } from './cards.js';
+         updateAgentMeetingBadge, updateAgentStatus, getCardEl } from './cards.js';
 import { addD3Edge, refreshInfectionStyles } from '../graph/d3.js';
 import { moveAgentOnMap, updateAgentInfectionOnMap, setMeetingIntentOnMap } from '../map/d3.js';
 import { setStatus } from './control.js';
@@ -162,6 +162,20 @@ export function connectSSE() {
   es.addEventListener('appearance_update', e => {
     const d = JSON.parse(e.data);
     addAppearanceCard(d);
+  });
+
+  // 상태(수면·개인 용무·이동) 진입/해제. 카드 뱃지(즉시성)와 피드 카드(감사·검증용
+  // 기록) 둘 다 갱신한다 — "언제 잠들어서 언제 깼는지"를 시나리오 화면에서 그대로
+  // 확인할 수 있어야 한다는 리뷰 지적을 보완한다. 선택된 에이전트의 컨텍스트
+  // 패널이 열려 있으면 그 자리에서도 즉시 갱신한다(turn_complete와 같은 패턴).
+  es.addEventListener('agent_status_change', e => {
+    const d = JSON.parse(e.data);
+    updateAgentStatus(d);
+    addStatusCard(d);
+    if (sim.selectedAgent === d.agent &&
+        !document.getElementById('sim-tab-context').classList.contains('sim-hidden')) {
+      fetchAgentContext(d.agent);
+    }
   });
 
   es.addEventListener('simulation_end', e => {

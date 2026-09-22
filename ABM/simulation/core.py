@@ -16,6 +16,7 @@ from .location import _LocationMixin
 from .infection import _InfectionMixin
 from .meeting import _MeetingMixin
 from .targets import _TargetsMixin
+from .status import _StatusMixin
 from .events import _EventsMixin
 from .turn import _TurnMixin
 from .step import _StepMixin
@@ -34,6 +35,7 @@ _PERSIST_EVENTS: frozenset[str] = frozenset({
     "director_call",
     "infection_update",
     "time_jump",
+    "agent_status_change",
 })
 
 # 시작 요일 키(프론트/스키마와 동일) → 표시 라벨. 인덱스 = 월요일 기준 0~6.
@@ -50,8 +52,18 @@ _DEFAULT_TIME_CATEGORIES: list[dict] = [
     {"id": "night_sleep",       "label": "취침 등 야간 장시간 경과",                   "min_minutes": 240, "max_minutes": 420},
 ]
 
+# 에이전트가 스스로 선택하는 상태(수면·개인 용무 등). time_categories와 같은 이유로
+# id는 화면에 안 보이는 순수 내부 키이고, 지속 시간은 LLM이 부르는 숫자가 아니라
+# 이 min~max 범위에서 엔진이 뽑는다(status.py::_StatusMixin._enter_state).
+# 이동(zone 경계) 상태는 에이전트가 선택하는 게 아니라 엔진이 자동으로 적용하므로
+# 여기 포함되지 않는다 — 별도의 zone_travel_min/max_minutes로 설정한다.
+_DEFAULT_STATE_CATEGORIES: list[dict] = [
+    {"id": "sleep", "label": "수면 — 상대가 알고도 말 걸지 않는 한 반응 없음", "min_minutes": 300, "max_minutes": 540},
+    {"id": "busy",  "label": "자리를 비우고 하는 개인적인 일(씻기 등)",       "min_minutes": 10,  "max_minutes": 30},
+]
 
-class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, _EventsMixin, _TurnMixin, _StepMixin, _SystemMixin, _RunnerMixin):
+
+class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, _StatusMixin, _EventsMixin, _TurnMixin, _StepMixin, _SystemMixin, _RunnerMixin):
     def __init__(
         self,
         agents:           dict[str, Agent],
@@ -99,6 +111,15 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         # 벽시계·동석 상황 기준으로 결정론적으로 캡한다. 0 = 해당 캡 비활성.
         max_scene_jump_minutes:   int                  = 45,
         max_daytime_jump_minutes: int                  = 180,
+        # 에이전트가 스스로 선택하는 상태(수면·개인 용무 등). None이면 기본
+        # 카테고리(수면/개인 용무), 빈 리스트([])면 기능 자체를 끈다(enter_state
+        # 힌트가 계약에서 빠지고 발화 억제도 일어나지 않는다).
+        state_categories: list[dict] | None            = None,
+        # zone 경계를 건너는 이동(예: 집→학교)에 걸리는 시간(분) — 에이전트가
+        # 고르는 게 아니라 엔진이 hop 적용 시 자동으로 부여한다. 같은 zone 안의
+        # 이동(예: 거실→안방)에는 적용되지 않는다(기존처럼 즉시).
+        zone_travel_min_minutes: int                   = 10,
+        zone_travel_max_minutes: int                   = 20,
         elapsed_minutes_init: int                      = 0,
         wave_base_init:   int                           = 0,
         infection_model:  dict | None                  = None,
@@ -213,6 +234,23 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         self._max_scene_jump_minutes:   int = max(0, int(max_scene_jump_minutes))
         self._max_daytime_jump_minutes: int = max(0, int(max_daytime_jump_minutes))
         self._elapsed_minutes: int = elapsed_minutes_init
+
+        # 에이전트 상태(수면·이동 등) 설정. `_StatusMixin`이 소비한다.
+        # `[]`(빈 리스트, None 아님)면 자기-선언형 상태(enter_state) 기능이 완전히
+        # 꺼진다 — time_categories와 달리 이 기능은 선택 사항이라 빈 목록을 유효한
+        # "off" 값으로 허용한다.
+        self._state_categories: list[dict] = (
+            list(_DEFAULT_STATE_CATEGORIES) if state_categories is None else list(state_categories)
+        )
+        self._zone_travel_min_minutes: int = max(0, int(zone_travel_min_minutes))
+        self._zone_travel_max_minutes: int = max(
+            self._zone_travel_min_minutes, int(zone_travel_max_minutes)
+        )
+        # {agent_key: {"state": "traveling"|<state_categories의 id>,
+        #              "until_elapsed": int,   # 이 절대 경과분 이전까지 유효
+        #              ...상태별 부가 정보(예: traveling의 arrival_location)}}
+        # 없는 키는 "available"(평소대로)과 동일하다. _StatusMixin이 관리한다.
+        self._agent_status: dict[str, dict] = {}
 
         # 공간 기반 인지 모드. 알 수 없는 값이면 기존 동작인 "targeted"로 폴백한다
         # (`_time_estimation_mode`와 같은 패턴). "spatial"일 때만 엿듣기·독백 행동
@@ -474,6 +512,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
                 has_location_graph = flags["has_location_graph"],
                 has_zone           = flags["has_zone"],
                 relationships      = rels,
+                state_categories   = self._state_categories,
             )
 
     def _verify_engine_contract(self) -> list[str]:
@@ -570,6 +609,9 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
                 # 감염 상태를 빼먹으면 resume/load 때 전원이 "S"로 되돌아가 유행이
                 # 통째로 초기화된다 — 위치/외모와 정확히 같은 버그 클래스.
                 "infection":    self._export_infection(key),
+                # 상태(수면·이동 등)를 빼먹으면 resume 직후 "자던 중"이었다는 사실이
+                # 사라지고 즉시 재투입 대상이 된다 — 감염 상태와 같은 버그 클래스.
+                "status":       self._export_status(key),
             }
         return state
 
@@ -590,6 +632,21 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
             now = self._current_elapsed_minutes(self.completed_waves)
             entry["elapsed_minutes_since_infection"] = max(0, now - since)
         return entry
+
+    def _export_status(self, key: str) -> dict | None:
+        """에이전트 상태(수면·이동 등) 직렬화. 상태가 없으면(= available) None.
+
+        `until_elapsed`는 감염의 `infected_at_minutes`와 같은 이유로 절대값을
+        그대로 믿지 않는다 — 저장 시점 기준 **남은 분**(`remaining_minutes`)만
+        남기고, 복원 쪽에서 새 run의 원점 기준으로 다시 앵커를 잡는다.
+        """
+        st = self._agent_status.get(key)
+        if not st:
+            return None
+        now = self._current_elapsed_minutes(self.completed_waves)
+        out = dict(st)
+        out["remaining_minutes"] = max(0, out.pop("until_elapsed", now) - now)
+        return out
 
     def restore_agent_state(self, states: dict[str, dict] | None) -> None:
         """export_agent_state()가 만든 상태를 복원. 없는 키/에이전트는 초기값 유지."""
@@ -657,6 +714,15 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
                     "recovered_at_minutes": rec_min if isinstance(rec_min, int) else None,
                     "notify_recovery":      bool(infection.get("notify_recovery", False)),
                 }
+            agent_status = st.get("status")
+            if isinstance(agent_status, dict) and agent_status.get("state"):
+                # base = 재개 첫 wave의 '지금' — 감염 복원과 같은 원점.
+                base      = self._current_elapsed_minutes(0)
+                remaining = agent_status.get("remaining_minutes")
+                remaining = max(0, int(remaining)) if isinstance(remaining, (int, float)) else 0
+                restored  = {k: v for k, v in agent_status.items() if k != "remaining_minutes"}
+                restored["until_elapsed"] = base + remaining
+                self._agent_status[key] = restored
 
     # ── I/O ──────────────────────────────────────────────────────────────────
 

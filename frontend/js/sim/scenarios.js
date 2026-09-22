@@ -3,7 +3,9 @@
 
 import { sim, _expandedAgents, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE, DEFAULT_START_WEEKDAY, normalizeWeekday,
          DEFAULT_TEMPERATURE, normalizeTemperature, normalizeAgentTemperature,
-         normalizeTargetDuration, buildInfectionModel, normalizeRelationships } from './state.js';
+         normalizeTargetDuration, buildInfectionModel, normalizeRelationships,
+         DEFAULT_STATE_CATEGORIES, DEFAULT_ZONE_TRAVEL_MIN_MINUTES,
+         DEFAULT_ZONE_TRAVEL_MAX_MINUTES } from './state.js';
 import { renderSettingsPage, readConfigFromUI } from './settings/page.js';
 import { refreshRunHistory } from './runs/history.js';
 import { downloadFile, safeFilename, nowTag } from './utils/download.js';
@@ -78,6 +80,11 @@ export function buildScenarioConfig() {
     max_scene_jump_minutes:   sim.max_scene_jump_minutes   ?? 45,
     max_daytime_jump_minutes: sim.max_daytime_jump_minutes ?? 180,
     max_silence_waves:      sim.max_silence_waves  ?? 3,
+    // time_categories와 달리 **빈 배열이 유효한 값**이다(자기-선언형 상태 기능 off) —
+    // 기본값으로 되메우지 않는다.
+    state_categories:        sim.state_categories || [],
+    zone_travel_min_minutes: sim.zone_travel_min_minutes ?? 10,
+    zone_travel_max_minutes: sim.zone_travel_max_minutes ?? 20,
     server_id:              sim.server_id         ?? null,
     temperature:            normalizeTemperature(sim.temperature),
     system_agent:           sim.system_agent,
@@ -174,6 +181,9 @@ export function newScenario() {
   sim.max_scene_jump_minutes   = 45;
   sim.max_daytime_jump_minutes = 180;
   sim.max_silence_waves      = 3;
+  sim.state_categories        = DEFAULT_STATE_CATEGORIES.map(c => ({ ...c }));
+  sim.zone_travel_min_minutes = DEFAULT_ZONE_TRAVEL_MIN_MINUTES;
+  sim.zone_travel_max_minutes = DEFAULT_ZONE_TRAVEL_MAX_MINUTES;
   sim.server_id              = null;
   sim.temperature            = DEFAULT_TEMPERATURE;
   sim.system_agent           = { enabled: false, icon: '🎬', display_name: '내레이터', system_prompt: '', intervention_interval: 1, silence_threshold: 3, director_note: '', digest_waves: 6 };
@@ -250,6 +260,12 @@ export function applyScenario(s) {
   sim.max_scene_jump_minutes   = cfg.max_scene_jump_minutes   ?? 45;
   sim.max_daytime_jump_minutes = cfg.max_daytime_jump_minutes ?? 180;
   sim.max_silence_waves      = cfg.max_silence_waves      ?? 3;
+  // time_categories와 달리 **빈 배열은 그대로 보존**한다(자기-선언형 상태 기능을
+  // 의도적으로 끈 것) — 필드 자체가 없는 구버전 시나리오만 기본값으로 폴백한다.
+  sim.state_categories = Array.isArray(cfg.state_categories)
+    ? cfg.state_categories : DEFAULT_STATE_CATEGORIES.map(c => ({ ...c }));
+  sim.zone_travel_min_minutes = cfg.zone_travel_min_minutes ?? DEFAULT_ZONE_TRAVEL_MIN_MINUTES;
+  sim.zone_travel_max_minutes = cfg.zone_travel_max_minutes ?? DEFAULT_ZONE_TRAVEL_MAX_MINUTES;
   sim.server_id              = cfg.server_id              ?? null;
   // 구버전 시나리오에는 필드가 없다 — normalizeTemperature()가 0.7로 폴백한다.
   sim.temperature            = normalizeTemperature(cfg.temperature);

@@ -121,11 +121,15 @@ async function fetchAll() {
 // 구분할 필드가 없고 스크립트로 외모를 바꾸는 경우 자체가 드물어 다수 사례(턴,
 // 대사 후)로 고정해 둔다 — 알려진 한계.
 const PRE_DIALOGUE_EVENT_TYPES  = new Set(['scene_event', 'director_call', 'system_intervention', 'world_event']);
-const POST_DIALOGUE_EVENT_TYPES = new Set(['appearance_update', 'agent_move', 'meeting_update', 'infection_update', 'time_jump']);
+const POST_DIALOGUE_EVENT_TYPES = new Set(['appearance_update', 'agent_move', 'meeting_update', 'infection_update', 'time_jump', 'agent_status_change']);
 
 function streamPhase(kind, payload) {
   if (kind === 'dialogue') return 0;
   if (kind === 'infection_update') return (payload || {}).cause === 'event' ? -1 : 1;
+  // agent_status_change도 infection_update와 같은 이유로 이중 시점이다 — 해제
+  // (clear)는 wave 시작 시점(대사 전)에, 진입(enter)은 이동/상태 처리 블록
+  // (대사 후)에 emit된다(runner.py).
+  if (kind === 'agent_status_change') return (payload || {}).action === 'clear' ? -1 : 1;
   if (PRE_DIALOGUE_EVENT_TYPES.has(kind)) return -1;
   return 1; // 나머지(주로 POST_DIALOGUE_EVENT_TYPES)는 대사 이후
 }
@@ -140,6 +144,10 @@ function buildStream(log, events, checks) {
   if (checks.meeting)      wantTypes.add('meeting_update');
   // 시나리오 이벤트는 작가가 심은 서사 비트라 토글과 무관하게 항상.
   wantTypes.add('scene_event');
+  // 상태(수면·개인 용무·이동) 진입/해제도 토글 무관하게 항상 포함한다 — 리뷰가
+  // 지적한 "Markdown만으로는 상태 시작/종료 시각·이유를 감사할 수 없다"는 공백을
+  // 메우는 것이 이 필드의 목적이라, 옵션으로 숨길 수 있게 두면 그 목적이 무너진다.
+  wantTypes.add('agent_status_change');
 
   // Normalise events: { wave, sort_key, kind, payload }
   const items = [];
@@ -256,6 +264,23 @@ function fmtMeeting(data) {
   return `\n> **[${info.icon} 씬]** *${info.text}*\n`;
 }
 
+/**
+ * 상태(수면·개인 용무·이동) 진입/해제 한 줄. 카드 뱃지(state.js의 agentStatusBadge)와
+ * 같은 아이콘을 쓰되, Markdown은 그 자리에서 사라지는 배지가 아니라 감사 기록이므로
+ * 시작/종료 예정 시각까지 남긴다 — 리뷰가 지적한 "상태 진입값·시각·해제 이유가
+ * 없어 완전하게 감사할 수 없다"는 공백을 메운다.
+ */
+function fmtStatus(data) {
+  const name = data.display_name || agentLabel(data.agent);
+  if (data.action === 'clear') {
+    return `\n> **[🌅 상태 해제]** *${name}이(가) ${data.label ? `'${data.label}' ` : ''}상태에서 벗어났다.*\n`;
+  }
+  const icon  = data.state === 'traveling' ? '🚶' : '💤';
+  const label = data.label || data.state || '상태';
+  const until = data.until_time_str ? ` · ~${data.until_time_str}까지` : '';
+  return `\n> **[${icon} 상태 진입]** *${name}이(가) '${label}' 상태가 됐다. (약 ${data.minutes}분${until})*\n`;
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 
 function _buildMarkdown(log, events, statusStr, checks) {
@@ -346,6 +371,7 @@ function _buildMarkdown(log, events, statusStr, checks) {
         case 'scene_event':         md += fmtSceneEvent(item.payload); break;
         case 'infection_update':    md += fmtInfection(item.payload); break;
         case 'meeting_update':      md += fmtMeeting(item.payload); break;
+        case 'agent_status_change': md += fmtStatus(item.payload); break;
       }
     }
     md += '\n';

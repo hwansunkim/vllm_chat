@@ -169,7 +169,7 @@ nullable/기본값이라 기존 행은 영향 없음. 컬럼 삭제·이름 변�
 | `id` | INTEGER PK | |
 | `run_id` | TEXT | |
 | `wave` | INTEGER | |
-| `event_type` | TEXT | `agent_move`, `infection_update`, `system_intervention`, `meeting_update`, `scene_event`, `director_call`, `appearance_update`, `time_jump` (= `_PERSIST_EVENTS`). `world_event`는 레거시 — 구 실행 행에만 존재 |
+| `event_type` | TEXT | `agent_move`, `infection_update`, `system_intervention`, `meeting_update`, `scene_event`, `director_call`, `appearance_update`, `time_jump`, `agent_status_change` (= `_PERSIST_EVENTS`). `world_event`는 레거시 — 구 실행 행에만 존재 |
 | `data_json` | TEXT | 이벤트 페이로드 |
 | `timestamp` | REAL | epoch |
 
@@ -181,7 +181,7 @@ nullable/기본값이라 기존 행은 영향 없음. 컬럼 삭제·이름 변�
 |---|---|---|
 | `run_id` + `agent_key` | TEXT, PK | |
 | `memory_json` | TEXT | 에이전트 `memory` (개인 컨텍스트) |
-| `state_json` | TEXT | 위치·외모·인지관계·낯선 이 ID·경로·만남 lock·감염 SIR 상태 (`export_agent_state()` 산물). null = 구버전 → 시나리오 초기값 폴백 |
+| `state_json` | TEXT | 위치·외모·인지관계·낯선 이 ID·경로·만남 lock·감염 SIR 상태·에이전트 상태(수면·이동, 남은 분) (`export_agent_state()` 산물). null = 구버전 → 시나리오 초기값 폴백 |
 
 인덱스 `idx_snapshots_run ON (run_id)`.
 

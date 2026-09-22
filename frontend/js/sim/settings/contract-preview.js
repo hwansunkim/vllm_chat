@@ -19,13 +19,14 @@
 // 계약 문자열을 바꾸는 입력은 6가지다:
 //   location_graph(노드/is_exterior/zone), time_mode+time_per_wave,
 //   infection_model.enabled+disease_name, extra_fields, output_format_override,
-//   그리고 기준 에이전트의 relationships(+ 이름/표시이름).
+//   state_categories(id/label), 그리고 기준 에이전트의 relationships(+ 이름/표시이름).
 // 설정 페이지 전체에 위임 리스너를 걸되, 디바운스 후 위 항목으로 만든 **서명**이
 // 실제로 달라졌을 때만 요청을 보낸다. 그래서 무관한 입력(예: max_waves 타이핑)은
 // 네트워크를 전혀 건드리지 않는다.
 
 import { sim, getAgentIcon, liveRelationships, buildKeyToAlias } from '../state.js';
 import { readLocationGraph } from './location-graph.js';
+import { readStateCategories } from './state-categories.js';
 import { updateSectionBadges } from './sections.js';
 import { autoGrowAll } from './textareas.js';
 
@@ -135,6 +136,9 @@ function _buildPayload(overrideOverride) {
       .map(f => ({ name: f.name, default: f.default || '' })),
     output_format_override: overrideOverride ?? _currentOverride(),
     include_output_schema:  true,
+    // enter_state 안내는 카테고리가 비어있지 않을 때만 붙는다(build_state_hint).
+    // 패널이 렌더되기 전(DOM에 행이 없음)이면 sim.state_categories로 폴백한다.
+    state_categories: readStateCategories(),
     // 관계는 per-agent — "누구 기준" 셀렉트가 고른 한 명의 시점만 보낸다.
     ..._relationshipPayload(),
   };
@@ -149,6 +153,7 @@ function _signature() {
     p.infection_model.enabled, p.infection_model.disease_name,
     p.extra_fields,
     p.output_format_override,
+    p.state_categories.map(c => [c.id, c.label]),
     p.relationships, p.key_to_alias, p.available_targets,
   ]);
 }

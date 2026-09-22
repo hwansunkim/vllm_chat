@@ -302,6 +302,31 @@ class _RunnerMixin:
             # 초기화라 targeted 모드에서는 동작이 완전히 동일하다.
             scene_injections: dict[str, list] = {}
 
+            # 이번 wave 시작 시점에 자연 해제된 상태(수면·이동 등) 정리. traveling이
+            # 막 풀린 사람의 "도착했다" 알림은 이동 시작 시점이 아니라 **지금** 그
+            # 자리 사람들을 기준으로 새로 만든다(status.py 모듈 docstring 참고) —
+            # 그래서 라우팅보다 앞, wave_start_location 스냅샷 직후에 처리한다.
+            # 같은 만료 배치에서 본인이 이동 중 놓친 메시지(held_incoming)도
+            # 함께 돌려준다 — 도착 알림(남에게)과 밀린 메시지(본인에게)는 방향이
+            # 반대라 서로 다른 dict에 쌓이지만, 최종적으로 next_wave에 합쳐지는
+            # 경로는 같다.
+            expired_statuses = self._expire_agent_states(now_elapsed)
+            for other_key, msgs in self._deferred_arrival_scene_injections(expired_statuses).items():
+                scene_injections.setdefault(other_key, []).extend(msgs)
+            for key, msgs in self._release_held_incoming(expired_statuses).items():
+                scene_injections.setdefault(key, []).extend(msgs)
+            # 상태 해제도 진입과 대칭으로 관전 텔레메트리를 남긴다 — 이게 없으면
+            # (리뷰에서 지적된 대로) "언제 잠들어서 언제 깼는지"를 Markdown
+            # 내보내기·DB sim_events 어디서도 감사할 수 없었다.
+            for key, st in expired_statuses.items():
+                self._emit("agent_status_change", {
+                    "wave":         disp_wave,
+                    "agent":        key,
+                    "display_name": self._key_to_alias.get(key, key),
+                    "action":       "clear",
+                    "state":        st.get("state"),
+                })
+
             routed: dict[str, list] = {}
             # 이번 wave 에 발화한 에이전트가 실제로 누군가에게 말이 닿았는지
             # (순수 혼잣말이면 False). 아래 휴면(dormancy) 스트릭 갱신에 쓴다.
@@ -377,6 +402,37 @@ class _RunnerMixin:
                         "action_note": "",
                     })
 
+            # ── 상태 선언 처리 (enter_state, 이동 적용과 무관) ──────────────────
+            # 자기-선언형 상태(수면·개인 용무 등)는 "지금부터"라 이동/외모 처리
+            # 같은 스냅샷 시점 제약이 없다 — 이번 wave 시작 시점(now_elapsed)
+            # 기준으로 바로 건다. zone-crossing 이동(traveling)은 에이전트가
+            # 선택하지 않으므로 여기서 다루지 않고, 아래 이동 루프에서 엔진이
+            # 자동으로 건다.
+            for speaker_key, result in results.items():
+                if not result.get("success"):
+                    continue
+                category_id = result.get("enter_state")
+                if not category_id:
+                    continue
+                minutes = self._enter_state(speaker_key, now_elapsed, category_id=category_id)
+                if minutes is not None:
+                    st    = self._agent_status.get(speaker_key, {})
+                    state = st.get("state", category_id)
+                    cat   = self._resolve_state_category(state)
+                    logger.info(f"[W{disp_wave}] {speaker_key} 상태 진입: {state} ({minutes}분)")
+                    self._emit("agent_status_change", {
+                        "wave":         disp_wave,
+                        "agent":        speaker_key,
+                        "display_name": self._key_to_alias.get(speaker_key, speaker_key),
+                        "action":       "enter",
+                        "state":        state,
+                        "label":        (cat or {}).get("label"),
+                        "minutes":      minutes,
+                        "until_time_str": self._format_time_str(
+                            self._sim_start_minutes + now_elapsed + minutes
+                        ),
+                    })
+
             # ── 이동 의도 해석 (이동 적용 *전* 위치 스냅샷 기준) ────────────────
             # 1) 이번 wave의 move_to를 장소 이동 / "사람을 만나러 간다"로 분류
             # 2) 살아 있는 만남 의도를 실제 경로로 환산 (추격 / 랑데부 / 집결)
@@ -407,6 +463,34 @@ class _RunnerMixin:
                 display          = self._key_to_alias.get(agent_key, agent_key)
                 to_exterior      = next_loc in self._exterior_locations
                 from_exterior    = old_loc  in self._exterior_locations
+                # zone 경계를 건너는 hop인가 — 어느 방에서 출발했든 구역을 나가는
+                # 쪽은 무조건 1홉이라(location.py::_expand_zone_edges "구역 안
+                # 어디서든 1홉 탈출") raw 위치가 이 hop 하나로 바로 바뀐다. 지리적
+                # 사실이라 에이전트가 아니라 엔진이 판단한다(0이면 기능 꺼짐).
+                # 외부 노드는 zone이 없어(zone='') 내부 zone과 자연히 구분된다.
+                crossing_zone = (
+                    self._zone_travel_max_minutes > 0
+                    and self._location_zone.get(old_loc, "") != self._location_zone.get(next_loc, "")
+                )
+                if crossing_zone:
+                    lo, hi = self._zone_travel_min_minutes, self._zone_travel_max_minutes
+                    travel_minutes = random.randint(lo, hi) if lo < hi else lo
+                    self._enter_state(
+                        agent_key, now_elapsed, minutes=travel_minutes, state="traveling",
+                        arrival_location=next_loc, pending_arrival_announcement=True,
+                    )
+                    self._emit("agent_status_change", {
+                        "wave":         disp_wave,
+                        "agent":        agent_key,
+                        "display_name": display,
+                        "action":       "enter",
+                        "state":        "traveling",
+                        "label":        f"{next_loc}(으)로 이동 중",
+                        "minutes":      travel_minutes,
+                        "until_time_str": self._format_time_str(
+                            self._sim_start_minutes + now_elapsed + travel_minutes
+                        ),
+                    })
                 self._emit("agent_move", {
                     "wave": disp_wave, "agent": agent_key,
                     "display_name": display,
@@ -433,6 +517,13 @@ class _RunnerMixin:
                     else:
                         # 일반 이동 (내부 → 내부, 외부 → 내부) — 도착지 사람들에게 알림
                         if other_loc == next_loc:
+                            if crossing_zone:
+                                # zone 경계를 건넜다 — 실제 도착 알림은 이동 시간이
+                                # 다 찬 뒤에야 낸다(status.py
+                                # _deferred_arrival_scene_injections). 여기서 바로
+                                # 내면 raw 위치만 바뀐 시점에 "도착했다"가 나가버려
+                                # 아직 이동 중인데 말을 걸 수 있는 것처럼 보인다.
+                                continue
                             if agent_key in self._agent_knowledge.get(other_key, set()):
                                 scene_msg = f"[씬] {display}이(가) 이곳에 도착했다."
                             else:
@@ -492,14 +583,31 @@ class _RunnerMixin:
             # ── next_wave 구성 ────────────────────────────────────────────────
             # 조립 자체는 이동이 끝난 뒤에 한다(도착/이탈 씬 메시지가 필요하므로).
             # "누가 무엇을 듣는지" 판정만 위에서 이동 전 스냅샷으로 이미 끝났다.
+            #
+            # 대상이 **지금(이동 적용 후) 여전히 traveling**이면 여기서 한 번 더
+            # 막는다 — `_same_room`/`_resolve_targets`의 traveling 가드는 "새로
+            # 타깃을 해석할 때"만 적용되고, 이미 routed/scene_injections에 실려
+            # 여기 도달한 메시지는 그 필터를 다시 통과하지 않는다. 그대로 두면
+            # 이동 중인 사람이 다음 wave에 정상 턴을 받아 "이미 도착한 것처럼"
+            # 서술할 수 있다(리뷰에서 코드 재현으로 확인된 구멍). 막는 대신
+            # 버리지 않고 상태에 보관했다가(`_hold_incoming`) 실제 도착 시점에
+            # 본인에게 돌려준다(`_release_held_incoming`, 위쪽 만료 처리 참고).
             next_wave: dict[str, list] = {}
             for agent_key, msgs in scene_injections.items():
-                if agent_key in self.active_agents:
-                    next_wave.setdefault(agent_key, []).extend(msgs)
+                if agent_key not in self.active_agents:
+                    continue
+                if self._agent_traveling(agent_key, now_elapsed):
+                    self._hold_incoming(agent_key, msgs)
+                    continue
+                next_wave.setdefault(agent_key, []).extend(msgs)
 
             for agent_key, msgs in routed.items():
-                if agent_key in self.active_agents:
-                    next_wave.setdefault(agent_key, []).extend(msgs)
+                if agent_key not in self.active_agents:
+                    continue
+                if self._agent_traveling(agent_key, now_elapsed):
+                    self._hold_incoming(agent_key, msgs)
+                    continue
+                next_wave.setdefault(agent_key, []).extend(msgs)
 
             # ── 침묵 처리 — 종료가 아니라 재투입/시간 점프 ────────────────────────
             organically_filled = bool(next_wave)
@@ -513,10 +621,14 @@ class _RunnerMixin:
                 # 막는다. 누군가 그에게 도달하면(이동·이벤트·디렉터 개입 →
                 # routed/scene_injections) 위쪽 조립에서 이미 next_wave 에 들어가므로
                 # 자동으로 깨어난다.
+                # 상태(수면·이동 등) 중인 에이전트는 재투입 후보에서 뺀다 — 직접
+                # 타깃팅(누군가 실제로 말을 걸어 routed/scene_injections로 들어오는
+                # 경우)은 이 경로와 무관하므로 영향받지 않는다.
                 dormant_cap = max(1, max_silence_waves)
                 wakeable = sorted(
                     k for k in self.active_agents
                     if self._solo_streak.get(k, 0) < dormant_cap
+                    and not self._agent_unavailable(k, now_elapsed)
                 )
                 if wakeable:
                     next_wave = {k: [] for k in wakeable}
@@ -560,7 +672,19 @@ class _RunnerMixin:
                 has_content = any(r.get("success") for r in results.values())
                 if forced_silence_reinject:
                     idx  = min(silence_count, len(self._idle_minutes_schedule)) - 1
-                    raw_jump = self._idle_minutes_schedule[idx]
+                    raw_jump    = self._idle_minutes_schedule[idx]
+                    jump_reason = "전원 휴면(고립 독백)"
+                    # 활성 에이전트 전원이 상태(수면·이동 등)에 묶여 있다면, idle
+                    # 스케줄의 랜덤값 대신 **가장 이른 상태 해제 시점까지 정확히**
+                    # 점프한다 — 몇 분 뒤 깨어날지 이미 아는데 굳이 60/120/180분
+                    # 임의 조각으로 나눠 깨울 이유가 없다(0번 클램프는 아래에서
+                    # 그대로 적용된다).
+                    state_wake_at = self._earliest_status_clear(
+                        self.active_agents, self._elapsed_minutes,
+                    )
+                    if state_wake_at is not None:
+                        raw_jump    = max(1, state_wake_at - self._elapsed_minutes)
+                        jump_reason = "전원 상태(수면·이동 등) 해제 대기"
                     # 결정적 idle 점프도 예정 이벤트(at_time) 시각은 넘기지 않는다 —
                     # "가족이 각자 나가 있는 낮"에 15:00 하교·16:30 학원이 통째로
                     # 건너뛰어지던 버그. _clamp_time_jump 는 LLM 경로 전용이라 여기서
@@ -582,7 +706,7 @@ class _RunnerMixin:
                         "used_fallback":  False,
                         "category_id":    None,
                         "category_label": None,
-                        "reason":         "전원 휴면(고립 독백)",
+                        "reason":         jump_reason,
                         "raw_minutes":    raw_jump,
                         "minutes":        jump,
                         "clamp_reason":   idle_clamp_reason,
@@ -608,14 +732,16 @@ class _RunnerMixin:
                     if self._time_estimation_mode == "ai":
                         ai_result = self._estimate_wave_minutes(disp_wave, results, any_reached)
                         if ai_result is None:
-                            # AI 추론 실패 — 카테고리 모드(normal_scene)로 조용히 폴백.
+                            # AI 추론 실패 — 카테고리 모드로 조용히 폴백. "normal_scene"은
+                            # 있으면 그리로, 없으면(사용자가 라벨을 바꿨거나 지웠으면)
+                            # _resolve_time_category가 알아서 첫 카테고리로 떨어뜨린다.
                             used_fallback = True
                             category_id = "normal_scene"
                             raw_jump    = self._random_minutes_for_category(category_id)
-                            jump_source = "ai→normal_scene 폴백"
+                            jump_source = "ai→카테고리 폴백"
                             logger.info(
                                 f"[W{disp_wave}] 시간 추론 모드=ai 실패 — "
-                                f"normal_scene 카테고리로 폴백, {raw_jump}분"
+                                f"카테고리 방식으로 폴백, {raw_jump}분"
                             )
                         else:
                             raw_jump, ai_reason = ai_result
@@ -785,7 +911,10 @@ class _RunnerMixin:
                             any_reached: bool = True) -> str:
         """이번 wave의 발화 결과를 LLM으로 분류해 시간 경과 카테고리 id를 반환.
 
-        절대 예외를 밖으로 던지지 않음 — 실패 시 "normal_scene"으로 폴백.
+        절대 예외를 밖으로 던지지 않음 — 실패 시 ``"normal_scene"``을 반환하지만,
+        이 문자열 자체는 이제 아무 의미가 없다(그 id를 가진 카테고리가 실제로
+        있는지는 `_resolve_time_category`가 신경 쓰지 않는다) — 있으면 그리로,
+        없으면 목록의 첫 카테고리로 조용히 떨어진다.
         """
         try:
             from ..time_classifier import classify_wave_time
@@ -817,19 +946,28 @@ class _RunnerMixin:
             )
             valid_ids = {c["id"] for c in self._time_categories}
             if category_id is None or category_id not in valid_ids:
-                logger.warning(f"[W{wave_num}] 시간 분류 실패/알수없는 카테고리({category_id!r}) — normal_scene으로 폴백")
+                logger.warning(f"[W{wave_num}] 시간 분류 실패/알수없는 카테고리({category_id!r}) — 첫 카테고리로 폴백")
                 return "normal_scene"
             return category_id
         except Exception as e:
-            logger.warning(f"[W{wave_num}] 시간 분류 예외 — normal_scene으로 폴백: {e}")
+            logger.warning(f"[W{wave_num}] 시간 분류 예외 — 첫 카테고리로 폴백: {e}")
             return "normal_scene"
 
     def _resolve_time_category(self, category_id: str | None) -> dict | None:
         """category id → 실제로 사용될 카테고리 dict.
 
-        알 수 없는 id면 ``normal_scene``, 그것도 없으면 첫 카테고리로 폴백한다
-        (``_random_minutes_for_category``의 원래 폴백 규칙 그대로). 카테고리가
-        하나도 설정되지 않았으면 ``None``.
+        알 수 없는 id(또는 None)면 항상 목록의 **첫 번째 카테고리**로 폴백한다.
+        카테고리가 하나도 설정되지 않았으면 ``None``.
+
+        예전엔 ``id == "normal_scene"``인 항목을 특별 취급해 그리로 폴백했는데,
+        설정 화면은 카테고리의 label·min·max만 편집하게 하고 id는 아예 보여주지
+        않는다(`renderTimeCategories()`, frontend) — 즉 id는 사용자가 절대 못
+        보는 순수 내부 키인데 코드 한 군데(`_resolve_time_category`)만 그 값에
+        의미를 두고 있었다. 사용자가 그 항목의 라벨을 다른 뜻으로 바꾸거나
+        지워버리면(둘 다 UI에서 자유롭게 가능) 이 특별 취급은 그냥 조용히
+        `cats[0]`으로 떨어지던 것과 동작이 같았으므로, "id는 완전히 불투명한
+        키이고 목록의 첫 항목이 곧 기본값"이라는 규칙 하나로 정리했다 —
+        설정 화면에도 이 규칙을 안내한다(index.html의 카테고리 목록 힌트).
 
         `time_jump` 이벤트가 "실제로 쓰인" 카테고리의 id/label을 싣기 위해 분리했다
         — 폴백이 걸렸을 때 요청된 id를 그대로 보여주면 사용자가 라벨/범위를
@@ -838,15 +976,12 @@ class _RunnerMixin:
         cats = self._time_categories or []
         if not cats:
             return None
-        return (
-            next((c for c in cats if c["id"] == category_id), None)
-            or next((c for c in cats if c["id"] == "normal_scene"), cats[0])
-        )
+        return next((c for c in cats if c["id"] == category_id), None) or cats[0]
 
     def _random_minutes_for_category(self, category_id: str | None) -> int:
         """카테고리 id의 min~max 범위에서 경과 분을 뽑는다 (카테고리 모드의 원래 로직).
 
-        알 수 없는 id면 ``normal_scene``, 그것도 없으면 첫 카테고리로 폴백한다.
+        알 수 없는 id(또는 None)면 목록의 첫 카테고리로 폴백한다.
         """
         cat = self._resolve_time_category(category_id)
         if cat is None:
@@ -974,6 +1109,20 @@ class _RunnerMixin:
             room = beat[0] - self._elapsed_minutes
             if room >= 0 and raw_jump > room:
                 return room, f"예정 이벤트({beat[1]}) 전까지 {raw_jump}→{room}분"
+
+        # (0.5) 가장 이른 상태(수면·이동 등) 해제 시점도 (0)과 같은 원칙으로
+        # 넘기지 않는다. 짧은 개인 용무(예: busy 10~30분)가 곧 끝나 돌아와야
+        # 하는 사람이 있는데, 다른 누군가의 "깊은 잠에 빠졌다" 같은 무성 독백
+        # 하나만 보고 LLM이 몇 시간을 통째로 점프시키면 그 활동 완료·복귀
+        # 서사가 그대로 묻힌다 — 실제 실행에서 확인된 버그(리뷰 3번: 씻으러 간
+        # 사람이 자기 방으로 돌아오지 못한 채 밤을 넘김). `forced_silence_reinject`
+        # 경로(전원 침묵)는 이 함수를 안 타므로 run()이 `_earliest_status_clear`를
+        # 직접 쓰지만, 이 경로(LLM이 실제로 뭔가 판단한 경우)는 여기서 막아야 한다.
+        state_wake_at = self._earliest_status_clear(self.active_agents, self._elapsed_minutes)
+        if state_wake_at is not None:
+            room = state_wake_at - self._elapsed_minutes
+            if room >= 0 and raw_jump > room:
+                return room, f"상태 해제 시점(그 뒤 {raw_jump}→{room}분)"
 
         # 이번 wave에 실제 내용 있는 발화를 한 에이전트들의 현재(이동 반영 후) 위치.
         speaker_locs = [

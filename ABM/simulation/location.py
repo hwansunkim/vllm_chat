@@ -160,11 +160,18 @@ class _LocationMixin:
         Returns (known: list[str], strangers: list[tuple[stranger_id, real_key, visual]])
         위치가 설정된 경우에만 필터링, 미설정 시 기존 동작.
         외부 공간에 있는 에이전트는 서로를 볼 수 없음.
+
+        `traveling`(zone 경계 이동 중) 상태인 에이전트는 `_agent_location`이 이미
+        목적지를 가리키고 있어도 아직 그 방에 없는 것과 같다 — 본인이 이동 중이면
+        아무도 안 보이고(전원 제외), 남이 이동 중이면 raw 위치만 보고 "이미
+        도착했다"고 오인해 목록에 넣지 않는다(`_same_room`과 같은 원칙, 여기선
+        `[현재 상황]`의 아는 사람/타깃 목록 계산이라 별도 구현이다).
         """
+        now         = self._current_elapsed_minutes(self.completed_waves)
         my_loc      = self._agent_location.get(agent_key, "")
         is_exterior = my_loc in self._exterior_locations
-        if is_exterior:
-            return [], []  # 외부 공간 — 아무도 보이지 않음
+        if is_exterior or self._agent_traveling(agent_key, now):
+            return [], []  # 외부 공간 또는 본인이 이동 중 — 아무도 보이지 않음
 
         knowledge = self._agent_knowledge.get(agent_key, set())
         known:     list[str]                    = []
@@ -172,6 +179,8 @@ class _LocationMixin:
         for other_key in self.active_agents:
             if other_key == agent_key:
                 continue
+            if self._agent_traveling(other_key, now):
+                continue  # 상대가 이동 중 — 아직 그 방에 없다
             other_loc = self._agent_location.get(other_key, "")
             if other_loc in self._exterior_locations:
                 continue  # 외부 공간에 있는 에이전트는 내부에서 보이지 않음

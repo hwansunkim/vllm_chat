@@ -851,6 +851,37 @@ class TimeJumpEndTimeStrTests(unittest.TestCase):
         self.assertTrue(all(e["category_id"] == "normal_scene" for e in jumps))
         self._assert_invariant(sim, jumps)
 
+    def test_resolve_time_category_falls_back_to_first_row_not_a_magic_id(self):
+        # id는 설정 화면에 노출되지 않는 순수 내부 키다(라벨·범위만 편집 가능,
+        # frontend/js/sim/settings/time-categories.js) — 사용자가 "normal_scene"
+        # id를 가진 행의 라벨을 완전히 다른 뜻으로 바꿔놓아도, 알 수 없는 id
+        # 요청은 그 특정 이름을 찾아가는 대신 목록의 **첫 번째 카테고리**로
+        # 떨어져야 한다. 예전엔 "id=='normal_scene'인 행"을 위치와 무관하게
+        # 특별 취급해서, 사용자가 첫 번째 행을 새 기본값으로 삼으려 해도
+        # 조용히 무시되고 다른 위치의 "normal_scene" 행으로 갔다.
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {"a": Agent("a", "너는 a다.", tmp, token_limit=4096)}
+            sim = Simulation(
+                agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+                llm=lambda *a, **kw: ("", "", {}),
+                time_mode="variable",
+                time_categories=[
+                    {"id": "first_real",   "label": "첫 번째(사용자가 새 기본값으로 삼음)",
+                     "min_minutes": 9, "max_minutes": 9},
+                    {"id": "normal_scene", "label": "라벨을 완전히 다른 뜻으로 바꿔놓음",
+                     "min_minutes": 77, "max_minutes": 77},
+                ],
+            )
+            # 존재하지 않는 id → 첫 번째 카테고리로 폴백 (다른 위치의 "normal_scene"
+            # 행으로 가지 않는다).
+            self.assertEqual(sim._resolve_time_category("hallucinated_id")["id"], "first_real")
+            # "normal_scene"을 정확히 요청하면 그 항목을 그대로 준다 — 이건
+            # 폴백이 아니라 정상적인 직접 일치이므로 당연히 존중된다.
+            self.assertEqual(sim._resolve_time_category("normal_scene")["id"], "normal_scene")
+
     def test_end_time_str_is_not_off_by_one_wave(self):
         # 회귀 방지: `_elapsed_minutes += jump` 뒤에 계산하거나(=한 wave 앞섬)
         # jump 를 빼먹으면(=한 wave 뒤처짐) 첫 이벤트가 시작 시각 그대로 나온다.
@@ -1213,6 +1244,7 @@ class _ScriptedLLM:
             "target":            turn.get("target", "self"),
             "move_to":           turn.get("move_to"),
             "update_appearance": turn.get("update_appearance"),
+            "enter_state":       turn.get("enter_state"),
         }), "", {}
 
 
@@ -3249,6 +3281,19 @@ class ResumeContinueWaveBaseTests(unittest.TestCase):
         self.assertEqual(calls["create_run"]["kwargs"].get("start_wave"), 0)
         self.assertEqual(resp.get("start_wave"), 0)
 
+    def test_resume_forwards_state_categories_and_zone_travel_minutes(self):
+        # load.py/resume.py 가 headless.py의 Simulation(...) 인자를 손으로
+        # 복제하고 있어, 새 엔진 인자를 빠뜨리면 /start 로는 상태(수면·이동)
+        # 기능이 걸리고 /resume 으로 되살린 실행에서만 조용히 꺼진다.
+        custom_states = [{"id": "nap", "label": "낮잠", "min_minutes": 20, "max_minutes": 40}]
+        resp, calls = self._run_resume(self._run_row(self._cfg(
+            state_categories=custom_states,
+            zone_travel_min_minutes=7, zone_travel_max_minutes=15,
+        )))
+        self.assertEqual(calls["sim_kwargs"].get("state_categories"), custom_states)
+        self.assertEqual(calls["sim_kwargs"].get("zone_travel_min_minutes"), 7)
+        self.assertEqual(calls["sim_kwargs"].get("zone_travel_max_minutes"), 15)
+
     def test_resume_forwards_max_silence_waves_to_run(self):
         resp, calls = self._run_resume(
             self._run_row(self._cfg(max_silence_waves=9)))
@@ -5057,6 +5102,36 @@ class EngineContractBuilderTests(unittest.TestCase):
         self.assertEqual(build_map_contract(location_graph=None), "")
         self.assertEqual(build_map_contract(location_graph={}), "")
 
+    def test_state_hint_is_empty_without_state_categories(self):
+        # 동작하지 않는 필드를 광고하지 않는다 — move_to/map과 같은 원칙.
+        from ABM.prompt_contract import build_state_hint
+
+        self.assertEqual(build_state_hint(None), "")
+        self.assertEqual(build_state_hint([]), "")
+
+    def test_state_hint_lists_category_ids_and_labels(self):
+        from ABM.prompt_contract import build_state_hint
+
+        hint = build_state_hint([
+            {"id": "sleep", "label": "수면"},
+            {"id": "busy",  "label": "개인 용무"},
+        ])
+        self.assertIn("enter_state", hint)
+        self.assertIn('"sleep": 수면', hint)
+        self.assertIn('"busy": 개인 용무', hint)
+
+    def test_output_contract_includes_state_hint_only_when_categories_given(self):
+        # "enter_state": null 필드 자체는 스키마 골격이라 항상 나온다(move_to와
+        # 같은 원칙) — 조건부인 건 그 의미를 설명하는 안내 줄뿐이다.
+        from ABM.prompt_contract import build_output_contract
+
+        with_state = build_output_contract(
+            ["a"], _FIELDS, state_categories=[{"id": "sleep", "label": "수면"}],
+        )
+        without_state = build_output_contract(["a"], _FIELDS, state_categories=None)
+        self.assertIn("- enter_state:", with_state)
+        self.assertNotIn("- enter_state:", without_state)
+
     def test_map_contract_conditional_sections(self):
         from ABM.prompt_contract import build_map_contract
 
@@ -5731,6 +5806,21 @@ class RelationshipRestorePathTests(unittest.TestCase):
         _, cap = self._load(cfg)
         self.assertEqual(cap.get("agent_relationships"), {"a": {}})
 
+    def test_load_forwards_state_categories_and_zone_travel_minutes(self):
+        # headless.py/resume.py와 같은 이유 — 빠뜨리면 /start로는 상태(수면·이동)
+        # 기능이 걸리고 /load로 되살린 실행에서만 조용히 꺼진다.
+        custom_states = [{"id": "nap", "label": "낮잠", "min_minutes": 20, "max_minutes": 40}]
+        cfg = SimStartConfig(
+            agents=[AgentConfig(name="a", system_prompt="너는 a다.")],
+            background="테스트", start_agent="a",
+            state_categories=custom_states,
+            zone_travel_min_minutes=7, zone_travel_max_minutes=15,
+        )
+        _, cap = self._load(cfg)
+        self.assertEqual(cap.get("state_categories"), custom_states)
+        self.assertEqual(cap.get("zone_travel_min_minutes"), 7)
+        self.assertEqual(cap.get("zone_travel_max_minutes"), 15)
+
 
 class LoadLocationSyncTests(unittest.TestCase):
     """`/load` 응답에 복원된 위치를 실어 보낸다.
@@ -6054,6 +6144,601 @@ class SystemAgentTimeAndOrderTests(unittest.TestCase):
 
             self.assertEqual(llm.director_calls, [])
             self.assertFalse([t for t, _ in emitted if t == "system_intervention"])
+
+
+class AgentStatusUnitTests(unittest.TestCase):
+    """에이전트 상태(수면·이동 등)의 저장·조회·진입·만료 (ABM/simulation/status.py).
+
+    발화/인지 억제에 실제로 개입하는 지점은 세 곳뿐이다 — `_same_room`(양방향
+    대칭), 재투입 `wakeable` 후보, "전원 재투입" 시간 점프. 이 클래스는 그
+    아래 순수 로직(카테고리 해석·진입·만료)만 단위 테스트한다. 통합(같은 방
+    판정·재투입 배제·zone 이동)은 `ZoneTravelStateTests`/`SelfDeclaredStateTests`.
+    """
+
+    def _sim(self, tmp, *, state_categories=None):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        agents = {"a": Agent("a", "너는 a다.", tmp, token_limit=4096)}
+        return Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=lambda *a, **kw: ("", "", {}),
+            state_categories=state_categories,
+        )
+
+    def test_resolve_state_category_falls_back_to_first_row_not_a_magic_id(self):
+        # time_categories와 같은 이유 — id는 화면에 안 보이는 순수 내부 키라
+        # 알 수 없는 id는 다른 위치의 "sleep" 행을 찾아가는 대신 첫 행으로 간다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, state_categories=[
+                {"id": "first",  "label": "첫 번째", "min_minutes": 9, "max_minutes": 9},
+                {"id": "sleep",  "label": "라벨을 다른 뜻으로 바꿔놓음", "min_minutes": 77, "max_minutes": 77},
+            ])
+            self.assertEqual(sim._resolve_state_category("hallucinated")["id"], "first")
+            self.assertEqual(sim._resolve_state_category("sleep")["id"], "sleep")
+
+    def test_resolve_state_category_empty_list_means_feature_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, state_categories=[])
+            self.assertIsNone(sim._resolve_state_category("sleep"))
+            self.assertIsNone(sim._resolve_state_category(None))
+
+    def test_enter_state_self_declared_draws_within_category_range(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, state_categories=[
+                {"id": "sleep", "label": "수면", "min_minutes": 300, "max_minutes": 300},
+            ])
+            minutes = sim._enter_state("a", 1000, category_id="sleep")
+            self.assertEqual(minutes, 300)
+            self.assertEqual(sim._agent_status["a"],
+                             {"state": "sleep", "until_elapsed": 1300})
+
+    def test_enter_state_self_declared_returns_none_when_categories_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, state_categories=[])
+            self.assertIsNone(sim._enter_state("a", 0, category_id="sleep"))
+            self.assertNotIn("a", sim._agent_status)
+
+    def test_enter_state_world_provided_uses_explicit_minutes_and_label(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp)
+            minutes = sim._enter_state("a", 100, minutes=15, state="traveling",
+                                       arrival_location="거실")
+            self.assertEqual(minutes, 15)
+            self.assertEqual(sim._agent_status["a"], {
+                "state": "traveling", "until_elapsed": 115, "arrival_location": "거실",
+            })
+
+    def test_agent_unavailable_and_traveling_reflect_expiry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp)
+            sim._enter_state("a", 0, minutes=10, state="sleep")
+            self.assertTrue(sim._agent_unavailable("a", 5))
+            self.assertFalse(sim._agent_traveling("a", 5))   # sleep, not traveling
+            self.assertFalse(sim._agent_unavailable("a", 10))  # 정확히 경계 시점 = 해제
+            self.assertFalse(sim._agent_unavailable("a", 11))
+
+    def test_expire_agent_states_removes_only_what_expired(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp)
+            sim._agent_status["a"] = {"state": "sleep", "until_elapsed": 10}
+            sim._agent_status["b"] = {"state": "busy",  "until_elapsed": 100}
+            expired = sim._expire_agent_states(10)
+            self.assertEqual(set(expired), {"a"})
+            self.assertNotIn("a", sim._agent_status)
+            self.assertIn("b", sim._agent_status)
+
+    def test_export_restore_rebases_status_anchor_like_infection(self):
+        # 감염 상태 복원과 같은 원칙 — until_elapsed(절대 앵커)를 그대로 믿지
+        # 않고 저장 시점 기준 **남은 분**만 넘겨, 복원 쪽이 새 run의 원점 기준
+        # (elapsed_minutes_init)으로 다시 앵커를 잡는다. 그래야 재개 후에도
+        # "몇 분 뒤 깨어날지"가 그대로 이어진다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp)
+            sim._enter_state("a", 100, minutes=500, state="sleep")  # until_elapsed=600
+            sim._elapsed_minutes = 400                              # 저장 시점 '지금'
+
+            state = sim.export_agent_state()
+            saved = state["a"]["status"]
+            self.assertEqual(saved["remaining_minutes"], 200)       # 600 - 400
+            self.assertEqual(saved["state"], "sleep")
+            self.assertNotIn("until_elapsed", saved)
+
+            fresh = self._sim(tmp)
+            fresh._elapsed_minutes = 400  # elapsed_minutes_init으로 복원된 새 run의 원점
+            fresh.restore_agent_state(state)
+
+            self.assertEqual(fresh._agent_status["a"]["state"], "sleep")
+            self.assertEqual(fresh._agent_status["a"]["until_elapsed"], 600)  # 400 + 200
+            self.assertTrue(fresh._agent_unavailable("a", 599))
+            self.assertFalse(fresh._agent_unavailable("a", 600))
+
+    def test_export_agent_state_omits_status_when_available(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp)
+            state = sim.export_agent_state()
+            self.assertIsNone(state["a"]["status"])
+
+    def test_earliest_status_clear_picks_the_minimum_or_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp)
+            sim._agent_status["a"] = {"state": "sleep", "until_elapsed": 500}
+            sim._agent_status["b"] = {"state": "busy",  "until_elapsed": 200}
+            self.assertEqual(sim._earliest_status_clear(["a", "b", "c"], 0), 200)
+            self.assertIsNone(sim._earliest_status_clear(["c"], 0))
+            # 이미 지난 상태는 후보에서 빠진다.
+            self.assertIsNone(sim._earliest_status_clear(["a", "b"], 999))
+
+
+class ZoneTravelStateTests(unittest.TestCase):
+    """zone 경계를 건너는 이동(traveling) — 도착 알림 지연 + 양방향 인지 차단.
+
+    배경: 딸이 학교에서 집으로 오는 중이어도 raw `_agent_location`은 hop
+    적용 즉시 "거실"로 바뀐다. 아무 처리도 없으면 거실에 있는 가족이 아직
+    도착 전인 딸을 그 즉시 타깃할 수 있다("도착도 안 했는데 target이 될 수
+    있잖아"). `_same_room`/`_resolve_targets`/`_compute_wave_targets`가 모두
+    `traveling` 상태를 보고 양방향으로 막아야 한다.
+    """
+
+    _GRAPH = [
+        {"name": "거실", "connects_to": ["동네", "안방"], "zone": "집", "is_zone_entry": True},
+        {"name": "안방", "connects_to": ["거실"], "zone": "집"},
+        {"name": "동네", "connects_to": ["거실"], "is_exterior": True},
+    ]
+
+    def _sim(self, tmp, script, locations, *, zone_travel_min=10, zone_travel_max=20, **kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in script}
+        return Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=_ScriptedLLM(script),
+            agent_locations=locations, location_graph=self._GRAPH,
+            zone_travel_min_minutes=zone_travel_min, zone_travel_max_minutes=zone_travel_max,
+            time_mode="variable",
+            **kw,
+        )
+
+    def test_crossing_hop_enters_traveling_state_with_configured_range(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                {"a": [{"content": "학교에서 출발.", "target": "self", "move_to": "거실"}]},
+                {"a": "동네"},
+                zone_travel_min=10, zone_travel_max=10,
+            )
+            sim._emit = lambda t, d: None
+            sim.run("a", max_waves=1, step_delay=0.0, resume_wave={"a": []})
+
+        # raw 위치는 기존처럼 즉시 갱신되지만(맵 표시용), traveling 상태로 묶인다.
+        # until_elapsed는 이동이 시작된 시점(첫 wave 시작 = elapsed 0) 기준 절대값
+        # 이다 — 활성 에이전트가 a 하나뿐이라 재투입 로직이 "전원 상태 해제 대기"로
+        # 정확히 그 시점까지 시계를 이미 앞당겼을 수 있으므로(그 자체가 이번 기능의
+        # 의도된 동작), 여기서는 sim._elapsed_minutes와 비교하지 않고 절대값만 본다.
+        self.assertEqual(sim._agent_location["a"], "거실")
+        st = sim._agent_status.get("a")
+        self.assertIsNotNone(st)
+        self.assertEqual(st["state"], "traveling")
+        self.assertEqual(st["arrival_location"], "거실")
+        self.assertEqual(st["until_elapsed"], 10)
+
+    def test_arrival_announcement_is_deferred_not_immediate_but_fires_on_expiry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                {"a": [{"content": "학교에서 출발.", "target": "self", "move_to": "거실"}],
+                 "b": [{"content": "...", "target": "self"}]},
+                {"a": "동네", "b": "거실"},
+                zone_travel_min=10, zone_travel_max=10,
+            )
+            sim._emit = lambda t, d: None
+            sim.run("a", max_waves=1, step_delay=0.0, resume_wave={"a": [], "b": []})
+
+            # 이동을 시작한 바로 그 wave에는 아직 "도착했다"가 나가면 안 된다 —
+            # raw 위치만 바뀌었을 뿐 실제로는 이동 시간이 남아 있다.
+            b_incoming = sim._pending_wave.get("b", [])
+            self.assertFalse(any("도착했다" in m.get("content", "") for m in b_incoming))
+            self.assertIn("a", sim._agent_status)
+
+            # 이동에 걸리는 시간(10분)이 다 찼다고 보고 직접 만료 처리하면, 그제서야
+            # "도착했다" 알림이 지금(b가 실제로 있는 자리) 기준으로 만들어져야 한다.
+            expired    = sim._expire_agent_states(sim._elapsed_minutes + 10)
+            injections = sim._deferred_arrival_scene_injections(expired)
+
+        self.assertIn("b", injections)
+        self.assertIn("도착했다", injections["b"][0]["content"])
+
+    def test_bystander_cannot_target_traveler_before_arrival(self):
+        # 핵심 회귀: 거실에 있는 b가 "방금 거실로 온" a(아직 traveling)를
+        # 직접 타깃해도 전달되지 않아야 한다 — raw 위치만 보면 이미 같은 방이다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                {"a": [{"content": "학교에서 출발.", "target": "self", "move_to": "거실"}],
+                 "b": [{"content": "...", "target": "self"},
+                       {"content": "왔어?", "target": "a"}]},
+                {"a": "동네", "b": "거실"},
+                zone_travel_min=999, zone_travel_max=999,  # 절대 안 풀리게
+            )
+            sim._emit = lambda t, d: None
+            sim.run("a", max_waves=2, step_delay=0.0, resume_wave={"a": [], "b": []})
+
+        self.assertTrue(sim._agent_traveling("a", sim._elapsed_minutes))
+        # shared_log의 targets는 화자의 **원래 의도**(파싱된 target 필드)라 전달
+        # 성공 여부와 무관하게 항상 "a"를 담고 있다 — 실제 배달 여부는 관계
+        # 그래프(edges, _resolve_targets의 해석 결과)로만 확인할 수 있다.
+        got = [e for e in sim.edges if e["source"] == "b" and e["target"] == "a"]
+        self.assertFalse(got, "아직 도착 전인 a가 b의 직접 타깃을 받으면 안 된다")
+
+    def test_direct_message_blocked_during_travel_even_via_1wave_grace(self):
+        # 외부 리뷰에서 코드 재현으로 확인된 구멍: 직전 wave 시작 시점엔 같은
+        # 방이었다가(1-wave 유예 조건 성립) 바로 그 wave에 zone 경계를 넘어
+        # 이동을 시작하면, `_can_address`가 `_recently_co_located`를 먼저 봐서
+        # traveling 체크(`_same_loc` 안)까지 가지 않고 통과시켜버렸다 — 집을
+        # "나서는" 쪽에서 발생하는 문제라, "들어오는" 쪽을 다루는 위 테스트와는
+        # 반대 방향이다.
+        #
+        # 목적지가 **외부(exterior) 공간이면 안 된다** — `_recently_co_located`
+        # 는 "현재 위치가 외부"만으로도 이미 False를 반환하므로(격리 우선 규칙),
+        # 그 경로로 우연히 막히면 이 테스트가 traveling 가드 자체를 검증하지
+        # 못한다. 그래서 표준 _GRAPH 대신 목적지가 **내부 zone**인 그래프를 쓴다.
+        _GRAPH_TWO_INTERIOR_ZONES = [
+            {"name": "거실",   "connects_to": ["옆집"], "zone": "우리집", "is_zone_entry": True},
+            {"name": "옆집",   "connects_to": ["거실"], "zone": "옆집",   "is_zone_entry": True},
+        ]
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        script = {
+            "a": [{"content": "옆집 다녀올게.", "target": "self", "move_to": "옆집"},
+                  {"content": "...", "target": "self"}],
+            "b": [{"content": "...", "target": "self"},
+                  {"content": "빨리 와!", "target": "a"}],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in script}
+            sim = Simulation(
+                agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+                llm=_ScriptedLLM(script),
+                agent_locations={"a": "거실", "b": "거실"},
+                location_graph=_GRAPH_TWO_INTERIOR_ZONES,
+                zone_travel_min_minutes=999, zone_travel_max_minutes=999,  # 절대 안 풀리게
+                time_mode="variable",
+            )
+            sim._emit = lambda t, d: None
+            sim.run("a", max_waves=2, step_delay=0.0, resume_wave={"a": [], "b": []})
+
+        self.assertTrue(sim._agent_traveling("a", sim._elapsed_minutes))
+        # 목적지가 진짜 내부(exterior 아님)인지 재확인 — 아니면 이 테스트가
+        # exterior 격리 규칙 덕에 우연히 통과했을 수 있다.
+        self.assertNotIn(sim._agent_location["a"], sim._exterior_locations)
+        got = [e for e in sim.edges if e["source"] == "b" and e["target"] == "a"]
+        self.assertFalse(got, "1-wave 유예를 통해 이동 중인 a에게 말이 전달되면 안 된다")
+
+    def test_message_queued_while_traveling_is_held_not_executed_then_released(self):
+        # 외부 리뷰 Finding 1: 이미 routed/scene_injections로 next_wave에 실린
+        # 메시지는 대상이 이동 중이어도 다음 wave에 정상 턴으로 실행됐다 —
+        # "이동 중인데 이미 도착한 것처럼" 서술할 수 있는 구멍. 수신 자체를
+        # 막는 대신 보류(hold)했다가 실제 도착 시점에 돌려줘야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                # wave 0: 같은 방(거실)에서 b가 a에게 직접 말을 걸면서, a는 동시에
+                # 이동을 시작한다(라우팅은 이동 전 스냅샷이라 정상 배달됨).
+                {"a": [{"content": "학교 간다.", "target": "self", "move_to": "동네"},
+                       {"content": "...", "target": "self"}],
+                 "b": [{"content": "잘 다녀와!", "target": "a"},
+                       {"content": "...", "target": "self"}]},
+                {"a": "거실", "b": "거실"},
+                zone_travel_min=10, zone_travel_max=10,
+            )
+            sim._emit = lambda t, d: None
+            sim.run("a", max_waves=1, step_delay=0.0, resume_wave={"a": [], "b": []})
+
+            # wave 0 종료 시점: a는 이동 중이라 "잘 다녀와!"가 next_wave로 바로
+            # 안 가고 상태에 보류돼야 한다 — a가 그 다음 wave에 정상 턴을 받아
+            # (아직 도착 전인데) 응답하면 안 되기 때문이다.
+            self.assertNotIn("a", sim._pending_wave)
+            st = sim._agent_status.get("a")
+            self.assertIsNotNone(st)
+            held = st.get("held_incoming") or []
+            self.assertTrue(any("잘 다녀와" in m.get("content", "") for m in held))
+
+            # 이동 시간이 다 찼다고 보고 만료 처리하면, 보류됐던 메시지가 본인
+            # 것으로 돌아와야 한다(도착 알림과는 반대 방향).
+            expired  = sim._expire_agent_states(sim._elapsed_minutes + 10)
+            released = sim._release_held_incoming(expired)
+
+        self.assertIn("a", released)
+        self.assertTrue(any("잘 다녀와" in m.get("content", "") for m in released["a"]))
+
+    def test_intra_zone_move_is_unaffected_no_travel_state(self):
+        # 같은 zone 안(거실→안방)에서는 지금처럼 즉시 이동 — traveling 없음.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                {"a": [{"content": "안방으로.", "target": "self", "move_to": "안방"}]},
+                {"a": "거실"},
+            )
+            sim._emit = lambda t, d: None
+            sim.run("a", max_waves=1, step_delay=0.0, resume_wave={"a": []})
+
+        self.assertEqual(sim._agent_location["a"], "안방")
+        self.assertEqual(sim._agent_status, {})
+
+    def test_zone_travel_disabled_when_max_minutes_zero(self):
+        # 0 = 기능 비활성(다른 점프 캡과 같은 관례) — 기존 즉시 이동 동작 유지.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                {"a": [{"content": "학교에서 출발.", "target": "self", "move_to": "거실"}]},
+                {"a": "동네"},
+                zone_travel_min=0, zone_travel_max=0,
+            )
+            sim._emit = lambda t, d: None
+            sim.run("a", max_waves=1, step_delay=0.0, resume_wave={"a": []})
+
+        self.assertEqual(sim._agent_location["a"], "거실")
+        self.assertEqual(sim._agent_status, {})
+
+
+class SelfDeclaredStateTests(unittest.TestCase):
+    """enter_state(수면·개인 용무) — LLM 출력 → 상태 진입 → 재투입 배제.
+
+    직접 타깃팅(같은 방 사람이 알면서 말 걸기)은 재투입과 무관한 별개 경로이므로
+    영향받지 않아야 한다 — 사용자가 명시적으로 정한 규칙("상대가 상태를 인지하고
+    말을 걸었으면 전달되는 게 맞다").
+    """
+
+    def _sim(self, tmp, script, locations=None, **kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in script}
+        return Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=_ScriptedLLM(script),
+            agent_locations=locations, time_mode="variable",
+            **kw,
+        )
+
+    def test_enter_state_field_from_llm_output_sets_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                {"a": [{"content": "잔다.", "target": "self", "enter_state": "sleep"}]},
+                state_categories=[{"id": "sleep", "label": "수면",
+                                   "min_minutes": 300, "max_minutes": 300}],
+            )
+            sim._emit = lambda t, d: None
+            sim.run("a", max_waves=1, step_delay=0.0, resume_wave={"a": []})
+
+        st = sim._agent_status.get("a")
+        self.assertIsNotNone(st)
+        self.assertEqual(st["state"], "sleep")
+
+    def test_enter_state_emits_agent_status_change_event(self):
+        # 관전 가능성(리뷰: "Markdown/DB 어디에도 상태 진입값이 없다") — 진입은
+        # `_PERSIST_EVENTS`에 있는 이벤트로 나가야 SSE·DB·마크다운 내보내기
+        # 어디서든 감사할 수 있다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                {"a": [{"content": "잔다.", "target": "self", "enter_state": "sleep"}]},
+                state_categories=[{"id": "sleep", "label": "수면",
+                                   "min_minutes": 300, "max_minutes": 300}],
+            )
+            emitted = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            sim.run("a", max_waves=1, step_delay=0.0, resume_wave={"a": []})
+
+        changes = [d for t, d in emitted if t == "agent_status_change"]
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]["action"], "enter")
+        self.assertEqual(changes[0]["agent"], "a")
+        self.assertEqual(changes[0]["state"], "sleep")
+        self.assertEqual(changes[0]["label"], "수면")
+        self.assertEqual(changes[0]["minutes"], 300)
+        self.assertIn("until_time_str", changes[0])
+
+        from ABM.simulation.core import _PERSIST_EVENTS
+        self.assertIn("agent_status_change", _PERSIST_EVENTS)
+
+    def test_state_clear_emits_agent_status_change_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, {"a": [{"content": "...", "target": "self"}]})
+            # until_elapsed=0은 wave 0 시작 시점(now_elapsed=0)에 이미 만료된
+            # 것으로 본다 — 만료 emit만 확인하면 되므로 정확히 그 경계를 쓴다.
+            sim._agent_status["a"] = {"state": "busy", "until_elapsed": 0}
+            emitted = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            sim.run("a", max_waves=1, step_delay=0.0, resume_wave={"a": []})
+
+        changes = [d for t, d in emitted if t == "agent_status_change"]
+        self.assertTrue(any(c["action"] == "clear" and c["agent"] == "a" and c["state"] == "busy"
+                            for c in changes))
+
+    def test_sleeping_agent_excluded_from_passive_reinjection(self):
+        # a는 자고 있고 b는 고립(대화 상대 없음) — a가 재투입 후보에서 빠지고
+        # b 혼자만 다시 초대돼야 한다(전원 휴면으로 잘못 판정되지 않음).
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                {"a": [{"content": "잔다.", "target": "self", "enter_state": "sleep"},
+                       {"content": "...", "target": "self"}],
+                 "b": [{"content": "...", "target": "self"},
+                       {"content": "...", "target": "self"}]},
+                {"a": "안방", "b": "거실"},
+                location_graph=[
+                    {"name": "안방", "connects_to": ["거실"]},
+                    {"name": "거실", "connects_to": ["안방"]},
+                ],
+                state_categories=[{"id": "sleep", "label": "수면",
+                                   "min_minutes": 300, "max_minutes": 300}],
+            )
+            sim._emit = lambda t, d: None
+            sim.run("a", max_waves=2, step_delay=0.0, resume_wave={"a": [], "b": []})
+
+        self.assertIn("a", sim._agent_status)  # 300분짜리라 아직 안 풀림
+        self.assertNotIn("a", sim._pending_wave)
+        self.assertIn("b", sim._pending_wave)
+
+    def test_same_room_direct_message_to_sleeping_agent_still_delivered(self):
+        # 핵심 설계 결정: 같은 방 사람이 자는 걸 알면서도 말을 걸면 전달돼야 한다
+        # (sleep/busy는 _same_room 판정과 무관 — traveling과 다르다).
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                {"a": [{"content": "잔다.", "target": "self", "enter_state": "sleep"},
+                       {"content": "...",  "target": "self"}],
+                 "b": [{"content": "...", "target": "self"},
+                       {"content": "일어나!", "target": "a"}]},
+                {"a": "거실", "b": "거실"},
+                location_graph=[{"name": "거실", "connects_to": []}],
+                state_categories=[{"id": "sleep", "label": "수면",
+                                   "min_minutes": 300, "max_minutes": 300}],
+            )
+            sim._emit = lambda t, d: None
+            sim.run("a", max_waves=2, step_delay=0.0, resume_wave={"a": [], "b": []})
+
+        got = [e for e in sim.edges if e["source"] == "b" and e["target"] == "a"]
+        self.assertTrue(got, "같은 방에서 자는 걸 알고도 건 말은 전달돼야 한다")
+
+    def test_all_active_agents_in_state_jumps_to_earliest_clear(self):
+        # 전원이 상태로 묶여 있으면 idle 스케줄 랜덤값 대신 가장 이른 해제
+        # 시점까지 정확히 점프해야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                {"a": [{"content": "잔다.", "target": "self", "enter_state": "sleep"}],
+                 "b": [{"content": "일 본다.", "target": "self", "enter_state": "busy"}]},
+                {"a": "안방", "b": "거실"},
+                location_graph=[
+                    {"name": "안방", "connects_to": ["거실"]},
+                    {"name": "거실", "connects_to": ["안방"]},
+                ],
+                state_categories=[
+                    {"id": "sleep", "label": "수면", "min_minutes": 500, "max_minutes": 500},
+                    {"id": "busy",  "label": "용무", "min_minutes": 50,  "max_minutes": 50},
+                ],
+                idle_minutes_schedule=[9999],  # 랜덤 폴백이 쓰였으면 바로 티가 나게
+            )
+            jumps = []
+            sim._emit = lambda t, d: (jumps.append(d) if t == "time_jump" else None)
+            sim.run("a", max_waves=2, step_delay=0.0, resume_wave={"a": [], "b": []})
+
+        idle_jumps = [d for d in jumps if d.get("mode") == "idle"]
+        self.assertTrue(idle_jumps)
+        self.assertEqual(idle_jumps[0]["minutes"], 50)  # busy(50) < sleep(500)
+        self.assertEqual(idle_jumps[0]["reason"], "전원 상태(수면·이동 등) 해제 대기")
+
+    def test_clamp_time_jump_respects_earliest_state_clear_not_just_forced_silence(self):
+        # 외부 리뷰 Finding 3: 완전한 침묵(forced_silence_reinject)이 아니라
+        # 누군가 "..." 독백 하나라도 성공하면 시간 판정이 일반 AI/카테고리
+        # 경로(_clamp_time_jump)로 빠진다 — 그 경로는 예전엔 상태 해제 시각을
+        # 전혀 안 봐서, 짧은 busy(10~30분)가 곧 끝나야 하는데 다른 사람의
+        # "깊은 잠" 독백만 보고 455분 같은 큰 값이 그대로 통과했다(실제 실행에서
+        # 확인됨 — 씻으러 간 사람이 자기 방으로 못 돌아온 채 밤을 넘김).
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, {"a": [{"content": "...", "target": "self"}]})
+            # "a"가 busy 상태이고(예: 씻는 중), 10분 뒤 해제 예정이라고 가정.
+            sim._agent_status["a"] = {"state": "busy", "until_elapsed": 10}
+            jump, reason = sim._clamp_time_jump(455, {"a": {"success": True}}, any_reached=False)
+
+        self.assertEqual(jump, 10)
+        self.assertIn("상태 해제", reason)
+
+    def test_clamp_time_jump_unaffected_when_no_state_is_active(self):
+        # 상태가 아예 없으면(또는 이미 만료됐으면) 이 캡이 조용히 no-op이어야
+        # 한다 — 기존 캡(예정 이벤트·동석·주간)만 정상 작동해야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, {"a": [{"content": "...", "target": "self"}]})
+            jump, reason = sim._clamp_time_jump(455, {"a": {"success": True}}, any_reached=False)
+
+        self.assertEqual(jump, 455)
+        self.assertIsNone(reason)
+
+    def test_broadcast_does_not_reach_sleeping_agent_but_direct_address_does(self):
+        # 정책 결정(Finding 4): "같은 방 사람이 상태를 알고도 의도적으로 말을
+        # 건다"는 예외는 그 사람을 콕 집어 부르는 **직접 타깃**에만 해당한다.
+        # 전체(all)를 향한 말은 특정 상대를 겨냥한 게 아니므로 자는 사람에게는
+        # 안 들리는 것으로 정책을 명시했다. traveling과 달리 sleep/busy는
+        # 원래 같은 방 판정 자체는 그대로다(_same_room 무관) — 방송만 걸린다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                {"a": [{"content": "잔다.", "target": "self", "enter_state": "sleep"},
+                       {"content": "...",  "target": "self"}],
+                 "b": [{"content": "...", "target": "self"},
+                       {"content": "다들 잘자!", "target": "all"}]},
+                {"a": "거실", "b": "거실"},
+                location_graph=[{"name": "거실", "connects_to": []}],
+                state_categories=[{"id": "sleep", "label": "수면",
+                                   "min_minutes": 300, "max_minutes": 300}],
+            )
+            sim._emit = lambda t, d: None
+            sim.run("a", max_waves=2, step_delay=0.0, resume_wave={"a": [], "b": []})
+
+        broadcast_got = [e for e in sim.edges
+                         if e["source"] == "b" and e["target"] == "a"
+                         and e["content"] == "다들 잘자!"]
+        self.assertFalse(broadcast_got, "방송(all)은 자는 사람에게 전달되면 안 된다")
+        # 위 test_same_room_direct_message_to_sleeping_agent_still_delivered가
+        # 직접 타깃은 여전히 전달됨을 이미 검증한다 — 여기서는 방송만 다르게
+        # 취급되는지가 초점이다.
+
+
+class AgentContextStatusFieldTests(unittest.TestCase):
+    """GET /agents/{name}/context 응답에 상태(수면·이동 등) 필드가 실리는지.
+
+    UI(컨텍스트 패널)와 감사(리뷰가 지적한 "Markdown/DB 어디에도 상태 진입값이
+    없다")를 보완하는 세 경로(SSE 이벤트·마크다운 export·이 API) 중 하나.
+    """
+
+    def tearDown(self):
+        sim_runtime._sim["sim_obj"]        = None
+        sim_runtime._sim["agents"]         = {}
+        sim_runtime._sim["background_log"] = []
+
+    def _install(self, tmp, *, status=None):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        agent = Agent("a", "너는 a다.", tmp, token_limit=4096)
+        sim = Simulation(
+            {"a": agent}, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=lambda *a, **kw: ("", "", {}),
+        )
+        if status is not None:
+            sim._agent_status["a"] = status
+        sim_runtime._sim["sim_obj"]        = sim
+        sim_runtime._sim["agents"]         = sim.agents
+        sim_runtime._sim["background_log"] = sim.background_log
+        return sim
+
+    def test_context_includes_active_status(self):
+        from backend.api.simulation.runtime.queries import get_agent_context
+        with tempfile.TemporaryDirectory() as tmp:
+            self._install(tmp, status={"state": "sleep", "until_elapsed": 300})
+            resp = get_agent_context("a")
+
+        self.assertIsNotNone(resp["status"])
+        self.assertEqual(resp["status"]["state"], "sleep")
+        self.assertEqual(resp["status"]["remaining_minutes"], 300)
+        self.assertIn("until_time_str", resp["status"])
+
+    def test_context_status_is_none_when_available(self):
+        from backend.api.simulation.runtime.queries import get_agent_context
+        with tempfile.TemporaryDirectory() as tmp:
+            self._install(tmp)
+            resp = get_agent_context("a")
+
+        self.assertIsNone(resp["status"])
+
+    def test_context_status_is_none_after_expiry(self):
+        from backend.api.simulation.runtime.queries import get_agent_context
+        with tempfile.TemporaryDirectory() as tmp:
+            self._install(tmp, status={"state": "busy", "until_elapsed": 0})
+            resp = get_agent_context("a")
+
+        self.assertIsNone(resp["status"])
 
 
 class IsolatedAgentDormancyTests(unittest.TestCase):
@@ -7185,6 +7870,64 @@ class MarkdownStreamPhaseTests(unittest.TestCase):
         )
 
 
+class MarkdownAgentStatusEventTests(unittest.TestCase):
+    """`agent_status_change` 마크다운 렌더링 — 리뷰가 지적한 감사 공백 보완분.
+
+    infection_update와 같은 이중 emit 패턴(해제=대사 전, 진입=대사 후)이라
+    `_stream_phase`도 그와 같은 방식으로 검증한다.
+    """
+
+    def test_status_change_phase_depends_on_action(self):
+        from ABM.export.markdown import _build_stream
+        log = [{"wave": 0, "timestamp": 100.0, "speaker": "a", "content": "..."}]
+
+        entered = [{"wave": 0, "timestamp": 100.0, "event_type": "agent_status_change",
+                    "data": {"action": "enter", "state": "sleep"}}]
+        self.assertEqual([it["kind"] for it in _build_stream(log, entered, frozenset())],
+                         ["dialogue", "agent_status_change"])
+
+        cleared = [{"wave": 0, "timestamp": 100.0, "event_type": "agent_status_change",
+                    "data": {"action": "clear", "state": "sleep"}}]
+        self.assertEqual([it["kind"] for it in _build_stream(log, cleared, frozenset())],
+                         ["agent_status_change", "dialogue"])
+
+    def test_status_change_renders_regardless_of_toggles(self):
+        # 시나리오 이벤트와 같은 이유로 토글과 무관하게 항상 실린다 — 감사 기록을
+        # 옵션으로 숨길 수 있게 두면 도입 목적이 무너진다.
+        from ABM.export.markdown import _build_stream
+        log = [{"wave": 0, "timestamp": 100.0, "speaker": "a", "content": "..."}]
+        events = [{"wave": 0, "timestamp": 100.0, "event_type": "agent_status_change",
+                   "data": {"action": "enter", "state": "sleep"}}]
+        kinds = [it["kind"] for it in _build_stream(log, events, frozenset())]
+        self.assertIn("agent_status_change", kinds)
+
+    def test_fmt_status_enter_and_clear_text(self):
+        from ABM.export.markdown import _fmt_status, AgentIndex
+        idx = AgentIndex([{"name": "짱구", "display_name": "신짱구"}])
+
+        enter_line = _fmt_status({
+            "agent": "짱구", "action": "enter", "state": "sleep",
+            "label": "수면", "minutes": 420, "until_time_str": "오전 6시 30분",
+        }, idx)
+        self.assertIn("💤 상태 진입", enter_line)
+        self.assertIn("신짱구", enter_line)
+        self.assertIn("'수면' 상태가 됐다", enter_line)
+        self.assertIn("약 420분", enter_line)
+        self.assertIn("~오전 6시 30분까지", enter_line)
+
+        travel_line = _fmt_status({
+            "agent": "짱구", "action": "enter", "state": "traveling",
+            "label": "학교(으)로 이동 중", "minutes": 15,
+        }, idx)
+        self.assertIn("🚶 상태 진입", travel_line)
+        self.assertNotIn("~", travel_line)  # until_time_str 없으면 시각 구절 자체가 없다
+
+        clear_line = _fmt_status({"agent": "짱구", "action": "clear", "state": "sleep",
+                                   "label": "수면"}, idx)
+        self.assertIn("🌅 상태 해제", clear_line)
+        self.assertIn("신짱구이(가) '수면' 상태에서 벗어났다", clear_line)
+
+
 class MarkdownLabelPortTests(unittest.TestCase):
     """state.js 포팅분(ABM/export/labels.py)의 JS 의미 재현."""
 
@@ -8094,7 +8837,7 @@ class MalformedJsonResponseTests(unittest.TestCase):
         from ABM.parser import parse_json_extras
         # 첫 객체의 move_to 는 null → None. 두 번째의 "창고" 를 주워오면 안 된다.
         self.assertEqual(parse_json_extras(self._MULTI),
-                         {"move_to": None, "update_appearance": None})
+                         {"move_to": None, "update_appearance": None, "enter_state": None})
 
     def test_plain_and_fenced_single_objects_still_parse(self):
         from ABM.parser import parse_json_response

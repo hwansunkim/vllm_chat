@@ -66,15 +66,31 @@ export async function fetchAgentContext(name) {
       return;
     }
     const data = await res.json();
-    renderContextMessages(data.messages, data.trimmed || 0, data.prompt_tokens || 0, data.token_limit || 0);
+    renderContextMessages(data.messages, data.trimmed || 0, data.prompt_tokens || 0,
+                          data.token_limit || 0, data.status || null);
   } catch (e) {
     msgs.innerHTML = `<div style="padding:12px;font-size:11px;color:#ef4444;">오류: ${esc(String(e))}</div>`;
   }
 }
 
-function renderContextMessages(messages, trimmed = 0, promptTokens = 0, tokenLimit = 0) {
+function renderContextMessages(messages, trimmed = 0, promptTokens = 0, tokenLimit = 0, status = null) {
   const container = document.getElementById('sim-context-msgs');
   container.innerHTML = '';
+
+  // 상태(수면·개인 용무·이동) 배너 — 실행 중 API가 매번 "지금" 기준으로 만료
+  // 여부를 다시 계산해 주므로(_agent_active_status), 만료됐으면 이 필드 자체가
+  // null이라 배너가 자연히 사라진다.
+  if (status) {
+    const banner = document.createElement('div');
+    banner.className = `ctx-status-banner st-${status.state === 'traveling' ? 'traveling' : 'busy'}`;
+    const icon = status.state === 'traveling' ? '🚶' : '💤';
+    banner.innerHTML = `
+      <span class="ctx-status-icon">${icon}</span>
+      <span class="ctx-status-text">${esc(status.label || status.state)}</span>
+      <span class="ctx-status-remain">${status.remaining_minutes}분 남음${status.until_time_str ? ` · ~${esc(status.until_time_str)}` : ''}</span>
+    `;
+    container.appendChild(banner);
+  }
 
   // Token usage bar
   if (tokenLimit > 0) {

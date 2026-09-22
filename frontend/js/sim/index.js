@@ -22,7 +22,8 @@ import {
   exportScenarioFile, importScenarioFile,
 } from './scenarios.js';
 import { addLocationNode, addTimeCategory, initTimeModeToggle, initTargetDurationUI,
-         initTimeEstimationModeToggle, initPerceptionModeToggle, addSymptomStage } from './settings/page.js';
+         initTimeEstimationModeToggle, initPerceptionModeToggle, addSymptomStage,
+         addStateCategory, resetStateCategoriesToDefault } from './settings/page.js';
 import { toggleRunHistory, openAllRunsModal } from './runs/history.js';
 import { exportGraph } from './graph/d3.js';
 import { exportLocationMap } from './map/d3.js';
@@ -111,6 +112,8 @@ export function initSimulationEvents() {
   document.getElementById('sim-inf-add-stage-btn')?.addEventListener('click', addSymptomStage);
 
   document.getElementById('sim-add-timecat-btn')?.addEventListener('click', addTimeCategory);
+  document.getElementById('sim-add-statecat-btn')?.addEventListener('click', addStateCategory);
+  document.getElementById('sim-reset-statecat-btn')?.addEventListener('click', resetStateCategoriesToDefault);
 
   document.querySelectorAll('.sim-tab').forEach(btn => {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));

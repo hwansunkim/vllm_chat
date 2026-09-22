@@ -1011,6 +1011,14 @@
 .sim-agent-card.infected { border-color: #fda4af; background: #fff5f5; }
 .sim-agent-card.infected.speaking { border-color: #e11d48; box-shadow: 0 0 0 2px #fecdd3; }
 
+/* 상태(수면·개인 용무·이동) 뱃지 — 감염 뱃지와 같은 자리·같은 크기 언어 */
+.sim-card-status {
+  font-size: 10px; padding: 1px 5px; border-radius: 4px;
+  white-space: nowrap; flex-shrink: 0; font-weight: 600;
+}
+.sim-card-status.st-busy      { color: #6d28d9; background: rgba(124,58,237,0.10); }
+.sim-card-status.st-traveling { color: #b45309; background: rgba(217,119,6,0.10); }
+
 .sim-card-meta    { display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 4px; }
 .emotion-angry   { background: #fee2e2; color: #b91c1c; }
 .emotion-happy   { background: #dcfce7; color: #15803d; }
@@ -1172,6 +1180,38 @@
 .inf-recovered .sim-infection-label { color: #16a34a; }
 .inf-recovered .sim-infection-cause { color: #166534; }
 .inf-recovered .sim-infection-wave  { color: #86efac; }
+
+/* ── 에이전트 상태 변화 카드 (agent_status_change) ───────────────────────────── */
+.sim-status-card {
+  margin: 8px 0; padding: 8px 14px;
+  border-radius: 10px; font-size: 12px;
+}
+.sim-status-card.st-busy {
+  background: linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%);
+  border: 1px solid #c4b5fd;
+}
+.sim-status-card.st-traveling {
+  background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%);
+  border: 1px solid #fcd34d;
+}
+.sim-status-card.st-clear {
+  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+  border: 1px solid #cbd5e1;
+}
+.sim-status-header { display: flex; align-items: center; gap: 6px; }
+.sim-status-icon    { font-size: 14px; }
+.sim-status-name    { font-weight: 700; font-size: 12px; }
+.sim-status-label   { font-size: 11px; font-weight: 600; flex: 1; }
+.sim-status-wave    { font-size: 10px; font-weight: 600; }
+.st-busy      .sim-status-name  { color: #6d28d9; }
+.st-busy      .sim-status-label { color: #7c3aed; }
+.st-busy      .sim-status-wave  { color: #c4b5fd; }
+.st-traveling .sim-status-name  { color: #b45309; }
+.st-traveling .sim-status-label { color: #d97706; }
+.st-traveling .sim-status-wave  { color: #fcd34d; }
+.st-clear     .sim-status-name  { color: #475569; }
+.st-clear     .sim-status-label { color: #64748b; }
+.st-clear     .sim-status-wave  { color: #cbd5e1; }
 
 /* ── 만남 이동 카드 (meeting_update) ─────────────────────────────────────────── */
 /* 이동 카드(파랑)·감염 카드(빨강/초록)와 구분되도록 호박색 계열. 한 줄짜리라
@@ -1391,6 +1431,19 @@
 .sim-context-header-btns { display: flex; gap: 4px; flex-shrink: 0; }
 
 /* Context token banner */
+.ctx-status-banner {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px; font-size: 11px; flex-shrink: 0;
+  border-bottom: 1px solid #f1f5f9;
+}
+.ctx-status-banner.st-busy      { background: #f5f3ff; }
+.ctx-status-banner.st-traveling { background: #fffbeb; }
+.ctx-status-icon   { font-size: 13px; }
+.ctx-status-text   { font-weight: 700; flex: 1; }
+.ctx-status-remain { color: #64748b; }
+.st-busy      .ctx-status-text { color: #6d28d9; }
+.st-traveling .ctx-status-text { color: #b45309; }
+
 .ctx-token-banner {
   padding: 8px 12px 6px; border-bottom: 1px solid #f1f5f9; flex-shrink: 0;
 }

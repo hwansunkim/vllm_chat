@@ -144,6 +144,11 @@ def resume_simulation(run_id: str):
                 idle_minutes_schedule=cfg.idle_minutes_schedule,
                 max_scene_jump_minutes=cfg.max_scene_jump_minutes,
                 max_daytime_jump_minutes=cfg.max_daytime_jump_minutes,
+                # load.py 와 같은 이유 — 빠뜨리면 재개한 실행만 상태(수면·이동)
+                # 기능이 꺼진다.
+                state_categories=[c.model_dump() for c in cfg.state_categories],
+                zone_travel_min_minutes=cfg.zone_travel_min_minutes,
+                zone_travel_max_minutes=cfg.zone_travel_max_minutes,
                 infection_model=cfg.infection_model.model_dump(),
                 elapsed_minutes_init=run.get("elapsed_minutes") or 0,
                 # 재개 run 의 wave 라벨이 직전 run 에 이어지도록 누적 base 주입.

@@ -143,6 +143,26 @@ class TimeCategory(BaseModel):
         return v
 
 
+# 에이전트가 스스로 선택하는 상태(수면·개인 용무 등) 카테고리. 구조가 TimeCategory와
+# 완전히 같아(id/label/min_minutes/max_minutes, id는 화면에 안 보이는 순수 내부 키)
+# 별칭으로 쓴다 — 그래도 쓰이는 목적이 다르므로(시간 판정 vs 발화 억제) 이름은
+# 분리해 계약・설정 코드가 각자의 개념으로 읽히게 한다. 이동(zone 경계) 상태는
+# 에이전트가 고르는 게 아니라 엔진이 자동으로 적용하므로 여기 포함되지 않는다 —
+# 별도 zone_travel_min/max_minutes로 설정한다.
+StateCategory = TimeCategory
+
+# ABM/simulation/core.py::_DEFAULT_STATE_CATEGORIES 와 같은 기본값이어야 한다 —
+# 생략된 계약 프리뷰 요청이 실제 실행과 다른 모습을 보여주면 오도한다.
+DEFAULT_STATE_CATEGORIES: list[StateCategory] = [
+    StateCategory(id="sleep", label="수면 — 상대가 알고도 말 걸지 않는 한 반응 없음",
+                  min_minutes=300, max_minutes=540),
+    StateCategory(id="busy",  label="자리를 비우고 하는 개인적인 일(씻기 등)",
+                  min_minutes=10, max_minutes=30),
+]
+DEFAULT_ZONE_TRAVEL_MIN_MINUTES = 10
+DEFAULT_ZONE_TRAVEL_MAX_MINUTES = 20
+
+
 # 분 단위 입력의 공통 상한(= 100년). 프론트의 MAX_TARGET_DURATION_MINUTES와 같은 값으로,
 # 목표 기간·증상 단계·회복 시간 등 모든 "시뮬레이션 내 분" 입력에 함께 적용한다.
 MAX_DURATION_MINUTES = 52560000
@@ -302,6 +322,18 @@ class SimStartConfig(BaseModel):
     # 두 캡 모두 0 = 해당 캡 비활성(순수 카테고리 랜덤값 사용).
     max_scene_jump_minutes:   int            = 45   # 실내 한 곳에 2명+ 동석 발화 중일 때의 점프 상한
     max_daytime_jump_minutes: int            = 180  # 밤(22~06시)이 아니고 집에 남은 사람이 있을 때의 점프 상한
+    # ── 에이전트 상태(수면·이동 등) ────────────────────────────────────────────
+    # 재투입(휴면 처리)이 에이전트의 상태를 전혀 모른 채 무조건 다시 초대해서,
+    # 이미 잠든 에이전트가 매 침묵 사이클마다 잠꼬대를 반복하거나 zone 경계를
+    # 건너는 이동이 1 wave 만에 "순간이동"하는 문제를 막는다(ABM/simulation/status.py).
+    # []면(빈 리스트, 생략과 다름) 자기-선언형 상태 기능 자체가 꺼진다 — enter_state
+    # 힌트가 계약에서 빠지고 발화 억제도 일어나지 않는다.
+    state_categories: list[StateCategory] = list(DEFAULT_STATE_CATEGORIES)
+    # zone 경계를 건너는 이동(예: 집→학교)에 걸리는 시간(분) — 에이전트가 고르는
+    # 게 아니라 엔진이 hop 적용 시 자동으로 부여한다. 같은 zone 안의 이동(예:
+    # 거실→안방)에는 적용되지 않는다(기존처럼 즉시). 둘 다 0이면 기능 비활성.
+    zone_travel_min_minutes: int = DEFAULT_ZONE_TRAVEL_MIN_MINUTES
+    zone_travel_max_minutes: int = DEFAULT_ZONE_TRAVEL_MAX_MINUTES
     # 고립 독백을 이 횟수 연속하면 '휴면'으로 보고 밀집 재투입에서 제외 +
     # 전원 휴면 시 idle 시간 점프 스케줄의 인덱스로도 쓰인다. (구 early_stop_enabled
     # 플래그는 제거됐다 — 대화가 시들해지는 것으로는 더 이상 실행을 종료하지 않고,
@@ -386,6 +418,9 @@ class ContractPreviewRequest(BaseModel):
     # 여기 실린 key 는 실존 검증을 하지 않는다 — 프리뷰는 편집 중 상태를 보여주는 거울이고,
     # dangling 필터링은 실행 시점(Simulation._sanitize_relationships)의 책임이다.
     relationships:          dict[str, str]      = {}
+    # SimStartConfig 와 같은 기본값이어야 한다 — 생략된 프리뷰 요청이 실제 실행과
+    # 다른 "상태 기능 OFF"를 보여주면 오도한다.
+    state_categories:       list[StateCategory] = list(DEFAULT_STATE_CATEGORIES)
 
     def time_enabled(self) -> bool:
         return self.time_mode == "variable" or self.time_per_wave > 0

@@ -7,13 +7,14 @@
 
 ---
 
-## 1. `Simulation` = 믹스인 9종 조합
+## 1. `Simulation` = 믹스인 10종 조합
 
 `ABM/simulation/core.py`:
 
 ```python
 class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
-                 _EventsMixin, _TurnMixin, _StepMixin, _SystemMixin, _RunnerMixin):
+                 _StatusMixin, _EventsMixin, _TurnMixin, _StepMixin, _SystemMixin,
+                 _RunnerMixin):
 ```
 
 `core.py` 자체가 보유하는 것: `__init__`(모든 config 파싱), 상태 dict들, `_emit`,
@@ -27,6 +28,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 | `_StepMixin` | `step.py` | `_step_agent`, `_assemble_agent_prompt` | 단일 턴. §3 |
 | `_TurnMixin` | `turn.py` | `_apply_turn_result` | 응답 파싱 → 상태 반영. §4 |
 | `_TargetsMixin` | `targets.py` | `_resolve_targets`, `_compute_wave_targets`(→ location.py) | 발화 대상 해석. §5 |
+| `_StatusMixin` | `status.py` | `_enter_state`, `_agent_unavailable`, `_agent_traveling`, `_expire_agent_states` | 에이전트 상태(수면·이동). features |
 | `_LocationMixin` | `location.py` | `_compute_zone_awareness`, `_build_situation_context`, `_get_or_assign_stranger_id` | 위치·zone·낯선 이·씬 메시지. features |
 | `_MeetingMixin` | `meeting.py` | `_apply_move_intents`, `_update_meeting_paths` | 만남 lock. features |
 | `_InfectionMixin` | `infection.py` | `_apply_infection_wave`, `_build_symptom_context` | 결정론적 SIR/SIS. features |

@@ -128,7 +128,7 @@ def _quote(text: str) -> str:
 # 흔들릴 수 있는 걸로 알려진 한계다.
 _PRE_DIALOGUE_EVENT_TYPES  = {"scene_event", "director_call", "system_intervention", "world_event"}
 _POST_DIALOGUE_EVENT_TYPES = {"appearance_update", "agent_move", "meeting_update",
-                              "infection_update", "time_jump"}
+                              "infection_update", "time_jump", "agent_status_change"}
 
 
 def _stream_phase(kind: str, payload: dict | None = None) -> int:
@@ -139,6 +139,11 @@ def _stream_phase(kind: str, payload: dict | None = None) -> int:
         # cause="event" = 시나리오 스크립트로 심은 환자 0번(대사 전).
         # 그 외("transmission"/"recovery")는 매 wave 자동 판정(대사 후).
         return -1 if (payload or {}).get("cause") == "event" else 1
+    if kind == "agent_status_change":
+        # infection_update와 같은 이유로 이중 시점이다 — 해제(clear)는 wave
+        # 시작 시점(대사 전)에, 진입(enter)은 이동/상태 처리 블록(대사 후)에
+        # emit된다(runner.py).
+        return -1 if (payload or {}).get("action") == "clear" else 1
     if kind in _PRE_DIALOGUE_EVENT_TYPES:
         return -1
     return 1  # 나머지 이벤트 종류(주로 _POST_DIALOGUE_EVENT_TYPES)는 대사 이후
@@ -150,6 +155,10 @@ def _build_stream(log: list[dict], events: list[dict], include: frozenset) -> li
     # 비트라 토글과 무관하게 항상 싣는다. infect_agent scene_event 는 제외 —
     # 같은 사실을 infection_update 가 이미 렌더한다(_fmt_scene_event 가 걸러낸다).
     want.add("scene_event")
+    # 상태(수면·개인 용무·이동) 진입/해제도 토글 무관하게 항상 포함한다 — 리뷰가
+    # 지적한 "Markdown만으로는 상태 시작/종료 시각·이유를 감사할 수 없다"는 공백을
+    # 메우는 것이 이 필드의 목적이라, 옵션으로 숨길 수 있게 두면 그 목적이 무너진다.
+    want.add("agent_status_change")
 
     items: list[dict] = []
     for entry in log:
@@ -276,6 +285,25 @@ def _fmt_meeting(data: dict, index: AgentIndex) -> str:
     if not info:
         return ""
     return f"\n> **[{info['icon']} 씬]** *{info['text']}*\n"
+
+
+def _fmt_status(data: dict, index: AgentIndex) -> str:
+    """상태(수면·개인 용무·이동) 진입/해제 한 줄.
+
+    카드 뱃지(state.js의 ``agentStatusBadge``)와 같은 아이콘을 쓰되, Markdown은
+    그 자리에서 사라지는 배지가 아니라 감사 기록이므로 시작/종료 예정 시각까지
+    남긴다 — 리뷰가 지적한 "상태 진입값·시각·해제 이유가 없어 완전하게 감사할
+    수 없다"는 공백을 메운다.
+    """
+    name = data.get("display_name") or index.label(data.get("agent"))
+    if data.get("action") == "clear":
+        label = data.get("label")
+        tag = f"'{label}' " if label else ""
+        return f"\n> **[🌅 상태 해제]** *{name}이(가) {tag}상태에서 벗어났다.*\n"
+    icon = "🚶" if data.get("state") == "traveling" else "💤"
+    label = data.get("label") or data.get("state") or "상태"
+    until = f" · ~{data['until_time_str']}까지" if data.get("until_time_str") else ""
+    return f"\n> **[{icon} 상태 진입]** *{name}이(가) '{label}' 상태가 됐다. (약 {data.get('minutes')}분{until})*\n"
 
 
 # ── 메인 ──────────────────────────────────────────────────────────────────────
@@ -435,6 +463,8 @@ def render_markdown(
             md += _fmt_infection(payload, index, disease_fallback)
         elif kind == "meeting_update":
             md += _fmt_meeting(payload, index)
+        elif kind == "agent_status_change":
+            md += _fmt_status(payload, index)
     md += "\n"
     return md
 

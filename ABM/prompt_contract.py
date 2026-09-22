@@ -40,6 +40,7 @@ from __future__ import annotations
 #   <FIELD_LINES>    extra_fields의 JSON 라인
 #   <FIELD_HINTS>    extra_fields의 설명 라인
 #   <MOVE_TO_HINT>   move_to 의미 (위치 그래프/zone 유무에 따라 조건부)
+#   <STATE_HINT>     enter_state 의미 (state_categories 설정 시에만 — §상태)
 #   <TARGETS>        지목 가능한 시스템 ID 목록
 #   <TARGETS_FOOTER> all/self 단축 표기
 #
@@ -58,7 +59,8 @@ DEFAULT_OUTPUT_FORMAT_TEMPLATE = """
 <FIELD_LINES>
     "target": ["id1", "id2"] 또는 "all" 또는 "self",
     "move_to": null,
-    "update_appearance": null
+    "update_appearance": null,
+    "enter_state": null
 }
 
 - content: 당신의 말, 대사. **반드시 한국어로만 작성. 중국어 한자·영어 등 외국어 절대 금지.**
@@ -66,6 +68,7 @@ DEFAULT_OUTPUT_FORMAT_TEMPLATE = """
 <FIELD_HINTS>
 <MOVE_TO_HINT>
 - update_appearance: 외모 변화가 있을 때 새 외모 전체 묘사 (없으면 null)
+<STATE_HINT>
 - target: 반드시 아래 시스템 ID만 사용 (표시 이름 절대 금지):
 <TARGETS><TARGETS_FOOTER>
 ⚠ content 필드는 반드시 한국어로만 작성하십시오. 외국어·한자 사용 금지.
@@ -106,6 +109,34 @@ def build_move_to_hint(*, has_location_graph: bool = False, has_zone: bool = Fal
     if has_zone:
         hint += _MOVE_TO_ZONE_SUFFIX
     return hint
+
+
+# ── enter_state 의미 (조건부, state_categories 설정 시에만) ────────────────────
+#
+# 에이전트가 스스로 "한동안 상황에서 빠지겠다"고 선언하는 유일한 통로다. 정확한
+# 지속 시간(분)은 에이전트가 정하지 않는다 — 시간 추론(time_categories)과 같은
+# 원칙으로, LLM이 부르는 임의의 숫자를 그대로 믿지 않고 사용자가 설정한
+# state_categories의 min~max 범위에서 엔진이 무작위로 뽑는다
+# (`_StatusMixin._enter_state`). id는 `_resolve_time_category`와 같은 이유로
+# 화면에 노출되지 않는 순수 내부 키다 — LLM에게는 id와 label을 같이 보여줘
+# id로 고르게 한다.
+def build_state_hint(state_categories: list[dict] | None = None) -> str:
+    """`enter_state` 필드의 의미 설명. `state_categories`가 비면 빈 문자열
+    (기능 자체가 꺼진 시나리오에는 동작하지 않는 필드를 광고하지 않는다)."""
+    cats = state_categories or []
+    if not cats:
+        return ""
+    lines = "\n".join(f'    - "{c["id"]}": {c.get("label", "")}' for c in cats)
+    return (
+        "- enter_state: 지금부터 한동안 스스로 상황에서 빠지고 싶을 때(자거나 "
+        "혼자 씻는 등, 곧바로 대화나 행동을 이어가기 어려운 상태) 아래 중 하나의 "
+        "id를 적으세요. 평소처럼 대화·행동을 계속한다면 null.\n"
+        f"{lines}\n"
+        "  ※ 정확히 몇 분 동안일지는 신경 쓰지 마십시오 — 상황에 맞게 자동으로 "
+        "정해지고, 그동안은 당신에게 말을 걸어도 자연히 반응이 없는 것으로 "
+        "처리됩니다. 같은 공간에 있는 사람이 그 사실을 알면서도 말을 거는 경우는 "
+        "예외입니다."
+    )
 
 
 # ── 위치 / zone / 외부 공간 계약 ──────────────────────────────────────────────
@@ -395,6 +426,7 @@ def build_output_contract(
     has_location_graph: bool = False,
     has_zone:           bool = False,
     speaker_relationships: dict[str, str] | None = None,
+    state_categories: list[dict] | None = None,
 ) -> str:
     """출력 JSON 스키마 + move_to 의미 + target ID 규칙을 담은 계약 블록.
 
@@ -402,6 +434,7 @@ def build_output_contract(
     않으면 항상 엔진 기본 템플릿을 쓴다(= 엔진 업그레이드가 자동 반영된다).
     `location_name`은 시그니처 호환을 위해 남겨둔 미사용 인자다.
     `speaker_relationships`는 `<TARGETS>` 목록에 관계어를 붙이는 화자 시점 관계 지도.
+    `state_categories`가 주어지면(비어있지 않으면) `enter_state` 필드 안내가 붙는다.
     """
     targets_block, targets_footer = build_targets_block(
         available_targets, key_to_alias, target_sections, situation_targets,
@@ -418,12 +451,14 @@ def build_output_contract(
     move_to_hint = build_move_to_hint(
         has_location_graph=has_location_graph, has_zone=has_zone,
     )
+    state_hint = build_state_hint(state_categories)
 
     return (
         tmpl
         .replace("<FIELD_LINES>", field_lines)
         .replace("<FIELD_HINTS>", field_hints)
         .replace("<MOVE_TO_HINT>", move_to_hint)
+        .replace("<STATE_HINT>", state_hint)
         .replace("<TARGETS>", targets_block)
         .replace("<TARGETS_FOOTER>", targets_footer)
     )
@@ -446,6 +481,7 @@ def build_engine_contract(
     include_output_schema: bool                            = True,
     output_format_override: str | None                     = None,
     relationships:      dict[str, str] | None              = None,
+    state_categories:   list[dict] | None                  = None,
 ) -> str:
     """계약 층 전체(세계 계약 + 관계 지도 + 출력 계약)를 한 번에 만든다.
 
@@ -482,6 +518,7 @@ def build_engine_contract(
         has_location_graph = bool(location_graph),
         has_zone           = bool(location_zone),
         speaker_relationships = relationships or None,
+        state_categories   = state_categories,
     )
 
 

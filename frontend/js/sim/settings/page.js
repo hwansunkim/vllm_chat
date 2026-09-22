@@ -17,6 +17,8 @@ import { updateVariableTimeUI, renderTimeCategories, readTimeCategories,
          readIdleSchedule, addTimeCategory, initTimeModeToggle,
          normalizeTimeEstimationMode, updateTimeEstimationModeUI,
          readTimeEstimationMode, initTimeEstimationModeToggle } from './time-categories.js';
+import { renderStateCategories, readStateCategories, addStateCategory,
+         resetStateCategoriesToDefault } from './state-categories.js';
 import { renderSystemAgentConfig } from './system-agent.js';
 import { renderInfectionConfig, readInfectionModel, addSymptomStage } from './infection-config.js';
 import { renderTemperatureSlider } from './temperature.js';
@@ -28,7 +30,8 @@ import { renderContractPreview, readOutputFormatOverride } from './contract-prev
 // 기존 사용처(index.js 등)가 계속 './settings/page.js' 하나만 import 하도록 재수출한다.
 export { initTargetDurationUI, initTimeModeToggle,
          initTimeEstimationModeToggle, initPerceptionModeToggle,
-         addTimeCategory, addSymptomStage, addLocationNode };
+         addTimeCategory, addSymptomStage, addLocationNode,
+         addStateCategory, resetStateCategoriesToDefault };
 
 export function renderSettingsPage() {
   // 설정 패널을 열 때마다 서버 목록을 새로 읽는다 — 그 사이 서버 모달에서
@@ -70,6 +73,11 @@ export function renderSettingsPage() {
   if (maxDaytimeJumpEl) maxDaytimeJumpEl.value = sim.max_daytime_jump_minutes ?? 180;
   const maxSilenceEl = document.getElementById('sim-max-silence-waves');
   if (maxSilenceEl) maxSilenceEl.value = sim.max_silence_waves ?? 3;
+  renderStateCategories();
+  const zoneTravelMinEl = document.getElementById('sim-zone-travel-min');
+  if (zoneTravelMinEl) zoneTravelMinEl.value = sim.zone_travel_min_minutes ?? 10;
+  const zoneTravelMaxEl = document.getElementById('sim-zone-travel-max');
+  if (zoneTravelMaxEl) zoneTravelMaxEl.value = sim.zone_travel_max_minutes ?? 20;
   const langFixEl = document.getElementById('sim-lang-fix-enabled');
   if (langFixEl) langFixEl.checked = sim.lang_fix_enabled ?? true;
   const langRetEl = document.getElementById('sim-lang-fix-retries');
@@ -128,6 +136,15 @@ export function readConfigFromUI() {
   sim.max_daytime_jump_minutes = (_daytimeJump == null || _daytimeJump === '')
     ? 180 : Math.max(0, parseInt(_daytimeJump) || 0);
   sim.max_silence_waves  = parseInt(document.getElementById('sim-max-silence-waves')?.value)  || 3;
+  sim.state_categories   = readStateCategories();
+  // zone 이동 시간도 점프 상한과 같은 규칙 — 0이 유효값("기능 끔")이므로
+  // `|| 기본값`을 쓰면 안 된다.
+  const _travelMin = document.getElementById('sim-zone-travel-min')?.value;
+  sim.zone_travel_min_minutes = (_travelMin == null || _travelMin === '')
+    ? 10 : Math.max(0, parseInt(_travelMin) || 0);
+  const _travelMax = document.getElementById('sim-zone-travel-max')?.value;
+  sim.zone_travel_max_minutes = (_travelMax == null || _travelMax === '')
+    ? 20 : Math.max(sim.zone_travel_min_minutes, parseInt(_travelMax) || 0);
   const sel = document.getElementById('sim-server-select');
   sim.server_id              = sel?.value || null;
   // 슬라이더가 DOM에 있으면 그 값이 항상 우선이고(정규화는 범위 밖 대비),

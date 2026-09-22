@@ -187,13 +187,28 @@ zone은 순수 위치 개념.)
 
 - `_current_elapsed_minutes` — 시각 계산 단일 진실 원천 ([`simulation-engine.md §10`](simulation-engine.md#10-시각-계산--_current_elapsed_minutes-단일-진실-원천)).
 - **variable — category 모드**: wave 끝에 `classify_wave_time`(LLM)이 카테고리 하나
-  선택 → 그 범위에서 `random.randint`. 실패 → `normal_scene`.
+  선택 → 그 범위에서 `random.randint`. 실패 → 폴백(아래).
 - **variable — ai 모드**: `estimate_wave_minutes`(LLM)가 경과 분을 직접 추론 →
-  `time_categories` 전체의 min~max로 clamp. 실패 → `normal_scene` 카테고리 폴백.
+  `time_categories` 전체의 min~max로 clamp. 실패 → 폴백(아래).
+- **카테고리 id는 순수 내부 키다** — 설정 화면(`time-categories.js`)은 label·
+  min·max만 편집하게 하고 id는 아예 보여주지 않는다. `_resolve_time_category`는
+  알 수 없는 id를 받으면(분류 실패·미설정 등) **항상 목록의 첫 번째 카테고리**로
+  폴백한다 — `"normal_scene"`이라는 특정 id를 찾아가는 특별 취급은 없다(id 값이
+  뭐든, 사용자가 라벨을 어떻게 바꾸든 무관). 설정 화면에도 "맨 위 카테고리가
+  기본값" 힌트가 있다.
 - **시간 추론 프롬프트가 받는 컨텍스트** (`time_classifier.py`): `[현재 시각]`,
   `[인물 배치]`(화자들이 함께 있나 흩어졌나 — `_placement_summary`),
-  `[다음 예정 시각]`(가장 이른 미발동 `at_time` 이벤트 — §9), 방법론 블록(대사는
-  거의 실시간·시간 표현 우선·의심스러우면 짧게), `reason` 먼저 `minutes` 나중.
+  `[다음 예정 시각]`(가장 이른 미발동 `at_time` 이벤트 — §9), 방법론 블록
+  (`_METHOD_BLOCK`), `reason` 먼저 `minutes` 나중.
+  - **2026-09 재보정** — 예전엔 "대사는 거의 실시간·의심스러우면 짧게"로
+    앵커가 강하게 짧은 쪽으로 쏠려, wave당 평균 2~5분씩만 흘러 하루를
+    지나는 데 수백 wave가 필요했다. 대사만 문자 그대로 읽는 속도가 아니라
+    사이사이의 화면 밖 동작(차리기·치우기·오가기 등)까지 포함한 "장면 전체
+    길이"로 옮기고(한두 마디 2~5분, 보통 장면 15~20분), "의심스러우면
+    짧게"는 "의심스러우면 장면 성격에 맞는 중간값으로"로 완화했다. 예정된
+    시각을 넘기는 점프는 이 문구와 무관하게 아래 (0) 가드가 항상 별도로
+    막고 있어서, 판단 자체를 느슨하게 풀어도 일정을 건너뛰는 사고는
+    재발하지 않는다.
 - **시간 점프 클램프** (`_clamp_time_jump`) — LLM이 고른 raw 경과 분을 엔진이
   **결정론적으로** 상한 (약한 모델 방어):
   - (0) 아직 발동 안 한 `at_time` 이벤트 시각 → 그 전까지만 (§9 예정 서사 앵커)
@@ -242,7 +257,110 @@ fixed 모드엔 안 나옴. `turn_complete`·로그의 `time_str`이 실제 시�
 
 ---
 
-## 7. 디렉터 (system 에이전트)
+## 7. 에이전트 상태 (수면·이동) — `status.py`
+
+**배경** — 재투입(위 dormancy)이 에이전트의 상태를 전혀 모른 채 무조건 다시 초대해서,
+① 이미 잠든 에이전트가 침묵 사이클마다 잠꼬대를 반복하거나 ② zone 경계를 건너는
+이동(`location.py::_expand_zone_edges`의 "구역 안 어디서든 1홉 탈출" 설계상 대부분
+1 wave에 끝난다)이 순간이동처럼 보이는 문제가 있었다. `_StatusMixin`이 최소한의
+상태 계층으로 이 둘을 메운다.
+
+**상태 진입 — 출처가 둘로 갈린다:**
+- **자기-선언형**(`state_categories`) — 수면·개인 용무 등 캐릭터의 선택. 에이전트는
+  출력 계약의 `enter_state` 필드에 **분이 아니라 카테고리 id**를 고른다 — 정확한
+  지속 시간은 `time_categories`와 같은 원칙으로 그 카테고리의 min~max 범위에서
+  엔진이 `random.randint`로 뽑는다(`_enter_state`). id는 화면에 노출되지 않는 순수
+  내부 키다(`_resolve_state_category` — 알 수 없는 id는 `_resolve_time_category`와
+  똑같이 목록의 첫 카테고리로 폴백). `state_categories: []`(빈 리스트, 생략과 다름)면
+  기능 자체가 꺼지고 `enter_state` 안내도 계약에서 빠진다.
+- **월드-부여형**(`traveling`) — zone 경계를 건너는 hop은 지리적 사실이지 캐릭터의
+  판단이 아니므로, 캐릭터가 고르지 않고 이동 적용 루프(`runner.py`)가 hop 적용 시
+  자동으로 건다. 지속 시간은 `zone_travel_min_minutes`~`zone_travel_max_minutes`
+  범위에서 무작위(둘 다 0이면 기능 비활성 — 다른 점프 캡과 같은 관례). 같은 zone
+  안의 이동(방→방)에는 적용되지 않는다(기존처럼 즉시).
+
+**상태가 개입하는 지점은 정확히 셋:**
+1. **`_same_room`(targets.py)** — 둘 중 누구라도 지금 `traveling`이면 무조건
+   같은 방 아님. raw `_agent_location`은 hop 적용 즉시 목적지를 가리키지만
+   (맵 표시는 그대로), 실제로는 아직 그 방에 없는 것과 같다. 한 가드로 양방향이
+   같이 풀린다 — 이동 중인 쪽은 남을 못 보고(엿듣기·인지 억제), 이미 그 방에
+   있는 쪽도 raw 위치만 보고 "이미 도착했다"고 오인해 타깃하지 않는다(예: 딸이
+   하교 중이라 `_agent_location`은 이미 "거실"이어도, 실제 도착 전까지는 거실의
+   가족이 그녀를 타깃할 수 없다). `_resolve_targets`의 `_same_loc`, `_compute_wave_targets`
+   (location.py, `[현재 상황]`의 아는 사람/타깃 목록)도 같은 원칙의 별도 구현이다.
+   `sleep`/`busy`는 물리적으로 그 자리에 있는 것이므로 이 가드와 무관 — **같은 방
+   사람이 상태를 알면서도 말을 걸면 정상 전달된다**(direct routing은 재투입과
+   무관한 별개 경로라 손댈 필요가 없다).
+2. **재투입 `wakeable` 후보**(runner.py) — 상태 중인 에이전트는 제외.
+3. **"전원 재투입" 시간 점프**(runner.py) — 활성 에이전트 전원이 상태에 묶여
+   있으면 idle 스케줄의 랜덤값 대신 `_earliest_status_clear`로 **가장 이른 상태
+   해제 시점까지 정확히** 점프한다(`_next_pending_beat`가 예정 이벤트를 넘기지
+   않는 것과 대칭 — 이건 반대로 "그 시점까지는 확실히 건너뛴다").
+
+이동 상태가 자연 해제될 때(hop 적용 시점이 아니라!) "도착했다" 씬 알림도 그제서야
+**지금** 그 자리에 있는 사람들 기준으로 새로 만든다(`_deferred_arrival_scene_injections`)
+— 이동 시작 시점 기준으로 미리 만들어두면 그 사이 룸메이트가 바뀐 경우 틀린다.
+
+**재개(export/restore)** — `until_elapsed`(절대 앵커)는 감염 상태 복원과 같은 이유로
+그대로 믿지 않는다. 저장 시점 기준 **남은 분**(`remaining_minutes`)만 넘기고,
+복원 쪽이 새 run의 원점(`elapsed_minutes_init`) 기준으로 다시 앵커를 잡는다
+(`export_agent_state`/`restore_agent_state`, core.py).
+
+**계약 블록** — `build_state_hint(state_categories)` → 출력 계약의 `enter_state`
+필드 설명 + 카테고리 id/label 목록. `state_categories`가 비면 빈 문자열(동작하지
+않는 필드를 광고하지 않는다 — `move_to`와 같은 원칙).
+
+**리뷰 기반 보완 (4건)** — 실제 실행 로그(v11) 재현으로 발견된, 위 "정확히 셋"
+설계가 놓친 우회로들. 전부 회귀 테스트로 고정돼 있다(`AgentStatusUnitTests`,
+`ZoneTravelStateTests`, `SelfDeclaredStateTests`).
+
+1. **이동 중에도 이미 예약된 턴이 실행됨** — 상대가 말을 건 *그 wave*에 발신자가
+   막 이동을 시작해도, `next_wave` 큐 구성 시점에는 traveling 체크가 없어 다음
+   wave에 그대로 턴이 돌았다(도착 전인데 답장하는 꼴). 고쳐서 `next_wave`
+   구성 시 수신자가 `traveling`이면 큐에 넣는 대신 `_hold_incoming`으로 보류하고,
+   상태가 풀리는 wave에 도착 알림과 함께 되돌려준다(`_release_held_incoming`).
+2. **직전 wave 동석 유예가 이동 중 차단을 우회함** — `_can_address()`는
+   `_recently_co_located()`(방금 전까지 같은 방이었으면 한 wave 봐준다)를
+   `_same_loc()`보다 먼저 검사해 즉시 리턴하므로, "방금 막 출발"한 경우 `_same_room`
+   traveling 가드를 그대로 건너뛰었다. `_recently_co_located()` 자체의 첫 검사로
+   같은 가드를 옮겨 막았다.
+3. **시간 점프가 상태 해제 시점을 모름** — `_earliest_status_clear` 기반 캡은
+   "전원 재투입"(완전 침묵) 분기에만 있었다. 그런데 짧은 독백(`...` 하나)만
+   있어도 일반 시간판정 경로(`_clamp_time_jump`)를 타므로, 화장실행(`busy`
+   10~30분) 도중 무관한 대형 AI 점프(예: "다들 잠들었으니 455분")가 그 위를
+   덮어써 다음 등장까지 화장실 복귀 장면이 통째로 생략되는 사고가 실측됐다
+   (v11 Wave 114→123). `_clamp_time_jump`에도 같은 캡을 추가해 상태 해제
+   시점을 넘는 점프는 그 시점까지로 잘린다.
+4. **브로드캐스트가 수면/개인용무 중에도 도달**(정책) — `target: "all"`은
+   `_same_room` 가드(traveling만 막음)만 거쳤을 뿐 `sleep`/`busy`는 걸러지지
+   않아, "다 같이 들으라고 한 말"이 자는 사람에게도 그대로 전달됐다. 논의된
+   설계 의도(직접 지목 + 상대가 상태를 인지하고 말 걸면 전달 O, 무차별
+   브로드캐스트는 X)에 맞춰 `"all"` 해석에 `_agent_unavailable` 체크를
+   추가했다 — 직접 주소(`_can_address`)는 그대로라 "자는 걸 알면서 콕 집어
+   말 걸기"는 여전히 전달된다.
+
+**관측성(UI)** — 도입 당시엔 상태가 서버 콘솔 로그 한 줄 외엔 어디서도 안 보였다
+("잠꼬대는 없어졌는데 왜 잠들었는지 화면에서 확인할 방법이 없다"는 지적). 지금은
+상태 진입/해제마다 영속 SSE 이벤트 `agent_status_change`
+(`{wave, agent, display_name, action: "enter"|"clear", state, label, minutes,
+until_time_str}`, label/minutes/until_time_str는 enter에만)를 emit하고, 이걸
+네 곳에서 소비한다:
+- **에이전트 카드 뱃지** (`cards.js::updateAgentStatus`) — 💤/🚶 아이콘 + 라벨을
+  카드에 바로 표시, 해제되면 사라짐.
+- **피드 카드** (`feed.js::addStatusCard`) — enter/clear 각각 별도 카드로 실행
+  이력에 영구 기록.
+- **컨텍스트 패널 배너** (`context.js`) — `GET /agents/{name}/context`가 함께
+  내려주는 `status`(`_agent_active_status`로 그 순간 기준 새로 계산, 만료됐으면
+  자연히 `null`)를 패널 상단에 배너로.
+- **마크다운 내보내기** (`export/markdown.js` + 파이썬 쌍둥이
+  `ABM/export/markdown.py`) — 다운로드한 시나리오 기록만으로 상태 진입/해제
+  시각·사유를 감사할 수 있도록, 토글과 무관하게 항상 포함(`scene_event`와
+  같은 원칙). `infection_update`와 같은 이중 emit 패턴이라(해제=대사 전,
+  진입=대사 후) `_stream_phase`도 `action` 필드로 갈라 처리한다.
+
+---
+
+## 8. 디렉터 (system 에이전트)
 
 **목적** — 이야기가 정체·반복되면 개입해 흐름을 되살리는 내레이터. (= system
 에이전트 = 내레이터, 셋 다 같은 것. 내부 식별자 `system`.)
@@ -304,7 +422,7 @@ fixed 모드엔 안 나옴. `turn_complete`·로그의 `time_str`이 실제 시�
 
 ---
 
-## 8. 감염병 모델 (`infection_model`)
+## 9. 감염병 모델 (`infection_model`)
 
 **목적** — 결정론적 SIR/SIS 확산. **LLM은 감염 여부를 절대 판단하지 않는다** — 엔진이
 접촉만 보고 상태를 계산하고, 결과를 오직 "증상 서사 텍스트"로만 알린다.
@@ -347,7 +465,7 @@ disease_name}` — `cause` = `event`(시드) / `transmission`(전파) / `recover
 
 ---
 
-## 9. 시나리오 이벤트 (`events`)
+## 10. 시나리오 이벤트 (`events`)
 
 **목적** — 지정한 시점에 자동 발생하는 사건. 실행 도중 상황 변경.
 
@@ -382,7 +500,7 @@ disease_name}` — `cause` = `event`(시드) / `transmission`(전파) / `recover
 
 ---
 
-## 10. 언어 교잡 수정
+## 11. 언어 교잡 수정
 
 **목적** — 응답 `content`에 한국어 아닌 문자(한자·영어)가 섞이면 재생성.
 

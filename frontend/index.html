@@ -367,6 +367,7 @@
             </div>
             <div class="sim-fields-hint" id="sim-time-cat-hint">wave가 끝날 때마다 그 wave의 대화 내용을 LLM이 아래 카테고리 중 하나로 분류하고, 그 범위(분) 내에서 무작위로 시간을 경과시킵니다.</div>
             <div class="sim-fields-hint sim-hidden" id="sim-time-ai-hint">wave가 끝날 때마다 LLM이 흘러간 시간(분)을 직접 추론합니다. <b>AI가 추론한 시간은 아래 카테고리 최소~최대 범위로 제한됩니다</b> — 카테고리 설정은 안전장치로 계속 쓰이니 그대로 두세요. 추론에 실패하면 카테고리 방식으로 자동 폴백합니다.</div>
+            <div class="sim-fields-hint">☝️ 맨 위 카테고리가 분류 실패 시 기본값으로 쓰입니다. 순서를 바꾸려면 삭제 후 원하는 순서로 다시 추가하세요.</div>
             <div id="sim-time-cat-list"></div>
             <div class="sim-option-row" style="margin-top:8px">
               <label>강제 재투입 시간(분)<span class="sim-help" aria-hidden="true" data-tooltip="연속 침묵으로 강제 재투입될 때 경과시킬 시간(분), 쉼표로 구분. 침묵 회차가 늘수록 다음 값을 사용하고 끝에서 고정됩니다.">?</span></label>
@@ -380,6 +381,40 @@
             <div class="sim-option-row" style="margin-top:8px">
               <label>주간 점프 상한(분)<span class="sim-help" aria-hidden="true" data-tooltip="밤(22~06시)이 아니고 집에 남아 있는 사람이 있을 때의 점프 상한. 집이 완전히 비면(모두 외출) 적용하지 않습니다.">?</span></label>
               <input type="number" id="sim-max-daytime-jump" value="180" min="0" step="10"/>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── 에이전트 상태(수면·이동 등) ───────────────────────────────────── -->
+    <div class="sim-settings-section" data-section="agent-state" data-sec-icon="💤" data-sec-label="에이전트 상태">
+      <div class="sim-settings-section-title">
+        <span class="sim-sec-title-text">💤 에이전트 상태<span class="sim-help" aria-hidden="true" data-tooltip="재투입(휴면 처리)이 에이전트의 상태를 몰라 무조건 다시 초대하면, 자던 에이전트가 매번 잠꼬대를 반복하거나 zone 경계 이동이 순간이동처럼 보입니다. 여기서 설정한 상태 중에는 재투입 후보에서 빠집니다 — 단 같은 방 사람이 상태를 알고도 직접 말을 걸면 정상적으로 전달됩니다.">?</span></span>
+        <span class="sim-sec-badge" data-sec-badge="agent-state"></span>
+        <button type="button" class="sim-sec-toggle" data-sec-toggle="agent-state" aria-expanded="false" title="섹션 접기/펼치기">▾</button>
+      </div>
+      <div class="sim-sec-wrap">
+        <div class="sim-sec-inner">
+          <div class="sim-sec-sub">
+            <div class="sim-sec-sub-title">
+              <span>자기-선언형 상태(수면·개인 용무)<span class="sim-help" aria-hidden="true" data-tooltip="에이전트가 스스로 '이제 잔다/씻는다' 등을 선언할 때 고르는 카테고리 목록입니다. 정확한 지속 시간은 에이전트가 정하지 않고, 여기 설정한 범위에서 자동으로 뽑힙니다. 전부 지우면(0개) 이 기능이 꺼집니다 — enter_state 안내 자체가 계약에서 빠집니다.">?</span></span>
+              <div>
+                <button id="sim-reset-statecat-btn" type="button" class="sim-settings-add-btn" title="기본값(수면/개인 용무)으로 되돌리기">↺ 기본값</button>
+                <button id="sim-add-statecat-btn" type="button" class="sim-settings-add-btn">+ 상태 추가</button>
+              </div>
+            </div>
+            <div id="sim-state-cat-list"></div>
+          </div>
+          <div class="sim-sec-sub">
+            <div class="sim-sec-sub-title">
+              <span>이동(zone 경계) 소요 시간<span class="sim-help" aria-hidden="true" data-tooltip="위치 그래프에서 zone 경계를 건너는 이동(예: 집→학교)에 걸리는 시간(분)입니다. 에이전트가 고르지 않고 엔진이 자동으로 적용합니다 — 같은 zone 안의 이동(예: 거실→안방)에는 적용되지 않습니다(기존처럼 즉시). 둘 다 0이면 이 기능이 꺼지고 이동이 항상 즉시 완료됩니다.">?</span></span>
+            </div>
+            <div class="sim-option-row">
+              <label>최소~최대(분)</label>
+              <input type="number" id="sim-zone-travel-min" value="10" min="0" step="5"/>
+              <span class="sim-time-cat-sep">~</span>
+              <input type="number" id="sim-zone-travel-max" value="20" min="0" step="5"/>
             </div>
           </div>
         </div>

@@ -150,6 +150,10 @@ function _badgeText(id, sim) {
       return (sim.time_per_wave ?? 0) > 0 ? `${sim.time_per_wave}분/wave` : '시간 없음';
     case 'tuning':
       return '';
+    case 'agent-state': {
+      const n = sim.state_categories?.length ?? 0;
+      return n ? `상태 ${n}` : '꺼짐';
+    }
     case 'output': {
       const n = sim.extra_fields?.length ?? 0;
       // "오버라이드"는 출력 계약을 직접 편집 중일 때만 — 엔진 생성분은 기본이라 배지가 없다.

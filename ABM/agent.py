@@ -59,6 +59,9 @@ class Agent:
         self.engine_contract: str = ""
         self._has_location_graph: bool = False
         self._has_zone: bool = False
+        # 상태(수면·이동 등) 카테고리 — enter_state 힌트를 조건부로 노출하는 데 쓴다.
+        # 시뮬레이션 전체가 공유하는 정적 설정이라 계약과 함께 한 번만 걸어둔다.
+        self._state_categories: list[dict] | None = None
         # 이 에이전트 시점의 관계 지도 {상대 key: 관계}. `engine_contract` 안의
         # [아는 사람] 블록과 **같은 데이터**이며, 매 턴 새로 만들어지는 출력 계약의
         # <TARGETS> 목록에 관계어 라벨을 붙이는 데 쓰인다. 관계는 시뮬레이션 수명
@@ -100,6 +103,7 @@ class Agent:
         has_location_graph: bool = False,
         has_zone: bool = False,
         relationships: dict[str, str] | None = None,
+        state_categories: list[dict] | None = None,
     ) -> None:
         """시뮬레이션이 소유한 정적 계약 블록(지도/시간/감염/관계)을 이 에이전트에 건다.
 
@@ -111,11 +115,14 @@ class Agent:
         문자열이다(`core._apply_engine_contract`). `relationships` 는 그 블록을
         만든 원본 dict 로, 출력 계약의 `<TARGETS>` 라벨에 재사용된다 — 계약 문자열을
         다시 파싱하지 않도록 구조 데이터를 그대로 들고 있는다.
+        `state_categories`는 `enter_state` 힌트를 조건부로 붙이는 데 쓴다(비어있으면
+        기능 자체가 꺼진 것 — 동작하지 않는 필드를 광고하지 않는다).
         """
         self.engine_contract = world_contract or ""
         self._has_location_graph = bool(has_location_graph)
         self._has_zone = bool(has_zone)
         self.relationships = dict(relationships or {})
+        self._state_categories = list(state_categories) if state_categories else None
 
     def get_system_message(
         self,
@@ -142,6 +149,7 @@ class Agent:
                 has_location_graph=self._has_location_graph,
                 has_zone=self._has_zone,
                 speaker_relationships=self.relationships or None,
+                state_categories=self._state_categories,
             ),
         }
 

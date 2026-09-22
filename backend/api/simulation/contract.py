@@ -65,6 +65,7 @@ def preview_engine_contract(body: ContractPreviewRequest):
         disease_name           = body.infection_model.disease_name,
         output_format_override = body.output_format_override or None,
         relationships          = dict(body.relationships) or None,
+        state_categories       = [c.model_dump() for c in body.state_categories] or None,
     )
 
     try:

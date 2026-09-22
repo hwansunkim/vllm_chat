@@ -1,7 +1,7 @@
 // frontend/js/sim/run/cards.js
 // Agent card rendering & live updates on the simulation run view.
 
-import { sim, esc, emotionClass, fmtK, getAgentIcon, infectionBadge } from '../state.js';
+import { sim, esc, emotionClass, fmtK, getAgentIcon, infectionBadge, agentStatusBadge } from '../state.js';
 import { openAgentContext } from '../context.js';
 
 // 만남 뱃지("→ 목표")용 로컬 상태.
@@ -56,6 +56,7 @@ export function renderAgentCards(overrideLocations = null) {
         <span class="sim-card-icon" id="simc-icon-${esc(agent.name)}">${esc(getAgentIcon(agent, 'neutral'))}</span>
         <span class="sim-card-name">${displayLabel}</span>
         <span class="sim-card-infection sim-hidden" id="simc-inf-${esc(agent.name)}"></span>
+        <span class="sim-card-status sim-hidden" id="simc-status-${esc(agent.name)}"></span>
         <span class="sim-card-meeting sim-hidden" id="simc-meet-${esc(agent.name)}"></span>
         ${locHtml}
       </div>
@@ -143,6 +144,27 @@ export function updateAgentInfection(d) {
   el.className   = `sim-card-infection inf-${badge.cls}`;
   el.title       = d.disease_name ? `${d.disease_name} · W${d.wave}` : `W${d.wave}`;
   getCardEl(d.agent)?.classList.toggle('infected', badge.cls === 'infected');
+}
+
+/**
+ * agent_status_change SSE 훅 — 카드에 상태(수면·개인 용무·이동) 뱃지를 붙이거나
+ * (해제 시) 지운다. infection과 달리 "과거 이력"을 남기지 않는다 — 지금 활성인지
+ * 아닌지만 보여주면 되므로 sim에 별도 상태 맵을 두지 않는다.
+ */
+export function updateAgentStatus(d) {
+  if (!d || !d.agent) return;
+  const el = document.getElementById(`simc-status-${d.agent}`);
+  if (!el) return;
+  const badge = agentStatusBadge(d);
+  if (!badge) {
+    el.classList.add('sim-hidden');
+    el.textContent = '';
+    el.title = '';
+    return;
+  }
+  el.textContent = `${badge.icon} ${badge.label}`;
+  el.className   = `sim-card-status st-${badge.cls}`;
+  el.title = d.until_time_str ? `${d.until_time_str}까지 (약 ${d.minutes}분)` : '';
 }
 
 /**

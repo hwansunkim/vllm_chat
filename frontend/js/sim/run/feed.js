@@ -2,7 +2,7 @@
 // Live feed: typing indicator, agent messages, scene events, wave indicator.
 
 import { sim, esc, emotionClass, agentLabel, getAgentIcon, simTimeLabel, infectionBadge,
-         meetingNarration } from '../state.js';
+         meetingNarration, agentStatusBadge } from '../state.js';
 
 // 증상 서사 카드 접두사 — 서버(_build_symptom_context)가 항상 이 머리말로 시작한다.
 // 같은 턴에 위치 안내 카드와 증상 카드가 각각 올 수 있어 이걸로 구분해 다르게 꾸민다.
@@ -327,6 +327,42 @@ export function addInfectionCard(d) {
       <span class="sim-infection-cause">${esc(disease + causeLabel)}</span>
       <span class="sim-infection-wave">W${d.wave}</span>
     </div>`;
+  document.getElementById('sim-feed').appendChild(el);
+  el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
+/**
+ * agent_status_change 피드 카드 — 언제 잠들어서/이동해서 언제 돌아왔는지를
+ * 시나리오 화면에서 그대로 확인·검증할 수 있게 한다(리뷰가 지적한 감사 공백
+ * 보완). 카드 뱃지(agentStatusBadge)는 "지금 활성인가"만 보고 clear를 null로
+ * 접는데, 피드는 진입·해제 둘 다 한 줄로 남겨야 하므로 action을 직접 본다.
+ */
+export function addStatusCard(d) {
+  if (!d || !d.agent) return;
+  removeFeedEmpty();
+  const name = esc(d.display_name || agentLabel(d.agent));
+  const el = document.createElement('div');
+  if (d.action === 'enter') {
+    const badge = agentStatusBadge(d);
+    if (!badge) return;
+    el.className = `sim-status-card st-${badge.cls}`;
+    el.innerHTML = `
+      <div class="sim-status-header">
+        <span class="sim-status-icon">${badge.icon}</span>
+        <span class="sim-status-name">${name}</span>
+        <span class="sim-status-label">${esc(badge.label)} 진입 (${esc(String(d.minutes))}분${d.until_time_str ? ` · ~${esc(d.until_time_str)}` : ''})</span>
+        <span class="sim-status-wave">W${d.wave}</span>
+      </div>`;
+  } else {
+    el.className = 'sim-status-card st-clear';
+    el.innerHTML = `
+      <div class="sim-status-header">
+        <span class="sim-status-icon">🌅</span>
+        <span class="sim-status-name">${name}</span>
+        <span class="sim-status-label">상태 해제</span>
+        ${d.wave != null ? `<span class="sim-status-wave">W${esc(String(d.wave))}</span>` : ''}
+      </div>`;
+  }
   document.getElementById('sim-feed').appendChild(el);
   el.scrollIntoView({ behavior: 'smooth', block: 'end' });
 }
