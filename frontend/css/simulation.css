@@ -669,8 +669,8 @@
 .sim-inf-toggle input[type=checkbox] { accent-color: #be123c; width: 14px; height: 14px; }
 
 .sim-inf-stages-head { margin-top: 10px; }
-#sim-inf-transmission { accent-color: #e11d48; }
-#sim-inf-transmission-val {
+#sim-inf-beta { accent-color: #e11d48; }
+#sim-inf-beta-val {
   color: #e11d48; font-weight: 700; font-variant-numeric: tabular-nums;
 }
 
@@ -695,14 +695,6 @@
 .sim-inf-onset-inputs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex: 1; }
 #sim-inf-onset-wave { width: 64px; }
 .sim-inf-onset-hint { font-size: 10.5px; color: #94a3b8; }
-
-/* 회복 시간 — (최소 N일 M시간) ~ (최대 N일 M시간). 증상 단계 행과 같은 입력 부품을 쓴다 */
-.sim-inf-recovery-row { align-items: center; }
-.sim-inf-recovery-inputs {
-  display: flex; align-items: center; gap: 4px; flex-wrap: wrap; flex: 1;
-}
-#sim-inf-recovery-hint { margin-top: -2px; }
-#sim-inf-recovery-hint.sim-inf-chronic { color: #b45309; font-weight: 600; }
 
 /* 증상 단계 — time_categories 행(라벨 + min~max)에 서사 textarea를 더한 형태.
    단위가 웨이브에서 "감염 후 경과 시간(일 + 시간)"으로 바뀌면서 입력 칸이 넷이 되어
@@ -1006,6 +998,7 @@
   font-size: 10px; padding: 1px 5px; border-radius: 4px;
   white-space: nowrap; flex-shrink: 0; font-weight: 600;
 }
+.sim-card-infection.inf-exposed   { color: #0e7490; background: rgba(8,145,178,0.10); }
 .sim-card-infection.inf-infected  { color: #be123c; background: rgba(225,29,72,0.10); }
 .sim-card-infection.inf-recovered { color: #15803d; background: rgba(34,197,94,0.12); }
 .sim-agent-card.infected { border-color: #fda4af; background: #fff5f5; }
@@ -1158,6 +1151,10 @@
   margin: 8px 0; padding: 8px 14px;
   border-radius: 10px; font-size: 12px;
 }
+.sim-infection-card.inf-exposed {
+  background: linear-gradient(135deg, #ecfeff 0%, #cffafe 100%);
+  border: 1px solid #67e8f9;
+}
 .sim-infection-card.inf-infected {
   background: linear-gradient(135deg, #fff1f2 0%, #ffe4e6 100%);
   border: 1px solid #fda4af;
@@ -1172,6 +1169,10 @@
 .sim-infection-label  { font-size: 11px; font-weight: 600; }
 .sim-infection-cause  { font-size: 11px; flex: 1; }
 .sim-infection-wave   { font-size: 10px; font-weight: 600; }
+.inf-exposed   .sim-infection-name  { color: #0e7490; }
+.inf-exposed   .sim-infection-label { color: #0891b2; }
+.inf-exposed   .sim-infection-cause { color: #155e75; }
+.inf-exposed   .sim-infection-wave  { color: #67e8f9; }
 .inf-infected  .sim-infection-name  { color: #be123c; }
 .inf-infected  .sim-infection-label { color: #e11d48; }
 .inf-infected  .sim-infection-cause { color: #9f1239; }
@@ -1513,6 +1514,7 @@
 .g-node circle { stroke: #e2e8f0; stroke-width: 2; }
 .g-node text   { pointer-events: none; }
 /* 감염 상태 — 노드 테두리 색으로만 표시한다(채움을 바꾸면 이모지 대비가 무너진다). */
+.g-node-exposed   circle { stroke: #0891b2; stroke-width: 3; }
 .g-node-infected  circle { stroke: #e11d48; stroke-width: 3; }
 .g-node-recovered circle { stroke: #22c55e; stroke-width: 3; }
 /* 엣지는 stroke가 아니라 채워진 테이퍼 폴리곤(source에서 두껍고 target에서 뾰족)이다.
@@ -1568,6 +1570,7 @@
 .lm-agent-icon { pointer-events: none; }
 .lm-agent-name { fill: #475569; pointer-events: none; }
 /* 감염 상태 — 관계 그래프 노드와 같은 색 규칙(테두리만 바꾼다) */
+.lm-agent-exposed   .lm-agent-dot { fill: #ecfeff; stroke: #0891b2; stroke-width: 2.5; }
 .lm-agent-infected  .lm-agent-dot { fill: #fff1f2; stroke: #e11d48; stroke-width: 2.5; }
 .lm-agent-recovered .lm-agent-dot { fill: #f0fdf4; stroke: #22c55e; stroke-width: 2.5; }
 /* 이동 직후 강조 */

@@ -6,9 +6,10 @@
 ``tests/fixtures/*.md`` 골든 테스트가 깨진다.
 
 포팅 대상: ``normalizeWeekday`` · ``normalizeDurationMinutes`` ·
-``normalizeProbability`` · ``normalizeSymptomStages`` · ``buildInfectionModel`` ·
-``formatDayHour`` · ``infectionBadge`` · ``meetingNarration`` · ``detectGender`` ·
-``getAgentIcon`` · ``agentLabel`` · ``simTimeLabel``.
+``normalizeProbability`` · ``normalizeBeta`` · ``normalizeSymptomStages`` ·
+``buildInfectionModel`` · ``formatDayHour`` · ``infectionBadge`` ·
+``meetingNarration`` · ``detectGender`` · ``getAgentIcon`` · ``agentLabel`` ·
+``simTimeLabel``.
 
 JS 의 ``parseFloat`` / ``Math.round`` 의미를 그대로 흉내 낸다(``_parse_float`` ·
 ``_js_round``) — 값이 폼에서 문자열로 흘러 들어오는 경로가 있어 "숫자로 안 읽히면
@@ -130,11 +131,18 @@ def normalize_probability(v, fallback: float = 0) -> float:
     return min(1, max(0, _js_round(n * 100) / 100))
 
 
-# ── 감염병 모델 ───────────────────────────────────────────────────────────────
+def normalize_beta(v, fallback: float = 0) -> float:
+    """β(전염 확률 계수) 정규화 — 확률이 아니라 비율(rate)이라 1을 넘을 수 있다.
+    0 이상이기만 하면 된다. state.js의 normalizeBeta와 동일 규칙(4자리 반올림)."""
+    n = _parse_float(v)
+    if n is None:
+        return fallback
+    return max(0, _js_round(n * 10000) / 10000)
 
-DEFAULT_TRANSMISSION_PROBABILITY = 0.3
-DEFAULT_RECOVERY_MIN_MINUTES = 7200    # 5일
-DEFAULT_RECOVERY_MAX_MINUTES = 14400   # 10일
+
+# ── 감염병 모델 (SEIR) ────────────────────────────────────────────────────────
+
+DEFAULT_BETA = 0.04
 
 DEFAULT_SYMPTOM_STAGES: list[dict] = [
     {"id": "incubation", "label": "잠복기", "min_minutes": 0,    "max_minutes": 2880,
@@ -180,13 +188,6 @@ def build_infection_model(raw) -> dict:
     채운 "꺼진 모델"을 돌려준다.
     """
     src = raw if isinstance(raw, dict) else None
-    rec_min = normalize_duration_minutes(
-        src.get("recovery_min_minutes") if src else None, DEFAULT_RECOVERY_MIN_MINUTES)
-    rec_max = normalize_duration_minutes(
-        src.get("recovery_max_minutes") if src else None, DEFAULT_RECOVERY_MAX_MINUTES)
-    # max == 0 은 "자연 회복 없음(만성)" 이라는 별도 의미 — 대소 검증에서 제외.
-    if rec_max > 0 and rec_max < rec_min:
-        rec_min = rec_max
     stages_raw = src.get("symptom_stages") if src else None
     # JS 의 `src?.immune_after_recovery ?? true` — 값이 없을 때만 true 로 채운다
     # (명시적 false 는 그대로 살린다).
@@ -194,15 +195,12 @@ def build_infection_model(raw) -> dict:
     return {
         "enabled":                  bool(src.get("enabled")) if src else False,
         "disease_name":             str((src.get("disease_name") if src else "") or "").strip(),
-        "transmission_probability": normalize_probability(
-            src.get("transmission_probability") if src else None,
-            DEFAULT_TRANSMISSION_PROBABILITY),
+        "beta":                     normalize_beta(
+            src.get("beta") if src else None, DEFAULT_BETA),
         # 감염 설정 자체가 없던 시나리오만 기본 단계로 채운다.
         "symptom_stages":           normalize_symptom_stages(stages_raw)
                                     if (src is not None and isinstance(stages_raw, list))
                                     else [dict(s) for s in DEFAULT_SYMPTOM_STAGES],
-        "recovery_min_minutes":     rec_min,
-        "recovery_max_minutes":     rec_max,
         "immune_after_recovery":    True if immune is None else immune,
     }
 
@@ -210,9 +208,11 @@ def build_infection_model(raw) -> dict:
 def infection_badge(status, cause) -> dict | None:
     """``infection_update`` 이벤트 → 표시 뱃지. 표시할 게 없으면 None.
 
-    ``status='S'`` 는 "한 번도 안 걸림"과 "회복했지만 재감염 가능(SIS)" 두 뜻이라
+    ``status='S'`` 는 "한 번도 안 걸림"과 "회복했지만 재감염 가능(SEIRS)" 두 뜻이라
     cause 로 구분한다 — 전자는 뱃지를 달지 않는다.
     """
+    if status == "E":
+        return {"icon": "⏳", "label": "잠복기",   "cls": "exposed"}
     if status == "I":
         return {"icon": "🦠", "label": "감염",     "cls": "infected"}
     if status == "R":

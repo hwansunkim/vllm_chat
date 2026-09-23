@@ -522,10 +522,20 @@ until_time_str}`, label/minutes/until_time_str는 enter에만)를 emit하고, �
 
 ---
 
-## 9. 감염병 모델 (`infection_model`)
+## 9. 감염병 모델 (`infection_model`) — SEIR (2026-09 리서치 스펙 반영)
 
-**목적** — 결정론적 SIR/SIS 확산. **LLM은 감염 여부를 절대 판단하지 않는다** — 엔진이
+**목적** — 결정론적 SEIR/SEIRS 확산. **LLM은 감염 여부를 절대 판단하지 않는다** — 엔진이
 접촉만 보고 상태를 계산하고, 결과를 오직 "증상 서사 텍스트"로만 알린다.
+
+**상태** — S(감염 가능) → E(잠복기, 비전염) → I(감염기, 전염 가능) → R(회복). E·I의
+지속 시간은 **연구 스펙 상수**라 사용자가 못 바꾼다(`ABM/simulation/infection.py`
+상단 참고):
+- **E(잠복기)**: 절단 감마분포 `Gamma(k=1.926, θ=1.775)`를 `[1,10]`일로 절단 후
+  반올림(Julia `Print_Duration_E`와 동일 파라미터). 평균 약 3.4일.
+- **I(감염기)**: 8일 고정(Julia `Print_Duration_I`와 동일).
+
+두 지속 시간 모두 **노출 시점에 한 번만** 뽑혀 그 뒤로는 결정론적으로 흐른다(감염
+시점 이후 재추첨 없음).
 
 **설정** — 설정 뷰 "감염병 모델" 섹션. `InfectionModelConfig`:
 
@@ -533,35 +543,46 @@ until_time_str}`, label/minutes/until_time_str는 enter에만)를 emit하고, �
 |---|---|
 | `enabled` | 활성화 |
 | `disease_name` | 질병명 (안내 문구용) |
-| `transmission_probability` | 같은 wave·같은 장소 감염자 1명당 전염 확률 (0~1) |
-| `symptom_stages[]` | `{min_minutes, max_minutes, symptom_text}` — **감염 후 경과 분** 구간별 서사 |
-| `recovery_min/max_minutes` | 회복까지 걸리는 시간 구간. 감염 시점에 [min,max]분에서 1회 균등 샘플. `max == 0` = 만성 |
-| `immune_after_recovery` | `true` = SIR (회복 후 면역) / `false` = SIS (재감염 가능) |
+| `beta` | 전염 확률 계수(β). 기본 0.04. Monte Carlo: λ=β×t_d, P=1-exp(-λ) |
+| `symptom_stages[]` | `{min_minutes, max_minutes, symptom_text}` — **노출 후 경과 분** 구간별 서사(E·I 공통) |
+| `immune_after_recovery` | `true` = SIR (회복 후 면역, 재감염 불가) / `false` = SEIRS (재감염 가능) |
 
 환자 0번은 `ScenarioEvent` `infect_agent` (설정 뷰에서 "환자 0번" 체크 → 해당 wave에
-`infect_agent` 이벤트 생성).
+`infect_agent` 이벤트 생성) — 시드된 환자도 곧바로 I가 아니라 E로 들어간다.
 
 **엔진 동작** (`infection.py`) — **시간 축이 둘**:
 
-- **전염 = wave·접촉 기준** — `_apply_infection_wave`가 **이동 반영 후** 위치로
-  `_compute_contact_groups`(같은 장소 2명+, 외부 공간 제외). 감염자 × 비감염자 쌍마다
-  `random.random() < transmission_probability` 독립 판정.
-- **증상 진행·회복 = 경과 분 기준** — 감염 시점에 `_sample_recovery_minutes()`로 회복
-  목표를 1회 뽑고, `now - infected_at_minutes >= recover_at_minutes`면 회복.
-  `_find_symptom_stage(elapsed)`가 경과 분이 속한 단계의 `symptom_text` 반환 (범위 밖은
-  마지막 단계 유지, 첫 단계가 0에서 시작 안 하면 그 전엔 증상 없음).
-- **재개 시 앵커 복원** — `infected_at_minutes`는 경과분 축의 절대 앵커. 재개 방식에
-  따라 원점이 달라질 수 있어 `elapsed_minutes_since_infection`(저장 시점의 감염 후
-  경과분)을 함께 저장하고 복원 쪽에서 새 원점 기준으로 재계산. `/continue`는
-  `rebase_infection_anchors(now=before)` (정상 시 no-op, 접기 누락 회귀 흡수).
-- 시간 개념 비활성 → 경과분 항상 0 → 감염자 첫 단계 고정, 자연 회복 없음.
+- **전염 = wave·접촉 기준 Monte Carlo** — `_apply_infection_wave`가 **이동 반영 후**
+  위치로 `_compute_contact_groups`(같은 장소 2명+, 외부 공간 제외). **I(감염기)** 상태인
+  사람만 전파원이 될 수 있다(E는 아직 비전염). 감염기 × 감염가능(S) 쌍마다
+  `λ = β × t_d`, `P = 1 - exp(-λ)`, `random.random() < P`로 독립 판정. `t_d`(접촉
+  시간, 일 단위)는 **직전 판정 이후 실제로 경과한 시간**을 일로 환산한 값이다 — 가변
+  시간 모드에서 5분짜리 식사 wave와 7시간짜리 취침 wave가 접촉 시간에 다르게
+  기여해야 하기 때문. 최초 판정(직전 기준 시각 없음)은 t_d=0으로 보아 전염을
+  걸지 않는다. **시간 개념이 꺼져 있으면(경과분이 항상 0) t_d도 항상 0이라 β가
+  아무리 커도 전염이 일어나지 않는다** — 회귀가 아니라 새 모델의 정의상 결과.
+- **잠복기·감염기 진행 = 경과 분 기준** — 노출 시점에 `infectious_at_minutes`
+  (E→I까지의 델타)와 `recover_at_minutes`(E→R까지의 총 델타)를 함께 뽑는다.
+  `now - infected_at_minutes >= infectious_at_minutes`면 E→I, `>= recover_at_minutes`면
+  I→R. 둘 다 같은 wave 시작 시점 명단(snapshot) 기준이라 갓 전이된 사람이 같은
+  wave에 곧장 다음 단계로 넘어가지 않는다. `_find_symptom_stage(elapsed)`가 경과
+  분이 속한 단계의 `symptom_text` 반환(E·I 공통, 범위 밖은 마지막 단계 유지, 첫
+  단계가 0에서 시작 안 하면 그 전엔 증상 없음).
+- **재개 시 앵커 복원** — `infected_at_minutes`(노출 시점)는 경과분 축의 절대 앵커.
+  재개 방식에 따라 원점이 달라질 수 있어 `elapsed_minutes_since_infection`(저장
+  시점의 노출 후 경과분)을 함께 저장하고 복원 쪽에서 새 원점 기준으로 재계산.
+  `infectious_at_minutes`/`recover_at_minutes`는 노출 시점부터의 델타라 앵커와
+  무관하게 그대로 저장된다. `/continue`는 `rebase_infection_anchors(now=before)`
+  (정상 시 no-op, 접기 누락 회귀 흡수) — 이때 `t_d` 기준 시각도 함께 초기화된다.
+- 시간 개념 비활성 → 경과분 항상 0 → 노출(E) 상태에 영구 고정, 진행·전염 전혀 없음.
 
 **이벤트** — `infection_update {wave, elapsed_minutes, agent, status, cause,
-disease_name}` — `cause` = `event`(시드) / `transmission`(전파) / `recovery`.
+disease_name}` — `cause` = `event`(시드, S→E) / `transmission`(접촉 전파, S→E) /
+`progression`(잠복기 종료, E→I) / `recovery`(I→R 또는 I→S).
 
 **계약 블록** — `build_infection_contract` → `[몸 상태 인식]`: "[몸 상태] 블록이 오면
 그게 네 몸이고, 안 오면 멀쩡하다. 수치나 상태값으로는 알 수 없다". 에이전트에겐
-감염 중일 때만 ephemeral `[몸 상태]\n{symptom_text}`.
+노출(E) 또는 감염기(I) 중일 때만 ephemeral `[몸 상태]\n{symptom_text}`.
 
 ---
 

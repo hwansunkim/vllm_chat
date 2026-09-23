@@ -198,36 +198,27 @@ class SymptomStage(BaseModel):
 
 
 class InfectionModelConfig(BaseModel):
-    """결정론적 감염병 모델(SIR/SIS) 설정.
+    """결정론적 감염병 모델(SEIR/SEIRS) 설정.
 
     감염 판정은 전적으로 엔진(순수 파이썬)이 수행한다. LLM은 status·확률·경과 시간 같은
     raw 값을 절대 보지 않고, 오직 ``symptom_stages``의 서사 텍스트만 상황 컨텍스트로 받는다.
 
-    시간 축이 둘로 나뉜다: **전염은 wave·접촉 기준 확률**, **증상 진행과 회복은
-    시뮬레이션 내 경과 시간(분) 기준**이다.
+    상태는 S(감염 가능) → E(잠복기, 비전염) → I(감염기, 전염 가능) → R(회복) 순으로
+    전이한다. E의 지속 시간(절단 감마분포)과 I의 지속 시간(8일 고정)은 연구 스펙
+    상수이며 사용자가 바꿀 수 없다 — ``beta``만 옵션으로 노출된다
+    (``ABM/simulation/infection.py`` 상단 docstring 참고).
+
+    시간 축이 둘로 나뉜다: **전염은 wave·접촉 기준 Monte Carlo 확률**(λ=β×t_d,
+    P=1-exp(-λ)), **잠복기·감염기 진행은 시뮬레이션 내 경과 시간(분) 기준**이다.
     """
     enabled:                  bool  = False
     disease_name:             str   = ""
-    # 감염자와 같은 wave·같은 장소에 있는 비감염자 1명당 이번 wave에 전염될 확률
-    transmission_probability: float = Field(default=0.3, ge=0.0, le=1.0)
+    # 전염 확률의 β(λ=β×t_d, P=1-exp(-λ)). t_d는 직전 판정 이후 실제로 경과한
+    # 시간(일 단위)이다 — infection.py::_apply_infection_wave 참고.
+    beta:                     float = Field(default=0.04, ge=0.0)
     symptom_stages:           list[SymptomStage] = []
-    # 회복까지 걸리는 시간(분) 구간. 감염 시점에 [min, max]에서 한 번 균등 샘플하고,
-    # 감염 후 경과분이 그 값에 도달하면 회복시킨다(wave당 주사위를 굴리던
-    # recovery_probability 모델은 폐기됨 — wave 길이에 따라 이환 기간이 달라졌다).
-    # recovery_max_minutes == 0 이면 자연 회복 없음(만성).
-    recovery_min_minutes:     int   = Field(default=7200,  ge=0, le=MAX_DURATION_MINUTES)   # 5일
-    recovery_max_minutes:     int   = Field(default=14400, ge=0, le=MAX_DURATION_MINUTES)   # 10일
-    # True = SIR(회복 후 면역, 재감염 불가) / False = SIS(회복 후 S로 복귀, 재감염 가능)
+    # True = SIR(회복 후 면역, 재감염 불가) / False = SEIRS(회복 후 S로 복귀, 재감염 가능)
     immune_after_recovery:    bool  = True
-
-    @field_validator("recovery_max_minutes")
-    @classmethod
-    def _recovery_max_not_below_min(cls, v: int, info) -> int:
-        # v == 0 은 "자연 회복 없음(만성)"이라는 별도 의미라서 min과 비교하지 않는다.
-        min_v = info.data.get("recovery_min_minutes")
-        if min_v is not None and 0 < v < min_v:
-            raise ValueError("recovery_max_minutes must be >= recovery_min_minutes")
-        return v
 
 
 DEFAULT_SYSTEM_AGENT_PROMPT = (

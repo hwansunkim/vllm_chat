@@ -658,40 +658,23 @@
                 <span class="sim-inf-onset-hint">이 wave부터 감염이 시작됩니다</span>
               </div>
             </div>
-            <div class="sim-option-row sim-temp-row">
-              <label>전염 확률 <span id="sim-inf-transmission-val">0.30</span></label>
-              <input type="range" id="sim-inf-transmission" min="0" max="1" step="0.05" value="0.3"
-                     title="같은 wave·같은 장소에 있는 감염자 1명당 전염될 확률"/>
+            <div class="sim-option-row">
+              <label>전염 계수 β <span id="sim-inf-beta-val">0.04</span></label>
+              <input type="number" id="sim-inf-beta" min="0" step="0.001" value="0.04"
+                     style="flex:1;max-width:120px"
+                     title="접촉 확률 λ=β×t_d, P=1-exp(-λ). t_d는 직전 판정 이후 실제로 경과한 접촉 시간(일 단위)입니다."/>
             </div>
-            <div class="sim-option-row sim-inf-recovery-row">
-              <label>회복까지</label>
-              <div class="sim-inf-recovery-inputs">
-                <span class="sim-inf-stage-tag">최소</span>
-                <input type="number" id="sim-inf-recovery-min-d" class="sim-inf-stage-num"
-                       min="0" max="36500" step="1" value="5"
-                       title="감염 후 이 시간이 지나기 전에는 회복하지 않습니다"/>
-                <span class="sim-inf-stage-unit">일</span>
-                <input type="number" id="sim-inf-recovery-min-h" class="sim-inf-stage-num"
-                       min="0" step="1" value="0"/>
-                <span class="sim-inf-stage-unit">시간</span>
-                <span class="sim-inf-stage-sep">~</span>
-                <span class="sim-inf-stage-tag">최대</span>
-                <input type="number" id="sim-inf-recovery-max-d" class="sim-inf-stage-num"
-                       min="0" max="36500" step="1" value="10"
-                       title="0일 0시간으로 두면 자연 회복이 없는 만성 질환이 됩니다"/>
-                <span class="sim-inf-stage-unit">일</span>
-                <input type="number" id="sim-inf-recovery-max-h" class="sim-inf-stage-num"
-                       min="0" step="1" value="0"/>
-                <span class="sim-inf-stage-unit">시간</span>
-              </div>
+            <div class="sim-fields-hint">
+              잠복기(E)는 절단 감마분포(k=1.926, θ=1.775, 1~10일, 평균 약 3.4일), 감염기(I)는 8일 고정입니다 —
+              연구 스펙 상수라 β만 조정할 수 있습니다. 노출(E) 중에는 아직 남을 감염시키지 못하고,
+              8일간의 감염기(I) 동안만 전염됩니다.
             </div>
-            <div class="sim-fields-hint" id="sim-inf-recovery-hint"></div>
             <div class="sim-option-row">
               <label>회복 후</label>
               <select id="sim-inf-immune" style="flex:1;max-width:220px"
-                      title="SIR = 회복하면 면역이 생겨 다시 걸리지 않음 / SIS = 회복해도 다시 걸릴 수 있음">
+                      title="SIR = 회복하면 면역이 생겨 다시 걸리지 않음 / SEIRS = 회복해도 다시 걸릴 수 있음">
                 <option value="sir">면역 획득 (SIR)</option>
-                <option value="sis">재감염 가능 (SIS)</option>
+                <option value="sis">재감염 가능 (SEIRS)</option>
               </select>
             </div>
             <div class="sim-option-row sim-inf-stages-head">

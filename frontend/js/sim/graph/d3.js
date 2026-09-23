@@ -330,6 +330,7 @@ export function refreshInfectionStyles() {
     const rec   = sim.agentInfection?.[d.id];
     const badge = rec ? infectionBadge(rec.status, rec.cause) : null;
     const sel   = d3.select(this);
+    sel.classed('g-node-exposed',   badge?.cls === 'exposed');
     sel.classed('g-node-infected',  badge?.cls === 'infected');
     sel.classed('g-node-recovered', badge?.cls === 'recovered');
   });

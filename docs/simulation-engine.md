@@ -31,7 +31,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 | `_StatusMixin` | `status.py` | `_enter_state`, `_agent_unavailable`, `_agent_traveling`, `_expire_agent_states` | 에이전트 상태(수면·이동). features |
 | `_LocationMixin` | `location.py` | `_compute_zone_awareness`, `_build_situation_context`, `_get_or_assign_stranger_id` | 위치·zone·낯선 이·씬 메시지. features |
 | `_MeetingMixin` | `meeting.py` | `_apply_move_intents`, `_update_meeting_paths` | 만남 lock. features |
-| `_InfectionMixin` | `infection.py` | `_apply_infection_wave`, `_build_symptom_context` | 결정론적 SIR/SIS. features |
+| `_InfectionMixin` | `infection.py` | `_apply_infection_wave`, `_build_symptom_context` | 결정론적 SEIR/SEIRS. features |
 | `_EventsMixin` | `events.py` | `_execute_event` | 시나리오 이벤트. features |
 | `_SystemMixin` | `system.py` | `_run_system_agent` | 디렉터. features |
 

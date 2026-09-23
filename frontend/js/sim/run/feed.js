@@ -314,6 +314,7 @@ export function addInfectionCard(d) {
   const causeLabel = {
     event:        '시드 (환자 0번)',
     transmission: '접촉 전파',
+    progression:  '잠복기 종료',
     recovery:     '회복',
   }[d.cause] || d.cause || '';
   const disease = d.disease_name ? `${d.disease_name} · ` : '';

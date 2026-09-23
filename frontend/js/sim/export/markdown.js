@@ -248,9 +248,11 @@ function fmtInfection(data) {
   const what    = disease ? `${disease}에` : '병에';
   const text = data.cause === 'recovery'
     ? `${name}이(가) ${disease ? `${disease}에서 ` : ''}회복했다.${data.status === 'R' ? ' (면역)' : ' (재감염 가능)'}`
-    : data.cause === 'event'
-      ? `${name}이(가) ${what} 감염됐다. (최초 감염자)`
-      : `${name}이(가) ${what} 감염됐다. (접촉 전파)`;
+    : data.cause === 'progression'
+      ? `${name}이(가) 잠복기를 지나 전염성을 갖게 됐다.`   // E → I
+      : data.cause === 'event'
+        ? `${name}이(가) ${what} 노출됐다. (최초 감염자)`     // S → E, 시드
+        : `${name}이(가) ${what} 노출됐다. (접촉 전파)`;      // S → E, 접촉 전파
   return `\n> **[${badge.icon} 감염]** *${text}*\n`;
 }
 
@@ -320,13 +322,11 @@ function _buildMarkdown(log, events, statusStr, checks) {
   // 감염병 모델이 켜져 있을 때만 — 꺼진 실행에는 아무 영향이 없는 설정이라 노이즈다.
   const infection = buildInfectionModel(sim.infection_model);
   if (infection.enabled) {
-    md += `## 🦠 감염병 모델\n\n`;
+    md += `## 🦠 감염병 모델 (SEIR)\n\n`;
     md += `> **질병** ${infection.disease_name || '(이름 없음)'}\n`;
-    const recovery = infection.recovery_max_minutes === 0
-      ? '자연 회복 없음(만성)'
-      : `${formatDayHour(infection.recovery_min_minutes)} ~ ${formatDayHour(infection.recovery_max_minutes)}`;
-    md += `> **전염 확률** ${infection.transmission_probability} · **회복까지** ${recovery}\n`;
-    md += `> **회복 후** ${infection.immune_after_recovery ? '면역 획득 (SIR)' : '재감염 가능 (SIS)'}\n\n`;
+    md += `> **전염 계수(β)** ${infection.beta} — 접촉 확률 λ=β×t_d, P=1-exp(-λ)\n`;
+    md += `> **잠복기(E)** 절단 감마분포(k=1.926, θ=1.775, 1~10일, 평균 약 3.4일) · **감염기(I)** 8일 고정\n`;
+    md += `> **회복 후** ${infection.immune_after_recovery ? '면역 획득 (SIR)' : '재감염 가능 (SEIRS)'}\n\n`;
     if (infection.symptom_stages.length) {
       md += `| 단계 | 감염 후 경과 시간 | 증상 서사 |\n|------|------------------|-----------|\n`;
       for (const s of infection.symptom_stages) {

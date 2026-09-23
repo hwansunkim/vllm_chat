@@ -220,7 +220,7 @@ ABM/
     targets.py       _TargetsMixin — 발화 대상 해석 · stranger
     location.py      _LocationMixin — 위치 그래프 · zone · 씬 메시지
     meeting.py       _MeetingMixin — 만남 lock (사람 추격)
-    infection.py     _InfectionMixin — 결정론적 SIR/SIS
+    infection.py     _InfectionMixin — 결정론적 SEIR/SEIRS
     events.py        _EventsMixin — 시나리오 이벤트
     system.py        _SystemMixin — 디렉터(system 에이전트)
     headless.py      run_config() — fresh start 유일 경로 (GUI·CLI 공용)

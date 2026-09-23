@@ -1,13 +1,15 @@
 // frontend/js/sim/settings/infection-config.js
-// 감염병 모델 설정 — 폼 ↔ sim.infection_model 동기화. 서버 검증(전염 확률 0~1,
+// 감염병 모델(SEIR) 설정 — 폼 ↔ sim.infection_model 동기화. 서버 검증(beta >= 0,
 // 모든 분 값 0~52560000, max >= min)을 통과하도록 읽어들이는 모든 경로가
 // buildInfectionModel()을 거친다.
 //
-// 단위 규칙: 전염만 wave·접촉 기준이고(슬라이더 유지), 증상 단계 진행과 회복은
-// "감염 후 경과 분" 기준이다. 사람이 쓰기 편하도록 (일 + 시간) 두 칸으로 입력받고
-// dayHourToMinutes()로 분으로 환산해 저장한다.
+// 단위 규칙: 전염(β)만 wave·접촉 기준이고, 증상 단계 진행은 "노출 후 경과 분"
+// 기준이다. 잠복기(E)·감염기(I) 지속 시간은 연구 스펙 상수(감마분포/8일 고정)라
+// 이 화면에서 편집하지 않는다 — ABM/simulation/infection.py 참고. 증상 단계는
+// 사람이 쓰기 편하도록 (일 + 시간) 두 칸으로 입력받고 dayHourToMinutes()로
+// 분으로 환산해 저장한다.
 
-import { sim, esc, buildInfectionModel, normalizeProbability,
+import { sim, esc, buildInfectionModel, normalizeBeta,
          normalizeSymptomStages, dayHourToMinutes, minutesToDayHour,
          formatDayHour, isTimeConceptDisabled, getAgentIcon } from '../state.js';
 import { renderScenarioEvents } from './events.js';
@@ -26,9 +28,8 @@ export function renderInfectionConfig() {
   const immuneEl = document.getElementById('sim-inf-immune');
   if (immuneEl) immuneEl.value = model.immune_after_recovery ? 'sir' : 'sis';
 
-  _bindProbabilitySlider('sim-inf-transmission', 'transmission_probability');
+  _bindBetaInput();
   renderPatientZeroPicker();
-  _renderRecoveryWindow();
   _renderSymptomStages();
   updateInfectionTimeWarning();
   _bindTimeWatchers();
@@ -48,16 +49,16 @@ export function renderInfectionConfig() {
   if (immuneEl) immuneEl.onchange = () => { sim.infection_model.immune_after_recovery = immuneEl.value !== 'sis'; };
 }
 
-/** 확률 슬라이더 + 현재 값 표시. 값은 즉시 상태에 반영된다(temperature 슬라이더와 동일). */
-function _bindProbabilitySlider(id, field) {
-  const slider = document.getElementById(id);
-  const valEl  = document.getElementById(`${id}-val`);
-  if (!slider) return;
-  const paint = () => { if (valEl) valEl.textContent = sim.infection_model[field].toFixed(2); };
-  slider.value = String(sim.infection_model[field]);
+/** β(전염 계수) 입력 + 현재 값 표시. 값은 즉시 상태에 반영된다. */
+function _bindBetaInput() {
+  const input = document.getElementById('sim-inf-beta');
+  const valEl = document.getElementById('sim-inf-beta-val');
+  if (!input) return;
+  const paint = () => { if (valEl) valEl.textContent = String(sim.infection_model.beta); };
+  input.value = String(sim.infection_model.beta);
   paint();
-  slider.oninput = () => {
-    sim.infection_model[field] = normalizeProbability(slider.value, sim.infection_model[field]);
+  input.oninput = () => {
+    sim.infection_model.beta = normalizeBeta(input.value, sim.infection_model.beta);
     paint();
   };
 }
@@ -253,53 +254,6 @@ function _bindTimeWatchers() {
   _timeWatchersBound = true;
 }
 
-// ── 회복 시간 ─────────────────────────────────────────────────────────────────
-// 감염 시점에 [min, max]분에서 균등 샘플된 값이 확정되고, 경과 분이 그 값에 닿으면 회복한다.
-// max === 0은 "자연 회복 없음(만성)"이라는 별도 의미라 백엔드도 min과 비교하지 않는다.
-function _renderRecoveryWindow() {
-  const fieldOf = bound => (bound === 'min' ? 'recovery_min_minutes' : 'recovery_max_minutes');
-  ['min', 'max'].forEach(bound => {
-    const { days, hours } = minutesToDayHour(sim.infection_model[fieldOf(bound)]);
-    const dEl = document.getElementById(`sim-inf-recovery-${bound}-d`);
-    const hEl = document.getElementById(`sim-inf-recovery-${bound}-h`);
-    if (dEl) dEl.value = String(days);
-    if (hEl) hEl.value = String(hours);
-    if (!dEl || !hEl) return;
-    const sync = () => {
-      const mins = dayHourToMinutes(dEl.value, hEl.value);
-      // sim.infection_model을 캡처하지 말 것 — addSymptomStage()와 readConfigFromUI()가
-      // 이 객체를 통째로 새 것으로 갈아끼우므로(buildInfectionModel), 캡처하면 핸들러가
-      // 고아가 된 옛 객체에 쓰게 되고 블러 전에 시작을 누르면 화면과 다른 값이 전송된다.
-      // 증상 단계 쪽 container.oninput과 같은 규칙으로 매번 live 조회한다.
-      sim.infection_model[fieldOf(bound)] = mins;
-      _paintRecoveryHint();
-    };
-    // 입력은 즉시 상태에 반영하고(타이핑 중 커서를 잃지 않게 다시 그리지 않는다),
-    // 포커스를 벗어날 때만 정규화 결과로 화면을 맞춘다 — 증상 단계와 같은 규칙.
-    dEl.oninput = sync;
-    hEl.oninput = sync;
-    dEl.onchange = hEl.onchange = () => {
-      sim.infection_model = buildInfectionModel(sim.infection_model);
-      _renderRecoveryWindow();
-    };
-  });
-  _paintRecoveryHint();
-}
-
-function _paintRecoveryHint() {
-  const hintEl = document.getElementById('sim-inf-recovery-hint');
-  if (!hintEl) return;
-  const { recovery_min_minutes: min, recovery_max_minutes: max } = sim.infection_model;
-  hintEl.classList.toggle('sim-inf-chronic', max === 0);
-  if (max === 0) {
-    hintEl.textContent = '자연 회복 없음 — 한 번 감염되면 스스로 낫지 않습니다(만성).';
-    return;
-  }
-  hintEl.textContent = min === max
-    ? `감염 후 정확히 ${formatDayHour(max)} 뒤에 회복합니다.`
-    : `감염 시점에 ${formatDayHour(min)} ~ ${formatDayHour(max)} 사이에서 무작위로 정해집니다.`;
-}
-
 // ── 증상 단계 에디터 ──────────────────────────────────────────────────────────
 // time_categories 에디터와 같은 구조(id/label/min/max)에 symptom_text textarea를 더한
 // 형태. 단위는 웨이브가 아니라 **감염 후 경과 시간**이고, 일 + 시간 두 칸으로 입력받는다.
@@ -457,13 +411,9 @@ export function readInfectionModel() {
   return buildInfectionModel({
     enabled:                  chk.checked,
     disease_name:             document.getElementById('sim-inf-disease-name')?.value ?? '',
-    transmission_probability: document.getElementById('sim-inf-transmission')?.value,
+    beta:                     document.getElementById('sim-inf-beta')?.value,
     // 편집기가 비어 있으면 빈 배열 그대로 — 백엔드도 빈 목록을 허용한다(증상 없음).
     symptom_stages:           sim.infection_model?.symptom_stages ?? [],
-    // 일/시간 두 칸짜리 입력은 편집 중에 이미 상태로 환산돼 들어와 있다 — 여기서 DOM을
-    // 다시 읽으면 시간 미만 단위가 잘려나가므로(minutesToDayHour의 절삭) 상태를 쓴다.
-    recovery_min_minutes:     sim.infection_model?.recovery_min_minutes,
-    recovery_max_minutes:     sim.infection_model?.recovery_max_minutes,
     immune_after_recovery:    document.getElementById('sim-inf-immune')?.value !== 'sis',
   });
 }

@@ -130,11 +130,11 @@ export function durationPartsToMinutes(value, unitId) {
   return normalizeTargetDuration(n * durationUnitMinutes(unitId));
 }
 
-// ── 일 + 시간 복합 입력 (감염병 모델의 경과 시간 필드 전용) ────────────────────
-// target_duration_minutes가 (숫자 + 단위 셀렉트)인 것과 달리, 증상 단계/회복 시간은
+// ── 일 + 시간 복합 입력 (감염병 모델의 증상 단계 경과 시간 필드 전용) ───────────
+// target_duration_minutes가 (숫자 + 단위 셀렉트)인 것과 달리, 증상 단계는
 // "2일 12시간"처럼 두 칸을 동시에 채우는 편이 자연스럽다. 저장은 언제나 분(int).
-// durationPartsToMinutes()와 달리 0을 null로 바꾸지 않는다 — 여기서는 0이 유효한 값이다
-// (min_minutes=0 = 감염 즉시, recovery_max_minutes=0 = 자연 회복 없음).
+// durationPartsToMinutes()와 달리 0을 null로 바꾸지 않는다 — 여기서는 0이 유효한
+// 값이다(min_minutes=0 = 노출 즉시부터 이 단계 적용).
 const MINUTES_PER_DAY  = 1440;
 const MINUTES_PER_HOUR = 60;
 
@@ -186,16 +186,13 @@ export function isTimeConceptDisabled(timeMode, timePerWave) {
   return timeMode !== 'variable' && !tpw;
 }
 
-// ── 감염병 모델 (백엔드 InfectionModelConfig / SymptomStage와 1:1 대응) ────────
-// 전염 확률은 서버가 `ge=0.0, le=1.0`으로 검증한다 — 범위 밖 값은 422이므로
-// 상태로 읽어들이는 모든 경로가 normalizeProbability()를 통과하도록 한다.
-// 전염만 wave·접촉 기준이고, 증상 진행과 회복은 "감염 후 경과 분" 기준이다.
-export const DEFAULT_TRANSMISSION_PROBABILITY = 0.3;
-
-// 회복까지 걸리는 시간 — 감염 시점에 [min, max]분에서 균등 샘플되어 확정된다.
-// max === 0은 "자연 회복 없음(만성)"이라는 별도 의미라 min과 비교하지 않는다(백엔드도 허용).
-export const DEFAULT_RECOVERY_MIN_MINUTES = 7200;   // 5일
-export const DEFAULT_RECOVERY_MAX_MINUTES = 14400;  // 10일
+// ── 감염병 모델 SEIR (백엔드 InfectionModelConfig / SymptomStage와 1:1 대응) ────
+// 상태는 S(감염 가능)→E(잠복기, 비전염)→I(감염기, 전염 가능)→R(회복) 순으로
+// 전이한다. E 지속 시간(절단 감마분포)·I 지속 시간(8일 고정)은 연구 스펙 상수라
+// 사용자가 못 바꾼다 — beta만 옵션이다(ABM/simulation/infection.py 참고).
+// 전염 확률은 λ=beta×t_d, P=1-exp(-λ) (Monte Carlo). 증상 진행은 "노출 후 경과 분"
+// 기준이다.
+export const DEFAULT_BETA = 0.04;
 
 // 백엔드 기본값은 빈 배열이지만, 단계가 하나도 없는 채로 감염 모델을 켜면 주입할 서사가
 // 없어 에이전트가 자기 몸 상태를 영영 인지하지 못한다. 그래서 "감염 설정을 만든 적이 없는"
@@ -218,6 +215,18 @@ export function normalizeProbability(v, fallback = 0) {
   if (!Number.isFinite(n)) return fallback;
   // 슬라이더 값(문자열)이 0.30000000000000004 같은 부동소수 잡음으로 저장되지 않도록 반올림.
   return Math.min(1, Math.max(0, Math.round(n * 100) / 100));
+}
+
+/**
+ * 임의의 입력을 β(전염 확률 계수)로 정규화. 확률이 아니라 비율(rate)이라 1을
+ * 넘을 수 있다 — 0 이상이기만 하면 된다(백엔드 `ge=0.0`과 동일). 기본값 0.04
+ * 같은 소수점 자리를 보존하도록 4자리까지 반올림한다(normalizeProbability의
+ * 2자리보다 정밀도가 더 필요함).
+ */
+export function normalizeBeta(v, fallback = 0) {
+  const n = typeof v === 'number' ? v : parseFloat(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.round(n * 10000) / 10000);
 }
 
 /**
@@ -258,31 +267,25 @@ export function normalizeSymptomStages(list) {
  */
 export function buildInfectionModel(raw) {
   const src = (raw && typeof raw === 'object') ? raw : null;
-  let recMin = normalizeDurationMinutes(src?.recovery_min_minutes, DEFAULT_RECOVERY_MIN_MINUTES);
-  const recMax = normalizeDurationMinutes(src?.recovery_max_minutes, DEFAULT_RECOVERY_MAX_MINUTES);
-  // max === 0은 "자연 회복 없음(만성)"이라는 별도 의미 — 백엔드가 이 경우만 min과의
-  // 대소 검증을 건너뛴다. 그 외에는 증상 단계와 같은 규칙으로 min을 max까지 낮춘다.
-  if (recMax > 0 && recMax < recMin) recMin = recMax;
   return {
     enabled:                  !!src?.enabled,
     disease_name:             String(src?.disease_name ?? '').trim(),
-    transmission_probability: normalizeProbability(src?.transmission_probability, DEFAULT_TRANSMISSION_PROBABILITY),
+    beta:                     normalizeBeta(src?.beta, DEFAULT_BETA),
     // 감염 설정 자체가 없던 시나리오만 기본 단계로 채운다(위 주석 참고).
     symptom_stages:           src && Array.isArray(src.symptom_stages)
                                 ? normalizeSymptomStages(src.symptom_stages)
                                 : DEFAULT_SYMPTOM_STAGES.map(s => ({ ...s })),
-    recovery_min_minutes:     recMin,
-    recovery_max_minutes:     recMax,
     immune_after_recovery:    src?.immune_after_recovery ?? true,
   };
 }
 
 /**
  * infection_update 이벤트 → 화면 뱃지. 표시할 게 없으면 null.
- * status='S'는 "한 번도 안 걸림"과 "회복했지만 재감염 가능(SIS)" 두 가지 의미라
+ * status='S'는 "한 번도 안 걸림"과 "회복했지만 재감염 가능(SEIRS)" 두 가지 의미라
  * cause로 구분한다 — 전자는 뱃지를 달지 않는다.
  */
 export function infectionBadge(status, cause) {
+  if (status === 'E') return { icon: '⏳', label: '잠복기',      cls: 'exposed'   };
   if (status === 'I') return { icon: '🦠', label: '감염',        cls: 'infected'  };
   if (status === 'R') return { icon: '💚', label: '회복·면역',    cls: 'recovered' };
   if (status === 'S' && cause === 'recovery') return { icon: '💚', label: '회복', cls: 'recovered' };
@@ -399,7 +402,7 @@ export const sim = {
     director_note:         '',   // 시뮬레이션 서사 목표
     digest_waves:          6,    // 디렉터가 개입 판단 시 되짚는 최근 wave 수 (엔진 clamp [2,20])
   },
-  // 결정론적 감염병 모델(SIR/SIS). enabled=false면 서버에서 상태 갱신도 프롬프트 주입도
+  // 결정론적 감염병 모델(SEIR/SEIRS). enabled=false면 서버에서 상태 갱신도 프롬프트 주입도
   // 전혀 일어나지 않는다(infect_agent 이벤트도 조용히 무시된다).
   infection_model: buildInfectionModel(null),
   eventSource:    null,

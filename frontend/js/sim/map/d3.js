@@ -735,6 +735,7 @@ function _applyInfectionClasses(sel) {
     const rec   = sim.agentInfection?.[d.name];
     const badge = rec ? infectionBadge(rec.status, rec.cause) : null;
     d3.select(this)
+      .classed('lm-agent-exposed',   badge?.cls === 'exposed')
       .classed('lm-agent-infected',  badge?.cls === 'infected')
       .classed('lm-agent-recovered', badge?.cls === 'recovered');
   });

@@ -272,10 +272,12 @@ def _fmt_infection(data: dict, index: AgentIndex, disease_fallback: str) -> str:
         frm = f"{disease}에서 " if disease else ""
         tail = " (면역)" if data.get("status") == "R" else " (재감염 가능)"
         text = f"{name}이(가) {frm}회복했다.{tail}"
+    elif cause == "progression":
+        text = f"{name}이(가) 잠복기를 지나 전염성을 갖게 됐다."   # E → I
     elif cause == "event":
-        text = f"{name}이(가) {what} 감염됐다. (최초 감염자)"
+        text = f"{name}이(가) {what} 노출됐다. (최초 감염자)"        # S → E, 시드
     else:
-        text = f"{name}이(가) {what} 감염됐다. (접촉 전파)"
+        text = f"{name}이(가) {what} 노출됐다. (접촉 전파)"          # S → E, 접촉 전파
     return f"\n> **[{badge['icon']} 감염]** *{text}*\n"
 
 
@@ -396,14 +398,11 @@ def render_markdown(
 
     # 감염병 모델이 켜져 있을 때만 — 꺼진 실행에는 아무 영향이 없는 설정이라 노이즈다.
     if infection["enabled"]:
-        md += "## 🦠 감염병 모델\n\n"
+        md += "## 🦠 감염병 모델 (SEIR)\n\n"
         md += f"> **질병** {infection['disease_name'] or '(이름 없음)'}\n"
-        recovery = ("자연 회복 없음(만성)" if infection["recovery_max_minutes"] == 0
-                    else f"{format_day_hour(infection['recovery_min_minutes'])} ~ "
-                         f"{format_day_hour(infection['recovery_max_minutes'])}")
-        md += (f"> **전염 확률** {_js_num(infection['transmission_probability'])} · "
-               f"**회복까지** {recovery}\n")
-        md += f"> **회복 후** {'면역 획득 (SIR)' if infection['immune_after_recovery'] else '재감염 가능 (SIS)'}\n\n"
+        md += f"> **전염 계수(β)** {_js_num(infection['beta'])} — 접촉 확률 λ=β×t_d, P=1-exp(-λ)\n"
+        md += "> **잠복기(E)** 절단 감마분포(k=1.926, θ=1.775, 1~10일, 평균 약 3.4일) · **감염기(I)** 8일 고정\n"
+        md += f"> **회복 후** {'면역 획득 (SIR)' if infection['immune_after_recovery'] else '재감염 가능 (SEIRS)'}\n\n"
         if infection["symptom_stages"]:
             md += "| 단계 | 감염 후 경과 시간 | 증상 서사 |\n|------|------------------|-----------|\n"
             for s in infection["symptom_stages"]:
