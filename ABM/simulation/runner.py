@@ -222,6 +222,56 @@ class _RunnerMixin:
             current_wave = {k: v for k, v in current_wave.items()
                             if k in self.active_agents}
 
+            # ── 상태 자연 만료 — wave **시작** 시점, LLM 호출 전 ─────────────────
+            # 상태 진입은 에이전트의 선택이지만 지속 시간은 엔진이 정한다. 그러니
+            # 끝나는 순간도 엔진이 본인에게 알려야 한다. 예전엔 이 처리가 LLM 호출이
+            # 끝난 **뒤**(결과 수집 후)에 있어서, 만료 판정은 wave 시작 시각 기준인데
+            # 해제된 사람은 그 wave에 턴을 못 받았고 본인에겐 아무 알림도 없었다 —
+            # 누가 말을 걸거나 재투입에 걸릴 때까지 멈춰 있었다(case1 실측: 23:09에
+            # 씻기가 끝난 아빠가 01:46에야 "씻고 나와 수건으로 닦는다").
+            #
+            # 위치 = 예약 이벤트·활성 필터 **뒤**, `if not current_wave` 가드·디렉터·
+            # traveling 관문 **앞**:
+            # - 자연 만료는 at_time 이벤트의 notified와 같은 "엔진이 시간으로 부르는
+            #   참가자"다. 이벤트 뒤라 agent_exit로 방금 비활성이 된 사람은 편입하지
+            #   않는다(아래 active_agents 확인) — 그래서 가드 앞에 둬도 "전원 퇴장 →
+            #   no_agents" 종료를 되살리지 않는다(디렉터가 가드 뒤에 있는 이유와 충돌
+            #   없음). 반대로 가드 뒤라면, 이번 wave 참가자가 전부 퇴장해 current_wave가
+            #   비었는데 남은 활성 에이전트가 마침 풀리는 경우 no_agents로 잘못 끝난다.
+            # - 디렉터 앞이라 디렉터 개입이 해제 알림 **뒤**에 이어 붙는다(알림 →
+            #   개입 순). 디렉터의 판단 입력(배치·고립·침묵)은 상태 조회가 전부
+            #   now_elapsed 기준이라 삭제 시점과 무관하다.
+            # - traveling 관문 앞이라 방금 도착한 사람은 상태가 지워져 통과하고,
+            #   아직 이동 중인 사람만 보류된다.
+            # clear 이벤트는 그래서 wave_start보다 먼저 나간다(wave 값은 예전과 같은
+            # disp_wave) — 디렉터 카드처럼 피드가 구분선 뒤로 미뤄 붙이고, 마크다운
+            # 내보내기는 원래 clear를 "대사 전"으로 놓는다.
+            expired_statuses = self._expire_agent_states(now_elapsed)
+            for key, st in expired_statuses.items():
+                self._emit("agent_status_change", {
+                    "wave":         disp_wave,
+                    "agent":        key,
+                    "display_name": self._key_to_alias.get(key, key),
+                    "action":       "clear",
+                    "state":        st.get("state"),
+                })
+            # 도착지의 **다른 사람**에게 가는 "도착했다" 알림은 지금 그 자리 사람
+            # 기준으로 만들되(status.py 참고) 예전처럼 **다음 wave**에 전달한다 —
+            # 아래 scene_injections 버퍼가 이 dict로 시작한다.
+            arrival_injections = self._deferred_arrival_scene_injections(expired_statuses)
+            # 본인: [해제 알림, *이동 중 놓친 메시지, *이미 받은 incoming] 으로 이번
+            # wave에 턴을 준다. 알림이 맨 앞이어야 뒤따르는 말을 "깨어난/도착한
+            # 뒤"에 듣는 순서가 된다. 전원 상태 잠금에서 wake_key로 [] 재투입된
+            # 경우도 여기서 같은 키에 알림이 한 번만 붙는다(dict 키라 중복 없음).
+            held_released = self._release_held_incoming(expired_statuses)
+            for key, st in expired_statuses.items():
+                if key not in self.active_agents:
+                    continue
+                notice = {"speaker": "씬", "action_note": "",
+                          "content": self._status_release_notice(key, st)}
+                current_wave[key] = [notice, *held_released.get(key, []),
+                                     *current_wave.get(key, [])]
+
             if not current_wave:
                 # 직전 루프가 종료 사유를 이미 세팅했으면(no_progress 등) 존중하고,
                 # 아직 기본값이면 "활성 에이전트 없음"으로 본다 (초기 시나리오에
@@ -306,6 +356,12 @@ class _RunnerMixin:
 
             if self._stop_event.is_set():
                 end_reason = "stopped"
+                # 상태 만료는 이미 wave 시작에 처리돼 상태가 지워졌다. 그 도착 알림
+                # (다음 wave 몫)을 여기서 버리면 재개해도 다시 만들어지지 않으므로,
+                # 재개 입력(_pending_wave = current_wave)에 실어 둔다.
+                for k, msgs in arrival_injections.items():
+                    if k in self.active_agents:
+                        current_wave[k] = [*current_wave.get(k, []), *msgs]
                 break
 
             # as_completed()가 채운 `results`는 LLM 응답 지연에 따른 **완료 순서**라
@@ -343,34 +399,12 @@ class _RunnerMixin:
             # 일어나야 하므로 반드시 이 자리다.
             #
             # 씬 주입 버퍼는 원래 아래 외모·이동 블록에서 만들었지만, 독백 행동
-            # 브로드캐스트가 같은 채널을 쓰므로 라우팅보다 앞으로 옮겼다. 빈 dict
-            # 초기화라 targeted 모드에서는 동작이 완전히 동일하다.
-            scene_injections: dict[str, list] = {}
-
-            # 이번 wave 시작 시점에 자연 해제된 상태(수면·이동 등) 정리. traveling이
-            # 막 풀린 사람의 "도착했다" 알림은 이동 시작 시점이 아니라 **지금** 그
-            # 자리 사람들을 기준으로 새로 만든다(status.py 모듈 docstring 참고) —
-            # 그래서 라우팅보다 앞, wave_start_location 스냅샷 직후에 처리한다.
-            # 같은 만료 배치에서 본인이 이동 중 놓친 메시지(held_incoming)도
-            # 함께 돌려준다 — 도착 알림(남에게)과 밀린 메시지(본인에게)는 방향이
-            # 반대라 서로 다른 dict에 쌓이지만, 최종적으로 next_wave에 합쳐지는
-            # 경로는 같다.
-            expired_statuses = self._expire_agent_states(now_elapsed)
-            for other_key, msgs in self._deferred_arrival_scene_injections(expired_statuses).items():
-                scene_injections.setdefault(other_key, []).extend(msgs)
-            for key, msgs in self._release_held_incoming(expired_statuses).items():
-                scene_injections.setdefault(key, []).extend(msgs)
-            # 상태 해제도 진입과 대칭으로 관전 텔레메트리를 남긴다 — 이게 없으면
-            # (리뷰에서 지적된 대로) "언제 잠들어서 언제 깼는지"를 Markdown
-            # 내보내기·DB sim_events 어디서도 감사할 수 없었다.
-            for key, st in expired_statuses.items():
-                self._emit("agent_status_change", {
-                    "wave":         disp_wave,
-                    "agent":        key,
-                    "display_name": self._key_to_alias.get(key, key),
-                    "action":       "clear",
-                    "state":        st.get("state"),
-                })
+            # 브로드캐스트가 같은 채널을 쓰므로 라우팅보다 앞으로 옮겼다.
+            # wave 시작 시점의 상태 자연 만료(위)가 만든 "X이(가) 도착했다" 알림
+            # (도착지의 다른 사람 몫)으로 시작한다 — 예전처럼 다음 wave에 전달된다.
+            # 만료된 사람 본인의 held_incoming은 더 이상 여기로 오지 않는다(이번
+            # wave incoming에 해제 알림과 함께 이미 실렸다).
+            scene_injections: dict[str, list] = arrival_injections
 
             routed: dict[str, list] = {}
             # 이번 wave 에 발화한 에이전트가 실제로 누군가에게 말이 닿았는지
@@ -658,7 +692,8 @@ class _RunnerMixin:
             # 이동 중인 사람이 다음 wave에 정상 턴을 받아 "이미 도착한 것처럼"
             # 서술할 수 있다(리뷰에서 코드 재현으로 확인된 구멍). 막는 대신
             # 버리지 않고 상태에 보관했다가(`_hold_incoming`) 실제 도착 시점에
-            # 본인에게 돌려준다(`_release_held_incoming`, 위쪽 만료 처리 참고).
+            # 본인에게 돌려준다(`_release_held_incoming` — wave 시작 시점 만료
+            # 처리가 해제 알림 바로 뒤에 붙여 그 wave incoming으로 준다).
             next_wave: dict[str, list] = {}
             for agent_key, msgs in scene_injections.items():
                 if agent_key not in self.active_agents:
@@ -708,8 +743,12 @@ class _RunnerMixin:
                     # 덜 지났다는 뜻이라 전원을 깨워도 잠꼬대 반복뿐이다(v11 실측:
                     # 신짱구/신짱아가 같은 밤 3~4번 "드르렁..." 재선언). **가장 먼저
                     # 풀리는 한 명만** 재투입하고, 시간은 그 해제 시점까지 점프한다
-                    # (아래 all_locked 분기). 나머지는 각자의 해제 시점에 다음 wave
-                    # 상단의 만료 처리(`_expire_agent_states`)로 자연히 합류한다.
+                    # (아래 all_locked 분기). wake_key 자신도 다음 wave 시작의 만료
+                    # 처리에서 해제 알림을 받는다 — 여기서 넣는 [] 에 알림이 앞에 붙을
+                    # 뿐 키가 하나라 중복되지 않는다(점프가 예정 이벤트에서 먼저 멈춰
+                    # 아직 안 풀렸으면 알림 없이 개입 턴이 된다). 나머지는 각자의 해제
+                    # 시점에 다음 wave 상단의 만료 처리(`_expire_agent_states`)로
+                    # 해제 알림과 함께 턴을 받아 자연히 합류한다.
                     idle_jump = True
                     wake_key = min(
                         state_locked,
@@ -791,8 +830,8 @@ class _RunnerMixin:
                     # 활성 에이전트 **전원**이 상태(수면·이동 등)에 묶여 있다면,
                     # idle 스케줄의 랜덤값 대신 **가장 이른 상태 해제 시점까지
                     # 정확히** 점프한다 — 몇 분 뒤 깨어날지 이미 아는데 굳이
-                    # 60/120/180분 임의 조각으로 나눠 깨울 이유가 없다(0번 클램프는
-                    # 아래에서 그대로 적용된다). 반드시 "전원"이어야 한다 — 실측된
+                    # 60/120/180분 임의 조각으로 나눠 깨울 이유가 없다(예정 이벤트
+                    # 클램프는 아래에서 그대로 적용된다). 반드시 "전원"이어야 한다 — 실측된
                     # 버그(사용자 제안): 이 wave가 "전원 침묵"으로 판정됐다고 해서
                     # 활성 에이전트 전원이 상태 중인 건 아니다. 짱구 혼자만 막
                     # 수면에 들고 신짱아는 아직 안 잤는데 `_earliest_status_clear`가
@@ -800,7 +839,8 @@ class _RunnerMixin:
                     # 신짱아의 남은 저녁 시간까지 통째로 건너뛰었다(22:53→03:38).
                     # 전원이 아니면 idle 스케줄의 작은 조각(raw_jump 기본값)으로
                     # 그대로 둔다 — 다음 "전원 침묵" 사이클에 다시 판단하면 되므로
-                    # 막히지 않는다.
+                    # 막히지 않는다. 단 그 조각도 누군가의 해제 시점은 넘지 않는다
+                    # (아래 상태 해제 클램프).
                     all_locked = all(
                         self._agent_active_status(k, self._elapsed_minutes) is not None
                         for k in self.active_agents
@@ -812,18 +852,41 @@ class _RunnerMixin:
                         if state_wake_at is not None:
                             raw_jump    = max(1, state_wake_at - self._elapsed_minutes)
                             jump_reason = "전원 상태(수면·이동 등) 해제 대기"
-                    # 결정적 idle 점프도 예정 이벤트(at_time) 시각은 넘기지 않는다 —
-                    # "가족이 각자 나가 있는 낮"에 15:00 하교·16:30 학원이 통째로
-                    # 건너뛰어지던 버그. _clamp_time_jump 는 LLM 경로 전용이라 여기서
-                    # 따로 못 박는다.
+                    # 결정적 idle 점프도 두 시각은 넘기지 않는다. _clamp_time_jump 는
+                    # LLM/카테고리 경로 전용이라 여기서 따로 못 박는다(같은 원칙: 후보를
+                    # 모아 min 한 번).
+                    # - 예정 이벤트(at_time) — "가족이 각자 나가 있는 낮"에 15:00 하교·
+                    #   16:30 학원이 통째로 건너뛰어지던 버그.
+                    # - 가장 이른 상태 해제 시점 — 전원 잠금이 아니면 위 all_locked
+                    #   분기를 안 타서 idle 스케줄(60/120/180분)이 누군가의 해제
+                    #   시점을 그냥 지나쳤다(실측: 씻기가 23:09에 끝나는데 22:46→23:46
+                    #   점프). 해제 시점에서 멈추면 다음 wave 시작의 만료 처리가 그
+                    #   사람에게 해제 알림 + 턴을 준다. 전원 잠금이면 raw_jump가 이미
+                    #   그 시점이라 이 후보는 걸리지 않는다.
+                    # 동률이면 예정 이벤트가 먼저(목록 순서 — min은 첫 최솟값을 고른다).
+                    # 두 후보 모두 "지금보다 뒤"만 남는 조회라(_next_pending_beat는
+                    # next_at > 지금, _earliest_status_clear는 아직 유효한 상태만)
+                    # room ≥ 1이지만, 0분 점프면 같은 시각에 머문 채 침묵 wave가
+                    # 반복되므로 max(1, …)로 한 번 더 못 박는다.
                     idle_clamp_reason: str | None = None
                     jump = raw_jump
+                    idle_limits: list[tuple[int, str]] = []
                     beat = self._next_pending_beat()
                     if beat is not None:
                         room = beat[0] - self._elapsed_minutes
-                        if 0 <= room < jump:
-                            jump = room
-                            idle_clamp_reason = f"예정 이벤트({beat[1]}) 전까지 {raw_jump}→{room}분"
+                        if 0 <= room < raw_jump:
+                            idle_limits.append((room, f"예정 이벤트({beat[1]})"))
+                    state_wake_at = self._earliest_status_clear(
+                        self.active_agents, self._elapsed_minutes,
+                    )
+                    if state_wake_at is not None:
+                        room = state_wake_at - self._elapsed_minutes
+                        if 0 < room < raw_jump:
+                            idle_limits.append((room, "상태 해제 시점"))
+                    if idle_limits:
+                        cap, cap_label = min(idle_limits, key=lambda t: t[0])
+                        jump = max(1, cap)
+                        idle_clamp_reason = f"{cap_label} 전까지 {raw_jump}→{jump}분"
                     # 관전 텔레메트리 — 연속 전원 침묵으로 시간이 크게 건너뛰는
                     # 것을 피드에서 볼 수 있게 한다. 예전엔 이 점프가 조용히 일어나
                     # "왜 갑자기 3시간이 지났지?"가 됐다.
@@ -1328,8 +1391,9 @@ class _RunnerMixin:
         # LLM이 몇 시간을 통째로 점프시키면 그 활동 완료·복귀 서사가 그대로
         # 묻힌다 — 실제 실행에서 확인된 버그(리뷰 3번: 씻으러 간 사람이 자기
         # 방으로 돌아오지 못한 채 밤을 넘김). `idle_jump` 경로
-        # (전원 침묵)는 이 함수를 안 타므로 run()이 `_earliest_status_clear`를
-        # 직접 쓰지만, 이 경로(LLM이 실제로 뭔가 판단한 경우)는 여기서 막아야 한다.
+        # (전원 침묵)는 이 함수를 안 타므로 run()이 `_earliest_status_clear`로
+        # 같은 캡(전원 잠금이면 해제 시점까지 점프, 아니면 해제 시점에서 클램프)을
+        # 직접 걸지만, 이 경로(LLM이 실제로 뭔가 판단한 경우)는 여기서 막아야 한다.
         state_wake_at = self._earliest_status_clear(self.active_agents, self._elapsed_minutes)
         if state_wake_at is not None:
             room = state_wake_at - self._elapsed_minutes

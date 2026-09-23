@@ -28,13 +28,23 @@
    점프**하고, 그 시점에 실제로 풀리는 에이전트 **한 명만** 다시 초대한다 —
    아직 안 풀린 나머지를 같이 깨우면 "아직 자는 중"이라는 거의 같은 대사를
    반복하게 될 뿐이다. 나머지는 각자의 해제 시점에 다음 wave 상단의 만료
-   처리(`_expire_agent_states`)로 자연히 합류한다. "전원"이 실제로 강제돼야
-   한다 — 이 wave가 "전원 침묵"(아무도 서로를 못 닿음)으로 판정된 것과
+   처리(`_expire_agent_states`)로 자연히 합류한다(아래 "자연 만료").
+   "전원"이 실제로 강제돼야 한다 — 이 wave가 "전원 침묵"(아무도 서로를 못 닿음)으로 판정된 것과
    활성 에이전트 전원이 상태 중인 것은 별개다. 한 명만 상태 중이고 나머지는
    그냥 고립돼 있을 뿐인데 그 한 명의 해제 시점으로 점프하면, 아직 상태에
    안 묶인 나머지의 남은 시간까지 통째로 건너뛴다(실측: 밤 10시대에 한 명만
    자고 있었는데 자정 넘어 새벽까지 통째로 점프해 다른 한 명의 저녁 활동이
-   증발함).
+   증발함). 일부만 상태 중일 때는 반대로 idle 스케줄 점프가 그 사람의 해제
+   시점을 **넘지 않도록** 해제 시점에서 자른다(runner.py idle 점프 클램프).
+
+**자연 만료** — 진입은 에이전트의 선택이지만 지속 시간은 엔진이 정하므로, 끝나는
+순간도 엔진이 본인에게 알려야 한다. runner.py가 wave **시작 시점**(LLM 호출 전)에
+`_expire_agent_states`로 만료분을 걷어내고, 활성인 본인을 그 wave의 발화자로
+편입하면서 incoming 맨 앞에 `_status_release_notice` 알림, 그 뒤에 이동 중 놓친
+메시지(`_release_held_incoming`)를 붙인다. 도착지의 **다른 사람**에게 가는 도착
+알림(`_deferred_arrival_scene_injections`)은 예전처럼 다음 wave로 간다. 개입으로
+턴을 받아 `enter_state`를 비워 즉시 해제되는 경로는 이미 턴을 받은 것이라 알림
+대상이 아니다(그 해제는 이 만료 처리를 거치지 않는다).
 """
 import random
 
@@ -78,6 +88,40 @@ class _StatusMixin:
             return f"{dest}(으)로 이동 중" if dest else "이동 중"
         cat = next((c for c in (self._state_categories or []) if c.get("id") == state), None)
         return (cat or {}).get("label") or state
+
+    def _status_release_notice(self, key: str, st: dict) -> str:
+        """상태가 **자연 만료**로 풀린 본인에게 주는 한 줄 씬 알림.
+
+        왜 필요한가: 상태에 들어가는 건 에이전트의 선택(`enter_state`·zone 경계
+        이동)이지만 끝나는 시점은 엔진이 정한다. 예전엔 만료돼도 본인에게 아무
+        신호가 없어서, 누가 말을 걸거나 소외/전원 침묵 재투입에 걸릴 때까지
+        (그것도 빈 incoming으로) 움직이지 않았다 — 실측(case1): 23:09에 씻기가
+        끝난 아빠가 01:46에야 "씻고 나와 수건으로 닦는다"로 턴을 받음. 그래서
+        runner가 만료 wave에 턴을 주면서 incoming 맨 앞에 이 알림을 넣는다.
+
+        문구 규칙(도착·이탈 씬 알림 "[씬] X이(가) 이곳에 도착했다."와 같은 톤 —
+        짧은 과거형 평서문, 무엇이 끝났고 지금 어디인지만):
+        - `traveling` → "[씬] {도착지}에 도착했다." 도착지 자체가 내용이라 괄호
+          위치를 따로 붙이지 않는다. 외부 공간이어도 본인 알림은 준다(남에게
+          가는 도착 알림 `_deferred_arrival_scene_injections`만 외부를 건너뛴다).
+        - `sleep` → "[씬] 잠에서 깼다. (현재 위치)". 기본 카테고리 id `sleep`에만
+          전용 문구를 준다 — "하던 일을 마쳤다: 수면"은 어색하다. id를 바꾼 사용자
+          정의 수면은 아래 일반 문구로 떨어질 뿐 틀린 말은 아니다.
+        - 그 외(`busy`·사용자 정의 카테고리) → "[씬] 하던 일을 마쳤다: {라벨}.
+          (현재 위치)". 라벨은 배너·상태 진입 이벤트와 같은 정본
+          `_status_display_label`.
+        위치가 없는 레거시(위치 미사용) 시나리오는 괄호를 생략한다.
+        """
+        state = st.get("state")
+        here  = self._agent_location.get(key, "") or ""
+        if state == "traveling":
+            dest = st.get("arrival_location") or here
+            return f"[씬] {dest}에 도착했다." if dest else "[씬] 목적지에 도착했다."
+        where = f" ({here})" if here else ""
+        if state == "sleep":
+            return f"[씬] 잠에서 깼다.{where}"
+        label = (self._status_display_label(st) or "").rstrip(" .") or "하던 일"
+        return f"[씬] 하던 일을 마쳤다: {label}.{where}"
 
     # ── 조회 ─────────────────────────────────────────────────────────────────
 
@@ -195,9 +239,10 @@ class _StatusMixin:
     def _expire_agent_states(self, now_elapsed: int) -> dict[str, dict]:
         """만료된(지금 시점 기준) 상태를 제거하고, 제거된 항목들을 반환한다.
 
-        반환값 `{key: status_dict}`은 호출부(runner.py)가 부수효과(예: traveling
-        만료 시 지연된 "도착했다" 씬 알림)를 처리하는 데 쓴다 — 이 함수 자체는
-        상태 dict를 지우는 것 말고는 아무 부수효과가 없다.
+        반환값 `{key: status_dict}`은 호출부(runner.py, wave 시작 시점)가
+        부수효과(clear 이벤트, 본인 해제 알림 + 이번 wave 턴, held_incoming 반환,
+        traveling 만료 시 지연된 "도착했다" 씬 알림)를 처리하는 데 쓴다 — 이 함수
+        자체는 상태 dict를 지우는 것 말고는 아무 부수효과가 없다.
         """
         expired: dict[str, dict] = {}
         for key in list(self._agent_status.keys()):

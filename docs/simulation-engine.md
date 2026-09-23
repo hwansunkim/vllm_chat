@@ -28,7 +28,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 | `_StepMixin` | `step.py` | `_step_agent`, `_assemble_agent_prompt` | 단일 턴. §3 |
 | `_TurnMixin` | `turn.py` | `_apply_turn_result` | 응답 파싱 → 상태 반영. §4 |
 | `_TargetsMixin` | `targets.py` | `_resolve_targets`, `_compute_wave_targets`(→ location.py) | 발화 대상 해석. §5 |
-| `_StatusMixin` | `status.py` | `_enter_state`, `_agent_unavailable`, `_agent_traveling`, `_expire_agent_states` | 에이전트 상태(수면·이동). features |
+| `_StatusMixin` | `status.py` | `_enter_state`, `_agent_unavailable`, `_agent_traveling`, `_expire_agent_states`, `_status_release_notice` | 에이전트 상태(수면·이동). features |
 | `_LocationMixin` | `location.py` | `_compute_zone_awareness`, `_build_situation_context`, `_get_or_assign_stranger_id` | 위치·zone·낯선 이·씬 메시지. features |
 | `_MeetingMixin` | `meeting.py` | `_apply_move_intents`, `_update_meeting_paths` | 만남 lock. features |
 | `_InfectionMixin` | `infection.py` | `_apply_infection_wave`, `_build_symptom_context` | 결정론적 SEIR/SEIRS. features |
@@ -64,10 +64,32 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
          이번 wave 발화 기회를 같이 만들어야 한다
        - 이벤트 실행 후 current_wave 를 active_agents 로 필터 — agent_exit 가
          이번 wave 참가자를 비활성으로 만들면 그 인물은 이 wave 에 발화하지 않는다
+ 2b. 상태 자연 만료 (wave 시작 시점, LLM 호출 전):
+       expired = _expire_agent_states(now_elapsed)
+       각 만료 → _emit("agent_status_change", action="clear", wave=disp_wave)
+                 (그래서 이 wave 의 wave_start 보다 먼저 나간다)
+       arrival_injections = _deferred_arrival_scene_injections(expired)
+                 → 도착지 **다른 사람**의 "[씬] X이(가) 이곳에 도착했다" — 10번
+                   scene_injections 의 초기값이 되어 **다음 wave** 에 전달
+       활성인 만료자 본인 → current_wave[key] =
+                 [해제 알림(_status_release_notice), *held_incoming, *기존 incoming]
+                 → 이번 wave 에 바로 턴 ("[씬] 고등학교에 도착했다." /
+                   "[씬] 잠에서 깼다. (누나방)" / "[씬] 하던 일을 마쳤다: 씻기. (안방화장실)")
+       ※ 위치 이유: 자연 만료는 at_time 이벤트의 notified 처럼 "엔진이 시간으로
+         부르는 참가자"라 이벤트·활성 필터 뒤(방금 퇴장한 사람은 편입 안 함),
+         3번 가드 앞(참가자가 전부 퇴장해 비었어도 마침 풀리는 활성 에이전트가
+         있으면 no_agents 로 잘못 끝나지 않게 — 활성만 넣으므로 "전원 퇴장"
+         종료는 그대로), 디렉터 앞(개입이 알림 뒤에 붙는다), traveling 관문 앞
+         (방금 도착한 사람은 통과). 예전엔 LLM 호출 **뒤**에 있어 풀린 본인은 그
+         wave 에 턴도 알림도 없었다(case1: 23:09 에 씻기가 끝난 아빠가 01:46 에야 턴).
+       ※ 개입으로 턴을 받아 enter_state 를 비워 즉시 해제되는 경로(12b)는 이
+         만료를 거치지 않으므로 알림 대상이 아니다.
  3. current_wave 비었으면 종료 (직전 루프가 no_progress 세팅했으면 존중, 아니면 "no_agents")
  4. 디렉터 (disp_wave > 0 이고 disp_wave % interval == 0)
        _run_system_agent(disp_wave, current_wave) → 개입/세계사건을 current_wave에 주입
        ※ wave 루프 상단에서 돈다 — emit·반응 wave·표시 시각이 일치하도록
+ 4b. traveling 공통 관문 — current_wave 에 남은 이동 중 에이전트를 _hold_incoming 으로
+       보류하고 제외(예약 이벤트·디렉터가 traveling 체크 없이 꽂은 경우 차단)
  5. _emit("wave_start", {wave, agents})
  6. self._turn_executor.submit(...) × len(current_wave):
        각 (agent_key, incoming) → _step_agent(agent_key, run_wave, disp_wave, turn, incoming)
@@ -82,12 +104,13 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
          run() 이 예외로 빠져나가는 경로는 finalize_run()
          (backend/api/simulation/runner.py) 이 `sim._turn_executor` 를
          getattr 로 방어적으로 한 번 더 닫아 대비한다.
- 7. stop_event 확인 → "stopped"
+ 7. stop_event 확인 → "stopped"  (2b 의 arrival_injections 는 current_wave 에 실어
+       _pending_wave 로 넘긴다 — 상태는 이미 지워져 재개 때 다시 만들어지지 않으므로)
  8. results = {k: results[k] for k in sorted(results)}   ← 키순 정규화 (이벤트 emit 결정론)
  9. completed_waves = run_wave + 1
 
 ── 발화 라우팅 (이동 전 위치 스냅샷) ──
-10. scene_injections = {}   (씬 메시지 버퍼)
+10. scene_injections = arrival_injections   (씬 메시지 버퍼 — 2b 의 다음-wave 도착 알림으로 시작)
     wave_start_location = dict(_agent_location)   ← 이번 wave 시작 스냅샷
 11. 각 성공한 speaker:
        resolved = _resolve_targets(result.targets, speaker)   ← 같은 방 + 1-wave 유예
@@ -101,6 +124,13 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
        _agent_visual[speaker] = update_appearance
        _emit("appearance_update")
        같은 장소 사람들에게 "[씬] ..." scene_injection (외부 공간이면 생략)
+
+── 상태 선언 ──
+12b. 각 성공한 speaker의 enter_state:
+       있으면 _enter_state(category_id) → 새로 걸렸을 때만 _emit("agent_status_change", action="enter")
+       없는데 자기-선언형 상태 중이면 → 즉시 해제(개입으로 턴을 받았다는 뜻) +
+         _emit(action="clear"). 이미 턴을 받은 것이라 2b 의 해제 알림은 없다.
+       (zone 경계 이동의 traveling 은 14번 이동 루프가 엔진 판단으로 건다)
 
 ── 이동 (이동 전 스냅샷 기준으로 의도 해석) ──
 13. meeting_before = dict(_meeting_intent)
@@ -134,6 +164,7 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
        상태(sleep·busy·traveling)에 안 묶인 활성 에이전트 전원 재투입
          → silence_count >= 2 면 idle_jump (1회째는 일반 시간 경로)
        전원 상태 잠금이면 → 가장 먼저 풀리는 한 명(wake_key)만 재투입 + idle_jump
+         (다음 wave 2b 에서 wake_key 의 [] 앞에 해제 알림이 한 번 붙는다 — 같은 키라 중복 없음)
     next_wave 있으면: silence_count = 0, 그리고 소외 재투입(starvation reinject) —
        활성 · next_wave에 없음 · 상태 아님 · disp_wave - _last_turn_wave[k] >= starvation_waves
        인 에이전트를 빈 incoming [] 으로 추가, _emit("starvation_reinject")
@@ -145,7 +176,10 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
 
 ── 시간 누적 (variable 모드만) ──
 20. idle_jump → idle_minutes_schedule[min(silence_count-1, len)-1] (2회째에 첫 값, 끝에서 포화;
-       전원 상태 잠금이면 가장 이른 해제 시점까지, 예정 이벤트 시각에서 클램프),
+       전원 상태 잠금이면 가장 이른 해제 시점까지. 그다음 min(예정 이벤트 시각,
+       가장 이른 상태 해제 시점)에서 클램프 — 일부만 상태 중이어도 누군가의 해제
+       시점을 넘지 않는다(실측: 23:09 해제인데 22:46→23:46 점프). 동률이면 예정 이벤트,
+       최소 1분. clamp_reason "상태 해제 시점 전까지 60→29분" / "예정 이벤트(HH:MM) 전까지 …"),
        _emit("time_jump", mode="idle")
     아니면 → _classify_wave_time / _estimate_wave_minutes → _clamp_time_jump
             _emit("time_jump", {...}) → _elapsed_minutes += jump

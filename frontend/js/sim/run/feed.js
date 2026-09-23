@@ -364,8 +364,10 @@ export function addStatusCard(d) {
         ${d.wave != null ? `<span class="sim-status-wave">W${esc(String(d.wave))}</span>` : ''}
       </div>`;
   }
-  document.getElementById('sim-feed').appendChild(el);
-  el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  // 자연 만료 해제(clear)는 엔진이 wave 시작 시점 — 그 wave 의 wave_start 보다
+  // **먼저** — emit 한다(디렉터 카드와 같은 사정). 구분선 뒤로 미뤄 붙인다.
+  // 진입(enter)·개입 해제는 wave_start 뒤에 오므로 그대로 즉시 붙는다.
+  _appendWaveCard(d.wave, el);
 }
 
 export function addMovementCard(d) {

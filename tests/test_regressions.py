@@ -7275,6 +7275,343 @@ class SelfDeclaredStateTests(unittest.TestCase):
         self.assertEqual(sim._agent_status["a"]["state"], "traveling")
 
 
+class NaturalStatusExpiryTests(unittest.TestCase):
+    """상태 자연 만료 — wave 시작 시점 처리 + 본인 해제 알림 + 그 wave 턴.
+
+    상태 진입은 에이전트의 선택이지만 지속 시간은 엔진이 정한다. 예전엔 만료
+    처리가 LLM 호출 **뒤**에 있어서 해제된 본인은 그 wave에 턴을 못 받고 아무
+    알림도 없었다(case1 실측: 23:09에 씻기가 끝난 아빠가 01:46에야 턴을 받음).
+    또 일부만 상태 중일 때 idle 점프가 해제 시점을 지나쳤다(22:46→23:46).
+
+    시간을 결정론적으로 만들기 위해 time_categories를 10분 고정 한 개로 둔다 —
+    일반 경로는 매 wave 10분, 상태 해제 캡(_clamp_time_jump)이 해제 시점에서 자른다.
+    """
+
+    _HOUSE = [
+        {"name": "거실",       "connects_to": ["안방화장실", "누나방"]},
+        {"name": "안방화장실", "connects_to": ["거실"]},
+        {"name": "누나방",     "connects_to": ["거실"]},
+    ]
+    _TIME_CATS  = [{"id": "normal_scene", "label": "t", "min_minutes": 10, "max_minutes": 10}]
+    _STATE_CATS = [
+        {"id": "sleep", "label": "수면", "min_minutes": 300, "max_minutes": 300},
+        {"id": "busy",  "label": "씻기", "min_minutes": 20,  "max_minutes": 20},
+    ]
+    # b·c 는 거실에서 계속 대화한다 — 전원 침묵·idle 점프 없이 일반 경로만 탄다.
+    _CHAT = {
+        "b": [{"content": "오늘 어땠어?", "target": "c"}],
+        "c": [{"content": "좋았어.",      "target": "b"}],
+    }
+
+    def _sim(self, tmp, script, locations, graph=None, **kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in script}
+        kw.setdefault("time_categories", self._TIME_CATS)
+        kw.setdefault("state_categories", self._STATE_CATS)
+        return Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=_ScriptedLLM(script),
+            agent_locations=locations, location_graph=graph or self._HOUSE,
+            time_mode="variable",
+            **kw,
+        )
+
+    @staticmethod
+    def _record_turns(sim) -> list[tuple[int, str, list[dict]]]:
+        """(disp_wave, agent_key, incoming) — 실제로 LLM 턴을 받은 기록."""
+        turns: list[tuple[int, str, list[dict]]] = []
+        orig = sim._step_agent
+
+        def wrapped(agent_key, run_wave, disp_wave, turn, incoming):
+            turns.append((disp_wave, agent_key, [dict(m) for m in incoming]))
+            return orig(agent_key, run_wave, disp_wave, turn, incoming)
+
+        sim._step_agent = wrapped
+        return turns
+
+    @staticmethod
+    def _of(turns, key):
+        return [(w, inc) for w, k, inc in turns if k == key]
+
+    def _run_expiry(self, state, location, until=25, extra_status=None, **kw):
+        """a 는 `state` 로 묶여 있고(until=25), b·c 는 거실에서 대화 중.
+        W0 0분 → W1 10분 → W2 20분(해제 캡 5분) → W3 25분에 a 가 풀린다."""
+        script = dict(self._CHAT, a=[{"content": "다 됐다.", "target": "self"}])
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, script, {"a": location, "b": "거실", "c": "거실"}, **kw)
+            sim._agent_status["a"] = {"state": state, "until_elapsed": until,
+                                      **(extra_status or {})}
+            emitted: list[tuple[str, dict]] = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            turns = self._record_turns(sim)
+            sim.run("b", max_waves=5, step_delay=0.0, starvation_waves=100,
+                    resume_wave={"b": [], "c": []})
+        return sim, turns, emitted
+
+    # ── 본인 해제 알림 + 그 wave 턴 ───────────────────────────────────────────
+
+    def test_busy_expiry_gives_the_agent_a_turn_that_wave_with_a_notice_first(self):
+        sim, turns, emitted = self._run_expiry("busy", "안방화장실")
+
+        a_turns = self._of(turns, "a")
+        # 만료 전 wave(W0~W2)에는 턴이 없고, 만료 wave(W3) 에 바로 턴을 받는다.
+        self.assertEqual([w for w, _ in a_turns][:1], [3], a_turns)
+        first_incoming = a_turns[0][1]
+        self.assertEqual(first_incoming[0], {
+            "speaker": "씬", "action_note": "",
+            "content": "[씬] 하던 일을 마쳤다: 씻기. (안방화장실)",
+        })
+        self.assertEqual(len(first_incoming), 1)
+        self.assertEqual(sim._last_turn_wave.get("a"), 3)
+        self.assertNotIn("a", sim._agent_status)
+
+        # clear 이벤트는 여전히 정확히 한 번, 예전과 같은 wave 번호(만료 wave).
+        clears = [d for t, d in emitted
+                  if t == "agent_status_change" and d.get("action") == "clear"]
+        self.assertEqual([(c["agent"], c["state"], c["wave"]) for c in clears],
+                         [("a", "busy", 3)])
+        # 이제 LLM 호출 전(wave 시작)에 처리되므로 그 wave 의 wave_start 보다 먼저
+        # 나가고, wave_start 의 agents 에도 a 가 들어 있다.
+        kinds = [(t, d.get("wave")) for t, d in emitted]
+        self.assertLess(kinds.index(("agent_status_change", 3)), kinds.index(("wave_start", 3)))
+        ws3 = next(d for t, d in emitted if t == "wave_start" and d["wave"] == 3)
+        self.assertIn("a", ws3["agents"])
+
+    def test_sleep_expiry_notice_says_woke_up_with_location(self):
+        _, turns, _ = self._run_expiry("sleep", "누나방")
+        a_turns = self._of(turns, "a")
+        self.assertEqual(a_turns[0][0], 3)
+        self.assertEqual(a_turns[0][1][0]["content"], "[씬] 잠에서 깼다. (누나방)")
+
+    def test_notice_goes_in_front_of_already_queued_incoming(self):
+        # 씻는 중에 같은 방 사람이 콕 집어 말을 걸어(직접 타깃은 상태와 무관하게
+        # 전달) 만료 wave 의 incoming 에 이미 메시지가 있으면, 알림이 그 앞에 온다.
+        script = {
+            "a": [{"content": "다 씻었다.", "target": "self", "enter_state": "busy"}],
+            "b": [{"content": "오늘 어땠어?", "target": "c"},
+                  {"content": "오늘 어땠어?", "target": "c"},
+                  {"content": "밥 먹자!",     "target": "a"},
+                  {"content": "오늘 어땠어?", "target": "c"}],
+            "c": [{"content": "좋았어.", "target": "b"}],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, script, {"a": "거실", "b": "거실", "c": "거실"})
+            sim._agent_status["a"] = {"state": "busy", "until_elapsed": 25}
+            sim._emit = lambda t, d: None
+            turns = self._record_turns(sim)
+            sim.run("b", max_waves=4, step_delay=0.0, starvation_waves=100,
+                    resume_wave={"b": [], "c": []})
+
+        a_turns = self._of(turns, "a")
+        self.assertEqual(a_turns[0][0], 3)
+        contents = [m["content"] for m in a_turns[0][1]]
+        self.assertEqual(contents, ["[씬] 하던 일을 마쳤다: 씻기. (거실)", "밥 먹자!"])
+
+    def test_traveling_expiry_notice_then_held_messages_others_get_arrival_next_wave(self):
+        graph = [
+            {"name": "거실", "connects_to": ["동네", "안방"], "zone": "집", "is_zone_entry": True},
+            {"name": "안방", "connects_to": ["거실"], "zone": "집"},
+            {"name": "동네", "connects_to": ["거실"], "is_exterior": True},
+        ]
+        held = [{"speaker": "b", "content": "잘 다녀와!", "action_note": ""}]
+        # raw 위치는 hop 적용 시 이미 도착지(거실)로 바뀌어 있다(엔진과 같은 모양).
+        sim, turns, emitted = self._run_expiry(
+            "traveling", "거실", graph=graph,
+            extra_status={"arrival_location": "거실",
+                          "pending_arrival_announcement": True,
+                          "held_incoming": held},
+        )
+
+        a_turns = self._of(turns, "a")
+        self.assertEqual(a_turns[0][0], 3)
+        self.assertEqual(
+            [(m["speaker"], m["content"]) for m in a_turns[0][1]],
+            [("씬", "[씬] 거실에 도착했다."), ("b", "잘 다녀와!")],
+        )
+        # 도착지 다른 사람(b)의 "도착했다" 알림은 예전처럼 **다음 wave**(W4).
+        b_by_wave = dict(self._of(turns, "b"))
+        self.assertFalse(any("도착했다" in m["content"] for m in b_by_wave[3]))
+        self.assertTrue(any(m["content"] == "[씬] a이(가) 이곳에 도착했다."
+                            for m in b_by_wave[4]), b_by_wave[4])
+        # a 본인에게는 남 몫의 도착 알림도, held 도 다음 wave 에 또 오지 않는다.
+        for w, inc in a_turns[1:]:
+            self.assertFalse(any(m["content"] in ("잘 다녀와!", "[씬] 거실에 도착했다.")
+                                 for m in inc), (w, inc))
+        clears = [d for t, d in emitted
+                  if t == "agent_status_change" and d.get("action") == "clear"]
+        self.assertEqual([(c["agent"], c["wave"]) for c in clears], [("a", 3)])
+
+    def test_stop_mid_wave_keeps_the_arrival_notice_for_resume(self):
+        # 만료는 wave 시작에 처리돼 상태가 이미 지워진다. 그 wave 가 LLM 호출 중
+        # 중지되면 다음 wave 몫의 도착 알림이 재개 입력(_pending_wave)에 남아야
+        # 한다 — 버리면 재개해도 다시 만들어지지 않는다.
+        graph = [
+            {"name": "거실", "connects_to": ["동네"], "zone": "집", "is_zone_entry": True},
+            {"name": "동네", "connects_to": ["거실"], "is_exterior": True},
+        ]
+        script = {"a": [{"content": "다녀왔습니다.", "target": "self"}],
+                  "b": [{"content": "...", "target": "self"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, script, {"a": "거실", "b": "거실"}, graph=graph)
+            sim._agent_status["a"] = {"state": "traveling", "until_elapsed": 0,
+                                      "arrival_location": "거실",
+                                      "pending_arrival_announcement": True}
+            sim._emit = lambda t, d: None
+            orig = sim._step_agent
+
+            def step_then_stop(*args):
+                result = orig(*args)
+                sim._stop_event.set()
+                return result
+
+            sim._step_agent = step_then_stop
+            sim.run("b", max_waves=3, step_delay=0.0, resume_wave={"b": []})
+
+        self.assertNotIn("a", sim._agent_status)
+        self.assertIn("[씬] a이(가) 이곳에 도착했다.",
+                      [m["content"] for m in sim._pending_wave.get("b", [])])
+
+    def test_intervention_clear_gets_no_release_notice(self):
+        # 개입(직접 부름)으로 턴을 받아 enter_state 를 비우면 그 자리에서 해제된다
+        # — 이미 턴을 받은 것이므로 자연 만료 알림 대상이 아니다.
+        script = {
+            "a": [{"content": "으응... 일어났어.", "target": "self"}],  # enter_state 없음
+            "b": [{"content": "일어나!", "target": "a"},
+                  {"content": "...",     "target": "self"}],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, script, {"a": "거실", "b": "거실"})
+            sim._agent_status["a"] = {"state": "sleep", "until_elapsed": 9999}
+            emitted: list[tuple[str, dict]] = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            turns = self._record_turns(sim)
+            sim.run("b", max_waves=3, step_delay=0.0, resume_wave={"b": []})
+
+        a_turns = self._of(turns, "a")
+        self.assertEqual(a_turns[0][0], 1)
+        all_a_incoming = [m["content"] for _, inc in a_turns for m in inc]
+        self.assertFalse([c for c in all_a_incoming if c.startswith("[씬] 잠에서 깼다")],
+                         all_a_incoming)
+        self.assertNotIn("a", sim._agent_status)
+        clears = [d for t, d in emitted
+                  if t == "agent_status_change" and d.get("action") == "clear"]
+        self.assertEqual([(c["agent"], c["wave"]) for c in clears], [("a", 1)])
+
+    def test_expired_status_restored_on_resume_is_released_on_the_first_wave(self):
+        # 저장 시점에 이미 다 된(remaining 0) 상태가 복원되면, 재개 첫 wave 시작에
+        # 바로 풀려 알림 + 턴을 받는다(예전엔 그 wave 에 턴 없이 조용히 지워졌다).
+        script = dict(self._CHAT, a=[{"content": "다 씻었다.", "target": "self"}])
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, script, {"a": "안방화장실", "b": "거실", "c": "거실"},
+                            elapsed_minutes_init=300, wave_base_init=20)
+            sim.restore_agent_state({"a": {"status": {"state": "busy", "remaining_minutes": 0}}})
+            emitted: list[tuple[str, dict]] = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            turns = self._record_turns(sim)
+            sim.run("b", max_waves=1, step_delay=0.0, resume_wave={"b": [], "c": []})
+
+        a_turns = self._of(turns, "a")
+        self.assertEqual([w for w, _ in a_turns], [20])
+        self.assertEqual(a_turns[0][1][0]["content"], "[씬] 하던 일을 마쳤다: 씻기. (안방화장실)")
+        clears = [d for t, d in emitted
+                  if t == "agent_status_change" and d.get("action") == "clear"]
+        self.assertEqual([(c["agent"], c["wave"]) for c in clears], [("a", 20)])
+
+    # ── 전원 상태 잠금 wake_key — 알림은 한 번만 ─────────────────────────────
+
+    def test_all_locked_wake_key_gets_exactly_one_notice_on_the_next_wave(self):
+        script = {
+            "a": [{"content": "잔다.",   "target": "self", "enter_state": "sleep"}],
+            "b": [{"content": "씻는다.", "target": "self", "enter_state": "busy"},
+                  {"content": "다 씻었다.", "target": "self"}],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, script, {"a": "누나방", "b": "안방화장실"},
+                            idle_minutes_schedule=[9999])
+            emitted: list[tuple[str, dict]] = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            turns = self._record_turns(sim)
+            sim.run("a", max_waves=2, step_delay=0.0, resume_wave={"a": [], "b": []})
+
+        jumps = [d for t, d in emitted if t == "time_jump" and d.get("mode") == "idle"]
+        self.assertEqual(jumps[0]["minutes"], 20)  # 전원 잠금 → 가장 이른 해제(busy 20)
+        w1 = [(k, inc) for w, k, inc in turns if w == 1]
+        # W1: 풀린 b 한 명만, incoming 은 해제 알림 딱 하나(wake_key [] + 만료 알림 합류).
+        self.assertEqual(w1, [("b", [{"speaker": "씬", "action_note": "",
+                                      "content": "[씬] 하던 일을 마쳤다: 씻기. (안방화장실)"}])])
+        clears = [d for t, d in emitted
+                  if t == "agent_status_change" and d.get("action") == "clear"]
+        self.assertEqual([(c["agent"], c["wave"]) for c in clears], [("b", 1)])
+
+    # ── idle 점프: 일부만 상태 중이어도 해제 시점을 넘지 않는다 ────────────────
+
+    def _partial_lock_run(self, events=None):
+        # 22:30 시작. a 는 23:09(경과 39분)에 씻기가 끝나고, b 는 깨어 있지만 혼자
+        # 독백 → W0 전원 침묵 #1(일반 경로 10분, 22:40) → W1 전원 침묵 #2 → idle
+        # 점프 60분이 23:09 를 지나치면 안 된다.
+        script = {
+            "a": [{"content": "다 씻었다.", "target": "self"}],
+            "b": [{"content": "혼잣말.",   "target": "self"}],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, script, {"a": "안방화장실", "b": "거실"},
+                            sim_start_time="22:30", idle_minutes_schedule=[60])
+            sim._agent_status["a"] = {"state": "busy", "until_elapsed": 39}
+            emitted: list[tuple[str, dict]] = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            turns = self._record_turns(sim)
+            sim.run("b", max_waves=3, step_delay=0.0, events=events,
+                    resume_wave={"b": []})
+        jumps = [d for t, d in emitted if t == "time_jump" and d.get("mode") == "idle"]
+        return sim, turns, jumps
+
+    def test_idle_jump_stops_at_a_partial_lock_release_time(self):
+        sim, turns, jumps = self._partial_lock_run()
+        self.assertEqual(jumps[0]["wave"], 1)
+        self.assertEqual(jumps[0]["raw_minutes"], 60)
+        self.assertEqual(jumps[0]["minutes"], 29)            # 22:40 → 23:09
+        self.assertEqual(jumps[0]["reason"], "연속 전원 침묵 2회")
+        self.assertEqual(jumps[0]["clamp_reason"], "상태 해제 시점 전까지 60→29분")
+        # 해제 시점에 멈췄으니 다음 wave(W2) 시작에 a 가 알림과 함께 턴을 받는다.
+        a_turns = self._of(turns, "a")
+        self.assertEqual([w for w, _ in a_turns], [2])
+        self.assertEqual(a_turns[0][1][0]["content"], "[씬] 하던 일을 마쳤다: 씻기. (안방화장실)")
+
+    def test_idle_jump_earlier_beat_wins_over_state_release(self):
+        # 22:50 예정 이벤트(경과 20분)가 해제 시점(39분)보다 이르면 이벤트가 우선.
+        _, _, jumps = self._partial_lock_run(events=[
+            {"at_time": "22:50", "type": "system_message",
+             "message": "22:50. 드라마가 시작한다.", "targets": ["b"]},
+        ])
+        self.assertEqual(jumps[0]["minutes"], 10)            # 22:40 → 22:50
+        self.assertEqual(jumps[0]["clamp_reason"], "예정 이벤트(22:50) 전까지 60→10분")
+
+    # ── 문구 헬퍼 ─────────────────────────────────────────────────────────────
+
+    def test_status_release_notice_wording(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp, {"a": [{"content": "..."}]}, {"a": "거실"},
+                graph=[{"name": "거실", "connects_to": ["동네"]},
+                       {"name": "동네", "connects_to": ["거실"], "is_exterior": True}],
+                state_categories=self._STATE_CATS + [
+                    {"id": "nap", "label": "낮잠.", "min_minutes": 5, "max_minutes": 5}],
+            )
+            n = sim._status_release_notice
+            # 외부 공간 도착도 본인 알림은 준다(남에게 가는 도착 알림만 외부를 건너뜀).
+            self.assertEqual(n("a", {"state": "traveling", "arrival_location": "동네"}),
+                             "[씬] 동네에 도착했다.")
+            self.assertEqual(n("a", {"state": "sleep"}), "[씬] 잠에서 깼다. (거실)")
+            self.assertEqual(n("a", {"state": "busy"}), "[씬] 하던 일을 마쳤다: 씻기. (거실)")
+            # 사용자 정의 카테고리 — 표시 라벨 정본, 끝 마침표 중복 없음.
+            self.assertEqual(n("a", {"state": "nap"}), "[씬] 하던 일을 마쳤다: 낮잠. (거실)")
+            # 위치 미사용(레거시)이면 괄호 생략.
+            sim._agent_location["a"] = ""
+            self.assertEqual(n("a", {"state": "sleep"}), "[씬] 잠에서 깼다.")
+            self.assertEqual(n("a", {"state": "traveling"}), "[씬] 목적지에 도착했다.")
+
+
 class AgentContextStatusFieldTests(unittest.TestCase):
     """GET /agents/{name}/context 응답에 상태(수면·이동 등) 필드가 실리는지.
 
