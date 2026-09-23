@@ -5176,6 +5176,19 @@ class EngineContractBuilderTests(unittest.TestCase):
         self.assertIn("- enter_state:", with_state)
         self.assertNotIn("- enter_state:", without_state)
 
+    def test_output_contract_forbids_imagining_absent_agents(self):
+        # 실측된 문제: 같은 방에 없는 가족(이동 중이라 [이 자리의 사람들]에
+        # 없음)이 방금 도착한 것처럼 상상해서 서술 — 엔진은 그 사람에게
+        # 아무 신호도 준 적이 없는데 다른 에이전트가 순수 서사적 기대만으로
+        # 지어낸다(v11 실행: 봉미선이 아직 귀가 전인 딸을 4번 연속 맞이함).
+        # 특정 에이전트 성격과 무관한 규칙이라 상황(state_categories 등) 설정과
+        # 무관하게 항상 켜져 있어야 한다.
+        from ABM.prompt_contract import build_output_contract
+
+        contract = build_output_contract(["a"], _FIELDS)
+        self.assertIn("이 자리의 사람들", contract)
+        self.assertIn("상상해서 서술하지 마십시오", contract)
+
     def test_map_contract_conditional_sections(self):
         from ABM.prompt_contract import build_map_contract
 
