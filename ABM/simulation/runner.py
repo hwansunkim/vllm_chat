@@ -492,7 +492,6 @@ class _RunnerMixin:
                 if minutes is not None:
                     st    = self._agent_status.get(speaker_key, {})
                     state = st.get("state", category_id)
-                    cat   = self._resolve_state_category(state)
                     logger.info(f"[W{disp_wave}] {speaker_key} 상태 진입: {state} ({minutes}분)")
                     self._emit("agent_status_change", {
                         "wave":         disp_wave,
@@ -500,7 +499,8 @@ class _RunnerMixin:
                         "display_name": self._key_to_alias.get(speaker_key, speaker_key),
                         "action":       "enter",
                         "state":        state,
-                        "label":        (cat or {}).get("label"),
+                        # 표시 라벨 정본(status.py) — 컨텍스트 배너와 같은 문구.
+                        "label":        self._status_display_label({"state": state}),
                         "minutes":      minutes,
                         "until_time_str": self._format_time_str(
                             self._sim_start_minutes + now_elapsed + minutes
@@ -559,7 +559,8 @@ class _RunnerMixin:
                         "display_name": display,
                         "action":       "enter",
                         "state":        "traveling",
-                        "label":        f"{next_loc}(으)로 이동 중",
+                        # 방금 건 상태 dict 그대로 — 컨텍스트 배너와 같은 문구 정본.
+                        "label":        self._status_display_label(self._agent_status.get(agent_key)),
                         "minutes":      travel_minutes,
                         "until_time_str": self._format_time_str(
                             self._sim_start_minutes + now_elapsed + travel_minutes

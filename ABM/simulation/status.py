@@ -57,6 +57,28 @@ class _StatusMixin:
             return None
         return next((c for c in cats if c["id"] == category_id), None) or cats[0]
 
+    def _status_display_label(self, st: dict | None) -> str | None:
+        """상태 dict → 사람이 읽는 표시용 라벨(컨텍스트 배너·상태 진입 이벤트 공용).
+
+        `_resolve_state_category`를 쓰면 안 된다 — 그 첫-카테고리 폴백은
+        `_enter_state` 자기-선언 경로(요청 id와 실제 적용 범위를 일치시키기)를
+        위한 규칙이라, 표시에 쓰면 카테고리 목록에 없는 엔진 부여 상태
+        `traveling`이 "수면"으로 둔갑한다(실측: 고등학교로 이동 중인데 배너가
+        🚶 아이콘 + 수면 라벨). 그래서 여기서는 폴백 없이:
+        - `traveling` → 도착지 기준 "…(으)로 이동 중"(도착지가 없으면 "이동 중").
+          runner.py의 이동 시작 emit도 이 함수를 써서 문구 정본이 한 곳이다.
+        - 그 외 → id가 **정확히 일치**하는 카테고리의 label, 없으면 state id 그대로.
+        상태가 없으면 None.
+        """
+        if not st or not st.get("state"):
+            return None
+        state = st["state"]
+        if state == "traveling":
+            dest = st.get("arrival_location") or ""
+            return f"{dest}(으)로 이동 중" if dest else "이동 중"
+        cat = next((c for c in (self._state_categories or []) if c.get("id") == state), None)
+        return (cat or {}).get("label") or state
+
     # ── 조회 ─────────────────────────────────────────────────────────────────
 
     def _agent_active_status(self, key: str, now_elapsed: int) -> dict | None:

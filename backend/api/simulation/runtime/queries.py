@@ -73,10 +73,11 @@ def get_agent_context(name: str):
         now = sim_obj._current_elapsed_minutes(sim_obj.completed_waves)
         st = sim_obj._agent_active_status(name, now)
         if st is not None:
-            cat = sim_obj._resolve_state_category(st.get("state"))
+            # 라벨은 표시 전용 헬퍼로 만든다 — `_resolve_state_category`는 모르는
+            # id를 첫 카테고리(sleep)로 폴백해서 traveling이 "수면"으로 표시됐다.
             status = {
                 "state":            st.get("state"),
-                "label":            (cat or {}).get("label"),
+                "label":            sim_obj._status_display_label(st),
                 "remaining_minutes": max(0, st.get("until_elapsed", now) - now),
                 "until_time_str":   sim_obj._format_time_str(
                     sim_obj._sim_start_minutes + st.get("until_elapsed", now)

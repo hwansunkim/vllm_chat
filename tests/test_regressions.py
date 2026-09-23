@@ -6635,6 +6635,26 @@ class ZoneTravelStateTests(unittest.TestCase):
         self.assertEqual(st["arrival_location"], "거실")
         self.assertEqual(st["until_elapsed"], 10)
 
+    def test_crossing_hop_status_event_label_names_destination(self):
+        # 이동 시작 emit 라벨은 `_status_display_label`(배너와 같은 정본)로 만든다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                {"a": [{"content": "학교에서 출발.", "target": "self", "move_to": "거실"}]},
+                {"a": "동네"},
+                zone_travel_min=10, zone_travel_max=10,
+            )
+            emitted = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            sim.run("a", max_waves=1, step_delay=0.0, resume_wave={"a": []})
+
+        enters = [d for t, d in emitted
+                  if t == "agent_status_change" and d.get("action") == "enter"]
+        self.assertEqual(len(enters), 1)
+        self.assertEqual(enters[0]["state"], "traveling")
+        self.assertEqual(enters[0]["label"], "거실(으)로 이동 중")
+        self.assertEqual(enters[0]["minutes"], 10)
+
     def test_arrival_announcement_is_deferred_not_immediate_but_fires_on_expiry(self):
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(
@@ -7308,6 +7328,90 @@ class AgentContextStatusFieldTests(unittest.TestCase):
             resp = get_agent_context("a")
 
         self.assertIsNone(resp["status"])
+
+    def test_traveling_banner_label_is_destination_not_sleep(self):
+        # 실측 회귀: 신짱아가 고등학교로 이동 중인데 배너가 🚶 + "수면 — …"로 떴다.
+        # traveling은 state_categories에 없는 엔진 부여 상태라, 첫 카테고리로
+        # 폴백하는 `_resolve_state_category`로 라벨을 만들면 sleep이 된다.
+        from ABM.simulation.core import _DEFAULT_STATE_CATEGORIES
+        from backend.api.simulation.runtime.queries import get_agent_context
+        sleep_label = _DEFAULT_STATE_CATEGORIES[0]["label"]
+        with tempfile.TemporaryDirectory() as tmp:
+            self._install(tmp, status={"state": "traveling", "until_elapsed": 20,
+                                       "arrival_location": "고등학교",
+                                       "pending_arrival_announcement": True})
+            resp = get_agent_context("a")
+
+        self.assertEqual(resp["status"]["state"], "traveling")
+        self.assertEqual(resp["status"]["label"], "고등학교(으)로 이동 중")
+        self.assertNotEqual(resp["status"]["label"], sleep_label)
+        # 응답 shape는 그대로여야 프론트(context.js)가 바뀌지 않는다.
+        self.assertEqual(set(resp["status"]),
+                         {"state", "label", "remaining_minutes", "until_time_str"})
+        self.assertEqual(resp["status"]["remaining_minutes"], 20)
+
+    def test_sleep_and_busy_banner_use_their_own_category_label(self):
+        from ABM.simulation.core import _DEFAULT_STATE_CATEGORIES
+        from backend.api.simulation.runtime.queries import get_agent_context
+        labels = {c["id"]: c["label"] for c in _DEFAULT_STATE_CATEGORIES}
+        for state in ("sleep", "busy"):
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as tmp:
+                self._install(tmp, status={"state": state, "until_elapsed": 60})
+                resp = get_agent_context("a")
+                self.assertEqual(resp["status"]["label"], labels[state])
+
+    def test_unknown_state_banner_shows_id_not_first_category(self):
+        # 표시용이므로 목록에 없는 id를 첫 카테고리(sleep)로 둔갑시키지 않는다.
+        from backend.api.simulation.runtime.queries import get_agent_context
+        with tempfile.TemporaryDirectory() as tmp:
+            self._install(tmp, status={"state": "meditating", "until_elapsed": 60})
+            resp = get_agent_context("a")
+
+        self.assertEqual(resp["status"]["label"], "meditating")
+
+
+class StatusDisplayLabelTests(unittest.TestCase):
+    """`_status_display_label` — 표시 전용 상태 라벨(배너·상태 진입 이벤트 공용).
+
+    `_resolve_state_category`(자기-선언 진입용, 첫 카테고리 폴백)와 달리 모르는
+    id를 폴백하지 않는다. 폴백 규칙 자체는 `_enter_state`가 의존하므로 그대로다.
+    """
+
+    def _sim(self, tmp, **kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        return Simulation(
+            {"a": Agent("a", "너는 a다.", tmp, token_limit=4096)},
+            [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=lambda *a, **kw: ("", "", {}), **kw,
+        )
+
+    def test_traveling_uses_arrival_location(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp)
+            self.assertEqual(
+                sim._status_display_label({"state": "traveling", "arrival_location": "고등학교"}),
+                "고등학교(으)로 이동 중",
+            )
+            self.assertEqual(sim._status_display_label({"state": "traveling"}), "이동 중")
+
+    def test_exact_category_label_and_no_fallback(self):
+        cats = [{"id": "sleep", "label": "수면", "min_minutes": 1, "max_minutes": 1},
+                {"id": "busy",  "label": "용무", "min_minutes": 1, "max_minutes": 1}]
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, state_categories=cats)
+            self.assertEqual(sim._status_display_label({"state": "sleep"}), "수면")
+            self.assertEqual(sim._status_display_label({"state": "busy"}), "용무")
+            self.assertEqual(sim._status_display_label({"state": "nap"}), "nap")
+            self.assertIsNone(sim._status_display_label(None))
+            self.assertIsNone(sim._status_display_label({}))
+            # 자기-선언 진입용 폴백 규칙은 바뀌지 않았다.
+            self.assertEqual(sim._resolve_state_category("nap")["id"], "sleep")
+
+    def test_categories_off_shows_state_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, state_categories=[])
+            self.assertEqual(sim._status_display_label({"state": "sleep"}), "sleep")
 
 
 class IsolatedAgentReinjectTests(unittest.TestCase):
