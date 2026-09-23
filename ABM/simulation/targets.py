@@ -95,19 +95,20 @@ class _TargetsMixin:
                     k for k in candidates
                     if _same_loc(k) and not self._agent_unavailable(k, now)
                 )
-            elif t_s.startswith("stranger_"):
-                # stranger_N ID는 같은 장소에서뿐 아니라 같은 zone의 다른 장소를
-                # 인지할 때도 발급된다. 대화 가능 범위는 어디까지나 "같은 방"이므로
-                # _can_address()(같은 방 + 1-wave 유예)로 걸러야 zone 인지가 대화
-                # 채널로 새지 않는다.
-                real_key = self._stranger_map.get(speaker_key, {}).get(t_s)
-                if real_key and real_key in self.active_agents and _can_address(real_key):
-                    self._agent_knowledge.setdefault(speaker_key, set()).add(real_key)
-                    self._agent_knowledge.setdefault(real_key, set()).add(speaker_key)
-                    resolved.append(real_key)
             else:
-                key = self._normalize_target(t_s)
-                if key in self.active_agents and key != speaker_key and _can_address(key):
+                parsed = self._parse_direct_target(t_s, speaker_key)
+                if parsed is None:
+                    continue
+                key, via_stranger = parsed
+                if via_stranger:
+                    # stranger_N ID는 같은 장소에서뿐 아니라 같은 zone의 다른 장소를
+                    # 인지할 때도 발급된다. 대화 가능 범위는 어디까지나 "같은 방"이므로
+                    # _can_address()(같은 방 + 1-wave 유예)로 걸러야 zone 인지가 대화
+                    # 채널로 새지 않는다.
+                    if key in self.active_agents and _can_address(key):
+                        self._learn_each_other(speaker_key, key)
+                        resolved.append(key)
+                elif key in self.active_agents and key != speaker_key and _can_address(key):
                     if self._is_anonymous_to(speaker_key, key):
                         # 화자가 아직 '낯선 이'로만 인지하는 상대를 실명/key로 부른
                         # 경우. stranger_N 핸드셰이크를 건너뛴 것이므로 폐기한다.
@@ -118,6 +119,85 @@ class _TargetsMixin:
                         continue
                     resolved.append(key)
         return list(dict.fromkeys(resolved))
+
+    def _parse_direct_target(self, t: str, speaker_key: str) -> tuple[str, bool] | None:
+        """원본 target 하나를 **직접 타깃**으로 해석 — `(실제 key, stranger_N 경유?)`.
+
+        `"self"`/`"system"`/`"all"`/빈 값은 직접 타깃이 아니므로 None. `stranger_N`은
+        **화자의** `_stranger_map`으로만 번역되며, 번역 불가(발급된 적 없는 ID)면
+        None. 일반 이름/alias는 `_normalize_target`으로 key화만 하고, 활성 여부·
+        자기 자신·인지(`_is_anonymous_to`)·공간 판정은 호출부가 한다 — 1차 라우팅
+        (`_resolve_targets`)과 이동 후 보강 배달(`_resolve_post_move_targets`)이
+        **같은 해석 규칙**을 공유하기 위한 공통 부분이다.
+        """
+        t_s = str(t).strip()
+        low = t_s.lower()
+        if not t_s or low in ("self", "system", "all"):
+            return None
+        if t_s.startswith("stranger_"):
+            real_key = self._stranger_map.get(speaker_key, {}).get(t_s)
+            return (real_key, True) if real_key else None
+        return self._normalize_target(t_s), False
+
+    def _learn_each_other(self, a: str, b: str) -> None:
+        """stranger_N으로 말을 건넨 순간 서로를 '아는 사이'로 만든다(양방향)."""
+        self._agent_knowledge.setdefault(a, set()).add(b)
+        self._agent_knowledge.setdefault(b, set()).add(a)
+
+    def _resolve_post_move_targets(
+        self,
+        targets:     list[str],
+        speaker_key: str,
+        exclude:     set[str],
+        now:         int,
+    ) -> list[str]:
+        """이동 후 보강 배달(post-move delivery) 대상 해석.
+
+        "말은 떠나기 전에 했다"(1차 `_resolve_targets`, 이동 전 스냅샷) 위에
+        "걸어가며 한 말은 도착지에서도 들린다"를 얹는다 — 거실에서 "짱구야! 얼른
+        씻고 나와"라며 화장실 문 앞까지 걸어간 엄마의 말이, 출발 시점엔 다른
+        방이었다는 이유로 짱구에게 폐기되던 버그(case1 v9 W26).
+
+        호출부(runner)가 "화자가 이번 wave에 실제로 위치가 바뀌었다"를 이미
+        확인한 뒤 **이동이 모두 적용된 현재 위치**로 부른다. 여기서는:
+
+          - **직접 타깃만** (`<key>`/alias/`stranger_N`) — `"all"`은 대상이 아니다
+            (방송은 이동 전 같은 방 한정 정책 그대로).
+          - `exclude`(1차에서 이미 받은 사람)는 중복 배달하지 않는다.
+          - 화자·대상 누구도 `traveling`이 아니어야 한다(zone 경계를 넘은
+            이동은 traveling이 되므로 여기서 자연히 빠지지만 명시적으로 본다).
+          - 지금 **같은 방**(`_same_room` — exterior 격리 존중)이어야 한다.
+            1-wave 유예(`_recently_co_located`)는 여기서 쓰지 않는다 — 그건 1차
+            라우팅의 몫이고, 여기서 유예를 또 열면 범위만 넓어진다.
+          - 인지 규칙은 1차와 같다: 실명으로 낯선 이를 부르면 폐기, `stranger_N`은
+            화자의 사전으로 해석하고 성공 시 서로를 알게 된다.
+          - sleep/busy 대상도 직접 타깃이면 전달(1차 정책과 동일 — 알면서 부른 것).
+        """
+        speaker_loc = self._agent_location.get(speaker_key, "")
+        if (not speaker_loc or speaker_loc in self._exterior_locations
+                or self._agent_traveling(speaker_key, now)):
+            return []
+        out: list[str] = []
+        for t in targets or []:
+            parsed = self._parse_direct_target(t, speaker_key)
+            if parsed is None:
+                continue
+            key, via_stranger = parsed
+            if (key not in self.active_agents or key == speaker_key
+                    or key in exclude or key in out):
+                continue
+            if not via_stranger and self._is_anonymous_to(speaker_key, key):
+                logger.debug(
+                    "post-move drop (not acquainted): speaker=%s target=%s",
+                    speaker_key, key,
+                )
+                continue
+            if self._agent_traveling(key, now) or not self._same_room(speaker_key, key):
+                continue
+            if via_stranger:
+                self._learn_each_other(speaker_key, key)
+            out.append(key)
+        return out
 
     # ── 대화 도달성 ───────────────────────────────────────────────────────────
 

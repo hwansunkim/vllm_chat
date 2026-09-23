@@ -366,6 +366,9 @@ class _RunnerMixin:
             # 이번 wave 에 발화한 에이전트가 실제로 누군가에게 말이 닿았는지
             # (순수 혼잣말이면 False). 아래 휴면(dormancy) 스트릭 갱신에 쓴다.
             reached_someone: dict[str, bool] = {}
+            # 화자별 1차(이동 전) 해석 결과 — 아래 이동 후 보강 배달이 중복을
+            # 거르는 기준이다.
+            first_resolved: dict[str, set[str]] = {}
             spatial = self._perception_mode == "spatial"
             for speaker_key, result in results.items():
                 if not result.get("success"):
@@ -374,6 +377,7 @@ class _RunnerMixin:
                 # 방금 자리를 뜬 상대에게 마지막 한마디가 닿는 경로.
                 resolved = self._resolve_targets(result["targets"], speaker_key)
                 reached_someone[speaker_key] = bool(resolved)
+                first_resolved[speaker_key]  = set(resolved)
                 for target_key in resolved:
                     routed.setdefault(target_key, []).append({
                         "speaker":     speaker_key,
@@ -605,6 +609,20 @@ class _RunnerMixin:
                             scene_injections.setdefault(other_key, []).append({
                                 "speaker": "씬", "content": scene_msg, "action_note": ""
                             })
+
+            # ── 이동 후 보강 배달 (post-move delivery) ─────────────────────────
+            # 위 1차 라우팅은 "말은 떠나기 전에 했다"(이동 전 스냅샷)라 출발지
+            # 사람은 계속 듣는다 — 그건 그대로 둔다. 여기서는 그 위에 "걸어가며
+            # 한 말은 도착지에서도 들린다"를 더한다: 같은 zone 안에서 한 방 건너
+            # 걸어가며 부른 **직접 타깃**이 이동 후 같은 방이 됐으면 한 번 더
+            # 배달한다(case1 v9 W26: 엄마가 화장실 문 앞으로 가며 "짱구야! 얼른
+            # 씻고 나와"라고 했는데 이동 전 기준으로 짱구가 다른 방이라 폐기됨).
+            # 반드시 이동 루프 **뒤**(도착 위치가 필요), 휴면 스트릭·next_wave
+            # 조립 **앞**(reached_someone·routed에 반영돼야 함)이다.
+            self._deliver_post_move(
+                results, wave_start_location, first_resolved,
+                routed, reached_someone, disp_wave, now_elapsed,
+            )
 
             # ── 감염 모델 ────────────────────────────────────────────────────
             # 이동이 모두 반영된 뒤의 위치를 기준으로 접촉을 계산한다 — "이번 wave가
@@ -939,6 +957,82 @@ class _RunnerMixin:
         })
 
     # ── 공간 기반 인지 라우팅 (perception_mode == "spatial") ────────────────────
+
+    def _deliver_post_move(
+        self,
+        results:             dict[str, dict],
+        wave_start_location: dict[str, str],
+        first_resolved:      dict[str, set[str]],
+        routed:              dict[str, list],
+        reached_someone:     dict[str, bool],
+        disp_wave:           int,
+        now_elapsed:         int,
+    ) -> None:
+        """이동 후 보강 배달 — 걸어가며 부른 직접 타깃에게 도착지에서 한 번 더.
+
+        조건(전부 만족): 이번 wave에 성공한 발화 / 화자의 위치가 이번 wave에 실제로
+        바뀜(wave 시작 스냅샷 ≠ 지금) / 원본 targets의 직접 타깃 중 1차 해석에
+        없던 사람 / 이동 후 같은 방 + 화자·대상 누구도 traveling 아님 / 인지 규칙
+        준수. 세부 판정은 `_resolve_post_move_targets`(targets.py)가 1차 해석과
+        같은 규칙으로 한다.
+
+        범위는 **직접 타깃 한정**이다 — spatial 모드여도 도착지 제3자 엿듣기로는
+        넓히지 않는다. 도착지 사람들은 이미 "[씬] X이(가) 이곳에 도착했다"를
+        받았고, 출발지에서 한 말이 도착지 제3자에게까지 퍼지면 한 발화가 두 방에서
+        동시에 엿들리는 셈이라 "같은 방이어야 들린다" 원칙이 흐려진다.
+
+        배달이 일어나면 turn.py의 1차 edge 생성과 같은 모양의 관계 그래프 edge를
+        `self.edges`에 더하고, `post_move_delivery` 이벤트(영속 대상)로 알린다 —
+        `turn_complete`는 턴 직후 이미 나갔으므로 다시 쏘지 않는다.
+        """
+        for speaker_key, result in results.items():
+            if not result.get("success"):
+                continue
+            before = wave_start_location.get(speaker_key, "")
+            after  = self._agent_location.get(speaker_key, "")
+            if not after or before == after:
+                continue  # 이번 wave에 움직이지 않았다 — 1차 라우팅이 전부다.
+            if self._agent_traveling(speaker_key, now_elapsed):
+                continue  # zone 경계를 넘어 아직 이동 중 — 아무 방에도 없다.
+            extra = self._resolve_post_move_targets(
+                result.get("targets") or [], speaker_key,
+                first_resolved.get(speaker_key, set()), now_elapsed,
+            )
+            if not extra:
+                continue
+            reached_someone[speaker_key] = True
+            speaker_name = getattr(self.agents.get(speaker_key), "name", speaker_key)
+            meta = dict(result.get("meta") or {})
+            for target_key in extra:
+                routed.setdefault(target_key, []).append({
+                    "speaker":     speaker_key,
+                    "content":     result["clean_content"],
+                    "action_note": result.get("action_note", ""),
+                })
+                edge = {
+                    "source":    speaker_name,
+                    "target":    target_key,
+                    "emotion":   meta.get("emotion", ""),
+                    "meta":      meta,
+                    "content":   result["clean_content"],
+                    "timestamp": time.time(),
+                    "post_move": True,
+                }
+                self.edges.append(edge)
+                logger.info(
+                    f"[W{disp_wave}] 이동 후 보강 배달: {speaker_key} "
+                    f"({before}→{after}) → {target_key}"
+                )
+                self._emit("post_move_delivery", {
+                    "wave":           disp_wave,
+                    "speaker":        speaker_key,
+                    "speaker_display": self._key_to_alias.get(speaker_key, speaker_key),
+                    "target":         target_key,
+                    "target_display": self._key_to_alias.get(target_key, target_key),
+                    "from":           before,
+                    "location":       after,
+                    "new_edges":      [edge],
+                })
 
     def _route_spatial(
         self,

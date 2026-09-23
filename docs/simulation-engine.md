@@ -112,6 +112,12 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
        도착지/출발지 사람들에게 "[씬] 도착/이탈" scene_injection
        (아는 사이면 실명, 아니면 "낯선 이가 나타났다: <외모>")
 
+── 이동 후 보강 배달 (이동 후 위치 기준, 직접 타깃 한정) ──
+14b. _deliver_post_move(...)  : 이번 wave에 위치가 바뀐 화자의 직접 타깃 중 1차에서
+       못 받은 사람이 이제 같은 방(둘 다 traveling 아님, 인지 규칙 준수)이면 routed에 추가
+       + edge + _emit("post_move_delivery"). "걸어가며 한 말은 도착지에서도 들린다".
+       1차(이동 전) 라우팅은 그대로 — 출발지 사람도 계속 듣는다.
+
 ── 감염 (이동 후 위치 기준) ──
 15. _apply_infection_wave(run_wave, disp_wave)   : 같은 wave·같은 장소 접촉 → 확률 전염
 

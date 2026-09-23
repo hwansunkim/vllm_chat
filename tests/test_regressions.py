@@ -1408,6 +1408,179 @@ class MoveRoutingTests(unittest.TestCase):
         self.assertIn("현재 위치: 입구", situations[("b", 1)])
 
 
+class PostMoveDeliveryTests(unittest.TestCase):
+    """이동 후 보강 배달(post-move delivery) 회귀 (runner `_deliver_post_move`).
+
+    배경(case1 v9 W26): 거실의 엄마가 "짱구야! 얼른 씻고 나와"라며 화장실 문
+    앞으로 걸어갔다(같은 zone 1홉 이동). 1차 라우팅은 이동 전 스냅샷이라 짱구가
+    다른 방으로 판정돼 말이 폐기됐다. "말은 떠나기 전에 했다"(출발지 사람은
+    듣는다)는 유지한 채, "걸어가며 한 말은 도착지에서도 들린다"를 더한다.
+    """
+
+    GRAPH = [
+        {"name": "거실",       "connects_to": ["공용화장실", "동네"], "zone": "집"},
+        {"name": "공용화장실", "connects_to": ["거실"],               "zone": "집"},
+        {"name": "동네",       "connects_to": ["거실", "학교"],       "zone": "마을"},
+        {"name": "학교",       "connects_to": ["동네"],               "zone": "마을"},
+    ]
+
+    def _run(self, script, locations, *, setup=None, zone_travel=(0, 0), wave0=None):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in script}
+            sim = Simulation(
+                agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+                llm=_ScriptedLLM(script),
+                agent_locations=locations, location_graph=self.GRAPH,
+                zone_travel_min_minutes=zone_travel[0],
+                zone_travel_max_minutes=zone_travel[1],
+                time_mode="variable",
+            )
+            emitted = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            if setup:
+                setup(sim)
+            sim.run("a", max_waves=1, step_delay=0.0,
+                    resume_wave=wave0 or {"a": []})
+            return sim, emitted
+
+    @staticmethod
+    def _heard(sim, key, speaker="a"):
+        return [m["content"] for m in sim._pending_wave.get(key, [])
+                if m["speaker"] == speaker]
+
+    @staticmethod
+    def _deliveries(emitted):
+        return [d for t, d in emitted if t == "post_move_delivery"]
+
+    def test_same_zone_one_hop_direct_target_is_delivered(self):
+        # W26 재현 — 사람 지목 move_to(b)로 한 칸 걸어가며 b를 부른다.
+        sim, emitted = self._run(
+            {"a": [{"content": "짱구야! 얼른 씻고 나와.", "target": ["b"],
+                    "move_to": "b", "action_note": "화장실 문 앞으로 다가가 말을 건다"}],
+             "b": [{"content": "...", "target": "self"}]},
+            {"a": "거실", "b": "공용화장실"},
+        )
+        self.assertEqual(sim._agent_location["a"], "공용화장실")
+        self.assertEqual(self._heard(sim, "b"), ["짱구야! 얼른 씻고 나와."])
+        # 도착 씬이 대사보다 앞에 온다(자연스러운 순서).
+        contents = [m["content"] for m in sim._pending_wave["b"]]
+        self.assertIn("도착했다", contents[0])
+        # 관계 그래프 edge + 영속 이벤트 정합성.
+        self.assertIn(("a", "b"), {(e["source"], e["target"]) for e in sim.edges})
+        dl = self._deliveries(emitted)
+        self.assertEqual(len(dl), 1)
+        self.assertEqual((dl[0]["speaker"], dl[0]["target"], dl[0]["location"]),
+                         ("a", "b", "공용화장실"))
+        self.assertEqual(dl[0]["new_edges"][0]["target"], "b")
+        # 말이 닿았으므로 휴면 스트릭이 쌓이지 않는다.
+        self.assertEqual(sim._solo_streak.get("a", 0), 0)
+
+    def test_markdown_export_shows_post_move_delivery_scene(self):
+        from ABM.export.markdown import render_markdown
+        log = [{"speaker": "a", "content": "짱구야!", "targets": ["b"], "wave": 26,
+                "timestamp": 1.0}]
+        events = [{"event_type": "post_move_delivery", "wave": 26, "timestamp": 2.0,
+                   "data": {"wave": 26, "speaker": "a", "speaker_display": "봉미선",
+                            "target": "b", "target_display": "신짱구",
+                            "from": "거실", "location": "공용화장실"}}]
+        cfg = {"agents": [{"name": "a", "display_name": "봉미선"},
+                          {"name": "b", "display_name": "신짱구"}]}
+        md = render_markdown(config=cfg, shared_log=log, events=events, now=0)
+        line = "> **[🗣️ 씬]** *봉미선의 말이 이동 후 신짱구에게 전달됐다 (공용화장실)*"
+        self.assertIn(line, md)
+        self.assertLess(md.index("짱구야!"), md.index(line))   # 대사 뒤
+        md_off = render_markdown(config=cfg, shared_log=log, events=events, now=0,
+                                 include={"time", "action"})
+        self.assertNotIn("이동 후", md_off)                      # 이동 토글에 묶임
+
+    def test_busy_direct_target_is_still_delivered(self):
+        # sleep/busy 대상도 직접 부르면 전달(1차 라우팅 정책과 동일).
+        def setup(sim):
+            sim._agent_status["b"] = {"state": "busy", "until_elapsed": 999}
+        sim, _ = self._run(
+            {"a": [{"content": "얼른 씻고 나와.", "target": ["b"], "move_to": "공용화장실"}],
+             "b": [{"content": "...", "target": "self"}]},
+            {"a": "거실", "b": "공용화장실"}, setup=setup,
+        )
+        self.assertEqual(self._heard(sim, "b"), ["얼른 씻고 나와."])
+
+    def test_zone_crossing_move_is_not_delivered(self):
+        # zone 경계를 넘으면 traveling — 아직 아무 방에도 없으므로 배달 안 됨.
+        sim, emitted = self._run(
+            {"a": [{"content": "다녀올게.", "target": ["b"], "move_to": "동네"}],
+             "b": [{"content": "...", "target": "self"}]},
+            {"a": "거실", "b": "동네"}, zone_travel=(10, 10),
+        )
+        # 이 wave 끝의 시간 점프가 이동 시간을 넘길 수 있어 "지금" 상태 대신
+        # 이동 시작 이벤트로 traveling 진입을 확인한다.
+        self.assertTrue(any(
+            t == "agent_status_change" and d["agent"] == "a"
+            and d["action"] == "enter" and d["state"] == "traveling"
+            for t, d in emitted))
+        self.assertEqual(self._heard(sim, "b"), [])
+        self.assertEqual(self._deliveries(emitted), [])
+
+    def test_not_moved_other_room_is_not_delivered(self):
+        sim, emitted = self._run(
+            {"a": [{"content": "짱구야!", "target": ["b"]}],
+             "b": [{"content": "...", "target": "self"}]},
+            {"a": "거실", "b": "공용화장실"},
+        )
+        self.assertEqual(self._heard(sim, "b"), [])
+        self.assertEqual(self._deliveries(emitted), [])
+        self.assertNotIn(("a", "b"), {(e["source"], e["target"]) for e in sim.edges})
+
+    def test_first_pass_recipient_gets_no_duplicate(self):
+        # b는 출발지(거실)에서 이미 받았고, c는 도착지에서 새로 받는다.
+        sim, emitted = self._run(
+            {"a": [{"content": "둘 다 들어.", "target": ["b", "c"], "move_to": "공용화장실"}],
+             "b": [{"content": "...", "target": "self"}],
+             "c": [{"content": "...", "target": "self"}]},
+            {"a": "거실", "b": "거실", "c": "공용화장실"},
+        )
+        self.assertEqual(self._heard(sim, "b"), ["둘 다 들어."])
+        self.assertEqual(self._heard(sim, "c"), ["둘 다 들어."])
+        self.assertEqual([d["target"] for d in self._deliveries(emitted)], ["c"])
+        self.assertEqual(
+            sorted(e["target"] for e in sim.edges if e["source"] == "a"), ["b", "c"])
+
+    def test_all_target_is_not_post_move_delivered(self):
+        sim, emitted = self._run(
+            {"a": [{"content": "다들 들어!", "target": "all", "move_to": "공용화장실"}],
+             "b": [{"content": "...", "target": "self"}]},
+            {"a": "거실", "b": "공용화장실"},
+        )
+        self.assertEqual(self._heard(sim, "b"), [])
+        self.assertEqual(self._deliveries(emitted), [])
+
+    def test_real_name_to_stranger_is_dropped_but_stranger_id_works(self):
+        def make_strangers(sim):
+            sim._agent_knowledge.setdefault("a", set()).discard("b")
+            sim._agent_knowledge.setdefault("b", set()).discard("a")
+            sim._stranger_map.setdefault("a", {})["stranger_1"] = "b"
+            sim._stranger_rmap.setdefault("a", {})["b"] = "stranger_1"
+
+        # 실명(key)으로 낯선 이를 부름 → 핸드셰이크 생략이므로 폐기.
+        sim, emitted = self._run(
+            {"a": [{"content": "저기요 b씨!", "target": ["b"], "move_to": "공용화장실"}],
+             "b": [{"content": "...", "target": "self"}]},
+            {"a": "거실", "b": "공용화장실"}, setup=make_strangers,
+        )
+        self.assertEqual(self._heard(sim, "b"), [])
+        self.assertEqual(self._deliveries(emitted), [])
+
+        # 같은 상황에서 stranger_N으로 부르면 전달되고 서로 알게 된다.
+        sim, emitted = self._run(
+            {"a": [{"content": "저기요!", "target": ["stranger_1"], "move_to": "공용화장실"}],
+             "b": [{"content": "...", "target": "self"}]},
+            {"a": "거실", "b": "공용화장실"}, setup=make_strangers,
+        )
+        self.assertEqual(self._heard(sim, "b"), ["저기요!"])
+        self.assertIn("b", sim._agent_knowledge["a"])
+
+
 class ZoneAwarenessTests(unittest.TestCase):
     """LocationNode.zone — 인지 범위(같은 zone)와 대화 범위(같은 노드)의 분리.
 

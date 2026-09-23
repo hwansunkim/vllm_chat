@@ -131,6 +131,9 @@ class _TurnMixin:
             "clean_content": clean_content,
             "action_note":   meta.get("action_note", ""),
             "targets":       parsed_targets,
+            # 이동 후 보강 배달(runner `_deliver_post_move`)이 위와 같은 모양의
+            # 관계 그래프 edge를 추가로 만들 때 쓴다(emotion 등).
+            "meta":          dict(meta),
         }
 
     def _rollback_incoming(self, agent: Agent, incoming_msgs: list[dict]) -> None:

@@ -40,7 +40,9 @@ DEFAULT_INCLUDE = frozenset(INCLUDE_KEYS)
 
 # 토글 → 스트림에 실을 이벤트 타입. 한 토글이 여러 타입을 열 수 있다.
 _TOGGLE_EVENT_TYPES = {
-    "move":         ("agent_move",),
+    # post_move_delivery = 이동 후 보강 배달(runner `_deliver_post_move`). 이동의
+    # 결과라 이동 토글에 묶는다.
+    "move":         ("agent_move", "post_move_delivery"),
     "appearance":   ("appearance_update",),
     "intervention": ("system_intervention", "world_event"),   # world_event = 레거시
     "world":        ("world_event",),                          # 하위호환 별칭
@@ -128,7 +130,8 @@ def _quote(text: str) -> str:
 # 흔들릴 수 있는 걸로 알려진 한계다.
 _PRE_DIALOGUE_EVENT_TYPES  = {"scene_event", "director_call", "system_intervention", "world_event"}
 _POST_DIALOGUE_EVENT_TYPES = {"appearance_update", "agent_move", "meeting_update",
-                              "infection_update", "time_jump", "agent_status_change"}
+                              "infection_update", "time_jump", "agent_status_change",
+                              "post_move_delivery"}
 
 
 def _stream_phase(kind: str, payload: dict | None = None) -> int:
@@ -211,6 +214,17 @@ def _fmt_move(data: dict) -> str:
         return f"\n> **[씬]** *{name}이(가) 자리를 떴다. (→ {data.get('to')})*\n"
     frm = f"{data['from']}에서 " if data.get("from") else ""
     return f"\n> **[씬]** *{name}이(가) {frm}{data.get('to')}(으)로 이동했다.*\n"
+
+
+def _fmt_post_move_delivery(data: dict, index: AgentIndex) -> str:
+    """이동 후 보강 배달 한 줄 — 걸어가며 한 말이 도착지의 직접 타깃에게 닿았다.
+
+    같은 wave의 ``agent_move`` 뒤에 emit되므로 스트림에서도 이동 줄 다음에 온다.
+    """
+    speaker = data.get("speaker_display") or index.label(data.get("speaker"))
+    target  = data.get("target_display") or index.label(data.get("target"))
+    loc     = f" ({data['location']})" if data.get("location") else ""
+    return f"\n> **[🗣️ 씬]** *{speaker}의 말이 이동 후 {target}에게 전달됐다{loc}*\n"
 
 
 def _fmt_appearance(data: dict) -> str:
@@ -450,6 +464,8 @@ def render_markdown(
             md += _fmt_dialogue(payload, index, inc)
         elif kind == "agent_move":
             md += _fmt_move(payload)
+        elif kind == "post_move_delivery":
+            md += _fmt_post_move_delivery(payload, index)
         elif kind == "appearance_update":
             md += _fmt_appearance(payload)
         elif kind == "system_intervention":

@@ -70,6 +70,16 @@ export function connectSSE() {
     }
   });
 
+  // 이동 후 보강 배달(엔진 runner `_deliver_post_move`) — 걸어가며 부른 상대에게
+  // 도착지에서 말이 닿은 경우. turn_complete의 new_edges는 이동 전 기준이라 이 edge가
+  // 빠져 있으므로 여기서 관계 그래프에만 더한다(피드 카드는 대사 자체가 이미 있음).
+  es.addEventListener('post_move_delivery', e => {
+    const d = JSON.parse(e.data);
+    d.new_edges?.forEach(edge =>
+      addD3Edge(edge.source, edge.target, edge.emotion || (edge.meta || {}).emotion || 'neutral')
+    );
+  });
+
   es.addEventListener('turn_error', e => {
     const d = JSON.parse(e.data);
     // payload의 turn/speaker/error를 그대로 누적한다 — 실행이 막힐 때 원인을 볼 수 있는

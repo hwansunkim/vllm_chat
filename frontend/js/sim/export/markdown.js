@@ -121,7 +121,7 @@ async function fetchAll() {
 // 구분할 필드가 없고 스크립트로 외모를 바꾸는 경우 자체가 드물어 다수 사례(턴,
 // 대사 후)로 고정해 둔다 — 알려진 한계.
 const PRE_DIALOGUE_EVENT_TYPES  = new Set(['scene_event', 'director_call', 'system_intervention', 'world_event']);
-const POST_DIALOGUE_EVENT_TYPES = new Set(['appearance_update', 'agent_move', 'meeting_update', 'infection_update', 'time_jump', 'agent_status_change']);
+const POST_DIALOGUE_EVENT_TYPES = new Set(['appearance_update', 'agent_move', 'meeting_update', 'infection_update', 'time_jump', 'agent_status_change', 'post_move_delivery']);
 
 function streamPhase(kind, payload) {
   if (kind === 'dialogue') return 0;
@@ -137,7 +137,9 @@ function streamPhase(kind, payload) {
 function buildStream(log, events, checks) {
   // Collect active event types based on checkboxes
   const wantTypes = new Set();
-  if (checks.move)         wantTypes.add('agent_move');
+  // post_move_delivery = 이동 후 보강 배달. 이동의 결과라 이동 토글에 묶는다
+  // (ABM/export/markdown.py와 동일).
+  if (checks.move)         { wantTypes.add('agent_move'); wantTypes.add('post_move_delivery'); }
   if (checks.appearance)   wantTypes.add('appearance_update');
   if (checks.intervention) { wantTypes.add('system_intervention'); wantTypes.add('world_event'); }
   if (checks.infection)    wantTypes.add('infection_update');
@@ -257,6 +259,17 @@ function fmtInfection(data) {
 }
 
 /**
+ * 이동 후 보강 배달 한 줄 — 걸어가며 한 말이 도착지의 직접 타깃에게 닿았다.
+ * ABM/export/markdown.py의 _fmt_post_move_delivery와 글자 단위로 같아야 한다.
+ */
+function fmtPostMoveDelivery(data) {
+  const speaker = data.speaker_display || agentLabel(data.speaker);
+  const target  = data.target_display  || agentLabel(data.target);
+  const loc     = data.location ? ` (${data.location})` : '';
+  return `\n> **[🗣️ 씬]** *${speaker}의 말이 이동 후 ${target}에게 전달됐다${loc}*\n`;
+}
+
+/**
  * 만남 lock 한 줄. 문구는 피드 카드와 같은 meetingNarration을 쓴다.
  * 모르는 status(구버전/미래 값)면 빈 문자열이라 아무것도 안 실린다.
  */
@@ -371,6 +384,7 @@ function _buildMarkdown(log, events, statusStr, checks) {
         case 'scene_event':         md += fmtSceneEvent(item.payload); break;
         case 'infection_update':    md += fmtInfection(item.payload); break;
         case 'meeting_update':      md += fmtMeeting(item.payload); break;
+        case 'post_move_delivery':  md += fmtPostMoveDelivery(item.payload); break;
         case 'agent_status_change': md += fmtStatus(item.payload); break;
       }
     }

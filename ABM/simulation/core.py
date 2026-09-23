@@ -38,6 +38,7 @@ _PERSIST_EVENTS: frozenset[str] = frozenset({
     "infection_update",
     "time_jump",
     "agent_status_change",
+    "post_move_delivery",
 })
 
 # 시작 요일 키(프론트/스키마와 동일) → 표시 라벨. 인덱스 = 월요일 기준 0~6.
