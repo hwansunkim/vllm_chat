@@ -82,7 +82,7 @@ export async function startSimulation() {
       idle_minutes_schedule:  (sim.idle_minutes_schedule?.length ? sim.idle_minutes_schedule : DEFAULT_IDLE_MINUTES_SCHEDULE),
       max_scene_jump_minutes:   sim.max_scene_jump_minutes   ?? 45,
       max_daytime_jump_minutes: sim.max_daytime_jump_minutes ?? 180,
-      max_silence_waves:      sim.max_silence_waves  ?? 3,
+      starvation_waves:       sim.starvation_waves   ?? 3,
       server_id:              sim.server_id || null,
       temperature:            normalizeTemperature(sim.temperature),
       system_agent:           sim.system_agent,

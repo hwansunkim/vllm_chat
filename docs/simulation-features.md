@@ -217,9 +217,10 @@ zone은 순수 위치 개념.)
     미적용 — 온 가족이 잠든 밤이 45분씩 갈리지 않도록.
   - (2) 밤(22~06시) 아니고 집에 남은 사람 있음 → `max_daytime_jump_minutes` (학원·저녁
     재집결 장면 안 건너뜀). 집이 완전히 비면 미적용.
-- **강제 재투입 시간 점프** (`mode: "idle"`) — **전원이 고립 독백 중(휴면)**이면,
-  LLM 분류 대신 `idle_minutes_schedule`로 시간을 크게 건너뛴다 (회차가 늘수록 다음
-  값, 끝에서 고정). **이 점프도 (0) 예정 이벤트 시각은 넘기지 않는다** — "가족이
+- **강제 재투입 시간 점프** (`mode: "idle"`) — **전원 침묵이 2회 연속**이면(또는 활성
+  에이전트 전원이 상태에 묶였으면), LLM 분류 대신 `idle_minutes_schedule`로 시간을
+  크게 건너뛴다 (2회째에 첫 값, 회차가 늘수록 다음 값, 끝에서 고정). 1회째 침묵은
+  대화가 잠깐 끊긴 것일 수 있으므로 일반 시간 경로(LLM/카테고리)를 탄다. **이 점프도 (0) 예정 이벤트 시각은 넘기지 않는다** — "가족이
   각자 나간 낮"에 하교·학원이 통째로 스킵되던 버그. "흩어진 하루"가 15~30분 조각
   점프로 `max_waves`까지 갈리지도 않는다.
 - **`_placement_summary`** — 시간 추론 프롬프트의 `[인물 배치]` 한 줄. 화자들이
@@ -231,24 +232,29 @@ zone은 순수 위치 개념.)
 raw_minutes, minutes, clamp_reason, end_time_str}`. `mode`는 `category` / `ai` / `idle`.
 fixed 모드엔 안 나옴. `turn_complete`·로그의 `time_str`이 실제 시각.
 
-### 고립 에이전트 휴면 (dormancy)
+### 재투입 — 소외 재투입 + 전원 침묵 (구 "고립 휴면" 대체)
 
-대화가 비면 전원을 재투입해 `max_waves`까지 계속 돈다 (구 `early_stop_enabled`
-플래그는 제거 — "대화가 시들해짐"으로는 더 이상 멈추지 않는다). 단 **실제 소통 없이
-혼잣말만 `max_silence_waves`회 연속**한 에이전트는 "휴면"으로 보고 밀집 재투입에서
-뺀다 (`_solo_streak` — `runner.py`). 스트릭이 0으로 리셋(= 깨어남)되는 경우:
+대화가 비어도 `max_waves`까지 계속 돈다 (구 `early_stop_enabled` 플래그는 제거 —
+"대화가 시들해짐"으로는 더 이상 멈추지 않는다). 재투입 규칙은 두 가지다 (`runner.py`):
 
-- 내가 누군가에게 말이 닿았다 / 이번 wave 에 누군가의 말·씬을 받았다
-- 곁에 상대가 있다(`_has_reachable_partner`) — 단 **위치를 쓰는 시나리오**면
-  이번 wave 에 방 어딘가에서 실제로 대화가 오갔을 때만. 곁에 사람이 있어도
-  **아무도 서로 말을 안 걸면**(각자 독백·취침) 스트릭이 쌓인다 — "한 방에서
-  잠든 부부"가 재투입에서 안 빠져 밤이 45분씩 갈리던 버그.
+- **소외 재투입 (starvation reinject)** — 누군가 대화가 오가 next_wave가 비어있지 않은
+  wave에도, **마지막으로 턴을 받은 지 `starvation_waves` wave 이상** 지난 에이전트를
+  빈 incoming `[]`으로 next_wave에 추가한다. 대상: 활성 · 이미 next_wave에 없음 ·
+  상태(sleep·busy·traveling) 아님. 기준은 `_last_turn_wave[key]`(disp_wave 축, 턴을
+  받으면 성공 여부와 무관하게 갱신). 한 번도 턴을 받지 않은 에이전트는 run 시작
+  wave(`_wave_base`)를 기준으로 간주 — `/resume` 직후 전원이 한꺼번에 쏟아지지
+  않는다. 예: W0에 턴을 받고 이후 못 받으면 W1~W3을 쉬고 W4에 턴(`starvation_waves=3`).
+  배경: 옛 "고립 휴면"은 누구를 **빼는지**만 정하고 재투입은 전원 침묵 때만 일어나서,
+  거실에서 가족이 계속 떠드는 동안 혼자 드레스룸에 간 아빠가 W10~W17 내내 턴을
+  못 받았다(case1). 관전 이벤트 `starvation_reinject {wave, agents, waves_since}` —
+  엔진 스케줄링 신호라 영속하지 않는다(재투입된 턴 자체는 정상 기록).
+- **전원 침묵** (next_wave가 빔) — 그 순간 활성이고 상태에 안 묶인 에이전트 **전원**을
+  한 번 재투입한다. 연속 전원 침묵 횟수(`silence_count`)가 1이면 일반 시간 경로,
+  **2 이상이면 위 `idle` 시간 점프** — 가족이 각자 흩어진 낮·각자 잠든 밤이 몇 분씩
+  갈리지 않는다. 전원이 상태에 묶였으면 가장 먼저 풀리는 한 명만 재투입하고 그 해제
+  시점까지 점프한다(아래 에이전트 상태 절).
 
-누군가 이동·이벤트·디렉터 개입으로 그에게 도달하면 깨어난다. 전원 휴면이면 위
-`idle` 시간 점프(예정 이벤트 시각은 넘기지 않음) + 전원 재투입. 위치 미사용
-시나리오는 `_has_reachable_partner`가 항상 True라 예전처럼 이 로직이 발동하지 않는다.
-
-**진행 불가 백스톱**: 연속으로 성공한 발화가 하나도 없는 wave가 `max(6, max_silence_waves×2)`회
+**진행 불가 백스톱**: 연속으로 성공한 발화가 하나도 없는 wave가 `max(6, starvation_waves×2)`회
 이어지면(LLM 서버 다운, 전부 파싱 실패 등) `end_reason="no_progress"`로 종료 —
 `max_waves`까지 헛되이 두들기지 않는다. 구 `early_stop`이 암묵적으로 하던 보호다.
 
@@ -259,7 +265,7 @@ fixed 모드엔 안 나옴. `turn_complete`·로그의 `time_str`이 실제 시�
 
 ## 7. 에이전트 상태 (수면·이동) — `status.py`
 
-**배경** — 재투입(위 dormancy)이 에이전트의 상태를 전혀 모른 채 무조건 다시 초대해서,
+**배경** — 재투입(위 전원 침묵 처리)이 에이전트의 상태를 전혀 모른 채 무조건 다시 초대해서,
 ① 이미 잠든 에이전트가 침묵 사이클마다 잠꼬대를 반복하거나 ② zone 경계를 건너는
 이동(`location.py::_expand_zone_edges`의 "구역 안 어디서든 1홉 탈출" 설계상 대부분
 1 wave에 끝난다)이 순간이동처럼 보이는 문제가 있었다. `_StatusMixin`이 최소한의
@@ -348,10 +354,9 @@ fixed 모드엔 안 나옴. `turn_complete`·로그의 `time_str`이 실제 시�
 관측성 덕에 처음으로 눈에 보였다(도입 전엔 안 보였을 뿐 같은 구조였다).
 사용자 제안대로 고쳤다: 이제 그 시점에 **실제로 풀리는 에이전트 한 명만**
 다시 초대하고, 아직 안 풀린 나머지는 각자의 해제 시점에 다음 wave 상단의
-만료 처리(`_expire_agent_states`)로 자연히 합류한다. 상태 없이 순수하게
-고립된(대화 상대가 없어 `max_silence_waves`를 넘긴) 에이전트에 대한 기존
-"전원 재투입" 동작은 그대로 보존된다(`state_categories`를 안 쓰는 시나리오는
-`state_locked`가 항상 빈 집합이라 완전히 이전과 동일하게 동작).
+만료 처리(`_expire_agent_states`)로 자연히 합류한다. 상태에 안 묶인
+에이전트가 한 명이라도 있으면 그들 전원을 재투입하는 "전원 침묵" 동작은 그대로다
+(`state_categories`를 안 쓰는 시나리오는 `state_locked`가 항상 빈 집합).
 
 **해제-시점 점프의 "전원" 미강제 — 사용자 실측(6번째 사안)** — 위 항목의
 점프 크기 계산(`_earliest_status_clear`) 자체가, 활성 에이전트 **전원**이
@@ -435,7 +440,7 @@ until_time_str}`, label/minutes/until_time_str는 enter에만)를 emit하고, �
    `now_elapsed`를 계산해 넘긴다.
 2. **재선언 없으면 즉시 해제** — `enter_state` 필드를 "이번 턴에도 이 상태를
    유지하겠다"는 신호로 재해석한다. 잠긴(locked) 에이전트가 턴을 받는 경로는
-   직접 지목·예약 이벤트·디렉터 개입뿐이다(순수 휴면 재투입에서는 이미
+   직접 지목·예약 이벤트·디렉터 개입뿐이다(소외·전원 침묵 재투입에서는 이미
    제외됨) — 그래서 턴을 받았다는 것 자체가 이미 "누군가/뭔가 개입했다"는
    뜻이다. 그 턴의 출력에 `enter_state`가 없으면(null) 그 자리에서 즉시
    상태를 해제하고 `agent_status_change`(action: "clear")를 emit한다
@@ -611,7 +616,7 @@ disease_name}` — `cause` = `event`(시드, S→E) / `transmission`(접촉 전�
 
 | type | 동작 |
 |---|---|
-| `system_message` | `targets`의 memory에 `[시스템] {message}` 주입 + **이번 wave의 `current_wave`에 강제 편입**(`notified`). 안 그러면 "16:30. 학원 갈 시간이다" 가 memory에는 들어가도 지난 wave 라우팅으로 이미 정해진 이번 wave 발화 후보 목록엔 없어서, 그 사람이 자연히 다시 초대될 때까지(누가 부르거나 전원 휴면 강제 재투입) 반응이 미뤄질 수 있었다 — 예정 알림은 그 즉시 반응 기회를 보장해야 실제 발화 시점이 예정 시각 근처에 머문다 |
+| `system_message` | `targets`의 memory에 `[시스템] {message}` 주입 + **이번 wave의 `current_wave`에 강제 편입**(`notified`). 안 그러면 "16:30. 학원 갈 시간이다" 가 memory에는 들어가도 지난 wave 라우팅으로 이미 정해진 이번 wave 발화 후보 목록엔 없어서, 그 사람이 자연히 다시 초대될 때까지(누가 부르거나 소외·전원 침묵 재투입) 반응이 미뤄질 수 있었다 — 예정 알림은 그 즉시 반응 기회를 보장해야 실제 발화 시점이 예정 시각 근처에 머문다 |
 | `agent_enter` | `active_agents.add(agent)`, 알림 주입, `current_wave`에 추가 (`entrant`) — `system_message`의 `notified`와 같은 강제 편입 메커니즘 |
 | `agent_exit` | `active_agents.discard(agent)`, `_pending_wave`에서 제거, 알림 주입. 이벤트 실행 후 `current_wave`를 `active_agents`로 필터 → 나간 인물은 **그 wave부터** 발화 안 함 |
 | `infect_agent` | `_set_infected(agent, wave, "event", at_minutes=…)` — 환자 0번 시드 (감염 모델 꺼져 있으면 무시). 시각 앵커는 runner가 스탬프한 `at_minutes`(= `_current_elapsed_minutes(run_wave)`); disp_wave를 환산하면 재개 후 fixed 모드에서 두 번 세어 밀린다. `message`는 관전용, memory엔 안 감 |

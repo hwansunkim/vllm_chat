@@ -82,7 +82,7 @@ body
 | 시나리오 | `agents[]`, `background`, `start_agent`, `max_waves`, `target_duration_minutes`, `extra_fields[]`, `events[]` |
 | 위치 | `location_graph[]`, `perception_mode` (`targeted`\|`spatial`) |
 | 시간 | `time_mode`, `time_per_wave`, `time_categories[]`, `time_estimation_mode`, `idle_minutes_schedule[]`, `max_scene_jump_minutes`, `max_daytime_jump_minutes`, `sim_start_time`, `sim_start_weekday` |
-| 휴면 | `max_silence_waves` (고립 휴면 기준) |
+| 소외 재투입 | `starvation_waves` (소외 재투입 간격(wave), input `#sim-starvation-waves`. 구 `max_silence_waves`는 로드 시 옮겨 읽음) |
 | 에이전트 상태 | `state_categories[]`(수면·개인 용무, []=off), `zone_travel_min_minutes`, `zone_travel_max_minutes`(zone 경계 이동 소요 시간) |
 | LLM | `server_id`, `temperature`, `token_limit`, `llm_max_tokens`, `lang_fix_*` |
 | 하위 모델 | `system_agent{}`, `infection_model{}` |

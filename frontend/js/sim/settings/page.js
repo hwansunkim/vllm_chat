@@ -71,8 +71,8 @@ export function renderSettingsPage() {
   if (maxSceneJumpEl) maxSceneJumpEl.value = sim.max_scene_jump_minutes ?? 45;
   const maxDaytimeJumpEl = document.getElementById('sim-max-daytime-jump');
   if (maxDaytimeJumpEl) maxDaytimeJumpEl.value = sim.max_daytime_jump_minutes ?? 180;
-  const maxSilenceEl = document.getElementById('sim-max-silence-waves');
-  if (maxSilenceEl) maxSilenceEl.value = sim.max_silence_waves ?? 3;
+  const starvationEl = document.getElementById('sim-starvation-waves');
+  if (starvationEl) starvationEl.value = sim.starvation_waves ?? 3;
   renderStateCategories();
   const zoneTravelMinEl = document.getElementById('sim-zone-travel-min');
   if (zoneTravelMinEl) zoneTravelMinEl.value = sim.zone_travel_min_minutes ?? 10;
@@ -135,7 +135,7 @@ export function readConfigFromUI() {
   const _daytimeJump = document.getElementById('sim-max-daytime-jump')?.value;
   sim.max_daytime_jump_minutes = (_daytimeJump == null || _daytimeJump === '')
     ? 180 : Math.max(0, parseInt(_daytimeJump) || 0);
-  sim.max_silence_waves  = parseInt(document.getElementById('sim-max-silence-waves')?.value)  || 3;
+  sim.starvation_waves   = Math.max(1, parseInt(document.getElementById('sim-starvation-waves')?.value) || 3);
   sim.state_categories   = readStateCategories();
   // zone 이동 시간도 점프 상한과 같은 규칙 — 0이 유효값("기능 끔")이므로
   // `|| 기본값`을 쓰면 안 된다.

@@ -175,13 +175,14 @@ def continue_simulation(cfg: SimContinueConfig):
 
             config_json = _sim.get("config_json") or "{}"
 
-            # 원래 실행의 max_silence_waves 를 복원해 run()에 다시 넘긴다.
+            # 원래 실행의 starvation_waves 를 복원해 run()에 다시 넘긴다
+            # (옛 config_json 의 max_silence_waves 는 스키마 validator 가 옮겨 읽는다).
             # /continue 요청 본문(SimContinueConfig)에는 이 필드가 없어서,
             # 이어서 실행하면 항상 기본값으로 돌던 버그가 있었다.
-            max_silence_waves = 3
+            starvation_waves = 3
             try:
                 _start_cfg = SimStartConfig(**json.loads(config_json))
-                max_silence_waves = _start_cfg.max_silence_waves
+                starvation_waves = _start_cfg.starvation_waves
             except Exception:
                 pass  # 스냅샷이 없거나 파싱 실패 → 방어적으로 기본값 유지
 
@@ -206,7 +207,7 @@ def continue_simulation(cfg: SimContinueConfig):
                 step_delay=cfg.step_delay,
                 events=[e.model_dump() for e in timed_only],
                 resume_wave=pending,
-                max_silence_waves=max_silence_waves,
+                starvation_waves=starvation_waves,
                 target_duration_minutes=cfg.target_duration_minutes,
             )
             finalize_run(db, run_sim_id, stop_ev, sim_obj, eq)

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class AgentConfig(BaseModel):
@@ -314,7 +314,7 @@ class SimStartConfig(BaseModel):
     max_scene_jump_minutes:   int            = 45   # 실내 한 곳에 2명+ 동석 발화 중일 때의 점프 상한
     max_daytime_jump_minutes: int            = 180  # 밤(22~06시)이 아니고 집에 남은 사람이 있을 때의 점프 상한
     # ── 에이전트 상태(수면·이동 등) ────────────────────────────────────────────
-    # 재투입(휴면 처리)이 에이전트의 상태를 전혀 모른 채 무조건 다시 초대해서,
+    # 재투입(전원 침묵 처리)이 에이전트의 상태를 전혀 모른 채 무조건 다시 초대해서,
     # 이미 잠든 에이전트가 매 침묵 사이클마다 잠꼬대를 반복하거나 zone 경계를
     # 건너는 이동이 1 wave 만에 "순간이동"하는 문제를 막는다(ABM/simulation/status.py).
     # []면(빈 리스트, 생략과 다름) 자기-선언형 상태 기능 자체가 꺼진다 — enter_state
@@ -325,12 +325,15 @@ class SimStartConfig(BaseModel):
     # 거실→안방)에는 적용되지 않는다(기존처럼 즉시). 둘 다 0이면 기능 비활성.
     zone_travel_min_minutes: int = DEFAULT_ZONE_TRAVEL_MIN_MINUTES
     zone_travel_max_minutes: int = DEFAULT_ZONE_TRAVEL_MAX_MINUTES
-    # 고립 독백을 이 횟수 연속하면 '휴면'으로 보고 밀집 재투입에서 제외 +
-    # 전원 휴면 시 idle 시간 점프 스케줄의 인덱스로도 쓰인다. (구 early_stop_enabled
+    # 소외 재투입 간격(wave). 다른 에이전트들이 대화 중이어도, 마지막으로 턴을
+    # 받은 지 이 wave 수 이상 지난(상태에 묶이지 않은) 에이전트를 빈 incoming 으로
+    # 재투입한다 — 혼자 다른 방에 간 에이전트가 영영 턴을 못 받는 starvation 방지.
+    # 진행 불가 백스톱 한도 max(6, 2×이 값) 에도 쓰인다. 구 이름 max_silence_waves
+    # (고립 휴면 기준)는 아래 validator 가 옮겨 읽는다. (구 early_stop_enabled
     # 플래그는 제거됐다 — 대화가 시들해지는 것으로는 더 이상 실행을 종료하지 않고,
     # 시간을 건너뛰며 계속한다. 종료는 max_waves / target_duration_minutes /
     # no_agents / no_progress / stopped.)
-    max_silence_waves:      int              = 3
+    starvation_waves:       int              = 3
     # 목표 기간(분). None = 미사용. 설정 시 "시뮬레이션 내 경과 시간이 이 값에 도달"이
     # 주 종료 신호가 되고, max_waves는 상한 안전장치로 남는다 — 둘 중 먼저 도달하는
     # 쪽에서 정상 종료. 시간 개념이 비활성(time_mode="fixed" AND time_per_wave=0)이면
@@ -342,6 +345,26 @@ class SimStartConfig(BaseModel):
     system_agent:           SystemAgentConfig = SystemAgentConfig()
     # 결정론적 감염병 모델. enabled=False(기본)면 상태 갱신도 프롬프트 주입도 전혀 일어나지 않는다.
     infection_model:        InfectionModelConfig = InfectionModelConfig()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_max_silence_waves(cls, data):
+        """하위 호환: 옛 시나리오/DB config_json 의 `max_silence_waves`(고립 휴면
+        기준)를 `starvation_waves` 로 옮겨 읽는다. 둘 다 있으면 새 이름이 이긴다.
+        옛 키는 버린다 — 모델에 없는 필드라 어차피 무시되지만 명시적으로 정리."""
+        if isinstance(data, dict) and "max_silence_waves" in data:
+            data = dict(data)
+            legacy = data.pop("max_silence_waves")
+            if data.get("starvation_waves") is None and legacy is not None:
+                data["starvation_waves"] = legacy
+        return data
+
+    @field_validator("starvation_waves")
+    @classmethod
+    def _clamp_starvation_waves(cls, v: int) -> int:
+        # 엔진도 max(1, …)로 막지만, 저장된 옛 값(0 등)으로 로드가 실패하지 않도록
+        # 거부 대신 clamp 한다.
+        return max(1, int(v))
 
     @field_validator("time_categories")
     @classmethod

@@ -186,14 +186,12 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
 
         self._last_spoke_wave: dict[str, int] = {}
 
-        # {에이전트 key: 연속으로 "혼잣말만 하고 대화 상대도 없던" wave 수}.
-        # 대화가 비어 전원을 재투입할 때, 회사·학교로 흩어져 서로 도달 불가능한
-        # 에이전트가 같은 독백을 무한 반복하는 것을 막는다. 이 값이 max_silence_waves
-        # 이상이면 '휴면'으로 보고 밀집 재투입에서 제외한다 — 누군가 그에게 도달하면
-        # (이동·이벤트·디렉터 개입) 즉시 0으로 리셋되어 깨어난다.
-        # runner._RunnerMixin.run() 가 유일한 소비자이며 파생 상태라 재개 스냅샷에
-        # 넣지 않는다.
-        self._solo_streak: dict[str, int] = {}
+        # {에이전트 key: 마지막으로 턴을 받은 disp_wave}. 소외 재투입(starvation
+        # reinject)의 기준 — runner 가 턴을 준 직후(성공 여부 무관) 갱신한다.
+        # `_last_spoke_wave`(agent.name 키, 발화 성공 시에만 — 디렉터 침묵 감지용)와
+        # 키·의미가 달라 따로 둔다. 파생 상태라 재개 스냅샷에 넣지 않는다 — 재개
+        # 직후 비어 있으면 run() 이 "run 시작 wave" 를 기준으로 간주한다.
+        self._last_turn_wave: dict[str, int] = {}
 
         # at_time(시계 시각) 트리거 이벤트. run()이 events 인자에서 채운다:
         # [{"hhmm": 자정기준분, "days": {요일idx}|None, "event": dict, "next_at": 경과분|None}].

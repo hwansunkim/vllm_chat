@@ -196,9 +196,10 @@ def resume_simulation(run_id: str):
                 step_delay=cfg.step_delay,
                 events=[e.model_dump() for e in timed_only],
                 resume_wave=saved_pending,
-                # 재개 시 max_silence_waves 유실 방지 — cfg 는 이미 복원된
-                # SimStartConfig 라 필드가 존재한다.
-                max_silence_waves=cfg.max_silence_waves,
+                # 재개 시 starvation_waves 유실 방지 — cfg 는 이미 복원된
+                # SimStartConfig 라 필드가 존재한다(옛 config_json 의
+                # max_silence_waves 는 스키마 validator 가 옮겨 읽는다).
+                starvation_waves=cfg.starvation_waves,
                 target_duration_minutes=cfg.target_duration_minutes,
             )
             finalize_run(new_db, run_sim_id, stop_ev, sim, eq)

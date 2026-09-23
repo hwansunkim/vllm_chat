@@ -344,9 +344,9 @@
             </select>
           </div>
           <div class="sim-option-row">
-            <label>고립 휴면 기준<span class="sim-help" aria-hidden="true" data-tooltip="대화 상대 없이 혼잣말만 이 횟수 연속하면 그 에이전트를 매 wave 재투입에서 뺍니다(휴면). 전원이 휴면이면 시간을 크게 건너뛰고 전원을 다시 깨웁니다 — 가족이 각자 회사·학교로 흩어진 시간대를 빠르게 지나갑니다. 대화가 시들해지는 것만으로는 시뮬레이션이 끝나지 않습니다(종료는 최대 wave 수 · 목표 기간 도달 시).">?</span></label>
+            <label>소외 재투입 간격(wave)<span class="sim-help" aria-hidden="true" data-tooltip="다른 에이전트들이 대화 중이어도, 마지막으로 턴을 받은 지 이 wave 수 이상 지난 에이전트에게 턴을 한 번 줍니다 — 혼자 다른 방에 간 사람이 영영 말할 기회를 못 얻는 것을 막습니다(수면·용무·이동 등 상태 중인 에이전트는 제외). 전원이 침묵하면 상태에 묶이지 않은 전원을 다시 초대하고, 2회 연속 침묵부터는 시간을 크게 건너뜁니다. 대화가 시들해지는 것만으로는 시뮬레이션이 끝나지 않습니다(종료는 최대 wave 수 · 목표 기간 도달 시).">?</span></label>
             <div class="sim-lang-fix-row">
-              <input type="number" id="sim-max-silence-waves" value="3" min="1" max="20" step="1"
+              <input type="number" id="sim-starvation-waves" value="3" min="1" max="20" step="1"
                      class="sim-lang-fix-count"/>
               <span class="sim-lang-fix-unit">wave 연속</span>
             </div>
@@ -390,7 +390,7 @@
     <!-- ── 에이전트 상태(수면·이동 등) ───────────────────────────────────── -->
     <div class="sim-settings-section" data-section="agent-state" data-sec-icon="💤" data-sec-label="에이전트 상태">
       <div class="sim-settings-section-title">
-        <span class="sim-sec-title-text">💤 에이전트 상태<span class="sim-help" aria-hidden="true" data-tooltip="재투입(휴면 처리)이 에이전트의 상태를 몰라 무조건 다시 초대하면, 자던 에이전트가 매번 잠꼬대를 반복하거나 zone 경계 이동이 순간이동처럼 보입니다. 여기서 설정한 상태 중에는 재투입 후보에서 빠집니다 — 단 같은 방 사람이 상태를 알고도 직접 말을 걸면 정상적으로 전달됩니다.">?</span></span>
+        <span class="sim-sec-title-text">💤 에이전트 상태<span class="sim-help" aria-hidden="true" data-tooltip="재투입(전원 침묵 처리)이 에이전트의 상태를 몰라 무조건 다시 초대하면, 자던 에이전트가 매번 잠꼬대를 반복하거나 zone 경계 이동이 순간이동처럼 보입니다. 여기서 설정한 상태 중에는 재투입 후보에서 빠집니다 — 단 같은 방 사람이 상태를 알고도 직접 말을 걸면 정상적으로 전달됩니다.">?</span></span>
         <span class="sim-sec-badge" data-sec-badge="agent-state"></span>
         <button type="button" class="sim-sec-toggle" data-sec-toggle="agent-state" aria-expanded="false" title="섹션 접기/펼치기">▾</button>
       </div>

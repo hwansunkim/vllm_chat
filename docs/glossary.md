@@ -163,7 +163,7 @@
 | **배경 설명** | `background` | 📋 | 모든 에이전트 공통 장면 전제 (`#sim-background`) | `settings/textareas.js` |
 | **에이전트** | `agents` | 👤 | 등장인물 카드: 페르소나·위치·관계·temperature·초기 등장 | `settings/agents.js` |
 | **실행 설정** | `run` | 🚀 | 시작 에이전트, 최대 wave, 목표 기간, LLM 서버, temperature | `settings/page.js` |
-| **시간 설정** | `time` | ⏱ | 시작 요일·시각, wave당 시간, 시간 모드(고정/가변), 고립 휴면 기준, 가변 시간 카테고리 | `settings/page.js`, `settings/time-categories.js` |
+| **시간 설정** | `time` | ⏱ | 시작 요일·시각, wave당 시간, 시간 모드(고정/가변), 소외 재투입 간격, 가변 시간 카테고리 | `settings/page.js`, `settings/time-categories.js` |
 | **생성 옵션** | `tuning` | ⚙ | step delay, token limit, LLM max tokens, 언어 교잡 수정 | `settings/page.js` |
 | **출력 정의** | `output` | 🏷 | 출력 필드(extra_fields), **엔진 계약 미리보기**, 출력 계약 오버라이드 | `settings/output-fields.js`, `settings/contract-preview.js` |
 | **위치 그래프** | `world` | 🗺 | 장소 노드·연결·zone·외부공간, **공간 기반 인지(엿듣기)** 토글 | `settings/location-graph.js` |
@@ -328,7 +328,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 | Canonical (믹스인) | 파일 | 핵심 메서드 | 담당 |
 |---|---|---|---|
 | **코어** | `core.py` | `__init__`, `_emit`, `_current_elapsed_minutes`, `export_agent_state` / `restore_agent_state`, `_apply_engine_contract` | 상태 보유, 이벤트 emit, 시각 계산, 재개용 스냅샷, 계약 주입 |
-| **러너 믹스인** | `runner.py` | `run()` | **Wave 기반 BFS 루프**. 발화 라우팅, 이동·외모 적용, 감염 처리, 시간 누적, 휴면/재투입, 목표 기간·진행 불가 판정. 가변 시간 분류/클램프 |
+| **러너 믹스인** | `runner.py` | `run()` | **Wave 기반 BFS 루프**. 발화 라우팅, 이동·외모 적용, 감염 처리, 시간 누적, 소외·전원 침묵 재투입, 목표 기간·진행 불가 판정. 가변 시간 분류/클램프 |
 | **스텝 믹스인** | `step.py` | `_step_agent`, `_assemble_agent_prompt` | 단일 에이전트 한 턴: 프롬프트 조립 (**단일 진실 원천**), 메모리 압축 트리거, 토큰 트림, 언어 교잡 수정, LLM 호출 |
 | **턴 믹스인** | `turn.py` | `_apply_turn_result` | LLM 응답 파싱 → `agent.memory` / `shared_log` / `edges` / DB 기록, `turn_complete` emit |
 | **타깃 믹스인** | `targets.py` | `_resolve_targets`, `_compute_wave_targets` | 발화 대상 해석: 같은 장소 필터, 관계 지도 기반 아는 사이/**낯선 이(stranger_N)** 분류, `all`/`self` 처리 |
@@ -407,8 +407,9 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 | **에이전트 memory** | 각 에이전트의 **개인** 컨텍스트 윈도우 (그 에이전트가 보고 들은 것만). `shared_log`와 다름 |
 | **start_agent (시작 에이전트)** | wave 0에서 첫 발화하는 에이전트 |
 | **initial_active / 초기 등장** | `false`면 비활성으로 시작 → `agent_enter` 이벤트로 등장 |
-| **휴면 (dormancy)** | 대화 상대 없이 혼잣말만 `max_silence_waves`회 연속한 에이전트를 밀집 재투입에서 제외 (`_solo_streak`). 누군가 도달하면 깨어남. 흩어진 가족이 무한 독백하는 것 방지. 전원 휴면이면 `idle` 시간 점프 + 전원 재투입 |
-| **진행 불가 (no_progress)** | 연속으로 성공한 발화가 하나도 없는 wave가 `max(6, max_silence_waves×2)`회 → 사실상 고장(LLM 서버 다운 등)으로 보고 종료. 구 `early_stop`이 암묵적으로 하던 보호 |
+| **소외 재투입 (starvation reinject)** | 대화가 오가는 wave에도 마지막 턴(`_last_turn_wave`, disp_wave) 이후 `starvation_waves` wave 이상 턴을 못 받은(상태에 안 묶인) 에이전트를 빈 incoming으로 재투입. 혼자 다른 방에 간 에이전트의 starvation 방지. 이벤트 `starvation_reinject`(비영속). 구 "고립 휴면(dormancy, `_solo_streak`/`max_silence_waves`)"을 대체 |
+| **전원 침묵 (all silent)** | next_wave가 빔 → 상태에 안 묶인 활성 에이전트 전원 재투입. 연속 1회째는 일반 시간 경로, 2회째부터 `idle` 시간 점프. 전원 상태 잠금이면 가장 먼저 풀리는 한 명만 + 해제 시점까지 점프 |
+| **진행 불가 (no_progress)** | 연속으로 성공한 발화가 하나도 없는 wave가 `max(6, starvation_waves×2)`회 → 사실상 고장(LLM 서버 다운 등)으로 보고 종료. 구 `early_stop`이 암묵적으로 하던 보호 |
 | **end_reason** | 종료 사유: `max_waves` / `target_duration` / `no_agents` / `no_progress` / `stopped`. (구 `early_stop_enabled` 플래그와 `silence` end_reason은 제거 — 대화가 시들해지는 것으로는 더 이상 종료하지 않고 시간을 건너뛴다) |
 | **목표 기간 (target_duration_minutes)** | 시뮬레이션 내 경과 시간이 이 값에 도달하면 정상 종료. `max_waves`와 함께 쓰면 먼저 도달하는 쪽 |
 | **step delay** | wave 사이 실제 대기 시간(초). 관전·서버 부하 조절용 |
@@ -526,7 +527,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 | **`meeting_update`** | 만남 lock 생성/해소 (start/arrived/cancelled) | 만남 카드 🤝 |
 | **`infection_update`** | 감염 상태 전이 (시드/전파/회복) | 감염 카드 🦠 + 뱃지 |
 | **`appearance_update`** | `update_appearance`로 외모 변경 | 외모 카드 👗 |
-| **`time_jump`** | 가변 시간 모드의 경과 분 결정. `mode`: `category`/`ai`/`idle`(전원 침묵·전원 휴면 강제 점프) | 시간 점프 카드 🕐 |
+| **`time_jump`** | 가변 시간 모드의 경과 분 결정. `mode`: `category`/`ai`/`idle`(연속 전원 침묵·전원 상태 잠금 강제 점프) | 시간 점프 카드 🕐 |
 | `compression_start` / `compression_done` | 에이전트 메모리 압축 | — |
 | **`simulation_end`** | 종료 (total_turns, end_reason: `max_waves`/`target_duration`/`no_agents`/`no_progress`/`stopped`) | "완료 \| 총 N턴 \| 사유" |
 | `error` | 연결 오류 (브라우저 스펙상 메시지 없음) | 연결 오류 누적 |

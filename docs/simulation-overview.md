@@ -132,7 +132,7 @@ SSE 큐·stop_event 생성, swap_event_queue
 - `status ∈ {done, stopped}` 이고 `sim_obj`가 살아 있어야 함 (아니면 409).
 - 메모리에 있는 `sim_obj`를 **그대로 이어 쓴다** (재조립 없음). 새 SSE 큐·새 `run_id`.
 - `fold_elapsed_and_reset_waves(sim_obj)` — 시계 연속성.
-- **원래 실행의 `config_json`에서** `max_silence_waves` 복원
+- **원래 실행의 `config_json`에서** `starvation_waves` 복원 (옛 `max_silence_waves`는 스키마 validator가 옮겨 읽음)
   (`SimContinueConfig`에는 없는 필드).
 - **wave 트리거 이벤트는 재생하지 않는다** — wave 0부터 다시 세므로 과거 wave의
   이벤트가 매번 다시 발동한다. **`at_time` 이벤트만** 재전달한다(이미 지난 시각은
@@ -155,7 +155,7 @@ agent_locations }` 반환(피드·감염 뱃지·위치 복원용). `agent_locat
 
 `/load`와 같은 재조립 + **바로 스레드 실행**. `wave_base_init = prior_cum`
 (직전 run들의 누적 wave), `elapsed_minutes_init`, `restore_agent_state`,
-`resume_wave = saved_pending`. `max_silence_waves`는 복원된 `SimStartConfig`에서.
+`resume_wave = saved_pending`. `starvation_waves`는 복원된 `SimStartConfig`에서.
 
 `/load`와 달리 조립이 **백그라운드 스레드**(비동기)에서 일어나 HTTP 응답 시점엔
 아직 위치가 준비돼 있지 않다 — 그래서 `restore_agent_state()` 직후 `run()` 시작
@@ -253,7 +253,7 @@ async def _gen():
 | `time_mode` / `time_per_wave` | `fixed` / 30 | 시간 모델 |
 | `time_categories[]` / `time_estimation_mode` | 4종 / `category` | 가변 시간 |
 | `max_scene_jump_minutes` / `max_daytime_jump_minutes` | 45 / 180 | 시간 점프 상한 |
-| `max_silence_waves` | 3 | 고립 휴면 기준 (연속 혼잣말 N회 → 밀집 재투입 제외) + idle 점프 인덱스 |
+| `starvation_waves` | 3 | 소외 재투입 간격 — 마지막 턴 이후 N wave 이상 턴을 못 받은 에이전트를 빈 incoming으로 재투입 (최소 1). 진행 불가 한도 `max(6, 2N)`. 구 이름 `max_silence_waves`는 읽을 때 옮겨짐 |
 | `server_id` / `temperature` | `null` / 0.7 | 시뮬레이션 기본 LLM |
 | `lang_fix_enabled` / `lang_fix_retries` | `true` / 2 | 언어 교잡 수정 |
 | `output_format_override` | `""` | 출력 계약 오버라이드 (opt-in). 빈 값 = 엔진 자동 생성 |

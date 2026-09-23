@@ -198,8 +198,8 @@ class _LocationMixin:
         """이 에이전트가 지금 대화할 수 있는 다른 활성 에이전트가 있는가.
 
         `_compute_wave_targets` 와 같은 판정(같은 장소 · 외부 공간 격리)을 쓴다.
-        위치를 안 쓰는 레거시 시나리오에서는 항상 전원이 보이므로 True →
-        휴면(dormancy) 로직이 절대 발동하지 않아 하위 호환이 완전하다.
+        위치를 안 쓰는 레거시 시나리오에서는 항상 전원이 보이므로 True.
+        디렉터의 [고립된 에이전트] 목록(system.py)이 쓴다.
         """
         known, strangers = self._compute_wave_targets(agent_key)
         return bool(known or strangers)

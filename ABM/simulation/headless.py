@@ -194,7 +194,7 @@ def run_config(
             max_waves=cfg.max_waves,
             step_delay=cfg.step_delay,
             events=[e.model_dump() for e in cfg.events],
-            max_silence_waves=cfg.max_silence_waves,
+            starvation_waves=cfg.starvation_waves,
             target_duration_minutes=cfg.target_duration_minutes,
         )
     finally:

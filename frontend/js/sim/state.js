@@ -379,11 +379,12 @@ export const sim = {
   // 동석 상황 기준으로 캡한다(schemas.py SimStartConfig와 동일 기본값). 0 = 캡 비활성.
   max_scene_jump_minutes:   45,   // 실내 한 곳에 2명+ 동석 발화 중일 때
   max_daytime_jump_minutes: 180,  // 밤(22~06시)이 아니고 집에 남은 사람이 있을 때
-  // 고립 독백을 이 횟수 연속하면 그 에이전트를 밀집 재투입에서 뺀다(휴면) +
-  // 전원 휴면 시 idle 시간 점프 스케줄 인덱스. 대화가 시들해지는 것만으로는
-  // 시뮬레이션이 끝나지 않는다(종료: max_waves / target_duration / no_agents / no_progress).
-  max_silence_waves:  3,
-  // 에이전트 상태(수면·이동 등) — 재투입(휴면 처리)이 상태를 모른 채 무조건
+  // 소외 재투입 간격(wave) — 대화가 오가는 중에도 마지막 턴 이후 이 wave 수 이상
+  // 지난(상태에 묶이지 않은) 에이전트를 빈 incoming 으로 재투입한다(구 max_silence_waves
+  // "고립 휴면 기준"을 대체). 대화가 시들해지는 것만으로는 시뮬레이션이 끝나지
+  // 않는다(종료: max_waves / target_duration / no_agents / no_progress).
+  starvation_waves:   3,
+  // 에이전트 상태(수면·이동 등) — 재투입(전원 침묵 처리)이 상태를 모른 채 무조건
   // 다시 초대해서 이미 잠든 에이전트가 잠꼬대를 반복하거나 zone 경계 이동이
   // 순간이동처럼 보이는 문제를 막는다. []면(생략과 다름) 자기-선언형 상태
   // 기능 자체가 꺼진다.

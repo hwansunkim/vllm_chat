@@ -65,7 +65,7 @@ class _RunnerMixin:
         step_delay:        float       = 1.0,
         events:            list        = None,
         resume_wave:       dict | None = None,
-        max_silence_waves: int         = 3,
+        starvation_waves:  int         = 3,
         target_duration_minutes: int | None = None,
     ):
         """Wave-based BFS + 시나리오 이벤트 실행.
@@ -74,9 +74,11 @@ class _RunnerMixin:
         에이전트 없음(``no_agents``) · 외부 중지(``stopped``) · **진행 불가**
         (``no_progress`` — 연속으로 성공한 발화가 하나도 없어 사실상 고장난 실행).
 
-        대화가 시들해지는 것 자체로는 멈추지 않는다 — 시간을 크게 건너뛰고
-        (``idle`` 시간 점프) 계속하며, 고립돼 혼잣말만 하는 에이전트는 밀집
-        재투입에서 빠진다(휴면). 예전의 ``early_stop_enabled`` 플래그는 제거됐다:
+        대화가 시들해지는 것 자체로는 멈추지 않는다 — 전원 침묵이면 상태에 안
+        묶인 활성 에이전트를 전원 재투입하고, 2회 연속 침묵부터는 시간을 크게
+        건너뛴다(``idle`` 시간 점프). 대화가 오가는 동안에도 ``starvation_waves``
+        wave 이상 턴을 못 받은 에이전트는 빈 incoming 으로 재투입한다(소외
+        재투입 — starvation 방지). 예전의 ``early_stop_enabled`` 플래그는 제거됐다:
         시간 개념이 있으면 "침묵"은 종료 신호가 아니라 "건너뛰기" 신호이고,
         시간 개념이 없는 순수 대화 시나리오는 더 이상 쓰이지 않는다.
         """
@@ -113,7 +115,12 @@ class _RunnerMixin:
         # 명시적 백스톱. 짧은 말이라도 뱉으면(any success) 0 으로 리셋되므로
         # "대화가 시들해짐"이 아니라 "정말 아무것도 생성 못 함(고장)"만 잡는다.
         dead_waves = 0
-        dead_wave_limit = max(6, max_silence_waves * 2)
+        starvation_waves = max(1, int(starvation_waves))
+        dead_wave_limit = max(6, starvation_waves * 2)
+        # 소외 재투입 기준점: 이번 run() 에서 아직 한 번도 턴을 받지 않은 에이전트는
+        # "run 시작 wave 에 턴을 받은 것"으로 간주한다 — /resume 직후(빈
+        # `_last_turn_wave`) 전원이 한꺼번에 소외 재투입으로 쏟아지지 않게.
+        starve_baseline = self._wave_base
 
         # ── 목표 기간(선택) ──────────────────────────────────────────────────
         # 시간 개념이 꺼져 있으면(fixed 모드 + time_per_wave=0) 목표 기간은 계산할
@@ -254,7 +261,7 @@ class _RunnerMixin:
             # 직전에 한 번 더 공통으로 거른다. 메시지 자체는 이미
             # `_execute_event`/디렉터가 각자 memory에 직접 적어뒀으므로(이 필터와
             # 무관하게 항상 전달됨), 여기서 막는 건 오직 "이번 wave에 턴을 받아
-            # 즉시 반응하는 것"뿐이다 — 도착 후 자연스러운 계기(직접 부름·휴면
+            # 즉시 반응하는 것"뿐이다 — 도착 후 자연스러운 계기(직접 부름·소외
             # 재투입 등)에 반응한다.
             travelers = {k for k in current_wave if self._agent_traveling(k, now_elapsed)}
             if travelers and len(travelers) < len(current_wave):
@@ -276,10 +283,6 @@ class _RunnerMixin:
                 "wave":   disp_wave,
                 "agents": list(current_wave.keys()),
             })
-
-            # 이번 wave 에 실제 incoming(누가 나에게 한 말/씬)을 받은 에이전트.
-            # 빈 리스트로 재투입된 경우는 제외 — 휴면 스트릭 리셋 판정에 쓴다.
-            got_incoming = {k for k, inc in current_wave.items() if inc}
 
             results: dict[str, dict] = {}
             # 풀 자체는 위에서 run() 전체용으로 한 번만 만든 걸 재사용한다(wave마다
@@ -314,6 +317,13 @@ class _RunnerMixin:
             turn_counter += len(current_wave)
             total_turns  += len(current_wave)
             self.completed_waves = run_wave + 1
+            # 소외 재투입 판정용 "마지막으로 턴을 받은 wave"(key 기준, disp_wave 축).
+            # 성공 여부와 무관하게 턴을 받았으면 갱신한다 — LLM 실패로 같은
+            # 에이전트가 매 wave 소외 재투입되는 폭주를 막는다. turn.py 의
+            # `_last_spoke_wave`(agent.name 키, 성공 시에만 — 디렉터 침묵 감지용)와는
+            # 의미가 달라 별도로 둔다.
+            for agent_key in current_wave:
+                self._last_turn_wave[agent_key] = disp_wave
 
             # 이번 wave **시작 시점**(이동 적용 전) 위치 스냅샷. 라우팅이 곧 이걸
             # 쓰고(지금 `_agent_location` 과 동일), 이번 wave 끝에서 다음 wave의
@@ -364,7 +374,7 @@ class _RunnerMixin:
 
             routed: dict[str, list] = {}
             # 이번 wave 에 발화한 에이전트가 실제로 누군가에게 말이 닿았는지
-            # (순수 혼잣말이면 False). 아래 휴면(dormancy) 스트릭 갱신에 쓴다.
+            # (순수 혼잣말이면 False). 아래 시간 추정(any_reached)·보강 배달에 쓴다.
             reached_someone: dict[str, bool] = {}
             # 화자별 1차(이동 전) 해석 결과 — 아래 이동 후 보강 배달이 중복을
             # 거르는 기준이다.
@@ -456,7 +466,7 @@ class _RunnerMixin:
                     # 본다. 지금 자기-선언형(수면·개인 용무) 상태 중이었다면
                     # 그 자리에서 바로 해제한다 — 사용자 설계 결정: 잠긴
                     # 에이전트가 턴을 받는 경로는 직접 지목·예약 이벤트·디렉터
-                    # 개입뿐이라(순수 휴면 재투입에서는 이미 제외됨), 턴을
+                    # 개입뿐이라(소외·전원 침묵 재투입에서는 이미 제외됨), 턴을
                     # 받았다는 것 자체가 이미 "누군가/뭔가 개입했다"는 뜻이고,
                     # 그때 상태를 유지할지는 그 순간의 판단에 맡기는 게 자연
                     # 스럽다(예: 엄마가 깨우면 실제로 일어나 세수하러 감).
@@ -617,7 +627,7 @@ class _RunnerMixin:
             # 걸어가며 부른 **직접 타깃**이 이동 후 같은 방이 됐으면 한 번 더
             # 배달한다(case1 v9 W26: 엄마가 화장실 문 앞으로 가며 "짱구야! 얼른
             # 씻고 나와"라고 했는데 이동 전 기준으로 짱구가 다른 방이라 폐기됨).
-            # 반드시 이동 루프 **뒤**(도착 위치가 필요), 휴면 스트릭·next_wave
+            # 반드시 이동 루프 **뒤**(도착 위치가 필요), any_reached·next_wave
             # 조립 **앞**(reached_someone·routed에 반영돼야 함)이다.
             self._deliver_post_move(
                 results, wave_start_location, first_resolved,
@@ -632,31 +642,9 @@ class _RunnerMixin:
             # 스냅샷이 틀리고 이름 노출·외부공간 격리도 안 됐던 구버전이라 제거했다.)
             self._apply_infection_wave(run_wave, disp_wave)
 
-            # ── 휴면(dormancy) 스트릭 갱신 ─────────────────────────────────────
-            # "이번 wave 에 발화했으나 실제 소통이 없었던(순수 혼잣말)" 에이전트의
-            # 연속 카운트를 올린다. 리셋(= 깨어남) 조건 중 하나라도:
-            #   - 내가 누군가에게 말이 닿았다 (reached_someone)
-            #   - 내가 이번 wave 에 누군가의 말/씬을 받았다 (got_incoming)
-            #   - 내 곁에 상대가 있다 (_has_reachable_partner) — 단 **위치를 쓰는**
-            #     시나리오라면 **이번 wave 에 방 어딘가에서 대화가 오갔을 때만**
-            #     (any_reached). 곁에 사람이 있어도 아무도 서로 말을 안 걸면 스트릭이
-            #     쌓인다 — 잠든 부부가 같은 방에 있다는 이유로 영영 안 깨어 max_waves
-            #     까지 45분씩 갈리던 버그. 순수 독백 wave 만 해당하므로 실제 대화가
-            #     오가는 장면(식사·수다)에는 영향이 없다.
-            # 위치 미사용(레거시) 시나리오는 `_has_reachable_partner` 가 항상 True 라
-            # 예전처럼 스트릭이 절대 쌓이지 않는다.
+            # 이번 wave 에 실제로 누군가 누군가에게 말이 닿았나 — 아래 시간 추정
+            # (장면 보호 캡)이 쓴다. 다들 각자 독백이면 False.
             any_reached = any(reached_someone.values())
-            for speaker_key, result in results.items():
-                if not result.get("success"):
-                    continue
-                partner = self._has_reachable_partner(speaker_key)
-                if self._agent_location.get(speaker_key):
-                    partner = partner and any_reached
-                if (reached_someone.get(speaker_key)
-                        or speaker_key in got_incoming or partner):
-                    self._solo_streak[speaker_key] = 0
-                else:
-                    self._solo_streak[speaker_key] = self._solo_streak.get(speaker_key, 0) + 1
 
             # ── next_wave 구성 ────────────────────────────────────────────────
             # 조립 자체는 이동이 끝난 뒤에 한다(도착/이탈 씬 메시지가 필요하므로).
@@ -689,68 +677,81 @@ class _RunnerMixin:
 
             # ── 침묵 처리 — 종료가 아니라 재투입/시간 점프 ────────────────────────
             organically_filled = bool(next_wave)
-            forced_silence_reinject = False
+            # 이번 wave 끝에 결정적 idle 시간 점프를 할지(아래 시간 누적 블록).
+            idle_jump = False
 
             if not next_wave:
-                # 이번 wave 에 아무도 서로를 target 하지 않았다. 종료하지 않는다:
-                # max_waves 까지 계속 돈다. 단 **고립 독백을 max_silence_waves 회
-                # 이상 연속한(휴면)** 에이전트는 밀집 재투입에서 뺀다 — 회사·학교로
-                # 흩어져 서로 못 닿는 에이전트가 같은 독백을 무한 반복하는 것을
-                # 막는다. 누군가 그에게 도달하면(이동·이벤트·디렉터 개입 →
-                # routed/scene_injections) 위쪽 조립에서 이미 next_wave 에 들어가므로
-                # 자동으로 깨어난다.
-                # 상태(수면·이동 등) 중인 에이전트는 재투입 후보에서 뺀다 — 직접
-                # 타깃팅(누군가 실제로 말을 걸어 routed/scene_injections로 들어오는
-                # 경우)은 이 경로와 무관하므로 영향받지 않는다.
-                dormant_cap = max(1, max_silence_waves)
-                wakeable = sorted(
+                # 전원 침묵 — 이번 wave 에 아무도 서로에게 닿지 않았다. 종료하지
+                # 않는다(max_waves 까지 계속). 활성이고 상태(수면·개인 용무·이동)에
+                # 묶이지 않은 에이전트 **전원**을 한 번 재투입한다. 직접 타깃팅
+                # (routed/scene_injections)은 위 조립에서 이미 처리돼 이 경로와 무관.
+                #
+                # 시간: 연속 전원 침묵 1회째는 일반 시간 경로(has_content → LLM/
+                # 카테고리 추정)를 탄다 — 대화가 잠깐 끊긴 것일 수 있다. **2회
+                # 연속부터** idle 스케줄로 크게 점프한다 — 가족이 각자 회사·학교로
+                # 흩어진 낮이 몇 분씩 조각나 max_waves 까지 갈리는 것을 막는다.
+                silence_count += 1
+                state_locked = {
                     k for k in self.active_agents
-                    if self._solo_streak.get(k, 0) < dormant_cap
-                    and not self._agent_unavailable(k, now_elapsed)
-                )
-                if wakeable:
-                    next_wave = {k: [] for k in wakeable}
-                else:
-                    # 전원 휴면 — 같은 독백을 재생하는 대신 시간을 크게 흘려보내고
-                    # (가변 모드는 idle 스케줄) 다시 초대한다. 새 시각을 보고 재회할지
-                    # 각자 판단하게 한다. 이게 없으면 '모두 흩어진 하루'가 조각 점프로
-                    # max_waves 까지 갈린다.
-                    #
-                    # 예전엔 여기서 활성 에이전트 **전원**을 무조건 재투입했는데,
-                    # 그중 상태(수면·이동 등)로 묶여 아직 해제 시점이 안 된 에이전트
-                    # 까지 매번 강제로 턴을 받아 거의 똑같은 잠꼬대를 반복하는 게
-                    # 실측으로 확인됐다(v11 실행 재현 — 신짱구/신짱아가 같은 밤
-                    # 3~4번 연속으로 "드르렁... 슛... 골!!!"류를 재선언). 상태로
-                    # 묶여 있다는 건 아직 시간이 덜 지났다는 뜻이라 지금 깨워도 얻을
-                    # 게 없다 — 그중 **가장 먼저 풀리는 한 명만** 다시 초대해 그
-                    # 행동으로 자연스럽게 이어지는지 지켜보고, 나머지는 각자의 해제
-                    # 시점에 다음 wave 상단의 만료 처리(`_expire_agent_states`)로
-                    # 자연히 합류하게 둔다. 상태 없이 순수하게 고립된(대화 상대가
-                    # 없어 dormant_cap을 넘긴) 에이전트는 이 문제와 무관하므로
-                    # 그대로 재투입한다 — state_categories 자체를 안 쓰는 시나리오는
-                    # state_locked가 항상 빈 집합이라 기존 동작과 완전히 같다.
-                    silence_count += 1
-                    forced_silence_reinject = True
-                    state_locked = {
-                        k for k in self.active_agents
-                        if self._agent_active_status(k, now_elapsed) is not None
-                    }
-                    reinject = sorted(self.active_agents - state_locked)
-                    if state_locked:
-                        wake_key = min(
-                            state_locked,
-                            key=lambda k: self._agent_active_status(k, now_elapsed)["until_elapsed"],
-                        )
-                        reinject.append(wake_key)
-                        logger.info(
-                            f"[W{disp_wave}] 전원 휴면(상태 {len(state_locked)}명 묶임) — "
-                            f"시간 점프 + {wake_key} 우선 재투입 #{silence_count}"
-                        )
-                    else:
-                        logger.info(f"[W{disp_wave}] 전원 휴면 — 시간 점프 + 전원 재투입 #{silence_count}")
-                    next_wave = {k: [] for k in reinject}
+                    if self._agent_unavailable(k, now_elapsed)
+                }
+                reinject = sorted(self.active_agents - state_locked)
+                if reinject:
+                    idle_jump = silence_count >= 2
+                    logger.info(
+                        f"[W{disp_wave}] 전원 침묵 #{silence_count} — 전원 재투입"
+                        f"({len(reinject)}명){' + idle 시간 점프' if idle_jump else ''}"
+                    )
+                elif state_locked:
+                    # 활성 에이전트 전원이 상태에 묶였다. 묶였다는 건 아직 시간이
+                    # 덜 지났다는 뜻이라 전원을 깨워도 잠꼬대 반복뿐이다(v11 실측:
+                    # 신짱구/신짱아가 같은 밤 3~4번 "드르렁..." 재선언). **가장 먼저
+                    # 풀리는 한 명만** 재투입하고, 시간은 그 해제 시점까지 점프한다
+                    # (아래 all_locked 분기). 나머지는 각자의 해제 시점에 다음 wave
+                    # 상단의 만료 처리(`_expire_agent_states`)로 자연히 합류한다.
+                    idle_jump = True
+                    wake_key = min(
+                        state_locked,
+                        key=lambda k: self._agent_active_status(k, now_elapsed)["until_elapsed"],
+                    )
+                    reinject = [wake_key]
+                    logger.info(
+                        f"[W{disp_wave}] 전원 침묵 #{silence_count} — 전원 상태 잠금"
+                        f"({len(state_locked)}명) → 시간 점프 + {wake_key} 우선 재투입"
+                    )
+                next_wave = {k: [] for k in reinject}
             else:
                 silence_count = 0
+                # ── 소외 재투입 (starvation reinject) ─────────────────────────
+                # 대화가 오가는 동안(next_wave 비어있지 않음)에도, 마지막으로 턴을
+                # 받은 지 starvation_waves wave 이상 지난 에이전트를 빈 incoming 으로
+                # 끼워 넣는다. 예전엔 재투입이 전원 침묵 분기에서만 일어나서, 거실에서
+                # 다른 가족이 계속 떠드는 동안 혼자 드레스룸으로 간 아빠가 W10~W17
+                # 내내 턴을 한 번도 못 받았다(case1 실측). 상태(수면·개인 용무·이동)
+                # 중인 에이전트는 제외 — 묶인 동안엔 깨워도 얻을 게 없다.
+                starved: list[str] = []
+                waves_since: dict[str, int] = {}
+                for k in sorted(self.active_agents):
+                    if k in next_wave or self._agent_unavailable(k, now_elapsed):
+                        continue
+                    gap = disp_wave - self._last_turn_wave.get(k, starve_baseline)
+                    if gap >= starvation_waves:
+                        starved.append(k)
+                        waves_since[k] = gap
+                if starved:
+                    for k in starved:
+                        next_wave[k] = []
+                    logger.info(
+                        f"[W{disp_wave}] 소외 재투입 — {starved} "
+                        f"(마지막 턴 이후 {waves_since} wave)"
+                    )
+                    # 관전 텔레메트리 — 엔진 스케줄링 신호라 영속하지 않는다(재투입된
+                    # 턴 자체는 turn_complete/DB 로 정상 기록된다).
+                    self._emit("starvation_reinject", {
+                        "wave":        disp_wave,
+                        "agents":      starved,
+                        "waves_since": waves_since,
+                    })
 
             # ── 진행 불가 백스톱 ─────────────────────────────────────────────────
             # 이번 wave 에 성공한 발화가 하나라도 있었으면 리셋, 없으면 카운트.
@@ -774,14 +775,18 @@ class _RunnerMixin:
             # organically_filled(라우팅으로 next_wave가 자연스럽게 채워짐)가 아니어도,
             # 이번 wave에 성공한 발화가 있었다면(전원 재투입됐지만 에이전트들이 서로를
             # 타겟하지 않고 각자 행동하는 경우) 진짜 침묵이 아니므로 LLM 분류 대상에
-            # 포함시킨다. forced_silence_reinject(전원 휴면 → 강제 재투입)만 결정적
-            # idle 스케줄을 쓴다.
+            # 포함시킨다. idle_jump(연속 전원 침묵 2회 이상 · 전원 상태 잠금)만
+            # 결정적 idle 스케줄을 쓴다.
             if self._time_mode == "variable":
                 has_content = any(r.get("success") for r in results.values())
-                if forced_silence_reinject:
-                    idx  = min(silence_count, len(self._idle_minutes_schedule)) - 1
-                    raw_jump    = self._idle_minutes_schedule[idx]
-                    jump_reason = "전원 휴면(고립 독백)"
+                if idle_jump:
+                    # 연속 전원 침묵 2회째에 스케줄 첫 값, 3회째에 둘째 값 … (끝에서
+                    # 포화). 전원 상태 잠금으로 1회째에 들어온 경우도 인덱스 0 —
+                    # 어차피 아래 all_locked 분기가 해제 시점으로 덮어쓴다.
+                    sched = self._idle_minutes_schedule or [60]
+                    idx  = max(0, min(silence_count - 1, len(sched)) - 1)
+                    raw_jump    = sched[idx]
+                    jump_reason = f"연속 전원 침묵 {silence_count}회"
                     # 활성 에이전트 **전원**이 상태(수면·이동 등)에 묶여 있다면,
                     # idle 스케줄의 랜덤값 대신 **가장 이른 상태 해제 시점까지
                     # 정확히** 점프한다 — 몇 분 뒤 깨어날지 이미 아는데 굳이
@@ -818,7 +823,7 @@ class _RunnerMixin:
                         if 0 <= room < jump:
                             jump = room
                             idle_clamp_reason = f"예정 이벤트({beat[1]}) 전까지 {raw_jump}→{room}분"
-                    # 관전 텔레메트리 — 전원 휴면 강제 재투입으로 시간이 크게 건너뛰는
+                    # 관전 텔레메트리 — 연속 전원 침묵으로 시간이 크게 건너뛰는
                     # 것을 피드에서 볼 수 있게 한다. 예전엔 이 점프가 조용히 일어나
                     # "왜 갑자기 3시간이 지났지?"가 됐다.
                     self._emit("time_jump", {
@@ -847,7 +852,7 @@ class _RunnerMixin:
                     ai_reason:     str | None = None
                     used_fallback: bool       = False
                     # `any_reached`(이번 wave에 실제로 누군가 누군가에게 말이 닿았나)는
-                    # 위 휴면 스트릭 블록에서 이미 계산됐다. 다들 각자 독백이면
+                    # 위(next_wave 구성 직전)에서 이미 계산됐다. 다들 각자 독백이면
                     # "진행 중인 대화 장면"이 아니므로 시간 추론이 장면 보호 캡을
                     # 걸지 않는다 — 온 가족이 잠든 밤에도 45분씩만 흐르던 버그.
                     if self._time_estimation_mode == "ai":
@@ -1321,7 +1326,7 @@ class _RunnerMixin:
         # 있는데, 다른 누군가의 "깊은 잠에 빠졌다" 같은 무성 독백 하나만 보고
         # LLM이 몇 시간을 통째로 점프시키면 그 활동 완료·복귀 서사가 그대로
         # 묻힌다 — 실제 실행에서 확인된 버그(리뷰 3번: 씻으러 간 사람이 자기
-        # 방으로 돌아오지 못한 채 밤을 넘김). `forced_silence_reinject` 경로
+        # 방으로 돌아오지 못한 채 밤을 넘김). `idle_jump` 경로
         # (전원 침묵)는 이 함수를 안 타므로 run()이 `_earliest_status_clear`를
         # 직접 쓰지만, 이 경로(LLM이 실제로 뭔가 판단한 경우)는 여기서 막아야 한다.
         state_wake_at = self._earliest_status_clear(self.active_agents, self._elapsed_minutes)

@@ -1104,7 +1104,7 @@ class TimedEventTests(unittest.TestCase):
         # 시작한다. at_time 알림이 "b"에게 뜨면 memory에 조용히 쌓이기만 하는 게
         # 아니라 **같은 wave**에 실제 발화 기회를 강제로 받아야 한다 — 안 그러면
         # "16:30. 학원 갈 시간이다" 가 그가 자연히 다시 초대될 때까지(누가 부르거나
-        # 전원 휴면 강제 재투입이 올 때까지) 반응 없이 미뤄진다.
+        # 전원 침묵·소외 재투입이 올 때까지) 반응 없이 미뤄진다.
         sim = self._sim([{"at_time": "14:30", "type": "system_message",
                           "message": "학원 갈 시간", "targets": ["b"]}], start="14:30")
         starts, completes = [], []
@@ -1176,12 +1176,12 @@ class TimedEventTests(unittest.TestCase):
         self.assertEqual(j[0]["raw_minutes"], 30)  # estimate_wave_minutes 내부에서 이미 clamp
 
     def test_idle_forced_jump_also_respects_the_next_beat(self):
-        # 가족이 각자 흩어져 전원 휴면 → idle 스케줄 강제 점프도 예정 이벤트 시각은
+        # 가족이 각자 흩어져 연속 전원 침묵 → idle 스케줄 강제 점프도 예정 이벤트 시각은
         # 넘기지 않아야 한다. (하교·학원이 "다들 나간 낮"에 통째로 건너뛰던 버그)
         sim = self._sim([{"at_time": "15:00", "at_days": ["mon"], "type": "system_message",
                           "message": "하교", "targets": ["a"]}], start="12:00", weekday="mon")
-        # a, b 를 서로 도달 불가한 위치로 — location_graph 없이도 위치만 다르면
-        # _has_reachable_partner 가 False 라 금방 휴면에 든다.
+        # a, b 를 서로 도달 불가한 위치로 — 각자 독백만 하므로 매 wave 전원
+        # 침묵이 이어져 2회째부터 idle 점프가 난다.
         sim._agent_location = {"a": "회사", "b": "학교"}
         sim._exterior_locations = {"회사", "학교"}
         jumps = []
@@ -1474,8 +1474,9 @@ class PostMoveDeliveryTests(unittest.TestCase):
         self.assertEqual((dl[0]["speaker"], dl[0]["target"], dl[0]["location"]),
                          ("a", "b", "공용화장실"))
         self.assertEqual(dl[0]["new_edges"][0]["target"], "b")
-        # 말이 닿았으므로 휴면 스트릭이 쌓이지 않는다.
-        self.assertEqual(sim._solo_streak.get("a", 0), 0)
+        # 말이 닿았으므로 b 는 다음 wave 에 실제 incoming 으로 턴을 받는다
+        # (빈 incoming 소외 재투입이 아니라).
+        self.assertTrue(sim._pending_wave["b"])
 
     def test_markdown_export_shows_post_move_delivery_scene(self):
         from ABM.export.markdown import render_markdown
@@ -3353,7 +3354,7 @@ class ResumeContinueWaveBaseTests(unittest.TestCase):
     - `/resume`: `create_run(start_wave=이전 start_wave + total_waves)` +
       `Simulation(wave_base_init=...)` + 응답에 `start_wave`.
     - `fold_elapsed_and_reset_waves`: `completed_waves` 리셋 직전 `_wave_base` 누적.
-    - `/resume` 이 `max_silence_waves` 를 `run()` 까지 전달 (유실 시 기본값으로 회귀).
+    - `/resume` 이 `starvation_waves` 를 `run()` 까지 전달 (유실 시 기본값으로 회귀).
     """
 
     def tearDown(self):
@@ -3520,10 +3521,34 @@ class ResumeContinueWaveBaseTests(unittest.TestCase):
         self.assertEqual(calls["sim_kwargs"].get("zone_travel_min_minutes"), 7)
         self.assertEqual(calls["sim_kwargs"].get("zone_travel_max_minutes"), 15)
 
-    def test_resume_forwards_max_silence_waves_to_run(self):
+    def test_resume_migrates_legacy_max_silence_waves_from_config_json(self):
+        # DB 에 저장된 옛 config_json 은 max_silence_waves 만 갖고 있다.
+        row = self._run_row(self._cfg())
+        legacy = json.loads(row["config_json"])
+        legacy.pop("starvation_waves", None)
+        legacy["max_silence_waves"] = 7
+        row["config_json"] = json.dumps(legacy)
+        resp, calls = self._run_resume(row)
+        self.assertEqual(calls["run"]["kwargs"].get("starvation_waves"), 7)
+
+    def test_sim_start_config_migrates_legacy_max_silence_waves(self):
+        base = dict(agents=[AgentConfig(name="a", system_prompt="너는 a다.")],
+                    background="테스트", start_agent="a")
+        self.assertEqual(SimStartConfig(**base).starvation_waves, 3)
+        cfg = SimStartConfig(**base, max_silence_waves=5)
+        self.assertEqual(cfg.starvation_waves, 5)
+        self.assertNotIn("max_silence_waves", cfg.model_dump())
+        # 둘 다 있으면 새 이름이 이긴다.
+        self.assertEqual(
+            SimStartConfig(**base, max_silence_waves=5, starvation_waves=2).starvation_waves, 2)
+        # 저장된 옛 0 값으로 로드가 실패하지 않고 1로 clamp.
+        self.assertEqual(SimStartConfig(**base, max_silence_waves=0).starvation_waves, 1)
+
+    def test_resume_forwards_starvation_waves_to_run(self):
         resp, calls = self._run_resume(
-            self._run_row(self._cfg(max_silence_waves=9)))
-        self.assertEqual(calls["run"]["kwargs"].get("max_silence_waves"), 9)
+            self._run_row(self._cfg(starvation_waves=9)))
+        self.assertEqual(calls["run"]["kwargs"].get("starvation_waves"), 9)
+        self.assertNotIn("max_silence_waves", calls["run"]["kwargs"])
         # 폐기된 플래그는 더 이상 넘기지 않는다.
         self.assertNotIn("early_stop_enabled", calls["run"]["kwargs"])
 
@@ -6912,7 +6937,7 @@ class SelfDeclaredStateTests(unittest.TestCase):
 
     def test_sleeping_agent_excluded_from_passive_reinjection(self):
         # a는 자고 있고 b는 고립(대화 상대 없음) — a가 재투입 후보에서 빠지고
-        # b 혼자만 다시 초대돼야 한다(전원 휴면으로 잘못 판정되지 않음).
+        # b 혼자만 다시 초대돼야 한다(전원 상태 잠금으로 잘못 판정되지 않음).
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(
                 tmp,
@@ -7008,15 +7033,17 @@ class SelfDeclaredStateTests(unittest.TestCase):
             )
             jumps = []
             sim._emit = lambda t, d: (jumps.append(d) if t == "time_jump" else None)
-            # max_silence_waves=1 → b의 고립 독백 한 번만으로 바로 dormant_cap을
-            # 넘겨, a(잠김)만 있고 b는 안 잠긴 채로 "전원 침묵" 분기에 들어가게 한다.
-            sim.run("a", max_waves=1, step_delay=0.0, max_silence_waves=1,
+            # W0: a 수면 선언 + b 독백 → 전원 침묵 #1(일반 시간 경로, b만 재투입).
+            # W1: b 독백 → 전원 침묵 #2 → idle 점프. a(잠김)만 있고 b는 안 잠긴
+            # 상태라 a 의 해제 시점이 아니라 idle 스케줄 값이어야 한다.
+            sim.run("a", max_waves=2, step_delay=0.0,
                     resume_wave={"a": [], "b": []})
 
         idle_jumps = [d for d in jumps if d.get("mode") == "idle"]
-        self.assertTrue(idle_jumps)
+        self.assertEqual(len(idle_jumps), 1)
+        self.assertEqual(idle_jumps[0]["wave"], 1)
         self.assertEqual(idle_jumps[0]["minutes"], 42)  # a(500분) 해제 시점 아님
-        self.assertEqual(idle_jumps[0]["reason"], "전원 휴면(고립 독백)")
+        self.assertEqual(idle_jumps[0]["reason"], "연속 전원 침묵 2회")
 
     def test_state_locked_reinject_wakes_only_the_earliest_clearing_agent(self):
         # 실제 실행(v11)에서 확인된 문제: 전원이 상태로 묶이면 옛 코드는 활성
@@ -7071,9 +7098,7 @@ class SelfDeclaredStateTests(unittest.TestCase):
                 ],
             )
             sim._emit = lambda t, d: None
-            # max_silence_waves=1 → 첫 독백 한 번만으로 바로 dormant_cap을 넘겨
-            # "전원 휴면"(내 새 코드가 손댄 else 분기)에 확실히 들어가게 한다.
-            sim.run("a", max_waves=2, step_delay=0.0, max_silence_waves=1,
+            sim.run("a", max_waves=2, step_delay=0.0,
                     resume_wave={"a": [], "b": []})
 
         self.assertIn("a", sim._pending_wave)
@@ -7176,7 +7201,7 @@ class SelfDeclaredStateTests(unittest.TestCase):
 
     def test_no_enter_state_clears_a_self_declared_status_immediately(self):
         # 사용자 설계 결정: 잠긴 상태에서 턴을 받는다는 것 자체가 이미 누군가/뭔가
-        # 개입했다는 뜻이다(순수 휴면 재투입에서는 애초에 제외됨) — 이번 턴에
+        # 개입했다는 뜻이다(소외·전원 침묵 재투입에서는 애초에 제외됨) — 이번 턴에
         # enter_state를 다시 선언하지 않으면 그 자리에서 즉시 해제한다.
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(
@@ -7285,16 +7310,16 @@ class AgentContextStatusFieldTests(unittest.TestCase):
         self.assertIsNone(resp["status"])
 
 
-class IsolatedAgentDormancyTests(unittest.TestCase):
-    """고립된 채 독백만 하는 에이전트의 휴면 처리.
+class IsolatedAgentReinjectTests(unittest.TestCase):
+    """고립 에이전트 재투입 — 소외 재투입(starvation) + 전원 침묵 처리.
 
-    배경: 가족이 각자 회사·학교로 흩어지면 서로 도달 불가능해진다. 대화가 비면
-    전원을 재투입하므로 옛 코드는 같은 독백을 max_waves 까지 무한 반복. 이제:
-      - 대화 상대가 없고 아무에게도 닿지 않은 채 독백을 max_silence_waves 회
-        연속한 에이전트는 '휴면'으로 보고 밀집 재투입에서 뺀다.
-      - 전원 휴면이면 시간을 크게 흘려보내고(가변 모드 idle 스케줄) 전원을 깨운다
-        → '모두 흩어진 하루'가 조각 점프로 갈리지 않고 빠르게 지나간다.
-      - 누군가 도달하면(이동·이벤트·디렉터) 스트릭이 0으로 리셋되어 깨어난다.
+    옛 설계(고립 휴면 `_solo_streak`/`max_silence_waves`)는 누구를 **빼는지**만
+    정했고 재투입은 전원 침묵 분기에서만 일어나서, 다른 가족이 거실에서 계속 떠드는
+    동안 혼자 드레스룸에 간 아빠가 W10~W17 내내 턴을 못 받았다(case1 실측). 이제:
+      - 소외 재투입: 대화가 오가는 wave 에도 마지막 턴 이후 `starvation_waves` wave
+        이상 지난(상태에 묶이지 않은) 에이전트를 빈 incoming 으로 재투입.
+      - 전원 침묵: 상태에 안 묶인 활성 에이전트 전원 재투입. 1회째는 일반 시간
+        경로, 2회 연속부터 idle 스케줄 점프(흩어진 하루를 빠르게 지나감).
     """
 
     def _build(self, tmp, script, *, locations, graph, **kw):
@@ -7326,22 +7351,78 @@ class IsolatedAgentDormancyTests(unittest.TestCase):
                 locations={"a": "회사", "b": "집"}, graph=self._GRAPH,
                 time_mode="variable",
             )
-            jumps: list[int] = []
-            orig_emit = sim._emit
-            sim._emit = lambda t, d: (jumps.append(d["minutes"]) if t == "time_jump" else None)
+            jumps: list[dict] = []
+            sim._emit = lambda t, d: (jumps.append(d) if t == "time_jump" else None)
             sim.run("a", max_waves=8, step_delay=0.0,
-                    max_silence_waves=3,
                     resume_wave={"a": [], "b": []})
 
-        # 전원 휴면에 들어가면 idle 스케줄(60/120/180)로 크게 점프한다 —
-        # normal_scene 조각 점프(15~30분)로 max_waves 까지 갈리지 않는다.
-        self.assertTrue(sim._solo_streak.get("a", 0) >= 3)
-        self.assertTrue(any(j >= 60 for j in jumps[-3:]),
-                        f"휴면 후 큰 시간 점프가 없다: {jumps}")
+        # 매 wave 전원 침묵 → 둘 다 매 wave 재투입된다(누구도 빠지지 않음).
+        for w in range(8):
+            spk = {e["speaker"] for e in sim.shared_log if e.get("wave") == w}
+            self.assertEqual(spk, {"a", "b"}, f"W{w}")
+        # 1회째는 일반 경로(카테고리), 2회 연속부터 idle 스케줄 60/120/180(끝 포화).
+        self.assertNotEqual(jumps[0]["mode"], "idle")
+        self.assertLess(jumps[0]["minutes"], 60)
+        self.assertEqual([j["minutes"] for j in jumps[1:4]], [60, 120, 180])
+        self.assertTrue(all(j["mode"] == "idle" for j in jumps[1:]))
         # 8 wave 로도 하루 이상 흘렀다(조각 점프였다면 4시간도 안 됐을 것).
         self.assertGreater(sim._elapsed_minutes, 8 * 60)
 
-    def test_dormant_agent_wakes_when_someone_reaches_them(self):
+    def test_first_all_silent_reinjects_everyone_without_idle_jump(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(
+                tmp,
+                {"a": [{"content": "음.", "target": "self"}],
+                 "b": [{"content": "음.", "target": "self"}]},
+                locations={"a": "회사", "b": "집"}, graph=self._GRAPH,
+                time_mode="variable", idle_minutes_schedule=[77, 88],
+            )
+            jumps: list[dict] = []
+            sim._emit = lambda t, d: (jumps.append(d) if t == "time_jump" else None)
+            sim.run("a", max_waves=1, step_delay=0.0,
+                    resume_wave={"a": [], "b": []})
+        self.assertEqual(set(sim._pending_wave), {"a", "b"})
+        self.assertTrue(all(v == [] for v in sim._pending_wave.values()))
+        self.assertEqual(len(jumps), 1)
+        self.assertNotEqual(jumps[0]["mode"], "idle")
+
+    def test_second_consecutive_all_silent_jumps_first_idle_value(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(
+                tmp,
+                {"a": [{"content": "음.", "target": "self"}],
+                 "b": [{"content": "음.", "target": "self"}]},
+                locations={"a": "회사", "b": "집"}, graph=self._GRAPH,
+                time_mode="variable", idle_minutes_schedule=[77, 88],
+            )
+            jumps: list[dict] = []
+            sim._emit = lambda t, d: (jumps.append(d) if t == "time_jump" else None)
+            sim.run("a", max_waves=4, step_delay=0.0,
+                    resume_wave={"a": [], "b": []})
+        self.assertEqual([j["mode"] == "idle" for j in jumps], [False, True, True, True])
+        self.assertEqual([j["minutes"] for j in jumps[1:]], [77, 88, 88])
+        self.assertEqual(jumps[1]["reason"], "연속 전원 침묵 2회")
+
+    def test_silence_counter_resets_when_conversation_resumes(self):
+        # 침묵 #1 → 대화(리셋) → 침묵 #1 은 다시 일반 경로여야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(
+                tmp,
+                {"a": [{"content": "음.", "target": "self"},
+                       {"content": "야.", "target": "b"},
+                       {"content": "음.", "target": "self"}],
+                 "b": [{"content": "음.", "target": "self"}]},
+                locations={"a": "집", "b": "집"}, graph=self._GRAPH,
+                time_mode="variable", idle_minutes_schedule=[77],
+            )
+            jumps: list[dict] = []
+            sim._emit = lambda t, d: (jumps.append(d) if t == "time_jump" else None)
+            # W0 a,b 독백(침묵#1) → W1 a→b(대화, 리셋) → W2 b 독백(침묵#1)
+            sim.run("a", max_waves=3, step_delay=0.0,
+                    resume_wave={"a": [], "b": []})
+        self.assertFalse([j for j in jumps if j["mode"] == "idle"], jumps)
+
+    def test_isolated_agent_reached_by_someone_gets_their_words(self):
         with tempfile.TemporaryDirectory() as tmp:
             # a 는 집에서 계속 독백, b 는 회사에 있다가 3번째 턴에 집으로 이동해
             # a 에게 말을 건다.
@@ -7357,18 +7438,17 @@ class IsolatedAgentDormancyTests(unittest.TestCase):
             )
             sim._emit = lambda t, d: None
             sim.run("a", max_waves=10, step_delay=0.0,
-                    max_silence_waves=3,
                     resume_wave={"a": [], "b": []})
 
-        # b 가 집에 도착해 a 에게 말을 걸면 a 의 스트릭이 리셋되어야 한다.
-        self.assertEqual(sim._solo_streak.get("a", 0), 0)
-        # a 는 b 의 발화를 실제로 받았다(관전 로그에 a→? 가 아니라 b→a 가 있다).
         got = [e for e in sim.shared_log if e.get("speaker") == "b" and "a" in (e.get("targets") or [])]
         self.assertTrue(got)
+        # a 는 b 의 발화 다음 wave 에 턴을 받았다.
+        w = got[0]["wave"]
+        self.assertTrue(any(e.get("speaker") == "a" and e.get("wave") == w + 1
+                            for e in sim.shared_log))
 
-    def test_legacy_no_location_scenario_never_goes_dormant(self):
+    def test_legacy_no_location_scenario_reinjects_everyone_on_silence(self):
         with tempfile.TemporaryDirectory() as tmp:
-            # 위치 미사용 — _has_reachable_partner 가 항상 True → 스트릭이 안 쌓인다.
             sim = self._build(
                 tmp,
                 {"a": [{"content": "음.", "target": "self"}],
@@ -7379,12 +7459,13 @@ class IsolatedAgentDormancyTests(unittest.TestCase):
             sim._emit = lambda t, d: None
             sim.run("a", max_waves=5, step_delay=0.0,
                     resume_wave={"a": [], "b": []})
-        self.assertEqual(sim._solo_streak.get("a", 0), 0)
-        self.assertEqual(sim._solo_streak.get("b", 0), 0)
+        for w in range(5):
+            spk = {e["speaker"] for e in sim.shared_log if e.get("wave") == w}
+            self.assertEqual(spk, {"a", "b"}, f"W{w}")
 
-    def test_co_located_agents_go_dormant_when_nobody_talks(self):
-        # 같은 방(안방)에 있어도 아무도 서로 말을 안 걸면(각자 독백=취침) 스트릭이
-        # 쌓여 휴면에 든다 → idle 시간 점프로 밤이 빠르게 지나간다. (밤에 45분씩만
+    def test_co_located_silent_agents_fast_forward_the_night(self):
+        # 같은 방(안방)에 있어도 아무도 서로 말을 안 걸면(각자 독백=취침) 연속
+        # 전원 침묵 → idle 시간 점프로 밤이 빠르게 지나간다. (밤에 45분씩만
         # 흐르던 버그)
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._build(
@@ -7397,13 +7478,11 @@ class IsolatedAgentDormancyTests(unittest.TestCase):
             jumps = []
             sim._emit = lambda t, d: (jumps.append(d["minutes"])
                                       if t == "time_jump" else None)
-            sim.run("a", max_waves=10, step_delay=0.0, max_silence_waves=3,
+            sim.run("a", max_waves=10, step_delay=0.0,
                     resume_wave={"a": [], "b": []})
-        self.assertGreaterEqual(sim._solo_streak.get("a", 0), 3)
         self.assertTrue(any(j >= 60 for j in jumps), f"큰 점프가 없다: {jumps}")
 
-    def test_co_located_agents_stay_awake_while_actually_talking(self):
-        # 서로 말을 주고받는 동안엔 같은 방이면 휴면에 들지 않는다.
+    def test_co_located_agents_talking_never_idle_jump(self):
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._build(
                 tmp,
@@ -7412,11 +7491,104 @@ class IsolatedAgentDormancyTests(unittest.TestCase):
                 locations={"a": "안방", "b": "안방"}, graph=self._GRAPH,
                 time_mode="variable",
             )
-            sim._emit = lambda t, d: None
-            sim.run("a", max_waves=8, step_delay=0.0, max_silence_waves=3,
+            jumps: list[dict] = []
+            sim._emit = lambda t, d: (jumps.append(d) if t == "time_jump" else None)
+            sim.run("a", max_waves=8, step_delay=0.0,
                     resume_wave={"a": [], "b": []})
-        self.assertEqual(sim._solo_streak.get("a", 0), 0)
-        self.assertEqual(sim._solo_streak.get("b", 0), 0)
+        self.assertTrue(jumps)
+        self.assertFalse([j for j in jumps if j["mode"] == "idle"])
+
+    # ── 소외 재투입 (starvation reinject) ────────────────────────────────────
+
+    _HOUSE = [
+        {"name": "거실",     "connects_to": ["드레스룸"]},
+        {"name": "드레스룸", "connects_to": ["거실"]},
+    ]
+    # 엄마(m)·아이(k)는 거실에서 계속 대화, 아빠(d)는 드레스룸에서 혼잣말.
+    _FAMILY = {
+        "m": [{"content": "숙제 했니?", "target": "k"}],
+        "k": [{"content": "지금 할게.", "target": "m"}],
+        "d": [{"content": "넥타이가 어디 있지.", "target": "self"}],
+    }
+    _FAMILY_LOC = {"m": "거실", "k": "거실", "d": "드레스룸"}
+
+    def _d_waves(self, sim):
+        return sorted(e["wave"] for e in sim.shared_log if e.get("speaker") == "d")
+
+    def test_isolated_agent_gets_turn_after_starvation_waves_while_others_talk(self):
+        # case1 재현: 아빠가 W0 혼잣말 후 대화가 계속 오가는 동안 영영 턴을 못
+        # 받으면 안 된다. starvation_waves=3 → 3 wave(W1~W3) 쉬고 W4 에 턴.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(tmp, self._FAMILY, locations=self._FAMILY_LOC,
+                              graph=self._HOUSE, time_mode="variable")
+            emitted: list[tuple[str, dict]] = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            sim.run("m", max_waves=10, step_delay=0.0, starvation_waves=3,
+                    resume_wave={"m": [], "k": [], "d": []})
+        self.assertEqual(self._d_waves(sim), [0, 4, 8])
+        # 거실 두 사람은 매 wave 대화 중 — 전원 침묵 분기는 한 번도 안 탔다.
+        self.assertFalse([d for t, d in emitted if t == "time_jump" and d["mode"] == "idle"])
+        sr = [d for t, d in emitted if t == "starvation_reinject"]
+        self.assertEqual([(d["wave"], d["agents"], d["waves_since"]) for d in sr],
+                         [(3, ["d"], {"d": 3}), (7, ["d"], {"d": 3})])
+
+    def test_starvation_waves_option_controls_interval(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(tmp, self._FAMILY, locations=self._FAMILY_LOC,
+                              graph=self._HOUSE, time_mode="variable")
+            sim._emit = lambda t, d: None
+            sim.run("m", max_waves=7, step_delay=0.0, starvation_waves=1,
+                    resume_wave={"m": [], "k": [], "d": []})
+        # 최소값 1: 턴을 못 받은 wave 가 1개 생기면 곧바로 재투입(격 wave).
+        self.assertEqual(self._d_waves(sim), [0, 2, 4, 6])
+
+    def test_state_locked_agent_is_not_starvation_reinjected(self):
+        script = dict(self._FAMILY)
+        script["d"] = [{"content": "한숨 자야겠다.", "target": "self", "enter_state": "sleep"}]
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(
+                tmp, script, locations=self._FAMILY_LOC, graph=self._HOUSE,
+                time_mode="variable",
+                state_categories=[{"id": "sleep", "label": "수면",
+                                   "min_minutes": 100000, "max_minutes": 100000}],
+            )
+            emitted: list[tuple[str, dict]] = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            sim.run("m", max_waves=10, step_delay=0.0, starvation_waves=3,
+                    resume_wave={"m": [], "k": [], "d": []})
+        self.assertEqual(self._d_waves(sim), [0])
+        self.assertFalse([d for t, d in emitted if t == "starvation_reinject"])
+
+    def test_traveling_agent_is_not_starvation_reinjected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(tmp, self._FAMILY, locations=self._FAMILY_LOC,
+                              graph=self._HOUSE, time_mode="variable")
+            sim._emit = lambda t, d: None
+            # d 를 아주 긴 이동 중 상태로 둔다(월드-부여형 traveling).
+            sim._agent_status["d"] = {"state": "traveling", "label": "이동",
+                                      "until_elapsed": 10 ** 7}
+            sim.run("m", max_waves=10, step_delay=0.0, starvation_waves=3,
+                    resume_wave={"m": [], "k": []})
+        self.assertEqual(self._d_waves(sim), [])
+
+    def test_no_mass_starvation_reinject_right_after_resume(self):
+        # /resume 직후엔 `_last_turn_wave` 가 비어 있다. 한 번도 턴을 안 받은
+        # 에이전트를 "run 시작 wave 에 턴을 받은 것"으로 간주해야 재개 첫 wave
+        # 끝에 전원이 한꺼번에 쏟아지지 않는다.
+        script = dict(self._FAMILY)
+        script["g"] = [{"content": "음.", "target": "self"}]
+        loc = dict(self._FAMILY_LOC, g="드레스룸")
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(tmp, script, locations=loc, graph=self._HOUSE,
+                              time_mode="variable", wave_base_init=20)
+            emitted: list[tuple[str, dict]] = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            sim.run("m", max_waves=5, step_delay=0.0, starvation_waves=3,
+                    resume_wave={"m": [], "k": []})
+        sr = [d for t, d in emitted if t == "starvation_reinject"]
+        self.assertEqual(sr[0]["wave"], 23)
+        self.assertEqual(sr[0]["agents"], ["d", "g"])
+        self.assertEqual(self._d_waves(sim), [24])
 
     def test_director_prompt_lists_isolated_agents_and_carries_the_rule(self):
         from ABM.system_agent import run_system_agent, DEFAULT_SYSTEM_AGENT_PROMPT
@@ -9213,7 +9385,8 @@ class HeadlessSimulationArgumentTests(unittest.TestCase):
         # sim.run 인자
         self.assertEqual(cap["run_start_agent"], "a")
         self.assertEqual(cap["run_kwargs"]["max_waves"], 5)
-        self.assertEqual(cap["run_kwargs"]["max_silence_waves"], 3)
+        self.assertEqual(cap["run_kwargs"]["starvation_waves"], 3)
+        self.assertNotIn("max_silence_waves", cap["run_kwargs"])
         self.assertIsNone(cap["run_kwargs"]["target_duration_minutes"])
         self.assertEqual(len(cap["run_kwargs"]["events"]), 1)
         self.assertEqual(cap["run_kwargs"]["events"][0]["type"], "infect_agent")
@@ -9477,7 +9650,7 @@ class MalformedJsonResponseTests(unittest.TestCase):
             sim = Simulation(agents, [{"role": "user", "content": "[배경] t"}], tmp, llm=llm)
             sim._emit = lambda t, d: events.append((t, d))
             # max_waves=100 이지만 백스톱(연속 6 dead wave)에서 훨씬 일찍 멈춘다.
-            sim.run("a", max_waves=100, step_delay=0.0, max_silence_waves=3)
+            sim.run("a", max_waves=100, step_delay=0.0, starvation_waves=3)
 
         end = next(d for t, d in events if t == "simulation_end")
         self.assertEqual(end["end_reason"], "no_progress")

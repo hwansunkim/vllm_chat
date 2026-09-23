@@ -39,7 +39,7 @@
     "sim_start_weekday": "mon",
     "time_per_wave": 30,
     "time_mode": "fixed",
-    "max_silence_waves": 3,
+    "starvation_waves": 3,
     "system_agent": {
       "enabled": true,
       "icon": "🎬",

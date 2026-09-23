@@ -79,7 +79,7 @@ export function buildScenarioConfig() {
     idle_minutes_schedule:  (sim.idle_minutes_schedule?.length ? sim.idle_minutes_schedule : DEFAULT_IDLE_MINUTES_SCHEDULE),
     max_scene_jump_minutes:   sim.max_scene_jump_minutes   ?? 45,
     max_daytime_jump_minutes: sim.max_daytime_jump_minutes ?? 180,
-    max_silence_waves:      sim.max_silence_waves  ?? 3,
+    starvation_waves:       sim.starvation_waves   ?? 3,
     // time_categories와 달리 **빈 배열이 유효한 값**이다(자기-선언형 상태 기능 off) —
     // 기본값으로 되메우지 않는다.
     state_categories:        sim.state_categories || [],
@@ -180,7 +180,7 @@ export function newScenario() {
   sim.idle_minutes_schedule  = [...DEFAULT_IDLE_MINUTES_SCHEDULE];
   sim.max_scene_jump_minutes   = 45;
   sim.max_daytime_jump_minutes = 180;
-  sim.max_silence_waves      = 3;
+  sim.starvation_waves       = 3;
   sim.state_categories        = DEFAULT_STATE_CATEGORIES.map(c => ({ ...c }));
   sim.zone_travel_min_minutes = DEFAULT_ZONE_TRAVEL_MIN_MINUTES;
   sim.zone_travel_max_minutes = DEFAULT_ZONE_TRAVEL_MAX_MINUTES;
@@ -259,7 +259,8 @@ export function applyScenario(s) {
   // 구버전 시나리오에는 필드가 없다 — 엔진/스키마 기본값과 같은 45/180으로 폴백.
   sim.max_scene_jump_minutes   = cfg.max_scene_jump_minutes   ?? 45;
   sim.max_daytime_jump_minutes = cfg.max_daytime_jump_minutes ?? 180;
-  sim.max_silence_waves      = cfg.max_silence_waves      ?? 3;
+  // 구버전 시나리오의 max_silence_waves(고립 휴면 기준)를 옮겨 읽는다.
+  sim.starvation_waves       = cfg.starvation_waves ?? cfg.max_silence_waves ?? 3;
   // time_categories와 달리 **빈 배열은 그대로 보존**한다(자기-선언형 상태 기능을
   // 의도적으로 끈 것) — 필드 자체가 없는 구버전 시나리오만 기본값으로 폴백한다.
   sim.state_categories = Array.isArray(cfg.state_categories)

@@ -121,26 +121,32 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
 ── 감염 (이동 후 위치 기준) ──
 15. _apply_infection_wave(run_wave, disp_wave)   : 같은 wave·같은 장소 접촉 → 확률 전염
 
-── 휴면 스트릭 갱신 ──
-16. 이번 wave에 발화한 각 에이전트: 아무에게도 안 닿았고(순수 혼잣말) 지금 곁에
-    대화 상대도 없으면 _solo_streak[k] += 1, 아니면 0으로 리셋
-    (_has_reachable_partner — 위치 미사용 시나리오는 항상 True → 스트릭 안 쌓임)
+── 도달 여부 집계 ──
+16. any_reached = any(reached_someone.values())  (시간 추정의 장면 보호 캡용)
+    (턴을 받은 에이전트는 결과 수집 직후 _last_turn_wave[key] = disp_wave 로 기록 —
+     성공 여부 무관. 소외 재투입의 기준)
 
 ── next_wave 조립 ──
 17. next_wave = scene_injections + routed   (active_agents인 것만)
 
 ── 침묵 처리 — 종료가 아니라 재투입/시간 점프 ──
-18. next_wave 비었으면:
-       _solo_streak < max_silence_waves 인 에이전트만 재투입(wakeable)
-       전원 휴면(wakeable 없음) → forced_silence_reinject + 전원 재투입
-    next_wave 있으면 silence_count = 0
+18. next_wave 비었으면 (전원 침묵): silence_count += 1
+       상태(sleep·busy·traveling)에 안 묶인 활성 에이전트 전원 재투입
+         → silence_count >= 2 면 idle_jump (1회째는 일반 시간 경로)
+       전원 상태 잠금이면 → 가장 먼저 풀리는 한 명(wake_key)만 재투입 + idle_jump
+    next_wave 있으면: silence_count = 0, 그리고 소외 재투입(starvation reinject) —
+       활성 · next_wave에 없음 · 상태 아님 · disp_wave - _last_turn_wave[k] >= starvation_waves
+       인 에이전트를 빈 incoming [] 으로 추가, _emit("starvation_reinject")
+       (한 번도 턴을 안 받은 에이전트는 run 시작 wave(_wave_base)를 기준으로 간주)
 
 ── 진행 불가 백스톱 ──
 19. 이번 wave에 성공한 발화 있으면 dead_waves=0, 없으면 dead_waves+1
-    dead_waves >= max(6, max_silence_waves×2) → end_reason="no_progress", break
+    dead_waves >= max(6, starvation_waves×2) → end_reason="no_progress", break
 
 ── 시간 누적 (variable 모드만) ──
-20. forced_silence_reinject → idle_minutes_schedule[silence_count], _emit("time_jump", mode="idle")
+20. idle_jump → idle_minutes_schedule[min(silence_count-1, len)-1] (2회째에 첫 값, 끝에서 포화;
+       전원 상태 잠금이면 가장 이른 해제 시점까지, 예정 이벤트 시각에서 클램프),
+       _emit("time_jump", mode="idle")
     아니면 → _classify_wave_time / _estimate_wave_minutes → _clamp_time_jump
             _emit("time_jump", {...}) → _elapsed_minutes += jump
 
