@@ -74,11 +74,17 @@ class _RunnerMixin:
         에이전트 없음(``no_agents``) · 외부 중지(``stopped``) · **진행 불가**
         (``no_progress`` — 연속으로 성공한 발화가 하나도 없어 사실상 고장난 실행).
 
-        대화가 시들해지는 것 자체로는 멈추지 않는다 — 전원 침묵이면 상태에 안
-        묶인 활성 에이전트를 전원 재투입하고, 2회 연속 침묵부터는 시간을 크게
-        건너뛴다(``idle`` 시간 점프). 대화가 오가는 동안에도 ``starvation_waves``
-        wave 이상 턴을 못 받은 에이전트는 빈 incoming 으로 재투입한다(소외
-        재투입 — starvation 방지). 예전의 ``early_stop_enabled`` 플래그는 제거됐다:
+        대화가 시들해지는 것 자체로는 멈추지 않는다 — 전원 침묵 1회째엔 상태에 안
+        묶인 활성 에이전트를 전원 재투입하고, 2회 연속 침묵부터는 소외 기준
+        해당자만 재투입하면서 시간을 크게 건너뛴다(``idle`` 시간 점프 — 예정
+        이벤트·상태 해제 시점 클램프). 그 결과 클램프된 짧은 wave 에는 사유가 있는
+        사람(자연 만료 해제 알림·예정 이벤트 알림·소외 해당)만 턴을 받고, 클램프
+        없이 크게 흘러 아무도 오지 않은 wave 는 wave 시작의 **빈 wave 안전장치**가
+        가용 전원(전원 상태 잠금이면 가장 먼저 풀리는 한 명)을 부른다. 대화가
+        오가는 동안에도 ``starvation_waves`` wave 이상 턴을 못 받은 에이전트는 빈
+        incoming 으로 재투입한다(소외 재투입 — starvation 방지).
+        ``resume_wave`` 는 ``None`` 이면 ``{start_agent: []}`` 로 시작하고, 빈 dict
+        ``{}`` 는 명시적 "빈 다음 wave" 재개 입력으로 그대로 받는다(안전장치 경로). 예전의 ``early_stop_enabled`` 플래그는 제거됐다:
         시간 개념이 있으면 "침묵"은 종료 신호가 아니라 "건너뛰기" 신호이고,
         시간 개념이 없는 순수 대화 시나리오는 더 이상 쓰이지 않는다.
         """
@@ -106,7 +112,17 @@ class _RunnerMixin:
             else:
                 events_by_wave.setdefault(e.get("wave", 0), []).append(e)
 
-        current_wave: dict[str, list] = resume_wave if resume_wave else {start_agent: []}
+        # `resume_wave=None`(새 시작·재개 입력 없음)만 start_agent 로 시작한다.
+        # **빈 dict `{}`** 는 "직전 run 의 다음 wave 가 비어 있었다"는 명시적
+        # 재개 입력이다 — 연속 전원 침묵 2회째부터는 소외 해당자가 없으면
+        # next_wave 가 비는 게 정상이라(아래 침묵 처리) 흔하다. 그 경우 start_agent
+        # 한 명으로 재시작하지 않고, 끊기지 않은 실행과 똑같이 첫 wave 시작의
+        # 자연 만료·예정 이벤트 편입 → 그래도 비면 빈 wave 안전장치가 처리한다.
+        # (/continue 는 백엔드가 빈 pending 을 None 으로 바꿔 넘기므로 사용자가
+        # 고른 start_agent 로 시작한다 — lifecycle.py.)
+        current_wave: dict[str, list] = (
+            dict(resume_wave) if resume_wave is not None else {start_agent: []}
+        )
         turn_counter  = 0
         total_turns   = 0
         silence_count = 0
@@ -218,7 +234,9 @@ class _RunnerMixin:
             # 퇴장(agent_exit)이 이번 wave 참가자를 비활성으로 만들었으면 이번 wave
             # 발화 목록에서도 뺀다 — active_agents/_pending_wave 에서만 지우고
             # current_wave 를 그대로 두면 이미 나간 인물이 이 wave 에 계속 발화해
-            # 로그·다른 인물 맥락에 남는다. 전원 퇴장이면 아래 no_agents 로 종료.
+            # 로그·다른 인물 맥락에 남는다. 활성 에이전트 전원이 퇴장했으면 아래
+            # 가드에서 no_agents 로 종료(참가자만 퇴장하고 남은 활성 에이전트가
+            # 있으면 빈 wave 안전장치가 그들을 부른다).
             current_wave = {k: v for k, v in current_wave.items()
                             if k in self.active_agents}
 
@@ -236,8 +254,8 @@ class _RunnerMixin:
             #   참가자"다. 이벤트 뒤라 agent_exit로 방금 비활성이 된 사람은 편입하지
             #   않는다(아래 active_agents 확인) — 그래서 가드 앞에 둬도 "전원 퇴장 →
             #   no_agents" 종료를 되살리지 않는다(디렉터가 가드 뒤에 있는 이유와 충돌
-            #   없음). 반대로 가드 뒤라면, 이번 wave 참가자가 전부 퇴장해 current_wave가
-            #   비었는데 남은 활성 에이전트가 마침 풀리는 경우 no_agents로 잘못 끝난다.
+            #   없음). 또 가드 앞이어야 빈 wave 안전장치가 "이번 wave에 사유가 있는
+            #   사람(해제·일정 알림)이 정말 아무도 없을 때"만 발동한다.
             # - 디렉터 앞이라 디렉터 개입이 해제 알림 **뒤**에 이어 붙는다(알림 →
             #   개입 순). 디렉터의 판단 입력(배치·고립·침묵)은 상태 조회가 전부
             #   now_elapsed 기준이라 삭제 시점과 무관하다.
@@ -271,6 +289,22 @@ class _RunnerMixin:
                           "content": self._status_release_notice(key, st)}
                 current_wave[key] = [notice, *held_released.get(key, []),
                                      *current_wave.get(key, [])]
+
+            # ── 빈 wave 안전장치 ────────────────────────────────────────────────
+            # 연속 전원 침묵 2회째부터는 next_wave 에 소외 해당자만 넣으므로(아래
+            # 침묵 처리) 여기까지 빈 채로 오는 게 정상 경로다. 그 뒤 시간이
+            # - 누군가의 상태 해제·예정 이벤트 시점에 **클램프돼 짧게** 흘렀으면
+            #   위 자연 만료·이벤트 편입이 그 사유가 있는 사람만 채워 여기 안 걸리고,
+            # - 클램프 없이 idle 스케줄(60/120/180분…)대로 **크게** 흘렀으면 아무도
+            #   사유가 없어 비어 있다 — 오랜 시간이 지났으니 전원이 움직이는 게
+            #   자연스럽다. 가용(상태 미잠금) 활성 에이전트 **전원**을 빈 incoming
+            #   으로 부르고, 전원 상태 잠금이면 가장 먼저 풀리는 한 명(침묵 처리의
+            #   wake_key 와 같은 규칙).
+            # 활성 에이전트가 하나도 없을 때만(초기 시나리오에 에이전트가 없거나
+            # 전원 agent_exit) 아래 no_agents 로 끝난다. 위치는 자연 만료 **뒤**,
+            # 디렉터·traveling 관문 **앞**(디렉터 개입이 이 wave 명단 위에 얹힌다).
+            if not current_wave and self.active_agents:
+                current_wave = self._empty_wave_fallback(disp_wave, now_elapsed)
 
             if not current_wave:
                 # 직전 루프가 종료 사유를 이미 세팅했으면(no_progress 등) 존중하고,
@@ -318,16 +352,35 @@ class _RunnerMixin:
                 for key in travelers:
                     self._hold_incoming(key, current_wave.pop(key))
             elif travelers:
-                # 활성 에이전트 전원이 하필 이 순간 동시에 이동 중인 극단적
-                # 경우 — current_wave를 완전히 비우면 no_agents 오판정
-                # (`if not current_wave` 가드는 이미 위에서 지나간 뒤라 여기선
-                # 안 걸리지만, 다음 wave 조립이 빈 채로 시작해 no_progress
-                # 오탐지로 이어질 수 있다). 이 희귀 케이스는 옛 동작(그대로
-                # 진행)으로 폴백한다 — 완벽히 막기보다 진행 불가를 피한다.
-                logger.warning(
-                    f"[W{disp_wave}] 활성 에이전트 전원이 이동 중 — traveling "
-                    f"필터를 건너뜀(전체 보류 시 진행 불가 위험): {sorted(travelers)}"
+                # 이번 wave 참가자 **전원**이 이동 중. 연속 전원 침묵 2회째부터는
+                # 짧은 클램프 wave 에 사유가 있는 사람만 들어오므로(아래 침묵 처리)
+                # "예정 이벤트 알림 대상이 하필 이동 중인 한 명뿐" 같은 wave 가 흔해졌다.
+                # 이동 중이 아닌 가용(상태 미잠금) 활성 에이전트가 있으면 참가자를
+                # 보류하고 그들로 채운다 — 빈 wave 안전장치와 같은 규칙이다(가드는
+                # 이미 지났으므로 여기서 한 번 더). 이동 중인 사람에게 턴을 주면
+                # 아직 도착 안 한 곳에서 활동하는 서사가 나온다(W82 재현).
+                available = sorted(
+                    k for k in self.active_agents
+                    if not self._agent_unavailable(k, now_elapsed)
                 )
+                if available:
+                    for key in travelers:
+                        self._hold_incoming(key, current_wave.pop(key))
+                    current_wave = {k: [] for k in available}
+                    logger.info(
+                        f"[W{disp_wave}] 참가자 전원 이동 중 {sorted(travelers)} — 보류하고 "
+                        f"빈 wave 안전장치로 가용 전원 재투입: {available}"
+                    )
+                else:
+                    # 활성 에이전트 전원이 상태에 묶였고 이번 wave 참가자는 전부 이동
+                    # 중인 극단적 경우 — current_wave를 완전히 비우면 빈 wave가 돌아
+                    # no_progress 카운트만 쌓인다. 이 희귀 케이스는 옛 동작(그대로
+                    # 진행)으로 폴백한다 — 완벽히 막기보다 진행 불가를 피한다.
+                    logger.warning(
+                        f"[W{disp_wave}] 활성 에이전트 전원이 이동 중(또는 상태 잠금) — "
+                        f"traveling 필터를 건너뜀(전체 보류 시 진행 불가 위험): "
+                        f"{sorted(travelers)}"
+                    )
 
             self._emit("wave_start", {
                 "wave":   disp_wave,
@@ -561,6 +614,22 @@ class _RunnerMixin:
                 path = self._agent_path.get(agent_key)
                 if not path:
                     continue
+                # 아직 이동 중(traveling)이면 경로를 **진행하지 않고 보존**한다 —
+                # hop 하나가 zone 경계를 건너 N분짜리 이동이 됐는데, 그 사이의 짧은
+                # wave(idle 점프가 남의 상태 해제·예정 이벤트 시점에 클램프돼 1분만
+                # 흐른 wave 등)에서 다음 hop을 꺼내면 traveling을 덮어써 순간이동이
+                # 되고, 중간 노드 사람에게 갈 도착 알림(pending_arrival_announcement)도
+                # 함께 사라진다(case1 v9 실측: 짱아가 17:00 고등학교→[거실, 동네]
+                # 경로의 첫 hop으로 17분 이동을 시작했는데 17:01 wave에서 바로
+                # 거실→동네로 넘어가 집을 1분에 통과, 거실의 엄마는 도착 알림 없음).
+                # 이 wave에서 `_apply_move_intents`/`_update_meeting_paths`가 경로를
+                # 새로 깔았더라도(만남 lock 재계산 등) 마찬가지로 보류만 한다. 도착
+                # 시점엔 wave 시작의 자연 만료 처리가 상태를 지우고 본인에게 알림 +
+                # 턴을 주므로, 그 wave의 이 루프에서 남은 경로가 정상 진행된다(그
+                # 턴의 move_to가 null이면 이어서 가고, 다른 곳을 고르면 위
+                # `_apply_move_intents`가 이미 경로를 교체해 둔 상태다).
+                if self._agent_traveling(agent_key, now_elapsed):
+                    continue
                 next_loc = path.pop(0)
                 if not path:
                     self._agent_path.pop(agent_key, None)
@@ -718,26 +787,60 @@ class _RunnerMixin:
 
             if not next_wave:
                 # 전원 침묵 — 이번 wave 에 아무도 서로에게 닿지 않았다. 종료하지
-                # 않는다(max_waves 까지 계속). 활성이고 상태(수면·개인 용무·이동)에
-                # 묶이지 않은 에이전트 **전원**을 한 번 재투입한다. 직접 타깃팅
-                # (routed/scene_injections)은 위 조립에서 이미 처리돼 이 경로와 무관.
+                # 않는다(max_waves 까지 계속). 누구를 다시 부를지는 연속 횟수로
+                # 갈린다(직접 타깃팅 — routed/scene_injections — 은 위 조립에서 이미
+                # 처리돼 이 경로와 무관):
+                # - **1회째**(silence_count == 1): 상태(수면·개인 용무·이동)에 안 묶인
+                #   활성 에이전트 **전원** 재투입 — 대화가 잠깐 끊긴 것일 수 있다.
+                # - **2회째부터**: **소외 기준 해당자만**(`_starved_agents` — 대화 중
+                #   소외 재투입과 같은 판정). next_wave 가 비어도 된다. 예전엔 매번
+                #   가용 전원을 불러서, idle 점프가 남의 상태 해제·예정 이벤트 시점에
+                #   클램프된 1~16분짜리 짧은 wave 마다 4명 전원이 LLM 을 호출해 같은
+                #   독백을 되풀이했다(case1 v9 실측: 낮 W31~47 턴 59개 중 50개가 반복
+                #   독백). 이제 그 짧은 wave 에는 **사유가 있는 사람만** 턴을 받는다 —
+                #   해제 알림 대상은 다음 wave 시작의 자연 만료 처리가, 예정 이벤트
+                #   알림 대상은 이벤트 편입(notified)이 자동으로 넣으므로 여기서 따로
+                #   넣지 않는다. 클램프 없이 idle 스케줄대로 크게 흘러 아무도 사유가
+                #   없으면 다음 wave 시작의 **빈 wave 안전장치**가 가용 전원을 부른다
+                #   (오랜 시간이 지났으니 전원 행동이 자연스럽다).
+                # - 가용자가 없고 전원 상태 잠금이면 가장 먼저 풀리는 한 명(wake_key).
                 #
                 # 시간: 연속 전원 침묵 1회째는 일반 시간 경로(has_content → LLM/
-                # 카테고리 추정)를 탄다 — 대화가 잠깐 끊긴 것일 수 있다. **2회
-                # 연속부터** idle 스케줄로 크게 점프한다 — 가족이 각자 회사·학교로
+                # 카테고리 추정)를 탄다. **2회 연속부터** idle 스케줄로 크게 점프한다
+                # (예정 이벤트·상태 해제 시점 클램프) — 가족이 각자 회사·학교로
                 # 흩어진 낮이 몇 분씩 조각나 max_waves 까지 갈리는 것을 막는다.
+                # 재투입 대상이 비어도(2회째+ 소외 해당자 없음) 가용자가 있으면
+                # idle 점프 규칙은 그대로다.
                 silence_count += 1
                 state_locked = {
                     k for k in self.active_agents
                     if self._agent_unavailable(k, now_elapsed)
                 }
-                reinject = sorted(self.active_agents - state_locked)
-                if reinject:
+                available = sorted(self.active_agents - state_locked)
+                reinject: list[str] = []
+                if available:
                     idle_jump = silence_count >= 2
-                    logger.info(
-                        f"[W{disp_wave}] 전원 침묵 #{silence_count} — 전원 재투입"
-                        f"({len(reinject)}명){' + idle 시간 점프' if idle_jump else ''}"
-                    )
+                    jump_note = " + idle 시간 점프" if idle_jump else ""
+                    if silence_count == 1:
+                        reinject = available
+                        logger.info(
+                            f"[W{disp_wave}] 전원 침묵 #1 — 가용 전원 재투입"
+                            f"({len(reinject)}명){jump_note}"
+                        )
+                    else:
+                        reinject, waves_since = self._starved_agents(
+                            disp_wave, now_elapsed, starve_baseline, starvation_waves,
+                        )
+                        logger.info(
+                            f"[W{disp_wave}] 전원 침묵 #{silence_count} — 소외 해당자만 "
+                            f"재투입 {reinject or '(없음)'}{jump_note}"
+                        )
+                        if reinject:
+                            self._emit("starvation_reinject", {
+                                "wave":        disp_wave,
+                                "agents":      reinject,
+                                "waves_since": waves_since,
+                            })
                 elif state_locked:
                     # 활성 에이전트 전원이 상태에 묶였다. 묶였다는 건 아직 시간이
                     # 덜 지났다는 뜻이라 전원을 깨워도 잠꼬대 반복뿐이다(v11 실측:
@@ -750,10 +853,7 @@ class _RunnerMixin:
                     # 시점에 다음 wave 상단의 만료 처리(`_expire_agent_states`)로
                     # 해제 알림과 함께 턴을 받아 자연히 합류한다.
                     idle_jump = True
-                    wake_key = min(
-                        state_locked,
-                        key=lambda k: self._agent_active_status(k, now_elapsed)["until_elapsed"],
-                    )
+                    wake_key = self._earliest_clearing_agent(state_locked, now_elapsed)
                     reinject = [wake_key]
                     logger.info(
                         f"[W{disp_wave}] 전원 침묵 #{silence_count} — 전원 상태 잠금"
@@ -769,15 +869,10 @@ class _RunnerMixin:
                 # 다른 가족이 계속 떠드는 동안 혼자 드레스룸으로 간 아빠가 W10~W17
                 # 내내 턴을 한 번도 못 받았다(case1 실측). 상태(수면·개인 용무·이동)
                 # 중인 에이전트는 제외 — 묶인 동안엔 깨워도 얻을 게 없다.
-                starved: list[str] = []
-                waves_since: dict[str, int] = {}
-                for k in sorted(self.active_agents):
-                    if k in next_wave or self._agent_unavailable(k, now_elapsed):
-                        continue
-                    gap = disp_wave - self._last_turn_wave.get(k, starve_baseline)
-                    if gap >= starvation_waves:
-                        starved.append(k)
-                        waves_since[k] = gap
+                starved, waves_since = self._starved_agents(
+                    disp_wave, now_elapsed, starve_baseline, starvation_waves,
+                    exclude=next_wave,
+                )
                 if starved:
                     for k in starved:
                         next_wave[k] = []
@@ -1024,6 +1119,74 @@ class _RunnerMixin:
             # "max_waves" | "target_duration" | "no_agents" | "no_progress" | "stopped"
             "end_reason":  end_reason,
         })
+
+    # ── 재투입 대상 선정 (소외 · 전원 상태 잠금 · 빈 wave 안전장치) ──────────────
+
+    def _starved_agents(
+        self,
+        disp_wave:        int,
+        now_elapsed:      int,
+        starve_baseline:  int,
+        starvation_waves: int,
+        exclude=(),
+    ) -> tuple[list[str], dict[str, int]]:
+        """소외 기준 해당자 — (key 사전순 목록, {key: 마지막 턴 이후 wave 수}).
+
+        가용(상태 미잠금) 활성 에이전트 중 마지막으로 턴을 받은 wave
+        (`_last_turn_wave`, 없으면 `starve_baseline`)로부터 `starvation_waves`
+        wave 이상 지난 사람. `exclude`(이미 next_wave 에 있는 사람 등)는 건너뛴다.
+        대화 중 소외 재투입과 연속 전원 침묵 2회째+ 재투입이 같은 판정을 쓴다.
+        """
+        starved: list[str] = []
+        waves_since: dict[str, int] = {}
+        for k in sorted(self.active_agents):
+            if k in exclude or self._agent_unavailable(k, now_elapsed):
+                continue
+            gap = disp_wave - self._last_turn_wave.get(k, starve_baseline)
+            if gap >= starvation_waves:
+                starved.append(k)
+                waves_since[k] = gap
+        return starved, waves_since
+
+    def _earliest_clearing_agent(self, locked_keys, now_elapsed: int) -> str:
+        """상태 잠금 에이전트 중 가장 먼저 풀리는 한 명(wake_key).
+
+        동률이면 key 사전순 — 집합 순회 순서(해시 시드)에 따라 매 실행 다른
+        사람이 깨는 일이 없게 한다. 호출부는 `locked_keys`가 전부 지금 유효한
+        상태를 가진 비어 있지 않은 집합임을 보장한다.
+        """
+        return min(
+            sorted(locked_keys),
+            key=lambda k: self._agent_active_status(k, now_elapsed)["until_elapsed"],
+        )
+
+    def _empty_wave_fallback(self, disp_wave: int, now_elapsed: int) -> dict[str, list]:
+        """빈 wave 안전장치 — wave 시작(자연 만료·예정 이벤트 편입 뒤)에 이번 wave
+        참가자가 아무도 없을 때의 대체 명단. 활성 에이전트가 있을 때만 불린다.
+
+        - 가용(상태 미잠금) 활성 에이전트가 있으면 **전원**을 빈 incoming 으로.
+          정상 흐름에서 여기 오는 건 연속 전원 침묵 2회째+ 에 소외 해당자가 없었고
+          그 뒤 idle 점프가 클램프 없이 크게(60/120/180분…) 흘러 해제·일정 알림
+          대상도 없는 경우다 — 오랜 시간이 지났으니 전원이 움직이는 게 자연스럽다.
+        - 가용자가 없고 전원 상태 잠금이면 가장 먼저 풀리는 한 명(침묵 처리의
+          wake_key 규칙과 동일). 시간 점프는 하지 않는다(이미 wave 시작 시각).
+        """
+        state_locked = {
+            k for k in self.active_agents if self._agent_unavailable(k, now_elapsed)
+        }
+        available = sorted(self.active_agents - state_locked)
+        if available:
+            logger.info(
+                f"[W{disp_wave}] 빈 wave 안전장치 — 이번 wave 에 턴을 받을 사람이 "
+                f"없어 가용 활성 에이전트 전원 재투입: {available}"
+            )
+            return {k: [] for k in available}
+        wake_key = self._earliest_clearing_agent(state_locked, now_elapsed)
+        logger.info(
+            f"[W{disp_wave}] 빈 wave 안전장치 — 활성 에이전트 전원 상태 잠금"
+            f"({len(state_locked)}명) → 가장 먼저 풀리는 {wake_key} 재투입"
+        )
+        return {wake_key: []}
 
     # ── 공간 기반 인지 라우팅 (perception_mode == "spatial") ────────────────────
 

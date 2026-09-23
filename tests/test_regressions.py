@@ -6958,6 +6958,9 @@ class SelfDeclaredStateTests(unittest.TestCase):
     def test_sleeping_agent_excluded_from_passive_reinjection(self):
         # a는 자고 있고 b는 고립(대화 상대 없음) — a가 재투입 후보에서 빠지고
         # b 혼자만 다시 초대돼야 한다(전원 상태 잠금으로 잘못 판정되지 않음).
+        # 연속 전원 침묵 2회째부터는 next_wave 에 소외 해당자만 넣으므로(W1 끝
+        # `_pending_wave` 는 비어도 된다), "누가 다음 wave 에 실제로 말하는지"로
+        # 본다 — W1 은 침묵 #1 재투입, W2 는 빈 wave 안전장치(가용 전원 = b).
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(
                 tmp,
@@ -6974,11 +6977,13 @@ class SelfDeclaredStateTests(unittest.TestCase):
                                    "min_minutes": 300, "max_minutes": 300}],
             )
             sim._emit = lambda t, d: None
-            sim.run("a", max_waves=2, step_delay=0.0, resume_wave={"a": [], "b": []})
+            sim.run("a", max_waves=3, step_delay=0.0, resume_wave={"a": [], "b": []})
 
         self.assertIn("a", sim._agent_status)  # 300분짜리라 아직 안 풀림
+        for w in (1, 2):
+            spk = {e.get("speaker") for e in sim.shared_log if e.get("wave") == w}
+            self.assertEqual(spk, {"b"}, f"W{w}")
         self.assertNotIn("a", sim._pending_wave)
-        self.assertIn("b", sim._pending_wave)
 
     def test_same_room_direct_message_to_sleeping_agent_still_delivered(self):
         # 핵심 설계 결정: 같은 방 사람이 자는 걸 알면서도 말을 걸면 전달돼야 한다
@@ -7106,6 +7111,8 @@ class SelfDeclaredStateTests(unittest.TestCase):
         # state_categories를 아예 안 쓰는(또는 상태가 하나도 안 걸린) 시나리오는
         # state_locked가 항상 빈 집합이라, 순수 고립(대화 상대 없음) 케이스의
         # 기존 "전원 재투입" 동작이 그대로 보존돼야 한다 — 회귀 없음 보증.
+        # 침묵 #1 은 전원 재투입(W1), 침묵 #2 부터는 소외 해당자가 없어 next_wave
+        # 가 비지만 다음 wave 시작의 빈 wave 안전장치가 전원을 부른다(W2).
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(
                 tmp,
@@ -7118,11 +7125,12 @@ class SelfDeclaredStateTests(unittest.TestCase):
                 ],
             )
             sim._emit = lambda t, d: None
-            sim.run("a", max_waves=2, step_delay=0.0,
+            sim.run("a", max_waves=3, step_delay=0.0,
                     resume_wave={"a": [], "b": []})
 
-        self.assertIn("a", sim._pending_wave)
-        self.assertIn("b", sim._pending_wave)
+        for w in (1, 2):
+            spk = {e.get("speaker") for e in sim.shared_log if e.get("wave") == w}
+            self.assertEqual(spk, {"a", "b"}, f"W{w}")
 
     def test_clamp_time_jump_respects_earliest_state_clear_not_just_forced_silence(self):
         # 외부 리뷰 Finding 3: 완전한 침묵(forced_silence_reinject)이 아니라
@@ -7612,6 +7620,165 @@ class NaturalStatusExpiryTests(unittest.TestCase):
             self.assertEqual(n("a", {"state": "traveling"}), "[씬] 목적지에 도착했다.")
 
 
+class MultiHopTravelTests(unittest.TestCase):
+    """다중 hop 경로 + zone 경계 이동(traveling) — 이동 중엔 경로를 진행하지 않는다.
+
+    case1 v9 실측: 짱아가 17:00 하교하며 move_to "동네" → 경로 [거실, 동네](외부
+    노드는 거실에만 연결). W43 에 첫 hop(고등학교→거실)으로 17분 traveling 을
+    시작했는데, W44(17:01 — idle 점프가 남의 상태 해제 시점에 클램프돼 1분만 흐름)
+    의 이동 루프가 아직 traveling 인데도 다음 hop(거실→동네)을 꺼내 traveling 을
+    덮어썼다 → 학교→집을 1분에 통과, 거실의 엄마에겐 도착 알림도 없음.
+
+    시간 결정론: 일반 경로 5분 고정, zone 이동 12분 고정, m·c 는 계속 대화(침묵 없음).
+    W0 0분(z 출발, ~12분) → W1 5분 → W2 10분(해제 캡 2분) → W3 12분(z 도착) → W4 17분.
+    """
+
+    _GRAPH = [
+        {"name": "거실",     "connects_to": ["고등학교", "동네", "안방"], "zone": "집",
+         "is_zone_entry": True},
+        {"name": "안방",     "connects_to": ["거실"], "zone": "집"},
+        {"name": "고등학교", "connects_to": ["거실"], "zone": "학교", "is_zone_entry": True},
+        {"name": "동네",     "connects_to": ["거실"], "is_exterior": True},
+    ]
+    _TIME_CATS = [{"id": "normal_scene", "label": "t", "min_minutes": 5, "max_minutes": 5}]
+    _CHAT = {
+        "m": [{"content": "저녁 뭐 먹지?", "target": "c"}],
+        "c": [{"content": "찌개요.",       "target": "m"}],
+    }
+
+    def _run(self, z_script, *, max_waves, locations=None, setup=None,
+             extra_script=None, resume=None):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        script = dict(self._CHAT, z=z_script, **(extra_script or {}))
+        locations = locations or {"z": "고등학교", "m": "거실", "c": "거실"}
+        resume = resume if resume is not None else sorted(locations)
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in script}
+            sim = Simulation(
+                agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+                llm=_ScriptedLLM(script),
+                agent_locations=locations, location_graph=self._GRAPH,
+                zone_travel_min_minutes=12, zone_travel_max_minutes=12,
+                time_mode="variable", time_categories=self._TIME_CATS,
+            )
+            if setup:
+                setup(sim)
+            emitted: list[tuple[str, dict]] = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            turns = NaturalStatusExpiryTests._record_turns(sim)
+            sim.run("m", max_waves=max_waves, step_delay=0.0, starvation_waves=100,
+                    resume_wave={k: [] for k in resume})
+        return sim, turns, emitted
+
+    _GO_OUT =[{"content": "떡볶이 먹으러 가자!", "target": "self", "move_to": "동네"},
+               {"content": "집 앞이다. 계속 가자.", "target": "self"}]
+
+    @staticmethod
+    def _moves(emitted, agent):
+        return [(d["wave"], d["from"], d["to"]) for t, d in emitted
+                if t == "agent_move" and d["agent"] == agent]
+
+    def test_remaining_path_is_kept_while_the_first_hop_is_still_traveling(self):
+        sim, turns, emitted = self._run(self._GO_OUT, max_waves=2)
+
+        # W1(5분)에도 아직 이동 중(~12분) — 다음 hop(거실→동네)을 꺼내면 안 된다.
+        self.assertEqual(self._moves(emitted, "z"), [(0, "고등학교", "거실")])
+        self.assertEqual(sim._agent_location["z"], "거실")
+        self.assertEqual(sim._agent_path.get("z"), ["동네"])
+        st = sim._agent_status["z"]
+        self.assertEqual((st["state"], st["arrival_location"], st["until_elapsed"]),
+                         ("traveling", "거실", 12))
+        # 중간 노드 사람에게 갈 도착 알림 플래그가 덮어써지지 않고 살아 있다.
+        self.assertTrue(st.get("pending_arrival_announcement"))
+        self.assertEqual([w for w, k, _ in turns if k == "z"], [0])
+
+    def test_release_wave_gives_arrival_notice_then_takes_the_next_hop(self):
+        sim, turns, emitted = self._run(self._GO_OUT, max_waves=4)
+
+        z_turns = NaturalStatusExpiryTests._of(turns, "z")
+        self.assertEqual([w for w, _ in z_turns], [0, 3])
+        self.assertEqual(z_turns[1][1][0]["content"], "[씬] 거실에 도착했다.")
+        # 도착 wave 턴의 move_to 가 null → 남은 경로 [동네] 로 이어서 간다.
+        self.assertEqual(self._moves(emitted, "z"),
+                         [(0, "고등학교", "거실"), (3, "거실", "동네")])
+        self.assertEqual(sim._agent_location["z"], "동네")
+        self.assertNotIn("z", sim._agent_path)
+        st = sim._agent_status["z"]
+        self.assertEqual((st["state"], st["arrival_location"], st["until_elapsed"]),
+                         ("traveling", "동네", 24))
+
+    def test_bystander_at_the_intermediate_node_gets_arrival_then_departure(self):
+        _, turns, _ = self._run(self._GO_OUT, max_waves=5)
+
+        scenes_by_wave = {
+            w: [m["content"] for m in inc if m["speaker"] == "씬"]
+            for w, inc in NaturalStatusExpiryTests._of(turns, "m")
+        }
+        # 도착 전(W1~W3)엔 도착 알림이 없고, 도착 다음 wave(W4)에 도착 → 이탈 순.
+        for w in (1, 2, 3):
+            self.assertEqual(scenes_by_wave.get(w, []), [], f"W{w}")
+        self.assertEqual(scenes_by_wave[4],
+                         ["[씬] z이(가) 이곳에 도착했다.", "[씬] z이(가) 자리를 떠났다."])
+
+    def test_new_move_to_on_the_release_turn_replaces_the_remaining_path(self):
+        script = [self._GO_OUT[0],
+                  {"content": "그냥 집에 있을래.", "target": "self", "move_to": "안방"}]
+        sim, _, emitted = self._run(script, max_waves=4)
+
+        self.assertEqual(self._moves(emitted, "z"),
+                         [(0, "고등학교", "거실"), (3, "거실", "안방")])
+        self.assertEqual(sim._agent_location["z"], "안방")
+        self.assertNotIn("z", sim._agent_path)
+        self.assertNotIn("z", sim._agent_status)   # 구역 안 이동 — traveling 없음
+
+    # ── 만남(meeting) lock 과 traveling ──────────────────────────────────────
+
+    def test_meeting_steer_does_not_force_a_hop_on_a_traveling_chaser(self):
+        # z 는 집으로 들어오는 중(~12분, raw 위치는 이미 거실)인데 안방의 m 을
+        # 만나려는 lock 이 있다. `_update_meeting_paths` 가 매 wave 거실→안방
+        # 경로를 깔지만, 도착 전엔 그 hop 을 밟으면 안 된다.
+        def setup(sim):
+            sim._agent_status["z"] = {"state": "traveling", "until_elapsed": 12,
+                                      "arrival_location": "거실",
+                                      "pending_arrival_announcement": True}
+            sim._meeting_intent["z"] = "m"
+
+        sim, turns, emitted = self._run(
+            [{"content": "엄마 어디 있지?", "target": "self"}], max_waves=5,
+            locations={"z": "거실", "m": "안방", "c": "안방"}, setup=setup,
+        )
+
+        self.assertEqual(self._moves(emitted, "z"), [(3, "거실", "안방")])
+        self.assertEqual(sim._agent_location["z"], "안방")
+        arrived = [(d["wave"], d["status"]) for t, d in emitted
+                   if t == "meeting_update" and d["chaser"] == "z"]
+        self.assertEqual(arrived, [(4, "arrived")])
+
+    def test_meeting_is_not_met_while_the_target_is_still_traveling(self):
+        # raw 위치가 같아도 대상이 아직 이동 중이면 "만났다"가 아니다 — lock 을
+        # 유지하다가 도착(W3 시작의 자연 만료) 뒤에 met 으로 푼다.
+        def setup(sim):
+            sim._agent_status["z"] = {"state": "traveling", "until_elapsed": 12,
+                                      "arrival_location": "거실",
+                                      "pending_arrival_announcement": True}
+            sim._meeting_intent["a"] = "z"
+
+        # a 는 거실에서 z 를 기다리는 추격자(혼잣말만). 안방의 m·c 대화가 wave 를
+        # 굴린다 — a 는 W0 이후 턴이 없어도 lock 판정은 매 wave 이동 단계에서 돈다.
+        _, _, emitted = self._run(
+            [{"content": "다녀왔어.", "target": "self"}], max_waves=5,
+            locations={"z": "거실", "a": "거실", "m": "안방", "c": "안방"},
+            setup=setup, extra_script={"a": [{"content": "...", "target": "self"}]},
+            resume=["m", "c"],
+        )
+
+        flow = [(d["wave"], d["status"], d["reason"]) for t, d in emitted
+                if t == "meeting_update" and d["chaser"] == "a"]
+        self.assertEqual(flow, [(3, "arrived", "met")])
+        self.assertEqual(self._moves(emitted, "a"), [])
+
+
 class AgentContextStatusFieldTests(unittest.TestCase):
     """GET /agents/{name}/context 응답에 상태(수면·이동 등) 필드가 실리는지.
 
@@ -8050,6 +8217,220 @@ class IsolatedAgentReinjectTests(unittest.TestCase):
         self.assertIn("[고립된 에이전트", captured["user"])
         self.assertIn('ID: "a"', captured["user"].split("[고립된 에이전트")[1].split("[반복")[0])
         self.assertIn("억지로 발화시키지 마십시오", captured["user"])
+
+
+class SilenceReinjectScopeTests(unittest.TestCase):
+    """연속 전원 침묵 재투입 범위 축소 + 빈 wave 안전장치 (runner.py).
+
+    case1 v9 실측: 낮(W31~47, 08:40~18:00) 턴 59개 중 50개가 반복 독백. 전원 침묵
+    때마다 가용 전원을 재투입하는데, idle 점프가 남의 상태 해제·예정 이벤트 시점에
+    클램프돼 1~16분짜리 짧은 wave 가 많아져 누가 이동을 마칠 때마다 4명 전원이 LLM
+    을 호출했다. 이제:
+      - 연속 전원 침묵 1회째: 가용(상태 미잠금) 활성 에이전트 전원 재투입(그대로).
+      - 2회째부터: 소외 기준 해당자만 — next_wave 가 비어도 된다.
+      - 다음 wave 시작(자연 만료·예정 이벤트 편입 뒤)에 그래도 비면 빈 wave
+        안전장치가 가용 전원(전원 상태 잠금이면 가장 먼저 풀리는 한 명)을 부른다.
+    """
+
+    _GRAPH = [
+        {"name": "거실", "connects_to": ["안방", "회사", "학교", "도장"]},
+        {"name": "안방", "connects_to": ["거실"]},
+        {"name": "회사", "connects_to": ["거실"]},
+        {"name": "학교", "connects_to": ["거실"]},
+        {"name": "도장", "connects_to": ["거실"]},
+    ]
+    _TIME_CATS  = [{"id": "normal_scene", "label": "t", "min_minutes": 10, "max_minutes": 10}]
+    _STATE_CATS = [
+        {"id": "sleep", "label": "수면", "min_minutes": 300, "max_minutes": 300},
+        {"id": "busy",  "label": "수련", "min_minutes": 20,  "max_minutes": 20},
+    ]
+    _SOLO = [{"content": "혼잣말.", "target": "self"}]
+
+    def _sim(self, tmp, keys, locations, **kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        script = {k: self._SOLO for k in keys}
+        script.update(kw.pop("script", {}))
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in script}
+        kw.setdefault("time_categories", self._TIME_CATS)
+        kw.setdefault("state_categories", self._STATE_CATS)
+        kw.setdefault("idle_minutes_schedule", [60])
+        return Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=_ScriptedLLM(script),
+            agent_locations=locations, location_graph=self._GRAPH,
+            time_mode="variable", **kw,
+        )
+
+    @staticmethod
+    def _speakers(turns, wave):
+        return {k for w, k, _ in turns if w == wave}
+
+    def _go(self, sim, *, max_waves, resume_wave, events=None, starvation_waves=3):
+        emitted: list[tuple[str, dict]] = []
+        sim._emit = lambda t, d: emitted.append((t, d))
+        turns = NaturalStatusExpiryTests._record_turns(sim)
+        sim.run("a", max_waves=max_waves, step_delay=0.0, events=events,
+                starvation_waves=starvation_waves, resume_wave=resume_wave)
+        return turns, emitted
+
+    # ── 침묵 재투입 범위 ─────────────────────────────────────────────────────
+
+    def test_first_silence_reinjects_every_available_agent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, ["a", "b", "c"], {"a": "거실", "b": "회사", "c": "안방"})
+            sim._agent_status["c"] = {"state": "sleep", "until_elapsed": 9999}
+            self._go(sim, max_waves=1, resume_wave={"a": [], "b": []})
+        self.assertEqual(sim._pending_wave, {"a": [], "b": []})   # 잠긴 c 제외
+
+    def test_second_silence_reinjects_nobody_when_no_one_is_starved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, ["a", "b"], {"a": "거실", "b": "회사"})
+            _, emitted = self._go(sim, max_waves=2, resume_wave={"a": [], "b": []})
+        self.assertEqual(sim._pending_wave, {})
+        jumps = [d for t, d in emitted if t == "time_jump"]
+        # idle 점프 규칙은 그대로 — 재투입 대상이 비어도 2회째부터 idle 스케줄.
+        self.assertEqual([(j["wave"], j["mode"]) for j in jumps],
+                         [(0, "category"), (1, "idle")])
+        self.assertEqual(jumps[1]["reason"], "연속 전원 침묵 2회")
+
+    def test_second_silence_onward_reinjects_only_starved_agents(self):
+        # starvation_waves=1. W0·W1 전원 독백(침묵 #1 전원 → #2 해당자 없음) →
+        # idle 60분이 12:30 예정 이벤트에 클램프(20분) → W2 는 알림 대상 a 만 →
+        # 침묵 #3 → b·d 가 1 wave 쉬어 소외 해당 → W3 은 b·d 만(a 제외).
+        events = [{"at_time": "12:30", "type": "system_message",
+                   "message": "12:30. 점심시간이다.", "targets": ["a"]}]
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, ["a", "b", "d"],
+                            {"a": "거실", "b": "회사", "d": "학교"},
+                            sim_start_time="12:00")
+            turns, emitted = self._go(sim, max_waves=4, events=events, starvation_waves=1,
+                                      resume_wave={"a": [], "b": [], "d": []})
+        self.assertEqual(self._speakers(turns, 1), {"a", "b", "d"})
+        self.assertEqual(self._speakers(turns, 2), {"a"})        # 안전장치 미발동
+        self.assertEqual(self._speakers(turns, 3), {"b", "d"})
+        sr = [(d["wave"], d["agents"], d["waves_since"]) for t, d in emitted
+              if t == "starvation_reinject"]
+        # 침묵 분기의 재투입도 같은 관전 이벤트로 나간다(W3 끝엔 이번엔 a 차례).
+        self.assertEqual(sr[0], (2, ["b", "d"], {"b": 1, "d": 1}))
+        self.assertEqual(sr[1][:2], (3, ["a"]))
+
+    # ── 빈 wave 안전장치 ─────────────────────────────────────────────────────
+
+    def test_safety_net_reinjects_all_available_when_nobody_has_a_reason(self):
+        # 클램프 없이 idle 60분이 흐른 뒤라 해제·일정 알림 대상이 없다 → 가용 전원.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, ["a", "b", "c"], {"a": "거실", "b": "회사", "c": "안방"})
+            sim._agent_status["c"] = {"state": "sleep", "until_elapsed": 9999}
+            with self.assertLogs("ABM.simulation.runner", level="INFO") as logs:
+                turns, emitted = self._go(sim, max_waves=3,
+                                          resume_wave={"a": [], "b": []})
+        self.assertEqual(sim._pending_wave, {})      # W2 끝(침묵 #3)도 해당자 없음
+        self.assertEqual(self._speakers(turns, 2), {"a", "b"})   # 잠긴 c 제외
+        net = [m for m in logs.output if "빈 wave 안전장치" in m]
+        self.assertEqual(len(net), 1, logs.output)
+        self.assertIn("[W2]", net[0])
+        ws2 = next(d for t, d in emitted if t == "wave_start" and d["wave"] == 2)
+        self.assertEqual(sorted(ws2["agents"]), ["a", "b"])
+
+    def test_release_or_event_participants_suppress_the_safety_net(self):
+        # 빈 current_wave 에 해제 대상(a)이 편입되면 그들만 턴을 받는다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, ["a", "b"], {"a": "안방", "b": "회사"})
+            sim._agent_status["a"] = {"state": "busy", "until_elapsed": 0}
+            with self.assertLogs("ABM.simulation.runner", level="INFO") as logs:
+                turns, _ = self._go(sim, max_waves=1, resume_wave={})
+        self.assertEqual(self._speakers(turns, 0), {"a"})
+        self.assertFalse([m for m in logs.output if "빈 wave 안전장치" in m])
+
+    def test_safety_net_wakes_only_the_earliest_clearing_agent_when_all_locked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, ["a", "b"], {"a": "안방", "b": "회사"})
+            sim._agent_status["a"] = {"state": "sleep", "until_elapsed": 500}
+            sim._agent_status["b"] = {"state": "busy",  "until_elapsed": 50}
+            turns, _ = self._go(sim, max_waves=1, resume_wave={})
+        self.assertEqual(self._speakers(turns, 0), {"b"})
+        self.assertIn("a", sim._agent_status)
+
+    def test_empty_resume_input_uses_the_safety_net_not_start_agent(self):
+        # resume_wave={} 는 "직전 run 의 다음 wave 가 비어 있었다"는 명시적 재개
+        # 입력이다(/resume 이 저장된 pending "{}" 를 그대로 넘긴다) — start_agent
+        # 한 명이 아니라 끊기지 않은 실행과 같은 경로(안전장치)를 탄다.
+        # resume_wave=None(새 시작)만 start_agent 로 시작한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, ["a", "b"], {"a": "거실", "b": "회사"})
+            turns, _ = self._go(sim, max_waves=1, resume_wave={})
+        self.assertEqual(self._speakers(turns, 0), {"a", "b"})
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, ["a", "b"], {"a": "거실", "b": "회사"})
+            turns, _ = self._go(sim, max_waves=1, resume_wave=None)
+        self.assertEqual(self._speakers(turns, 0), {"a"})
+
+    def test_no_active_agents_still_ends_with_no_agents(self):
+        events = [{"wave": 1, "type": "agent_exit", "agent": "a", "message": "퇴장"},
+                  {"wave": 1, "type": "agent_exit", "agent": "b", "message": "퇴장"}]
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, ["a", "b"], {"a": "거실", "b": "회사"})
+            turns, emitted = self._go(sim, max_waves=5, events=events,
+                                      resume_wave={"a": [], "b": []})
+        end = next(d for t, d in emitted if t == "simulation_end")
+        self.assertEqual(end["end_reason"], "no_agents")
+        self.assertEqual({w for w, _, _ in turns}, {0})
+
+    def test_participants_exiting_leaves_the_rest_to_the_safety_net(self):
+        # 이번 wave 참가자(a)만 퇴장하고 활성 에이전트(b)가 남았으면 no_agents 로
+        # 끝내지 않는다(예전엔 여기서 no_agents 종료).
+        events = [{"wave": 0, "type": "agent_exit", "agent": "a", "message": "퇴장"}]
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, ["a", "b"], {"a": "거실", "b": "회사"})
+            turns, emitted = self._go(sim, max_waves=1, events=events,
+                                      resume_wave={"a": []})
+        self.assertEqual(self._speakers(turns, 0), {"b"})
+        end = next(d for t, d in emitted if t == "simulation_end")
+        self.assertEqual(end["end_reason"], "max_waves")
+
+    def test_wave_of_only_traveling_participants_is_refilled_with_available_agents(self):
+        # 18:00 알림 대상 a 가 하필 이동 중이고 다른 사유자가 없다 — a 를 턴에
+        # 올리면 아직 도착 안 한 곳에서 활동한다(W82 재현). a 는 보류, 가용 전원.
+        events = [{"at_time": "18:00", "type": "system_message",
+                   "message": "18:00. 학원이 끝났다.", "targets": ["a"]}]
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, ["a", "b", "c"],
+                            {"a": "거실", "b": "회사", "c": "안방"},
+                            sim_start_time="18:00")
+            sim._agent_status["a"] = {"state": "traveling", "until_elapsed": 999,
+                                      "arrival_location": "거실"}
+            turns, _ = self._go(sim, max_waves=1, events=events, resume_wave={})
+            mem = [m.get("content", "") for m in sim.agents["a"].memory]
+        self.assertEqual(self._speakers(turns, 0), {"b", "c"})
+        self.assertTrue(any("18:00. 학원이 끝났다." in c for c in mem))   # 사실은 전달
+        self.assertEqual(sim._agent_status["a"]["state"], "traveling")
+
+    # ── 실측 재현형 ──────────────────────────────────────────────────────────
+
+    def test_short_clamped_wave_after_one_release_gives_the_turn_only_to_that_agent(self):
+        # 16:00 낮, 가족 넷이 각자 다른 곳에서 독백. k 는 16:11 에 수련이 끝난다.
+        # W0(16:00) f·m·z 독백 → 침묵 #1(10분) → W1(16:10) 침묵 #2 → idle 60분이
+        # k 해제 시점에 클램프돼 **1분** → W2(16:11) 는 k 혼자 턴(예전엔 넷 다).
+        # 그 뒤 침묵 #3 → 클램프 없는 60분 점프 → W3(17:11) 은 안전장치로 전원.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, ["f", "k", "m", "z"],
+                            {"f": "회사", "k": "도장", "m": "거실", "z": "학교"},
+                            sim_start_time="16:00")
+            sim._agent_status["k"] = {"state": "busy", "until_elapsed": 11}
+            turns, emitted = self._go(sim, max_waves=4,
+                                      resume_wave={"f": [], "m": [], "z": []})
+
+        jumps = [(d["wave"], d["mode"], d["minutes"], d["clamp_reason"])
+                 for t, d in emitted if t == "time_jump"]
+        self.assertEqual(jumps[1], (1, "idle", 1, "상태 해제 시점 전까지 60→1분"))
+        self.assertEqual(self._speakers(turns, 2), {"k"})
+        k_w2 = next(inc for w, k, inc in turns if w == 2 and k == "k")
+        self.assertEqual(k_w2[0]["content"], "[씬] 하던 일을 마쳤다: 수련. (도장)")
+        self.assertEqual(jumps[2], (2, "idle", 60, None))
+        self.assertEqual(self._speakers(turns, 3), {"f", "k", "m", "z"})
+        # LLM 턴 수: 3 + 3 + 1 + 4 = 11 (예전: 3 + 3 + 4 + 4 = 14)
+        self.assertEqual(len(turns), 11)
 
 
 class DirectorPlacementAwarenessTests(unittest.TestCase):

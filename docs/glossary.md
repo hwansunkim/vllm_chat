@@ -408,7 +408,8 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 | **start_agent (시작 에이전트)** | wave 0에서 첫 발화하는 에이전트 |
 | **initial_active / 초기 등장** | `false`면 비활성으로 시작 → `agent_enter` 이벤트로 등장 |
 | **소외 재투입 (starvation reinject)** | 대화가 오가는 wave에도 마지막 턴(`_last_turn_wave`, disp_wave) 이후 `starvation_waves` wave 이상 턴을 못 받은(상태에 안 묶인) 에이전트를 빈 incoming으로 재투입. 혼자 다른 방에 간 에이전트의 starvation 방지. 이벤트 `starvation_reinject`(비영속). 구 "고립 휴면(dormancy, `_solo_streak`/`max_silence_waves`)"을 대체 |
-| **전원 침묵 (all silent)** | next_wave가 빔 → 상태에 안 묶인 활성 에이전트 전원 재투입. 연속 1회째는 일반 시간 경로, 2회째부터 `idle` 시간 점프. 전원 상태 잠금이면 가장 먼저 풀리는 한 명만 + 해제 시점까지 점프 |
+| **전원 침묵 (all silent)** | next_wave가 빔 → 연속 1회째는 상태에 안 묶인(가용) 활성 에이전트 전원 재투입 + 일반 시간 경로, 2회째부터는 소외 기준 해당자만 재투입(없으면 next_wave 빈 채로) + `idle` 시간 점프. 전원 상태 잠금이면 가장 먼저 풀리는 한 명만 + 해제 시점까지 점프 |
+| **빈 wave 안전장치** | wave 시작(자연 만료·예정 이벤트 편입 뒤)에 current_wave가 비었는데 활성 에이전트가 있으면 `no_agents`로 끝내지 않고 가용 전원(전원 상태 잠금이면 가장 먼저 풀리는 한 명)을 빈 incoming으로 재투입(`_empty_wave_fallback`). 클램프 없이 크게 흐른 idle 점프 뒤 아무도 사유가 없을 때 전원을 부르는 경로 |
 | **진행 불가 (no_progress)** | 연속으로 성공한 발화가 하나도 없는 wave가 `max(6, starvation_waves×2)`회 → 사실상 고장(LLM 서버 다운 등)으로 보고 종료. 구 `early_stop`이 암묵적으로 하던 보호 |
 | **end_reason** | 종료 사유: `max_waves` / `target_duration` / `no_agents` / `no_progress` / `stopped`. (구 `early_stop_enabled` 플래그와 `silence` end_reason은 제거 — 대화가 시들해지는 것으로는 더 이상 종료하지 않고 시간을 건너뛴다) |
 | **목표 기간 (target_duration_minutes)** | 시뮬레이션 내 경과 시간이 이 값에 도달하면 정상 종료. `max_waves`와 함께 쓰면 먼저 도달하는 쪽 |

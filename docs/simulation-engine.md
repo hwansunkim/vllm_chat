@@ -44,6 +44,13 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 유령 발화, "밤새 앓았는데 증상은 그대로"류 모순이 생긴다 (`runner.py` 주석이 각각의
 과거 버그를 기록).
 
+루프 진입 전 `current_wave = resume_wave if resume_wave is not None else {start_agent: []}`
+— `None`(새 시작)만 start_agent 로 시작한다. 빈 dict `{}`는 "직전 run 의 다음 wave 가
+비어 있었다"는 명시적 재개 입력이라(연속 전원 침묵 2회째+ 에서 흔하다, 18번) 첫 wave 의
+2b·3번(자연 만료·예정 이벤트 편입 → 빈 wave 안전장치)을 그대로 탄다 — `/resume` 이
+저장된 pending `"{}"` 를 넘기는 경우. `/continue` 는 백엔드가 빈 pending 을 `None` 으로
+바꿔 넘기므로 사용자가 고른 start_agent 로 시작한다(lifecycle.py).
+
 `for run_wave in range(max_waves)` 안에서:
 
 ```
@@ -77,19 +84,35 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
                    "[씬] 잠에서 깼다. (누나방)" / "[씬] 하던 일을 마쳤다: 씻기. (안방화장실)")
        ※ 위치 이유: 자연 만료는 at_time 이벤트의 notified 처럼 "엔진이 시간으로
          부르는 참가자"라 이벤트·활성 필터 뒤(방금 퇴장한 사람은 편입 안 함),
-         3번 가드 앞(참가자가 전부 퇴장해 비었어도 마침 풀리는 활성 에이전트가
-         있으면 no_agents 로 잘못 끝나지 않게 — 활성만 넣으므로 "전원 퇴장"
-         종료는 그대로), 디렉터 앞(개입이 알림 뒤에 붙는다), traveling 관문 앞
-         (방금 도착한 사람은 통과). 예전엔 LLM 호출 **뒤**에 있어 풀린 본인은 그
+         3번 가드 앞(사유가 있는 사람이 정말 아무도 없을 때만 빈 wave 안전장치가
+         발동하도록 — 활성만 넣으므로 "전원 퇴장" 종료는 그대로), 디렉터 앞(개입이
+         알림 뒤에 붙는다), traveling 관문 앞(방금 도착한 사람은 통과). 예전엔 LLM 호출 **뒤**에 있어 풀린 본인은 그
          wave 에 턴도 알림도 없었다(case1: 23:09 에 씻기가 끝난 아빠가 01:46 에야 턴).
        ※ 개입으로 턴을 받아 enter_state 를 비워 즉시 해제되는 경로(12b)는 이
          만료를 거치지 않으므로 알림 대상이 아니다.
- 3. current_wave 비었으면 종료 (직전 루프가 no_progress 세팅했으면 존중, 아니면 "no_agents")
+ 3. current_wave 비었으면:
+       활성 에이전트가 있으면 → **빈 wave 안전장치** (_empty_wave_fallback, logger.info)
+         가용(상태 미잠금) 활성 에이전트 전원을 빈 incoming [] 으로. 가용자가 없고
+         전원 상태 잠금이면 가장 먼저 풀리는 한 명(18번 wake_key 와 같은 규칙,
+         동률은 key 사전순). 시간 점프는 하지 않는다.
+         ※ 정상 흐름에서 여기 오는 건 18번이 연속 전원 침묵 2회째+ 에 소외 해당자가
+           없어 next_wave 를 비웠고, 그 뒤 idle 점프가 클램프 없이 크게(60/120/180분)
+           흘러 2·2b 의 편입 대상(일정 알림·해제)도 없는 경우다 — 오랜 시간이
+           지났으니 전원 행동이 자연스럽다. 클램프된 짧은 wave 는 2·2b 가 사유가
+           있는 사람만 채워 여기 안 걸린다.
+         ※ 이번 wave 참가자만 agent_exit 하고 다른 활성 에이전트가 남은 경우도 여기로
+           온다(예전엔 no_agents 종료).
+       활성 에이전트가 하나도 없으면 → 종료 (직전 루프가 no_progress 세팅했으면
+         존중, 아니면 "no_agents")
  4. 디렉터 (disp_wave > 0 이고 disp_wave % interval == 0)
        _run_system_agent(disp_wave, current_wave) → 개입/세계사건을 current_wave에 주입
        ※ wave 루프 상단에서 돈다 — emit·반응 wave·표시 시각이 일치하도록
  4b. traveling 공통 관문 — current_wave 에 남은 이동 중 에이전트를 _hold_incoming 으로
        보류하고 제외(예약 이벤트·디렉터가 traveling 체크 없이 꽂은 경우 차단)
+       참가자 **전원**이 이동 중이면: 이동 중이 아닌 가용 활성 에이전트가 있으면 참가자를
+         보류하고 그들 전원으로 채운다(3번 안전장치와 같은 규칙 — 18번 축소 이후 "일정
+         알림 대상이 하필 이동 중인 한 명뿐"인 wave 가 흔해져서). 가용자도 없는 극단적
+         경우만 옛 폴백(그대로 진행 + warning).
  5. _emit("wave_start", {wave, agents})
  6. self._turn_executor.submit(...) × len(current_wave):
        각 (agent_key, incoming) → _step_agent(agent_key, run_wave, disp_wave, turn, incoming)
@@ -138,6 +161,13 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
     _update_meeting_paths(scene_injections)  : 추격/랑데부/집결 경로 계산
     _emit_meeting_updates(disp_wave, meeting_before)
 14. 각 agent의 _agent_path에서 next_loc pop → _agent_location 갱신
+       단, 지금(now_elapsed) traveling 중이면 pop 하지 않고 경로를 **보존**한다 —
+         다음 hop 을 꺼내면 traveling 을 덮어써 순간이동이 되고 중간 노드 사람의
+         도착 알림(pending_arrival_announcement)도 사라진다(case1 v9: 17:00 학교→
+         [거실, 동네] 첫 hop 17분 이동 중 17:01 wave 에서 거실→동네로 넘어감).
+         13번이 이 wave 에 경로를 새로 깔았어도(만남 재계산 등) 보류만 한다. 도착 wave
+         에는 2b 가 상태를 지우고 알림 + 턴을 주므로 여기서 다음 hop 이 정상 진행된다
+         (그 턴 move_to 가 null 이면 이어서, 다른 곳이면 13번이 이미 경로를 교체).
        _emit("agent_move")
        도착지/출발지 사람들에게 "[씬] 도착/이탈" scene_injection
        (아는 사이면 실명, 아니면 "낯선 이가 나타났다: <외모>")
@@ -161,13 +191,22 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
 
 ── 침묵 처리 — 종료가 아니라 재투입/시간 점프 ──
 18. next_wave 비었으면 (전원 침묵): silence_count += 1
-       상태(sleep·busy·traveling)에 안 묶인 활성 에이전트 전원 재투입
-         → silence_count >= 2 면 idle_jump (1회째는 일반 시간 경로)
+       가용(sleep·busy·traveling 에 안 묶인) 활성 에이전트가 있으면:
+         silence_count == 1 → 가용 전원 재투입 (시간은 일반 경로)
+         silence_count >= 2 → **소외 기준 해당자만** 재투입(_starved_agents — 아래 소외
+           재투입과 같은 판정, 있으면 _emit("starvation_reinject")) + idle_jump.
+           해당자가 없으면 next_wave 는 **빈 채로** 둔다 — 해제 알림 대상(2b)·예정 이벤트
+           알림 대상(2 notified)은 다음 wave 시작에 자동 편입되고, 아무도 없으면 3번
+           빈 wave 안전장치가 가용 전원을 부른다.
+           (의도: idle 점프가 남의 상태 해제·예정 이벤트 시점에 클램프된 1~16분짜리
+            짧은 wave 에서는 사유가 있는 사람만 턴을 받는다. case1 v9 실측: 낮 W31~47
+            턴 59개 중 50개가 매번 전원 재투입된 반복 독백이었다.)
        전원 상태 잠금이면 → 가장 먼저 풀리는 한 명(wake_key)만 재투입 + idle_jump
          (다음 wave 2b 에서 wake_key 의 [] 앞에 해제 알림이 한 번 붙는다 — 같은 키라 중복 없음)
     next_wave 있으면: silence_count = 0, 그리고 소외 재투입(starvation reinject) —
-       활성 · next_wave에 없음 · 상태 아님 · disp_wave - _last_turn_wave[k] >= starvation_waves
-       인 에이전트를 빈 incoming [] 으로 추가, _emit("starvation_reinject")
+       _starved_agents: 활성 · next_wave에 없음 · 상태 아님 ·
+       disp_wave - _last_turn_wave[k] >= starvation_waves 인 에이전트를 빈 incoming [] 으로
+       추가, _emit("starvation_reinject")
        (한 번도 턴을 안 받은 에이전트는 run 시작 wave(_wave_base)를 기준으로 간주)
 
 ── 진행 불가 백스톱 ──

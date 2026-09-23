@@ -275,6 +275,14 @@ class _MeetingMixin:
         if target_loc in self._exterior_locations:
             return "gone"
         if chaser_loc and chaser_loc == target_loc:
+            # raw 위치는 zone 경계 hop 적용 즉시 도착지로 바뀐다. 둘 중 누구라도
+            # 아직 이동 중(traveling)이면 실제로는 아직 못 만났다 — lock을 유지해
+            # 도착(wave 시작의 자연 만료) 뒤에 "met"으로 푼다. 그 사이 추격자는
+            # 목표 노드에 이미 서 있으므로 `_steer`가 경로를 깔지 않고 기다린다.
+            # (`_same_room`과 같은 원칙·같은 시각 기준.)
+            now = self._current_elapsed_minutes(self.completed_waves)
+            if self._agent_traveling(chaser, now) or self._agent_traveling(target, now):
+                return None
             return "met"
         if self._location_zone:
             chaser_zone = self._location_zone.get(chaser_loc, "")
