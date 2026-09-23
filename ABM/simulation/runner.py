@@ -764,17 +764,30 @@ class _RunnerMixin:
                     idx  = min(silence_count, len(self._idle_minutes_schedule)) - 1
                     raw_jump    = self._idle_minutes_schedule[idx]
                     jump_reason = "전원 휴면(고립 독백)"
-                    # 활성 에이전트 전원이 상태(수면·이동 등)에 묶여 있다면, idle
-                    # 스케줄의 랜덤값 대신 **가장 이른 상태 해제 시점까지 정확히**
-                    # 점프한다 — 몇 분 뒤 깨어날지 이미 아는데 굳이 60/120/180분
-                    # 임의 조각으로 나눠 깨울 이유가 없다(0번 클램프는 아래에서
-                    # 그대로 적용된다).
-                    state_wake_at = self._earliest_status_clear(
-                        self.active_agents, self._elapsed_minutes,
+                    # 활성 에이전트 **전원**이 상태(수면·이동 등)에 묶여 있다면,
+                    # idle 스케줄의 랜덤값 대신 **가장 이른 상태 해제 시점까지
+                    # 정확히** 점프한다 — 몇 분 뒤 깨어날지 이미 아는데 굳이
+                    # 60/120/180분 임의 조각으로 나눠 깨울 이유가 없다(0번 클램프는
+                    # 아래에서 그대로 적용된다). 반드시 "전원"이어야 한다 — 실측된
+                    # 버그(사용자 제안): 이 wave가 "전원 침묵"으로 판정됐다고 해서
+                    # 활성 에이전트 전원이 상태 중인 건 아니다. 짱구 혼자만 막
+                    # 수면에 들고 신짱아는 아직 안 잤는데 `_earliest_status_clear`가
+                    # 짱구 한 명의 해제 시점(몇 시간 뒤)을 반환해, 아직 안 잔
+                    # 신짱아의 남은 저녁 시간까지 통째로 건너뛰었다(22:53→03:38).
+                    # 전원이 아니면 idle 스케줄의 작은 조각(raw_jump 기본값)으로
+                    # 그대로 둔다 — 다음 "전원 침묵" 사이클에 다시 판단하면 되므로
+                    # 막히지 않는다.
+                    all_locked = all(
+                        self._agent_active_status(k, self._elapsed_minutes) is not None
+                        for k in self.active_agents
                     )
-                    if state_wake_at is not None:
-                        raw_jump    = max(1, state_wake_at - self._elapsed_minutes)
-                        jump_reason = "전원 상태(수면·이동 등) 해제 대기"
+                    if all_locked:
+                        state_wake_at = self._earliest_status_clear(
+                            self.active_agents, self._elapsed_minutes,
+                        )
+                        if state_wake_at is not None:
+                            raw_jump    = max(1, state_wake_at - self._elapsed_minutes)
+                            jump_reason = "전원 상태(수면·이동 등) 해제 대기"
                     # 결정적 idle 점프도 예정 이벤트(at_time) 시각은 넘기지 않는다 —
                     # "가족이 각자 나가 있는 낮"에 15:00 하교·16:30 학원이 통째로
                     # 건너뛰어지던 버그. _clamp_time_jump 는 LLM 경로 전용이라 여기서

@@ -6802,6 +6802,40 @@ class SelfDeclaredStateTests(unittest.TestCase):
         self.assertEqual(idle_jumps[0]["minutes"], 50)  # busy(50) < sleep(500)
         self.assertEqual(idle_jumps[0]["reason"], "전원 상태(수면·이동 등) 해제 대기")
 
+    def test_partial_state_lock_does_not_jump_to_the_locked_ones_clear_time(self):
+        # 사용자가 실측한 버그: "전원 침묵"으로 판정됐다고 활성 에이전트 전원이
+        # 상태 중인 건 아니다 — a만 수면(500분)에 들고 b는 아직 안 잤는데도(그냥
+        # 고립돼 말이 안 닿았을 뿐) _earliest_status_clear가 a 한 명의 해제
+        # 시점을 그대로 raw_jump로 써버리면, 아직 안 잔 b의 남은 저녁 시간까지
+        # 통째로 건너뛴다(실제 사례: 22:53→03:38). 전원이 아니면 idle 스케줄의
+        # 작은 조각(여기서는 42분)을 그대로 써야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp,
+                {"a": [{"content": "잔다.", "target": "self", "enter_state": "sleep"}],
+                 "b": [{"content": "혼잣말.", "target": "self"}]},
+                {"a": "안방", "b": "거실"},
+                location_graph=[
+                    {"name": "안방", "connects_to": ["거실"]},
+                    {"name": "거실", "connects_to": ["안방"]},
+                ],
+                state_categories=[
+                    {"id": "sleep", "label": "수면", "min_minutes": 500, "max_minutes": 500},
+                ],
+                idle_minutes_schedule=[42],
+            )
+            jumps = []
+            sim._emit = lambda t, d: (jumps.append(d) if t == "time_jump" else None)
+            # max_silence_waves=1 → b의 고립 독백 한 번만으로 바로 dormant_cap을
+            # 넘겨, a(잠김)만 있고 b는 안 잠긴 채로 "전원 침묵" 분기에 들어가게 한다.
+            sim.run("a", max_waves=1, step_delay=0.0, max_silence_waves=1,
+                    resume_wave={"a": [], "b": []})
+
+        idle_jumps = [d for d in jumps if d.get("mode") == "idle"]
+        self.assertTrue(idle_jumps)
+        self.assertEqual(idle_jumps[0]["minutes"], 42)  # a(500분) 해제 시점 아님
+        self.assertEqual(idle_jumps[0]["reason"], "전원 휴면(고립 독백)")
+
     def test_state_locked_reinject_wakes_only_the_earliest_clearing_agent(self):
         # 실제 실행(v11)에서 확인된 문제: 전원이 상태로 묶이면 옛 코드는 활성
         # 에이전트 전원을 무조건 재투입해, 아직 해제 시점이 안 된 에이전트까지
