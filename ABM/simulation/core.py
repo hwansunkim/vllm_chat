@@ -17,6 +17,7 @@ from .infection import (
     _InfectionMixin, _sample_incubation_minutes, _infectious_duration_minutes,
 )
 from .meeting import _MeetingMixin
+from .journey import _JourneyMixin
 from .targets import _TargetsMixin
 from .status import _StatusMixin
 from .events import _EventsMixin
@@ -39,6 +40,12 @@ _PERSIST_EVENTS: frozenset[str] = frozenset({
     "time_jump",
     "agent_status_change",
     "post_move_delivery",
+    # 여정(먼 목적지로 가는 길) start/pause/pass/resume/arrive/cancel — journey.py.
+    "journey_update",
+    # LLM이 고른 원본 move_to + 엔진 해석(place/journey/stay/person/…) 감사 기록.
+    # 화면(SSE 리스너·마크다운)에는 안 나가는 순수 로그 — journey.py
+    # `_record_move_resolution` 참고.
+    "move_intent",
 })
 
 # 시작 요일 키(프론트/스키마와 동일) → 표시 라벨. 인덱스 = 월요일 기준 0~6.
@@ -66,7 +73,7 @@ _DEFAULT_STATE_CATEGORIES: list[dict] = [
 ]
 
 
-class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, _StatusMixin, _EventsMixin, _TurnMixin, _StepMixin, _SystemMixin, _RunnerMixin):
+class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, _TargetsMixin, _StatusMixin, _EventsMixin, _TurnMixin, _StepMixin, _SystemMixin, _RunnerMixin):
     def __init__(
         self,
         agents:           dict[str, Agent],
@@ -298,7 +305,8 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
                     elif node.get("is_zone_entry"):
                         logger.warning(f"[zone 입구] '{name}' 은 zone 이 없어 is_zone_entry 무시")
             # zone 참조 엣지를 노드 레벨 엣지로 전개. 전개 후 _location_graph 는
-            # 여전히 순수 노드 인접 리스트라 BFS/adjacency/인지 로직 전부 무변경.
+            # 여전히 순수 노드 인접 리스트라 adjacency/인지 로직 전부 무변경
+            # (경로 탐색만 zone 경계 횡단을 먼저 줄인다 — location._find_path_zoned).
             self._expand_zone_edges(location_graph)
 
         # 위치/시간 계약 블록의 주입은 감염 모델 설정을 읽은 **뒤**에 한 번에 한다
@@ -354,6 +362,14 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
         # 않는다** — 재개 시점에 복원할 의미가 없는 파생 정보다(상태는 여전히
         # _meeting_intent 하나뿐).
         self._meeting_break_log: dict[str, str] = {}
+
+        # 여정: {에이전트 key: {"destination", "origin", "via": [경유지…],
+        #                      "status": "en_route"|"paused", "paused_at": 장소|None}}.
+        # `move_to` 장소의 경로가 zone 경계를 넘어 도착하는 **중간** 노드(경유지)를
+        # 가질 때 세워진다. 경유지에 가용한 사람이 있으면 멈추고(paused), 같은
+        # 목적지를 다시 고르면 재출발, 목적지 도착·다른 move_to·퇴장·수면 진입에서
+        # 풀린다. 상세는 journey.py. 재개 스냅샷(`journey`)에 실린다.
+        self._journey: dict[str, dict] = {}
 
         # {agent_key: {"status": "S"|"E"|"I"|"R",
         #              "infected_at_minutes":   int|None,  # 노출(E 진입) 시점의 경과분 앵커
@@ -614,6 +630,10 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
                 # 만남 lock. 빼먹으면 resume 직후 "누굴 만나러 가던 중"이라는 사실만
                 # 사라지고 경로는 남아, 상대가 움직여도 더 이상 따라가지 않는다.
                 "meeting_target": self._meeting_intent.get(key),
+                # 여정. 빼먹으면 resume 직후 "동네로 가던 길(거실에서 멈춤)"이라는
+                # 사실이 사라져 재출발 안내가 끊기고, 가는 중이던 사람은 경유지에서
+                # 멈추지 않고 옛 규칙대로 통과한다 — meeting_target 과 같은 버그 클래스.
+                "journey":      self._export_journey(key),
                 # 감염 상태를 빼먹으면 resume/load 때 전원이 "S"로 되돌아가 유행이
                 # 통째로 초기화된다 — 위치/외모와 정확히 같은 버그 클래스.
                 "infection":    self._export_infection(key),
@@ -622,6 +642,13 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
                 "status":       self._export_status(key),
             }
         return state
+
+    def _export_journey(self, key: str) -> dict | None:
+        """여정 직렬화(없으면 None). via 리스트까지 복사해 원본과 공유하지 않는다."""
+        j = self._journey.get(key)
+        if not j:
+            return None
+        return {**j, "via": list(j.get("via") or [])}
 
     def _export_infection(self, key: str) -> dict:
         """감염 상태 직렬화.
@@ -696,6 +723,15 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin, 
             meeting = st.get("meeting_target")
             if meeting and meeting in self.agents:
                 self._meeting_intent[key] = meeting
+            journey = st.get("journey")
+            if isinstance(journey, dict) and journey.get("destination"):
+                self._journey[key] = {
+                    "destination": journey["destination"],
+                    "origin":      journey.get("origin") or "",
+                    "via":         list(journey.get("via") or []),
+                    "status":      "paused" if journey.get("status") == "paused" else "en_route",
+                    "paused_at":   journey.get("paused_at"),
+                }
             infection = st.get("infection")
             if isinstance(infection, dict) and infection.get("status") in ("S", "E", "I", "R"):
                 status       = infection["status"]

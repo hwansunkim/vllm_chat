@@ -121,7 +121,7 @@ async function fetchAll() {
 // 구분할 필드가 없고 스크립트로 외모를 바꾸는 경우 자체가 드물어 다수 사례(턴,
 // 대사 후)로 고정해 둔다 — 알려진 한계.
 const PRE_DIALOGUE_EVENT_TYPES  = new Set(['scene_event', 'director_call', 'system_intervention', 'world_event']);
-const POST_DIALOGUE_EVENT_TYPES = new Set(['appearance_update', 'agent_move', 'meeting_update', 'infection_update', 'time_jump', 'agent_status_change', 'post_move_delivery']);
+const POST_DIALOGUE_EVENT_TYPES = new Set(['appearance_update', 'agent_move', 'meeting_update', 'infection_update', 'time_jump', 'agent_status_change', 'post_move_delivery', 'journey_update']);
 
 function streamPhase(kind, payload) {
   if (kind === 'dialogue') return 0;
@@ -130,6 +130,9 @@ function streamPhase(kind, payload) {
   // (clear)는 wave 시작 시점(대사 전)에, 진입(enter)은 이동/상태 처리 블록
   // (대사 후)에 emit된다(runner.py).
   if (kind === 'agent_status_change') return (payload || {}).action === 'clear' ? -1 : 1;
+  // journey_update도 이중 시점 — 경유지 도착(자연 만료)·퇴장 취소는 wave 시작(대사
+  // 전), 출발·재출발·취소는 이동 의도 해석(대사 후). 엔진이 payload에 적어 준다.
+  if (kind === 'journey_update') return (payload || {}).at_wave_start ? -1 : 1;
   if (PRE_DIALOGUE_EVENT_TYPES.has(kind)) return -1;
   return 1; // 나머지(주로 POST_DIALOGUE_EVENT_TYPES)는 대사 이후
 }
@@ -138,8 +141,11 @@ function buildStream(log, events, checks) {
   // Collect active event types based on checkboxes
   const wantTypes = new Set();
   // post_move_delivery = 이동 후 보강 배달. 이동의 결과라 이동 토글에 묶는다
-  // (ABM/export/markdown.py와 동일).
-  if (checks.move)         { wantTypes.add('agent_move'); wantTypes.add('post_move_delivery'); }
+  // (ABM/export/markdown.py와 동일). journey_update(여정 출발·경유지 멈춤·재출발·
+  // 취소)도 이동의 맥락이라 같은 토글이다.
+  if (checks.move) {
+    wantTypes.add('agent_move'); wantTypes.add('post_move_delivery'); wantTypes.add('journey_update');
+  }
   if (checks.appearance)   wantTypes.add('appearance_update');
   if (checks.intervention) { wantTypes.add('system_intervention'); wantTypes.add('world_event'); }
   if (checks.infection)    wantTypes.add('infection_update');
@@ -270,6 +276,31 @@ function fmtPostMoveDelivery(data) {
 }
 
 /**
+ * 여정 한 줄 — 먼 목적지로 가는 길의 출발·경유지 멈춤·재출발·취소.
+ * 경유지 통과(pass)·도착(arrive)·퇴장 취소는 싣지 않는다(이동 줄·상태 줄·퇴장 씬이
+ * 같은 사실을 보여준다). ABM/export/markdown.py의 _fmt_journey와 글자 단위로 같아야 한다.
+ */
+function fmtJourney(data) {
+  const name = data.display_name || agentLabel(data.agent);
+  const dest = data.destination || '';
+  const at   = data.at || '';
+  let text;
+  if (data.action === 'start') {
+    const via = data.via || [];
+    text = `${name}이(가) ${dest}(으)로 향한다${via.length ? ` (${via.join('·')} 경유)` : ''}`;
+  } else if (data.action === 'pause') {
+    text = `${name}이(가) ${dest}(으)로 가던 길에 ${at}에서 멈췄다`;
+  } else if (data.action === 'resume') {
+    text = `${name}이(가) ${at}에서 다시 ${dest}(으)로 출발했다`;
+  } else if (data.action === 'cancel' && data.reason !== 'exit') {
+    text = `${name}이(가) ${dest}(으)로 가던 길을 그만뒀다`;
+  } else {
+    return '';
+  }
+  return `\n> **[🧭 씬]** *${text}*\n`;
+}
+
+/**
  * 만남 lock 한 줄. 문구는 피드 카드와 같은 meetingNarration을 쓴다.
  * 모르는 status(구버전/미래 값)면 빈 문자열이라 아무것도 안 실린다.
  */
@@ -385,6 +416,7 @@ function _buildMarkdown(log, events, statusStr, checks) {
         case 'infection_update':    md += fmtInfection(item.payload); break;
         case 'meeting_update':      md += fmtMeeting(item.payload); break;
         case 'post_move_delivery':  md += fmtPostMoveDelivery(item.payload); break;
+        case 'journey_update':      md += fmtJourney(item.payload); break;
         case 'agent_status_change': md += fmtStatus(item.payload); break;
       }
     }

@@ -88,6 +88,8 @@ class _EventsMixin:
                 return result
             self.active_agents.discard(agent_key)
             self._pending_wave.pop(agent_key, None)
+            # 퇴장하면 가던 길(여정)도 끝난다. wave 시작(대사 전) 시점의 취소다.
+            self._journey_cancel(agent_key, wave, "exit", at_wave_start=True)
             exit_msg = message or f"{agent_key}이(가) 퇴장했다."
             for name in self._resolve_event_targets(targets):
                 self.agents[name].add_to_memory({

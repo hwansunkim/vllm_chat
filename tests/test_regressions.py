@@ -7693,12 +7693,19 @@ class MultiHopTravelTests(unittest.TestCase):
         self.assertTrue(st.get("pending_arrival_announcement"))
         self.assertEqual([w for w, k, _ in turns if k == "z"], [0])
 
+    # 경유지(거실)에 깨어 있는 사람이 없는 배치 — m·c 는 안방에서 대화한다.
+    # (거실에 가용한 사람이 있으면 여정이 거기서 멈춘다 — JourneyTests.)
+    _NOBODY_AT_VIA = {"z": "고등학교", "m": "안방", "c": "안방"}
+
     def test_release_wave_gives_arrival_notice_then_takes_the_next_hop(self):
-        sim, turns, emitted = self._run(self._GO_OUT, max_waves=4)
+        sim, turns, emitted = self._run(self._GO_OUT, max_waves=4,
+                                        locations=self._NOBODY_AT_VIA)
 
         z_turns = NaturalStatusExpiryTests._of(turns, "z")
         self.assertEqual([w for w, _ in z_turns], [0, 3])
-        self.assertEqual(z_turns[1][1][0]["content"], "[씬] 거실에 도착했다.")
+        # 여정의 경유지 도착 — 알림에 "동네로 가는 길" 맥락이 붙는다(통과).
+        self.assertEqual(z_turns[1][1][0]["content"],
+                         "[씬] 거실에 도착했다. (동네로 가는 길에 들름, 그대로 지나가는 중)")
         # 도착 wave 턴의 move_to 가 null → 남은 경로 [동네] 로 이어서 간다.
         self.assertEqual(self._moves(emitted, "z"),
                          [(0, "고등학교", "거실"), (3, "거실", "동네")])
@@ -7709,11 +7716,21 @@ class MultiHopTravelTests(unittest.TestCase):
                          ("traveling", "동네", 24))
 
     def test_bystander_at_the_intermediate_node_gets_arrival_then_departure(self):
-        _, turns, _ = self._run(self._GO_OUT, max_waves=5)
+        # 중간 노드(거실)의 구경꾼 s 는 **잠들어 있다** — 경유지에 깨어 있는 사람이
+        # 없으니 z 는 그대로 지나가고(멈추지 않음), s 는 도착 → 이탈을 차례로 받는다.
+        def setup(sim):
+            sim._agent_status["s"] = {"state": "sleep", "until_elapsed": 9999}
+
+        _, turns, _ = self._run(
+            self._GO_OUT, max_waves=5, setup=setup,
+            locations={**self._NOBODY_AT_VIA, "s": "거실"}, resume=["c", "m", "z"],
+            extra_script={"s": [{"content": "쿨쿨...", "target": "self",
+                                 "enter_state": "sleep"}]},
+        )
 
         scenes_by_wave = {
             w: [m["content"] for m in inc if m["speaker"] == "씬"]
-            for w, inc in NaturalStatusExpiryTests._of(turns, "m")
+            for w, inc in NaturalStatusExpiryTests._of(turns, "s")
         }
         # 도착 전(W1~W3)엔 도착 알림이 없고, 도착 다음 wave(W4)에 도착 → 이탈 순.
         for w in (1, 2, 3):
@@ -7777,6 +7794,423 @@ class MultiHopTravelTests(unittest.TestCase):
                 if t == "meeting_update" and d["chaser"] == "a"]
         self.assertEqual(flow, [(3, "arrived", "met")])
         self.assertEqual(self._moves(emitted, "a"), [])
+
+
+class JourneyTests(unittest.TestCase):
+    """여정(journey) — 먼 목적지로 가는 길의 경로 안내 · 경유지 멈춤/통과 · 재출발.
+
+    case1 v9 실측: 짱아가 고등학교에서 `move_to: "동네"`를 골랐는데 외부 노드는
+    거실(집 입구)에만 연결돼 있어 엔진이 조용히 [거실, 동네]로 집을 경유시켰다.
+    에이전트는 출발할 때 경유 사실을 몰랐고, 집에 들렀을 때도 "동네로 가던 길"이라는
+    맥락이 없었다. 그래프는 그대로 두고 엔진이 가는 방법을 정하고 알려준다
+    (ABM/simulation/journey.py).
+
+    시간 결정론(MultiHopTravelTests 와 같음): 일반 경로 5분 고정, zone 이동 12분 고정.
+    W0 0분(z 출발, 거실 도착 12분) → W1 5분 → W2 10분(해제 캡 2분) → W3 12분(거실 도착).
+    """
+
+    # case1 과 같은 모양 — 집(우리집) 안 방들 + 집에만 연결된 바깥 장소들(zone 참조
+    # "우리집" → 진입은 입구 거실, 탈출은 집 안 어디서든 1홉).
+    _GRAPH = [
+        {"name": "거실",       "connects_to": ["안방", "누나방"], "zone": "우리집",
+         "is_zone_entry": True},
+        {"name": "안방",       "connects_to": ["거실", "드레스룸"], "zone": "우리집"},
+        {"name": "드레스룸",   "connects_to": ["안방", "안방화장실"], "zone": "우리집"},
+        {"name": "안방화장실", "connects_to": ["드레스룸"], "zone": "우리집"},
+        {"name": "누나방",     "connects_to": ["거실"], "zone": "우리집"},
+        {"name": "고등학교",   "connects_to": ["우리집"]},
+        {"name": "누나학원",   "connects_to": ["우리집"]},
+        {"name": "동네",       "connects_to": ["우리집"], "is_exterior": True},
+    ]
+    _TIME_CATS = [{"id": "normal_scene", "label": "t", "min_minutes": 5, "max_minutes": 5}]
+    # m·c 가 대화하며 wave 를 굴린다. m 은 z 도 부른다 — z 가 도착하기 전엔 이동 중/다른
+    # 방이라 닿지 않고, 같은 방이 되면 z 가 다음 wave 턴을 받는다.
+    _CHAT = {
+        "m": [{"content": "저녁 뭐 먹지?", "target": ["c", "z"]}],
+        "c": [{"content": "찌개요.",       "target": "m"}],
+    }
+    _GO_OUT = {"content": "떡볶이 먹으러 가자!", "target": "self", "move_to": "동네"}
+    _IDLE   = {"content": "...", "target": "self"}
+
+    def _sim(self, tmp, script, locations, *, zone_travel=12, **kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in script}
+        return Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=_ScriptedLLM(script),
+            agent_locations=locations, location_graph=self._GRAPH,
+            zone_travel_min_minutes=zone_travel, zone_travel_max_minutes=zone_travel,
+            time_mode="variable", time_categories=self._TIME_CATS, **kw,
+        )
+
+    def _run(self, z_script, *, max_waves, locations=None, setup=None,
+             extra_script=None, resume=None, inspect=None, events=None, **kw):
+        script = dict(self._CHAT, z=z_script, **(extra_script or {}))
+        locations = locations or {"z": "고등학교", "m": "거실", "c": "거실"}
+        resume = resume if resume is not None else ["c", "m", "z"]
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, script, locations, **kw)
+            if setup:
+                setup(sim)
+            emitted: list[tuple[str, dict]] = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            turns = NaturalStatusExpiryTests._record_turns(sim)
+            sim.run("m", max_waves=max_waves, step_delay=0.0, starvation_waves=100,
+                    events=events, resume_wave={k: [] for k in resume})
+            if inspect:
+                inspect(sim, tmp)
+        return sim, turns, emitted
+
+    @staticmethod
+    def _journey(emitted, agent="z"):
+        return [(d["wave"], d["action"], d["at"], d.get("reason")) for t, d in emitted
+                if t == "journey_update" and d["agent"] == agent]
+
+    @staticmethod
+    def _situations(emitted, agent="z"):
+        return {d["wave"]: d["text"] for t, d in emitted
+                if t == "turn_situation" and d["agent"] == agent
+                and d["text"].startswith("[현재 상황]")}
+
+    # ── 1. 경로 사전 안내 ─────────────────────────────────────────────────────
+
+    def test_route_guide_from_high_school_lists_destinations_via_the_home_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, {"z": [self._IDLE]}, {"z": "고등학교"})
+            text = sim._build_situation_context("z", [], [], None)
+        self.assertIn("이동 가능한 장소: 거실", text)
+        # 바깥 장소는 이름을 나열하고, 경유 구역 안의 방들은 한 덩어리로 접는다.
+        self.assertIn(
+            "가는 길 — 거실(우리집) 경유: 누나학원, 동네, 우리집 안 다른 곳 "
+            "(구역을 넘을 때마다 약 12분)", text)
+        self.assertNotIn("안방화장실", text)   # 장황한 전체 목록 금지
+
+    def test_no_route_guide_inside_the_house(self):
+        # 집 안 어느 방에서든 바깥은 1홉(zone 탈출) — 경유지가 없다. 집 안 다중
+        # hop(거실→안방화장실)은 같은 구역이라 역시 안내 대상이 아니다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, {"z": [self._IDLE]}, {"z": "안방"})
+            for room in ("안방", "거실", "안방화장실"):
+                sim._agent_location["z"] = room
+                text = sim._build_situation_context("z", [], [], None)
+                self.assertNotIn("가는 길", text, room)
+            self.assertEqual(sim._path_via("거실", sim._find_path("거실", "안방화장실")), [])
+
+    def test_zoned_path_prefers_staying_inside_the_zone(self):
+        # 순수 BFS 는 zone 탈출 엣지 때문에 안방화장실→거실을 [고등학교, 거실](바깥으로
+        # 나갔다 입구로 재진입, zone 이동 2회)로 골랐다. 경계 횡단이 적은 길이 먼저다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, {"z": [self._IDLE]}, {"z": "안방화장실"})
+            self.assertEqual(sim._find_path("안방화장실", "거실"), ["드레스룸", "안방", "거실"])
+            self.assertEqual(sim._find_path("안방화장실", "누나방"),
+                             ["드레스룸", "안방", "거실", "누나방"])
+            self.assertEqual(sim._find_path("안방화장실", "동네"), ["동네"])  # 1홉 탈출
+            self.assertEqual(sim._find_path("고등학교", "동네"), ["거실", "동네"])
+            self.assertEqual(sim._find_path("고등학교", "안방화장실"),
+                             ["거실", "안방", "드레스룸", "안방화장실"])
+            text = sim._build_situation_context("z", [], [], None)
+        self.assertNotIn("가는 길", text)   # 집 안 어느 방에서도 경유 안내 없음
+
+    def test_exterior_guidance_shows_direct_exit_and_via_routes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, {"z": [self._IDLE]}, {"z": "동네"})
+            text = sim._build_situation_context("z", [], [], None)
+        self.assertNotIn("내부로 돌아가려면", text)
+        self.assertIn("이곳에서 바로 갈 수 있는 곳: 거실", text)
+        self.assertIn("가는 길 — 거실(우리집) 경유: 고등학교, 누나학원, 우리집 안 다른 곳", text)
+
+    # ── 2~3. 여정 · 경유지 멈춤 → 재출발 → 목적지 도착 ────────────────────────
+
+    def test_awake_person_at_the_via_pauses_then_same_destination_resumes(self):
+        z_script = [self._GO_OUT,
+                    {"content": "엄마 다녀왔어!", "target": ["m"]},        # W3: 멈춘 채
+                    {"content": "나 동네 갔다 올게!", "target": ["m"],     # W4: 재출발
+                     "move_to": "동네"},
+                    self._IDLE]
+        sim, turns, emitted = self._run(z_script, max_waves=8)
+
+        # 여정 흐름: 출발(고등학교) → 거실에서 멈춤 → 거실에서 재출발 → 동네 도착.
+        self.assertEqual(self._journey(emitted), [
+            (0, "start", "고등학교", None), (3, "pause", "거실", None),
+            (4, "resume", "거실", None), (7, "arrive", "동네", None),
+        ])
+        start = next(d for t, d in emitted if t == "journey_update" and d["action"] == "start")
+        self.assertEqual((start["destination"], start["via"]), ("동네", ["거실"]))
+        # 경유지 도착 알림에 여정 맥락 + 멈춤.
+        z_turns = dict(NaturalStatusExpiryTests._of(turns, "z"))
+        self.assertEqual(z_turns[3][0]["content"],
+                         "[씬] 거실에 도착했다. (동네로 가는 길에 들름, 잠시 멈춤)")
+        # 멈춘 동안 매 턴 "가던 길" 줄 — W3(도착 턴)·W4(null 로 머문 다음 턴).
+        sits = self._situations(emitted)
+        for w in (3, 4):
+            self.assertIn('가던 길: 동네 (거실에서 멈춤) — 다시 출발하려면 move_to: "동네"',
+                          sits[w], f"W{w}")
+            self.assertNotIn("이동 중:", sits[w])
+        # W3 null → 계속 머묾(W4 에야 거실→동네).
+        moves = [(d["wave"], d["from"], d["to"]) for t, d in emitted
+                 if t == "agent_move" and d["agent"] == "z"]
+        self.assertEqual(moves, [(0, "고등학교", "거실"), (4, "거실", "동네")])
+        self.assertEqual(sim._agent_location["z"], "동네")
+        self.assertNotIn("z", sim._journey)   # 목적지 도착 → 해제
+        # 목적지 도착 알림은 평범한 도착(여정 맥락 없음).
+        self.assertEqual(z_turns[7][0]["content"], "[씬] 동네에 도착했다.")
+
+    def test_paused_journey_state_after_the_arrival_turn(self):
+        sim, _, _ = self._run([self._GO_OUT, {"content": "다녀왔어!", "target": ["m"]}],
+                              max_waves=4)
+        self.assertEqual(sim._agent_location["z"], "거실")
+        self.assertNotIn("z", sim._agent_path)              # 남은 경로 비움
+        self.assertEqual(sim._journey["z"]["status"], "paused")
+        self.assertEqual(sim._journey["z"]["paused_at"], "거실")
+
+    def test_nobody_awake_at_the_via_passes_through_in_the_same_wave(self):
+        # 거실엔 잠든 s 뿐 — 멈출 이유가 없다. 도착 wave(W3) 이동 단계에서 바로 동네로.
+        def setup(sim):
+            sim._agent_status["s"] = {"state": "sleep", "until_elapsed": 9999}
+
+        sim, turns, emitted = self._run(
+            [self._GO_OUT, self._IDLE], max_waves=4, setup=setup,
+            locations={"z": "고등학교", "m": "안방", "c": "안방", "s": "거실"},
+            extra_script={"s": [{"content": "쿨쿨", "target": "self", "enter_state": "sleep"}]},
+        )
+        self.assertEqual(self._journey(emitted),
+                         [(0, "start", "고등학교", None), (3, "pass", "거실", None)])
+        z_turns = dict(NaturalStatusExpiryTests._of(turns, "z"))
+        self.assertEqual(z_turns[3][0]["content"],
+                         "[씬] 거실에 도착했다. (동네로 가는 길에 들름, 그대로 지나가는 중)")
+        # 지나가는 턴의 상황 안내 — "이동 중" 줄과 여정 목적지가 같다.
+        sit = self._situations(emitted)[3]
+        self.assertIn("이동 중: 동네까지 1칸 남음", sit)
+        self.assertIn('가던 길: 동네 — 계속 가는 중 (여기 머물려면 move_to: "거실")', sit)
+        self.assertIn(("agent_move", 3, "거실", "동네"),
+                      [(t, d["wave"], d["from"], d["to"]) for t, d in emitted
+                       if t == "agent_move" and d["agent"] == "z"])
+        self.assertEqual(sim._journey["z"]["status"], "en_route")  # 동네로 이동 중
+
+    def test_busy_person_at_the_via_does_not_stop_the_journey(self):
+        # busy(자리를 비우고 하는 개인적인 일)는 "all" 방송에서도 빠지는 상태 —
+        # 멈출 이유로 치지 않는다(수면과 같은 취급). 통과 턴에 보이긴 한다.
+        def setup(sim):
+            sim._agent_status["s"] = {"state": "busy", "until_elapsed": 9999}
+
+        _, _, emitted = self._run(
+            [self._GO_OUT, self._IDLE], max_waves=4, setup=setup,
+            locations={"z": "고등학교", "m": "안방", "c": "안방", "s": "거실"},
+            extra_script={"s": [{"content": "...", "target": "self", "enter_state": "busy"}]},
+        )
+        self.assertEqual([a for _, a, _, _ in self._journey(emitted)], ["start", "pass"])
+
+    # ── 멈춘 상태에서의 선택 ─────────────────────────────────────────────────
+
+    def test_other_place_while_paused_cancels_the_journey(self):
+        z_script = [self._GO_OUT, {"content": "다녀왔어!", "target": ["m"]},
+                    {"content": "그냥 방에 있을래.", "target": "self", "move_to": "누나방"},
+                    self._IDLE]
+        sim, _, emitted = self._run(z_script, max_waves=5)
+        self.assertEqual(self._journey(emitted), [
+            (0, "start", "고등학교", None), (3, "pause", "거실", None),
+            (4, "cancel", "거실", "new_move_to"),
+        ])
+        self.assertEqual(sim._agent_location["z"], "누나방")
+        self.assertNotIn("z", sim._journey)
+
+    def test_current_location_move_to_stays_and_cancels_path_and_journey(self):
+        # 거실에 아무도 없어 지나가는 턴이지만 "여기 있겠다"(지금 위치)를 고르면 머문다.
+        z_script = [self._GO_OUT,
+                    {"content": "집에 있을래.", "target": "self", "move_to": "거실"},
+                    self._IDLE]
+        sim, _, emitted = self._run(
+            z_script, max_waves=5,
+            locations={"z": "고등학교", "m": "안방", "c": "안방"},
+        )
+        self.assertEqual(self._journey(emitted), [
+            (0, "start", "고등학교", None), (3, "pass", "거실", None),
+            (3, "cancel", "거실", "stay"),
+        ])
+        self.assertEqual(sim._agent_location["z"], "거실")
+        self.assertNotIn("z", sim._agent_path)
+        self.assertNotIn("z", sim._journey)
+
+    def test_current_location_move_to_drops_a_plain_remaining_path(self):
+        # 여정이 아닌 평범한 경로도 같다 — 예전엔 만남 lock 이 없으면 이 값을 무시해
+        # 남은 경로로 계속 갔다(하위 호환 규칙 폐기).
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, {"z": [self._IDLE]}, {"z": "안방"})
+            emitted: list[tuple[str, dict]] = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            sim._agent_path["z"] = ["드레스룸", "안방화장실"]
+            sim._apply_move_intents({"z": {"success": True, "move_to": "안방"}}, 7)
+        self.assertNotIn("z", sim._agent_path)
+        intents = [d for t, d in emitted if t == "move_intent"]
+        self.assertEqual([(d["wave"], d["raw"], d["kind"]) for d in intents],
+                         [(7, "안방", "stay")])
+
+    # ── 여정 아님: 구역 안 다중 hop ───────────────────────────────────────────
+
+    def test_in_zone_multi_hop_is_not_a_journey(self):
+        a_script = [{"content": "씻으러 간다.", "target": "self", "move_to": "안방화장실"},
+                    self._IDLE]
+        sim, _, emitted = self._run(
+            self._IDLE, max_waves=3, extra_script={"a": a_script},
+            locations={"z": "누나방", "m": "누나방", "c": "누나방", "a": "거실"},
+            resume=["a", "c", "m"],
+        )
+        moves = [(d["wave"], d["to"]) for t, d in emitted
+                 if t == "agent_move" and d["agent"] == "a"]
+        self.assertEqual(moves, [(0, "안방"), (1, "드레스룸"), (2, "안방화장실")])
+        self.assertEqual([d for t, d in emitted if t == "journey_update"], [])
+        self.assertEqual(sim._journey, {})
+        intent = next(d for t, d in emitted if t == "move_intent" and d["agent"] == "a")
+        self.assertEqual((intent["kind"], intent["path"]),
+                         ("place", ["안방", "드레스룸", "안방화장실"]))
+        self.assertNotIn("via", intent)
+
+    # ── 이동 시간 0 — 경계 hop 이 즉시 적용되는 경우 ─────────────────────────
+
+    def test_instant_crossing_pauses_at_the_via_with_a_scene_notice(self):
+        sim, turns, emitted = self._run(
+            [self._GO_OUT, {"content": "엄마!", "target": ["m"]}], max_waves=2,
+            zone_travel=0,
+        )
+        self.assertEqual([(w, a) for w, a, _, _ in self._journey(emitted)],
+                         [(0, "start"), (0, "pause")])
+        z_turns = dict(NaturalStatusExpiryTests._of(turns, "z"))
+        self.assertIn({"speaker": "씬", "action_note": "",
+                       "content": "[씬] 거실에 도착했다. (동네로 가는 길에 들름, 잠시 멈춤)"},
+                      z_turns[1])
+        self.assertEqual(sim._agent_location["z"], "거실")
+        self.assertNotIn("z", sim._agent_path)
+
+    def test_instant_crossing_without_company_passes_and_arrives(self):
+        _, _, emitted = self._run(
+            [self._GO_OUT, self._IDLE], max_waves=3, zone_travel=0,
+            locations={"z": "고등학교", "m": "안방", "c": "안방"},
+        )
+        self.assertEqual([(w, a) for w, a, _, _ in self._journey(emitted)],
+                         [(0, "start"), (0, "pass"), (1, "arrive")])
+
+    # ── 해제: 퇴장 · 수면 ──────────────────────────────────────────────────────
+
+    def test_agent_exit_cancels_the_journey_at_wave_start(self):
+        _, _, emitted = self._run(
+            [self._GO_OUT, {"content": "다녀왔어!", "target": ["m"]}], max_waves=5,
+            events=[{"wave": 4, "type": "agent_exit", "agent": "z"}],
+        )
+        cancels = [d for t, d in emitted
+                   if t == "journey_update" and d["action"] == "cancel"]
+        self.assertEqual([(d["wave"], d["reason"], d["at_wave_start"]) for d in cancels],
+                         [(4, "exit", True)])
+
+    def test_falling_asleep_while_paused_cancels_the_journey(self):
+        sim, _, emitted = self._run(
+            [self._GO_OUT, {"content": "졸려... 소파에서 잘래.", "target": "self",
+                            "enter_state": "sleep"}], max_waves=4,
+        )
+        self.assertEqual(self._journey(emitted)[-1], (3, "cancel", "거실", "sleep"))
+        self.assertNotIn("z", sim._journey)
+
+    # ── 로깅 · 재개 ───────────────────────────────────────────────────────────
+
+    def test_move_to_is_logged_raw_and_resolved(self):
+        logs: dict = {}
+
+        def inspect(sim, tmp):
+            with open(os.path.join(tmp, "z.json"), encoding="utf-8") as f:
+                logs["z"] = json.load(f)
+
+        _, _, emitted = self._run([self._GO_OUT, self._IDLE], max_waves=1, inspect=inspect)
+        entry = logs["z"][0]
+        self.assertEqual(entry["move_to"], "동네")
+        self.assertEqual(entry["move_resolved"],
+                         {"kind": "journey", "destination": "동네",
+                          "path": ["거실", "동네"], "via": ["거실"]})
+        intent = next(d for t, d in emitted if t == "move_intent")
+        self.assertEqual((intent["agent"], intent["raw"], intent["kind"], intent["via"]),
+                         ("z", "동네", "journey", ["거실"]))
+        from ABM.simulation.core import _PERSIST_EVENTS
+        self.assertIn("move_intent", _PERSIST_EVENTS)
+        self.assertIn("journey_update", _PERSIST_EVENTS)
+
+    def test_person_move_to_is_logged_as_person(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, {"z": [self._IDLE], "m": [self._IDLE]},
+                            {"z": "안방", "m": "거실"})
+            emitted: list[tuple[str, dict]] = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            sim._apply_move_intents({"z": {"success": True, "move_to": "m"}}, 2)
+        intent = next(d for t, d in emitted if t == "move_intent")
+        self.assertEqual((intent["kind"], intent["target"]), ("person", "m"))
+
+    def test_paused_journey_survives_resume_snapshot(self):
+        state: dict = {}
+
+        def inspect(sim, tmp):
+            state.update(sim.export_agent_state())
+
+        self._run([self._GO_OUT, {"content": "다녀왔어!", "target": ["m"]}],
+                  max_waves=4, inspect=inspect)
+        self.assertEqual(state["z"]["journey"]["status"], "paused")
+        self.assertIsNone(state["m"]["journey"])
+        state = json.loads(json.dumps(state))   # DB(state_json) 왕복과 같은 모양
+        with tempfile.TemporaryDirectory() as tmp:
+            fresh = self._sim(tmp, {"z": [self._IDLE]}, {"z": "고등학교"})
+            fresh.restore_agent_state(state)
+            self.assertEqual(fresh._journey["z"]["destination"], "동네")
+            self.assertEqual(fresh._journey["z"]["paused_at"], "거실")
+            text = fresh._build_situation_context("z", [], [], None)
+        self.assertIn('가던 길: 동네 (거실에서 멈춤) — 다시 출발하려면 move_to: "동네"', text)
+
+    # ── 계약 · 마크다운 ───────────────────────────────────────────────────────
+
+    def test_contract_describes_via_stop_and_stay(self):
+        from ABM.prompt_contract import build_map_contract, build_move_to_hint, verify_contract
+
+        zoned = build_move_to_hint(has_location_graph=True, has_zone=True)
+        self.assertIn("같은 목적지를 다시", zoned)
+        self.assertIn("그 자리에 머뭅니다", zoned)
+        flat = build_move_to_hint(has_location_graph=True, has_zone=False)
+        self.assertIn("그 자리에 머뭅니다", flat)
+        self.assertNotIn("경유지", flat)        # zone 없는 지도엔 경유지가 없다
+        m = build_map_contract(location_graph=_GRAPH_ZONED, location_zone=_ZONES)
+        self.assertIn("경유지", m)
+        self.assertNotIn("경유지", build_map_contract(location_graph=_GRAPH_FLAT))
+        problems = verify_contract('"target" "move_to" update_appearance [위치 그래프 [구역:',
+                                   has_location_graph=True, has_zone=True)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("경유지", problems[0])
+
+    def test_markdown_renders_journey_lines_under_the_move_toggle(self):
+        from ABM.export.markdown import render_markdown
+        log = [{"speaker": "z", "content": "엄마 다녀왔어!", "targets": ["m"], "wave": 3,
+                "timestamp": 1.0}]
+
+        def ev(action, at, wave, ts, **extra):
+            return {"event_type": "journey_update", "wave": wave, "timestamp": ts,
+                    "data": {"wave": wave, "agent": "z", "display_name": "신짱아",
+                             "destination": "동네", "action": action, "at": at,
+                             "via": ["거실"], "reason": None,
+                             "at_wave_start": action in ("pause", "pass"), **extra}}
+
+        events = [ev("start", "고등학교", 0, 0.5), ev("pause", "거실", 3, 2.0),
+                  ev("resume", "거실", 4, 3.0), ev("pass", "거실", 5, 4.0),
+                  ev("cancel", "거실", 6, 5.0, reason="exit"),
+                  {"event_type": "move_intent", "wave": 0, "timestamp": 0.4,
+                   "data": {"wave": 0, "agent": "z", "raw": "동네", "kind": "journey"}}]
+        cfg = {"agents": [{"name": "z", "display_name": "신짱아"},
+                          {"name": "m", "display_name": "봉미선"}]}
+        md = render_markdown(config=cfg, shared_log=log, events=events, now=0)
+        start  = "> **[🧭 씬]** *신짱아이(가) 동네(으)로 향한다 (거실 경유)*"
+        pause  = "> **[🧭 씬]** *신짱아이(가) 동네(으)로 가던 길에 거실에서 멈췄다*"
+        resume = "> **[🧭 씬]** *신짱아이(가) 거실에서 다시 동네(으)로 출발했다*"
+        for line in (start, pause, resume):
+            self.assertIn(line, md)
+        # 경유지 멈춤은 wave 시작(대사 전) — 그 wave 의 대사보다 앞.
+        self.assertLess(md.index(pause), md.index("엄마 다녀왔어!"))
+        self.assertEqual(md.count("🧭"), 3)     # pass·퇴장 취소·move_intent 는 안 실림
+        md_off = render_markdown(config=cfg, shared_log=log, events=events, now=0,
+                                 include={"time", "action"})
+        self.assertNotIn("🧭", md_off)
 
 
 class AgentContextStatusFieldTests(unittest.TestCase):

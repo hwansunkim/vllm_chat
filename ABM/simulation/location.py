@@ -1,3 +1,4 @@
+import heapq
 import logging
 from collections import defaultdict, deque
 
@@ -17,7 +18,9 @@ class _LocationMixin:
         내부 노드는 X 로 단방향 탈출, 복귀는 X -> E -> ... -> 내부.
 
         전개 후 self._location_graph 는 여전히 순수 노드 인접 리스트라
-        _find_path/_get_adjacent/_build_situation_context/인지 로직 전부 무변경.
+        _get_adjacent/_build_situation_context/인지 로직 전부 무변경. 단 탈출 엣지
+        때문에 순수 BFS 는 입구에서 먼 방끼리의 이동을 바깥으로 돌리므로
+        _find_path 는 zone 이 있으면 경계 횡단 수를 먼저 줄인다(_find_path_zoned).
         zone 이 하나도 없으면 완전한 no-op — flat 그래프는 바이트 단위로 동일하다.
         """
         if not self._location_zone:
@@ -66,10 +69,13 @@ class _LocationMixin:
                     _add(interior, x)  # 탈출 (E 포함)
 
     def _find_path(self, start: str, goal: str) -> list[str]:
-        """BFS 최단 경로. 시작 제외, 목표 포함.
+        """최단 경로. 시작 제외, 목표 포함.
 
         그래프 없음 → [goal] (하위 호환 직접 이동).
         그래프 있는데 goal이 지도 밖 → [] (이동 무시).
+
+        zone 을 안 쓰는 지도는 예전 그대로 BFS(hop 수 최소). zone 을 쓰면
+        **(zone 경계 횡단 수, hop 수)** 사전순 최소 경로다(`_find_path_zoned`).
         """
         if start == goal:
             return []
@@ -79,6 +85,8 @@ class _LocationMixin:
             return []  # 지도에 없는 목적지 → 이동 무시
         if start not in self._location_graph:
             return [goal]  # 시작 위치가 지도 밖인 예외 상황 → 직접 이동
+        if self._location_zone:
+            return self._find_path_zoned(start, goal)
         visited = {start}
         q = deque([(start, [])])
         while q:
@@ -91,6 +99,44 @@ class _LocationMixin:
                     visited.add(nb)
                     q.append((nb, new_path))
         return []  # 연결 경로 없음 → 이동 무시
+
+    def _find_path_zoned(self, start: str, goal: str) -> list[str]:
+        """zone 지도용 최단 경로 — zone 경계를 **덜 넘는** 길이 먼저, 그다음 hop 수.
+
+        순수 BFS(hop 수 최소)는 zone 탈출 엣지(`_expand_zone_edges` — 구역 안 어디서든
+        바깥으로 1홉) 때문에 입구에서 먼 방끼리의 이동을 **바깥으로 돌아가게** 만든다:
+        안방화장실→거실이 집 안 3홉([드레스룸, 안방, 거실]) 대신 [고등학교, 거실]
+        2홉이 되어, 집 안 이동이 두 번의 zone 이동(각 10~20분 traveling)으로 둔갑한다.
+        경계 hop 은 실제로 시간이 드는 이동이라 먼저 최소화한다. 지도(엣지)는 그대로다.
+
+        동률 처리는 BFS 와 같다 — (횡단, hop, 발견 순서) 힙이라 경계를 안 넘는
+        구간에서는 먼저 발견된 부모를 유지한다. 도달 불가면 [].
+        """
+        best: dict[str, tuple[int, int]] = {start: (0, 0)}
+        parent: dict[str, str] = {}
+        seq = 0
+        heap: list[tuple[int, int, int, str]] = [(0, 0, seq, start)]
+        while heap:
+            crossings, hops, _, node = heapq.heappop(heap)
+            if best.get(node) != (crossings, hops):
+                continue  # 더 나은 값으로 갱신된 낡은 항목
+            if node == goal:
+                break
+            for nb in self._location_graph.get(node, []):
+                step = 1 if self._location_zone.get(node, "") != self._location_zone.get(nb, "") else 0
+                cost = (crossings + step, hops + 1)
+                if nb not in best or cost < best[nb]:
+                    best[nb] = cost
+                    parent[nb] = node
+                    seq += 1
+                    heapq.heappush(heap, (cost[0], cost[1], seq, nb))
+        if goal not in best:
+            return []  # 연결 경로 없음 → 이동 무시
+        path = [goal]
+        while path[-1] in parent and parent[path[-1]] != start:
+            path.append(parent[path[-1]])
+        path.reverse()
+        return path
 
     def _get_adjacent(self, location: str) -> list[str]:
         """현재 위치에서 이동 가능한 인접 장소 목록."""
@@ -254,6 +300,10 @@ class _LocationMixin:
     ) -> str | None:
         """현재 위치·이동 가능 장소·동석자 정보를 내러티브 user 메시지로 구성.
 
+        여정(journey.py) 두 가지가 붙는다: 다른 구역을 거쳐야만 닿는 목적지의 "가는
+        길" 안내(`_route_guide_lines`)와, 여정 중이면 "가던 길" 줄(멈춤이면 재출발
+        방법, 가는 중이면 머무는 법 — `_journey_context_lines`). 외부 공간도 같다.
+
         ``now_elapsed``를 주면 자기 자신의 활성 상태(수면·개인 용무 — traveling은
         제외)도 한 줄 노출한다. 예전엔 에이전트 본인도 자기가 언제까지 그
         상태여야 하는지 알 방법이 없어서, 상태를 유지할지 끝낼지를 판단할
@@ -288,13 +338,34 @@ class _LocationMixin:
                     f"이 상태에서 벗어난 것으로 처리됩니다."
                 )
 
+        # 가는 길 안내(journey.py) — 다른 구역을 **거쳐야만** 닿는 목적지를 첫 경유
+        # 구역별로 묶은 한두 줄. 예전엔 move_to 에 아무 장소명이나 넣으면 엔진이 조용히
+        # 경로를 만들어, 에이전트는 집을 거쳐 간다는 사실을 출발할 때 몰랐다(case1:
+        # 고등학교→동네가 실제로는 [거실, 동네]). 구역 안 다중 hop·1홉 목적지는 제외.
+        route_guide = self._route_guide_lines(my_loc)
+
+        path = self._agent_path.get(agent_key, [])
+        path_lines: list[str] = []
+        if path:
+            dest  = path[-1]
+            steps = len(path)
+            if steps == 1:
+                path_lines.append(f"이동 중: {dest}까지 1칸 남음")
+            else:
+                path_lines.append(f"이동 중: {dest} 방향 ({steps}칸 남음, 다음: {path[0]})")
+        # 여정 줄 — 경유지에서 멈췄으면 "가던 길: 동네 (거실에서 멈춤) — 다시 출발하려면
+        # move_to", 지나가는 중이면 목적지(= 위 "이동 중" 줄의 목적지)와 머무는 법.
+        path_lines.extend(self._journey_context_lines(agent_key, my_loc))
+
         if is_exterior:
             lines.append("※ 이곳은 시뮬레이션 경계 밖의 공허한 공간입니다.")
             lines.append("  아무도 없고, 아무도 당신의 존재를 알지 못합니다.")
             lines.append("  이 공간에서의 말과 행동은 외부로 전달되지 않습니다.")
             adjacent = self._get_adjacent(my_loc)
             if adjacent:
-                lines.append(f"  내부로 돌아가려면 move_to로 인접 장소({', '.join(adjacent)})를 선택하세요.")
+                lines.append(f"  이곳에서 바로 갈 수 있는 곳: {', '.join(adjacent)} (move_to에 장소명을 적으세요)")
+            lines.extend(f"  {line}" for line in route_guide)
+            lines.extend(f"  {line}" for line in path_lines)
             return "\n".join(lines)
 
         adjacent = self._get_adjacent(my_loc)
@@ -306,15 +377,8 @@ class _LocationMixin:
                 return loc
             shown = [_adj_label(loc) for loc in adjacent] if my_zone_here else adjacent
             lines.append(f"이동 가능한 장소: {', '.join(shown)}")
-
-        path = self._agent_path.get(agent_key, [])
-        if path:
-            dest  = path[-1]
-            steps = len(path)
-            if steps == 1:
-                lines.append(f"이동 중: {dest}까지 1칸 남음")
-            else:
-                lines.append(f"이동 중: {dest} 방향 ({steps}칸 남음, 다음: {path[0]})")
+        lines.extend(route_guide)
+        lines.extend(path_lines)
 
         # 사람을 만나러 가는 중이면 목적지 좌표가 아니라 **누구를** 쫓는지 보여준다.
         # 경로 줄만 있으면 도중에 상대가 움직여 목적지가 바뀔 때 이유를 알 수 없다.

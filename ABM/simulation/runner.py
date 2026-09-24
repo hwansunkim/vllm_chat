@@ -273,6 +273,12 @@ class _RunnerMixin:
                     "action":       "clear",
                     "state":        st.get("state"),
                 })
+            # 여정(journey.py) — traveling 해제 = 도착. 경유지면 멈춤/통과를, 목적지면
+            # 여정 해제를 여기서 정한다. 아래 본인 해제 알림이 그 결과("동네로 가는
+            # 길에 들름, 잠시 멈춤")를 읽으므로 반드시 알림 조립 **앞**이다. 멈춤이면
+            # 남은 경로가 지워져 이 wave 이동 단계에서 다음 hop 을 밟지 않는다(턴의
+            # move_to 로 재출발하면 `_apply_move_intents` 가 새 경로를 깐다).
+            self._journey_on_status_expiry(expired_statuses, disp_wave, now_elapsed)
             # 도착지의 **다른 사람**에게 가는 "도착했다" 알림은 지금 그 자리 사람
             # 기준으로 만들되(status.py 참고) 예전처럼 **다음 wave**에 전달한다 —
             # 아래 scene_injections 버퍼가 이 dict로 시작한다.
@@ -580,6 +586,11 @@ class _RunnerMixin:
                     st    = self._agent_status.get(speaker_key, {})
                     state = st.get("state", category_id)
                     logger.info(f"[W{disp_wave}] {speaker_key} 상태 진입: {state} ({minutes}분)")
+                    if state == "sleep" and self._journey_cancel(speaker_key, disp_wave, "sleep"):
+                        # 잠들었으면 가던 길(여정)은 끝났다 — 남은 경로도 함께 버린다.
+                        # 안 그러면 잠든 채 경유지를 지나 목적지로 걸어간다. 여정이
+                        # 아닌 평범한 경로는 예전 동작 그대로 둔다(하위 호환).
+                        self._agent_path.pop(speaker_key, None)
                     self._emit("agent_status_change", {
                         "wave":         disp_wave,
                         "agent":        speaker_key,
@@ -606,10 +617,15 @@ class _RunnerMixin:
             # _update_meeting_paths 직전에 뜨면 그 변화들이 이미 스냅샷에 녹아
             # meeting_update가 영영 안 나간다. diff 기준은 "지난 wave 종료 시점"이다.
             meeting_before = dict(self._meeting_intent)
-            self._apply_move_intents(results)
+            self._apply_move_intents(results, disp_wave)
             self._update_meeting_paths(scene_injections)
             self._emit_meeting_updates(disp_wave, meeting_before)
 
+            # 이동 시간 없이(zone_travel_max_minutes == 0) 경유지에 들어선 여정 중인
+            # 사람 — 멈춤/통과는 루프가 **끝난 뒤** 이번 wave 최종 위치로 판정한다
+            # (`_journey_after_moves`). 루프 안에서 판정하면 순회 순서에 따라 같은
+            # wave 에 떠나는 사람이 아직 있는 것으로 보이기도, 없기도 한다.
+            instant_via_arrivals: list[str] = []
             for agent_key in list(self.active_agents):
                 path = self._agent_path.get(agent_key)
                 if not path:
@@ -675,6 +691,9 @@ class _RunnerMixin:
                     "from": old_loc, "to": next_loc,
                     "to_exterior": to_exterior,
                 })
+                if (not crossing_zone and path and agent_key in self._journey
+                        and self._is_zone_boundary(old_loc, next_loc)):
+                    instant_via_arrivals.append(agent_key)
                 mover_visual = self._agent_visual.get(agent_key, "") or display
                 for other_key in self.active_agents:
                     if other_key == agent_key:
@@ -723,6 +742,13 @@ class _RunnerMixin:
                             scene_injections.setdefault(other_key, []).append({
                                 "speaker": "씬", "content": scene_msg, "action_note": ""
                             })
+
+            # ── 여정 정리 (이동 후 위치 기준) ──────────────────────────────────
+            # 이동 시간 없는 경계 hop 의 경유지 판정 + 구역 안 hop 으로 목적지에 들어선
+            # 여정 해제. traveling 으로 도착하는 경우는 wave 시작의 자연 만료가 처리한다.
+            self._journey_after_moves(
+                instant_via_arrivals, disp_wave, now_elapsed, scene_injections,
+            )
 
             # ── 이동 후 보강 배달 (post-move delivery) ─────────────────────────
             # 위 1차 라우팅은 "말은 떠나기 전에 했다"(이동 전 스냅샷)라 출발지

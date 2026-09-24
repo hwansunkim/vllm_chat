@@ -219,7 +219,8 @@ ABM/
     turn.py          _TurnMixin — _apply_turn_result
     targets.py       _TargetsMixin — 발화 대상 해석 · stranger
     location.py      _LocationMixin — 위치 그래프 · zone · 씬 메시지
-    meeting.py       _MeetingMixin — 만남 lock (사람 추격)
+    meeting.py       _MeetingMixin — move_to 해석 · 만남 lock (사람 추격)
+    journey.py       _JourneyMixin — 여정(경유지 멈춤/통과 · 가는 길 안내 · move_to 로깅)
     infection.py     _InfectionMixin — 결정론적 SEIR/SEIRS
     events.py        _EventsMixin — 시나리오 이벤트
     system.py        _SystemMixin — 디렉터(system 에이전트)

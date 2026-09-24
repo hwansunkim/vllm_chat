@@ -157,12 +157,22 @@ class _MeetingMixin:
                 return None
         return target
 
-    def _apply_move_intents(self, results: dict) -> None:
-        """이번 wave의 `move_to` 발화를 장소 이동 / 만남 의도로 분류해 반영.
+    def _apply_move_intents(self, results: dict, wave_num: int = 0) -> None:
+        """이번 wave의 `move_to` 발화를 장소 이동 / 만남 의도 / 머무름으로 분류해 반영.
 
         반드시 **이동 적용 전 위치 스냅샷**에서 불려야 한다(runner의 발화 라우팅·
-        외모 처리와 같은 원칙). 어떤 형태든 새 `move_to`가 나오면 기존 만남 lock은
-        그 발화로 대체되거나 취소된다 — LLM이 마음을 바꿀 수 있는 유일한 손잡이다.
+        외모 처리와 같은 원칙). 어떤 형태든 새 `move_to`가 나오면 기존 만남 lock과
+        여정(journey.py)은 그 발화로 대체되거나 취소된다 — LLM이 마음을 바꿀 수 있는
+        유일한 손잡이다. 단 여정 목적지를 다시 고른 것은 "계속/재출발"이다.
+
+        해석 규칙(순서대로):
+        - 그래프의 장소명이 아니고 사람으로 해석되면 → 만남 lock (여정 취소 `meeting`).
+        - **지금 위치**면 → 머무름: 남은 경로·여정·만남 lock을 모두 버린다. 예전엔
+          만남 lock이 없으면 이 값을 무시해 남은 경로로 계속 가 버렸다(하위 호환
+          규칙) — "여기 있겠다"는 의도가 경유지에서 통하지 않아 바꿨다.
+        - 그 밖의 장소 → 경로를 새로 깔고 `_journey_plan`이 여정을 세우거나 잇는다.
+          도달 불가·해석 불가면 경로와 여정을 버린다(제자리).
+        원본 값과 해석 결과는 `_record_move_resolution`이 로그·이벤트로 남긴다.
 
         만남 처리 한 쌍(`_apply_move_intents` → `_update_meeting_paths`)의 선두이므로
         해제 사유 버퍼를 여기서 비운다.
@@ -179,10 +189,16 @@ class _MeetingMixin:
                 continue
 
             # 장소명이 우선. 사람 alias와 장소명이 겹치면 장소로 읽는다.
-            if not self._is_location_name(dest):
+            is_place = self._is_location_name(dest)
+            if not is_place:
                 target = self._resolve_meet_target(speaker_key, dest)
                 if target:
                     self._meeting_intent[speaker_key] = target
+                    # 사람을 만나러 가기로 했으면 가던 길(여정)은 그 발화로 끝난다.
+                    self._journey_cancel(speaker_key, wave_num, "meeting")
+                    self._record_move_resolution(
+                        speaker_key, raw, {"kind": "person", "target": target}, wave_num,
+                    )
                     continue
 
             had_intent  = self._meeting_intent.pop(speaker_key, None) is not None
@@ -196,15 +212,26 @@ class _MeetingMixin:
                 # 디버깅 시 "경로가 있는데 안 움직인다"로 오독되는 걸 막는다.
                 if path:
                     self._agent_path[speaker_key] = path
+                    kind = self._journey_plan(speaker_key, dest, current_loc, path, wave_num)
+                    resolution = {"kind": kind, "destination": dest, "path": list(path)}
+                    via = self._path_via(current_loc, path)
+                    if via:
+                        resolution["via"] = via
                 else:
                     self._agent_path.pop(speaker_key, None)
-            elif had_intent:
-                self._meeting_break_log[speaker_key] = "staying"
-                # "나는 여기 있겠다" — 만나러 가던 길도 그 자리에서 버린다. 이걸
-                # 빠뜨리면 lock만 풀리고 몸은 계속 옛 목적지로 걸어가는 유령 추격이
-                # 남는다. 만남 lock이 없던 경우(순수 장소 이동 시나리오)는 기존
-                # 동작을 그대로 둔다 — 하위 호환.
+                    self._journey_cancel(speaker_key, wave_num, "invalid")
+                    resolution = {"kind": "invalid", "destination": dest,
+                                  "reason": "unreachable" if is_place else "unknown"}
+            else:
+                if had_intent:
+                    self._meeting_break_log[speaker_key] = "staying"
+                # "나는 여기 있겠다" — 가던 길(남은 경로)도 여정도 그 자리에서 버린다.
+                # 이걸 빠뜨리면 lock만 풀리고 몸은 계속 옛 목적지로 걸어가는 유령
+                # 추격, 또는 경유지에서 머물겠다고 했는데 계속 가 버리는 여정이 남는다.
                 self._agent_path.pop(speaker_key, None)
+                self._journey_cancel(speaker_key, wave_num, "stay")
+                resolution = {"kind": "stay", "destination": dest}
+            self._record_move_resolution(speaker_key, raw, resolution, wave_num)
 
     # ── lock 유지/해제 ────────────────────────────────────────────────────────
 

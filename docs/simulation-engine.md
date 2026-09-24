@@ -7,14 +7,14 @@
 
 ---
 
-## 1. `Simulation` = 믹스인 10종 조합
+## 1. `Simulation` = 믹스인 11종 조합
 
 `ABM/simulation/core.py`:
 
 ```python
-class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
-                 _StatusMixin, _EventsMixin, _TurnMixin, _StepMixin, _SystemMixin,
-                 _RunnerMixin):
+class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin,
+                 _TargetsMixin, _StatusMixin, _EventsMixin, _TurnMixin, _StepMixin,
+                 _SystemMixin, _RunnerMixin):
 ```
 
 `core.py` 자체가 보유하는 것: `__init__`(모든 config 파싱), 상태 dict들, `_emit`,
@@ -30,7 +30,8 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 | `_TargetsMixin` | `targets.py` | `_resolve_targets`, `_compute_wave_targets`(→ location.py) | 발화 대상 해석. §5 |
 | `_StatusMixin` | `status.py` | `_enter_state`, `_agent_unavailable`, `_agent_traveling`, `_expire_agent_states`, `_status_release_notice` | 에이전트 상태(수면·이동). features |
 | `_LocationMixin` | `location.py` | `_compute_zone_awareness`, `_build_situation_context`, `_get_or_assign_stranger_id` | 위치·zone·낯선 이·씬 메시지. features |
-| `_MeetingMixin` | `meeting.py` | `_apply_move_intents`, `_update_meeting_paths` | 만남 lock. features |
+| `_MeetingMixin` | `meeting.py` | `_apply_move_intents`, `_update_meeting_paths` | `move_to` 해석(장소/사람/머무름) + 만남 lock. features |
+| `_JourneyMixin` | `journey.py` | `_journey_plan`, `_journey_on_via_arrival`, `_route_guide_lines`, `_record_move_resolution` | 여정(먼 목적지로 가는 길) · 경유지 멈춤/통과 · 가는 길 안내 · move_to 로깅. features §1 |
 | `_InfectionMixin` | `infection.py` | `_apply_infection_wave`, `_build_symptom_context` | 결정론적 SEIR/SEIRS. features |
 | `_EventsMixin` | `events.py` | `_execute_event` | 시나리오 이벤트. features |
 | `_SystemMixin` | `system.py` | `_run_system_agent` | 디렉터. features |
@@ -71,10 +72,15 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
          이번 wave 발화 기회를 같이 만들어야 한다
        - 이벤트 실행 후 current_wave 를 active_agents 로 필터 — agent_exit 가
          이번 wave 참가자를 비활성으로 만들면 그 인물은 이 wave 에 발화하지 않는다
+         (agent_exit 는 그 인물의 여정도 취소 — journey_update cancel/exit, at_wave_start)
  2b. 상태 자연 만료 (wave 시작 시점, LLM 호출 전):
        expired = _expire_agent_states(now_elapsed)
        각 만료 → _emit("agent_status_change", action="clear", wave=disp_wave)
                  (그래서 이 wave 의 wave_start 보다 먼저 나간다)
+       _journey_on_status_expiry(expired)   ← traveling 해제 = 도착. 여정 중이면:
+                 목적지 → 여정 해제(arrive) / 경유지 + 가용한 다른 사람 있음 → 멈춤
+                 (남은 경로 삭제, paused) / 없음 → 통과(pass, 경로 유지 → 14번에서 다음 hop).
+                 본인 알림이 이 결과를 읽으므로 반드시 알림 조립 **앞**
        arrival_injections = _deferred_arrival_scene_injections(expired)
                  → 도착지 **다른 사람**의 "[씬] X이(가) 이곳에 도착했다" — 10번
                    scene_injections 의 초기값이 되어 **다음 wave** 에 전달
@@ -82,6 +88,8 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
                  [해제 알림(_status_release_notice), *held_incoming, *기존 incoming]
                  → 이번 wave 에 바로 턴 ("[씬] 고등학교에 도착했다." /
                    "[씬] 잠에서 깼다. (누나방)" / "[씬] 하던 일을 마쳤다: 씻기. (안방화장실)")
+                   여정 경유지면 "[씬] 거실에 도착했다. (동네로 가는 길에 들름, 잠시 멈춤)"
+                   / "(…, 그대로 지나가는 중)"
        ※ 위치 이유: 자연 만료는 at_time 이벤트의 notified 처럼 "엔진이 시간으로
          부르는 참가자"라 이벤트·활성 필터 뒤(방금 퇴장한 사람은 편입 안 함),
          3번 가드 앞(사유가 있는 사람이 정말 아무도 없을 때만 빈 wave 안전장치가
@@ -153,11 +161,16 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
        있으면 _enter_state(category_id) → 새로 걸렸을 때만 _emit("agent_status_change", action="enter")
        없는데 자기-선언형 상태 중이면 → 즉시 해제(개입으로 턴을 받았다는 뜻) +
          _emit(action="clear"). 이미 턴을 받은 것이라 2b 의 해제 알림은 없다.
+       sleep 에 새로 들면 여정 취소(reason sleep) + 그 여정의 남은 경로도 버린다.
        (zone 경계 이동의 traveling 은 14번 이동 루프가 엔진 판단으로 건다)
 
 ── 이동 (이동 전 스냅샷 기준으로 의도 해석) ──
 13. meeting_before = dict(_meeting_intent)
-    _apply_move_intents(results)      : move_to를 장소이동/사람추격으로 분류
+    _apply_move_intents(results, disp_wave) : move_to를 장소이동/사람추격/머무름으로 분류
+       - 지금 위치 = 머무름: 남은 경로·여정·만남 lock 버림(옛 "lock 없으면 무시" 폐기)
+       - 장소 → 경로 + _journey_plan (경유지 있으면 여정 start, 같은 목적지면
+         resume/continue, 다른 곳이면 기존 여정 cancel)
+       - 원본·해석 → _record_move_resolution (에이전트 로그 주석 + move_intent 이벤트)
     _update_meeting_paths(scene_injections)  : 추격/랑데부/집결 경로 계산
     _emit_meeting_updates(disp_wave, meeting_before)
 14. 각 agent의 _agent_path에서 next_loc pop → _agent_location 갱신
@@ -171,6 +184,11 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
        _emit("agent_move")
        도착지/출발지 사람들에게 "[씬] 도착/이탈" scene_injection
        (아는 사이면 실명, 아니면 "낯선 이가 나타났다: <외모>")
+       이동 시간 없는(zone_travel_max=0) 경계 hop 으로 여정의 경유지에 들어선 사람은
+       instant_via_arrivals 에 모은다(판정은 14a — 루프 순회 순서에 흔들리지 않게)
+14a. _journey_after_moves(instant_via_arrivals, ...) : 이동 후 위치 기준
+       - 즉시 경유지 도착자 멈춤/통과 판정 (멈춤이면 본인에게 다음 wave 씬 알림)
+       - 구역 안 hop 으로 목적지에 들어선(traveling 아님) 여정 해제(arrive)
 
 ── 이동 후 보강 배달 (이동 후 위치 기준, 직접 타깃 한정) ──
 14b. _deliver_post_move(...)  : 이번 wave에 위치가 바뀐 화자의 직접 타깃 중 1차에서
@@ -544,7 +562,7 @@ config만 보고 매번 새로 만들면 엔진 업그레이드가 DB 마이그�
 | `build_infection_contract` | `[몸 상태 인식]` — `[몸 상태]` 블록 읽는 법 (status/확률은 절대 안 알려줌) | `infection_enabled` |
 | `build_relationship_contract` | `[아는 사람 (나와의 관계)]` — `- 채민경 (ID: "chaemin") — 당신의 아내` | `relationships` 비어있지 않을 때 |
 | `build_output_contract` | 출력 JSON 스키마 + `<MOVE_TO_HINT>` + `<TARGETS>` 목록 + `<TARGETS_FOOTER>` | 항상 (인터뷰 `include_output_schema=False` 제외) |
-| `build_move_to_hint` | 그래프 없음 → "이동할 위치 이름" / 있음 → "장소명 또는 사람 ID(추격/랑데부)" / zone 있음 → + "다른 방 사람은 ID로 지목" | — |
+| `build_move_to_hint` | 그래프 없음 → "이동할 위치 이름" / 있음 → "장소명 또는 사람 ID(추격/랑데부)" + "지금 있는 곳 = 머묾" / zone 있음 → + "다른 방 사람은 ID로 지목" + "먼 곳은 안내된 길, 경유지에 깨어 있는 사람이 있으면 멈춤 — 같은 목적지로 재출발" | — |
 
 `build_engine_contract(...)` — 전체를 한 번에 만드는 단일 진입점 (계약 프리뷰
 엔드포인트·테스트용). 실행 경로는 world를 `core._apply_engine_contract`로 1회,
@@ -571,7 +589,7 @@ output을 `Agent.get_system_message`로 매 턴.
 | feature | 필수 토큰 |
 |---|---|
 | `has_location_graph` | `move_to`, `[위치 그래프` |
-| `has_zone` | `[구역:` |
+| `has_zone` | `[구역:`, `경유지` (세계 계약 `_MAP_RULE_JOURNEY` — 옛 프리즈 출력 템플릿에도 들어간다) |
 | `time_enabled` | `[시간 인식]` |
 | `infection_enabled` | `[몸 상태` |
 | `include_output_schema` | `"target"`, `"move_to"`, `update_appearance` |

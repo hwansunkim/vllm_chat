@@ -317,12 +317,13 @@ ABM 엔진을 웹에서 굴리는 얇은 래퍼. **엔진 자체는 별도 OS �
 
 ## C-1. Simulation 엔진 = 믹스인 조합
 
-**`Simulation`** 클래스 (`ABM/simulation/core.py`) 하나가 믹스인 9개를 상속한다.
+**`Simulation`** 클래스 (`ABM/simulation/core.py`) 하나가 믹스인 11개를 상속한다.
 "엔진 어디를 고친다"는 대화에서는 **믹스인 이름**으로 특정한다.
 
 ```python
-class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
-                 _EventsMixin, _TurnMixin, _StepMixin, _SystemMixin, _RunnerMixin):
+class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin,
+                 _TargetsMixin, _StatusMixin, _EventsMixin, _TurnMixin, _StepMixin,
+                 _SystemMixin, _RunnerMixin):
 ```
 
 | Canonical (믹스인) | 파일 | 핵심 메서드 | 담당 |
@@ -333,7 +334,8 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 | **턴 믹스인** | `turn.py` | `_apply_turn_result` | LLM 응답 파싱 → `agent.memory` / `shared_log` / `edges` / DB 기록, `turn_complete` emit |
 | **타깃 믹스인** | `targets.py` | `_resolve_targets`, `_compute_wave_targets` | 발화 대상 해석: 같은 장소 필터, 관계 지도 기반 아는 사이/**낯선 이(stranger_N)** 분류, `all`/`self` 처리 |
 | **로케이션 믹스인** | `location.py` | `_expand_zone_edges`, `_compute_zone_awareness`, 씬 메시지 빌더 | 위치 그래프(BFS 이동), **zone(구역) 인지**, 외부공간 격리, 도착/이탈 씬 메시지 |
-| **미팅 믹스인** | `meeting.py` | `_apply_move_intents`, `_update_meeting_paths` | **만남 lock** (`move_to`에 장소가 아닌 **사람**을 지목): 추격·랑데부·집결, `meeting_update` emit |
+| **미팅 믹스인** | `meeting.py` | `_apply_move_intents`, `_update_meeting_paths` | `move_to` 해석(장소/사람/머무름) + **만남 lock** (`move_to`에 장소가 아닌 **사람**을 지목): 추격·랑데부·집결, `meeting_update` emit |
+| **여정 믹스인** | `journey.py` | `_journey_plan`, `_journey_on_via_arrival`, `_route_guide_lines` | **여정**(먼 목적지로 가는 길): 경유지 멈춤/통과, 재출발, "가는 길"/"가던 길" 안내, `journey_update`·`move_intent` emit |
 | **감염 믹스인** | `infection.py` | `_apply_infection_wave`, `_sample_incubation_minutes` | **결정론적 SEIR/SEIRS**. 같은 wave·같은 장소 접촉(I만 전파) → Monte Carlo(λ=β×t_d) 전염. 잠복기(E)·진행·회복은 경과 분 기준. LLM은 상태·확률을 절대 안 봄 |
 | **이벤트 믹스인** | `events.py` | `_execute_event` | 시나리오 이벤트: `system_message`, `agent_enter`, `agent_exit` |
 | **시스템 믹스인** | `system.py` | `_run_system_agent` | **디렉터(system 에이전트)** 실행: 침묵·반복·고립 감지, 개입 메시지 주입(1..N 대상), `director_memo` 갱신, `director_call` emit |
@@ -441,6 +443,10 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 | **1-wave 대화 유예** | 직접 타깃이 지금은 다른 방이어도 **직전 wave 시작 시점에 같은 방**이었으면 한 번 더 배달. 방금 자리를 뜬 상대에게 답·작별. `_recently_co_located` / `_prev_wave_start_location`. `"all"`·외부 공간 제외 |
 | **씬 메시지 (`[씬]`)** | 환경 관찰 메시지: 도착/이탈, 외모 변화, 독백 행동, 만남 취소. `speaker="씬"` |
 | **만남 lock (`_meeting_intent`)** | `move_to`에 장소가 아닌 **사람**을 지목 → 그 사람을 따라감(추격/랑데부). 동석·다른 `move_to`·목표 이탈에서 해제 |
+| **경유지 (via)** | 경로의 **중간** 노드 중 zone 경계를 넘는 hop으로 도착하는 곳(예: 고등학교→동네의 거실). 구역 안 다중 hop의 중간 방은 경유지가 아니다. `_path_via` |
+| **여정 (journey, `_journey`)** | 경유지가 있는 장소 `move_to`의 의도 `{destination, origin, via, status: en_route\|paused, paused_at}`. 경유지에 가용한(상태 없는) 사람이 있으면 **멈춤**(남은 경로 삭제, paused), 없으면 **통과**. 같은 목적지를 다시 고르면 재출발, 목적지 도착·다른 `move_to`·지금 위치(머무름)·퇴장·수면 진입에서 해제. 재개 스냅샷 `journey` |
+| **가는 길 / 가던 길** | `[현재 상황]`의 여정 안내. "가는 길 — 거실(우리집) 경유: 누나학원, 동네, …"(경유지를 거쳐야만 닿는 목적지, 첫 경유 구역별로 묶음) / "가던 길: 동네 (거실에서 멈춤) — 다시 출발하려면 move_to: \"동네\"" |
+| **머무름 (`move_to` = 지금 위치)** | 남은 경로·여정·만남 lock을 모두 버리고 그 자리에 있는다 (옛 "lock 없으면 무시" 규칙 폐기) |
 
 ## D-4. 시간
 
@@ -526,6 +532,8 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _TargetsMixin,
 | `director_call` | 디렉터가 돈 사실 + 비용 (`n_interventions`) | 디렉터 판단 카드 |
 | **`agent_move`** | 에이전트 이동 (from → to) | 이동 카드 🚶 + 지도 갱신 |
 | **`meeting_update`** | 만남 lock 생성/해소 (start/arrived/cancelled) | 만남 카드 🤝 |
+| **`journey_update`** | 여정 start/pause/pass/resume/arrive/cancel (`at`, `via`, `reason`, `at_wave_start`) | (리스너 없음) — 마크다운 `[🧭 씬]` (이동 토글, start/pause/resume/cancel만) |
+| **`move_intent`** | LLM 원본 `move_to` + 엔진 해석 `kind` (place/journey/resume/continue/stay/person/invalid) — 감사 로그 | (리스너 없음, 마크다운 비노출) |
 | **`infection_update`** | 감염 상태 전이 (시드/전파/회복) | 감염 카드 🦠 + 뱃지 |
 | **`appearance_update`** | `update_appearance`로 외모 변경 | 외모 카드 👗 |
 | **`time_jump`** | 가변 시간 모드의 경과 분 결정. `mode`: `category`/`ai`/`idle`(연속 전원 침묵·전원 상태 잠금 강제 점프) | 시간 점프 카드 🕐 |

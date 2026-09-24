@@ -41,8 +41,10 @@ DEFAULT_INCLUDE = frozenset(INCLUDE_KEYS)
 # 토글 → 스트림에 실을 이벤트 타입. 한 토글이 여러 타입을 열 수 있다.
 _TOGGLE_EVENT_TYPES = {
     # post_move_delivery = 이동 후 보강 배달(runner `_deliver_post_move`). 이동의
-    # 결과라 이동 토글에 묶는다.
-    "move":         ("agent_move", "post_move_delivery"),
+    # 결과라 이동 토글에 묶는다. journey_update = 여정(먼 목적지로 가는 길의
+    # 출발·경유지 멈춤·재출발·취소 — ABM/simulation/journey.py)도 이동의 맥락이라
+    # 같은 토글이다.
+    "move":         ("agent_move", "post_move_delivery", "journey_update"),
     "appearance":   ("appearance_update",),
     "intervention": ("system_intervention", "world_event"),   # world_event = 레거시
     "world":        ("world_event",),                          # 하위호환 별칭
@@ -131,7 +133,7 @@ def _quote(text: str) -> str:
 _PRE_DIALOGUE_EVENT_TYPES  = {"scene_event", "director_call", "system_intervention", "world_event"}
 _POST_DIALOGUE_EVENT_TYPES = {"appearance_update", "agent_move", "meeting_update",
                               "infection_update", "time_jump", "agent_status_change",
-                              "post_move_delivery"}
+                              "post_move_delivery", "journey_update"}
 
 
 def _stream_phase(kind: str, payload: dict | None = None) -> int:
@@ -147,6 +149,10 @@ def _stream_phase(kind: str, payload: dict | None = None) -> int:
         # 시작 시점(대사 전)에, 진입(enter)은 이동/상태 처리 블록(대사 후)에
         # emit된다(runner.py).
         return -1 if (payload or {}).get("action") == "clear" else 1
+    if kind == "journey_update":
+        # 역시 이중 시점 — 경유지 도착(자연 만료)·퇴장 취소는 wave 시작(대사 전),
+        # 출발·재출발·취소는 이동 의도 해석(대사 후). 엔진이 payload 에 적어 준다.
+        return -1 if (payload or {}).get("at_wave_start") else 1
     if kind in _PRE_DIALOGUE_EVENT_TYPES:
         return -1
     return 1  # 나머지 이벤트 종류(주로 _POST_DIALOGUE_EVENT_TYPES)는 대사 이후
@@ -225,6 +231,33 @@ def _fmt_post_move_delivery(data: dict, index: AgentIndex) -> str:
     target  = data.get("target_display") or index.label(data.get("target"))
     loc     = f" ({data['location']})" if data.get("location") else ""
     return f"\n> **[🗣️ 씬]** *{speaker}의 말이 이동 후 {target}에게 전달됐다{loc}*\n"
+
+
+def _fmt_journey(data: dict, index: AgentIndex) -> str:
+    """여정 한 줄 — 먼 목적지로 가는 길의 출발·경유지 멈춤·재출발·취소.
+
+    경유지 통과(pass)·도착(arrive)과 퇴장에 따른 취소는 싣지 않는다 — 이동 줄
+    (agent_move)·상태 줄·퇴장 씬이 이미 같은 사실을 보여준다. 조사는 다른 씬
+    문구처럼 받침 판정 없이 ``이(가)``/``(으)로``. markdown.js ``fmtJourney`` 와
+    글자 단위로 같아야 한다.
+    """
+    action = data.get("action")
+    name   = data.get("display_name") or index.label(data.get("agent"))
+    dest   = data.get("destination") or ""
+    at     = data.get("at") or ""
+    if action == "start":
+        via = data.get("via") or []
+        via_str = f" ({'·'.join(via)} 경유)" if via else ""
+        text = f"{name}이(가) {dest}(으)로 향한다{via_str}"
+    elif action == "pause":
+        text = f"{name}이(가) {dest}(으)로 가던 길에 {at}에서 멈췄다"
+    elif action == "resume":
+        text = f"{name}이(가) {at}에서 다시 {dest}(으)로 출발했다"
+    elif action == "cancel" and data.get("reason") != "exit":
+        text = f"{name}이(가) {dest}(으)로 가던 길을 그만뒀다"
+    else:
+        return ""
+    return f"\n> **[🧭 씬]** *{text}*\n"
 
 
 def _fmt_appearance(data: dict) -> str:
@@ -466,6 +499,8 @@ def render_markdown(
             md += _fmt_move(payload)
         elif kind == "post_move_delivery":
             md += _fmt_post_move_delivery(payload, index)
+        elif kind == "journey_update":
+            md += _fmt_journey(payload, index)
         elif kind == "appearance_update":
             md += _fmt_appearance(payload)
         elif kind == "system_intervention":

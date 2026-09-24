@@ -104,6 +104,8 @@ class _StatusMixin:
         - `traveling` → "[씬] {도착지}에 도착했다." 도착지 자체가 내용이라 괄호
           위치를 따로 붙이지 않는다. 외부 공간이어도 본인 알림은 준다(남에게
           가는 도착 알림 `_deferred_arrival_scene_injections`만 외부를 건너뛴다).
+          여정(journey.py)의 경유지 도착이면 뒤에 "(동네로 가는 길에 들름, 잠시
+          멈춤)" / "(…, 그대로 지나가는 중)"이 붙는다.
         - `sleep` → "[씬] 잠에서 깼다. (현재 위치)". 기본 카테고리 id `sleep`에만
           전용 문구를 준다 — "하던 일을 마쳤다: 수면"은 어색하다. id를 바꾼 사용자
           정의 수면은 아래 일반 문구로 떨어질 뿐 틀린 말은 아니다.
@@ -116,7 +118,12 @@ class _StatusMixin:
         here  = self._agent_location.get(key, "") or ""
         if state == "traveling":
             dest = st.get("arrival_location") or here
-            return f"[씬] {dest}에 도착했다." if dest else "[씬] 목적지에 도착했다."
+            if not dest:
+                return "[씬] 목적지에 도착했다."
+            # 여정의 경유지면 "(동네로 가는 길에 들름, 잠시 멈춤 / 그대로 지나가는
+            # 중)"을 붙인다 — 멈춤/통과 판정은 runner 가 이 알림을 만들기 **전에**
+            # `_journey_on_status_expiry` 로 끝내 둔다. 목적지 도착·여정 없음이면 불변.
+            return f"[씬] {dest}에 도착했다.{self._journey_notice_suffix(key, dest)}"
         where = f" ({here})" if here else ""
         if state == "sleep":
             return f"[씬] 잠에서 깼다.{where}"

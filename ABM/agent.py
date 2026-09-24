@@ -96,6 +96,21 @@ class Agent:
         with open(self.log_file, 'w', encoding='utf-8') as f:
             json.dump(self._log_buffer, f, ensure_ascii=False, indent=2)
 
+    def annotate_last_log(self, fields: dict) -> None:
+        """가장 최근 로그 항목(= 이번 턴)에 턴 **뒤에** 확정되는 값을 덧붙인다.
+
+        예: `move_to` 원본과 엔진의 해석 결과 — 해석은 wave의 모든 턴이 끝난 뒤
+        (이동 전 스냅샷) 메인 스레드에서 정해지므로 턴 로그를 쓸 때는 아직 모른다.
+        예약 키(`timestamp`·`content` 등)는 덮어쓰지 않는다. 로그가 비었으면 no-op.
+        """
+        if not self._log_buffer or not fields:
+            return
+        self._log_buffer[-1].update(
+            {k: v for k, v in fields.items() if k not in _RESERVED_LOG_KEYS}
+        )
+        with open(self.log_file, 'w', encoding='utf-8') as f:
+            json.dump(self._log_buffer, f, ensure_ascii=False, indent=2)
+
     def set_engine_contract(
         self,
         world_contract: str,
