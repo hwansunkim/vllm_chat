@@ -1,8 +1,8 @@
 // frontend/js/sim/run/control.js
 // Start / stop / continue / status-badge logic for simulation runs.
 
-import { sim, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCHEDULE, normalizeWeekday,
-         normalizeTemperature, normalizeTargetDuration, buildInfectionModel } from '../state.js';
+import { sim, normalizeTargetDuration } from '../state.js';
+import { buildSimConfig } from '../config.js';
 import { readConfigFromUI } from '../settings/page.js';
 import { renderAgentCards } from './cards.js';
 import { removeTypingIndicator, resetWaveCardBuffer, flushPendingWaveCards } from './feed.js';
@@ -58,42 +58,11 @@ export async function startSimulation() {
   const res = await fetch('/api/simulation/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    // 필드 목록은 저장 경로와 같은 buildSimConfig() 한 곳에만 있다(../config.js).
+    // scenario_id 만 실행 전용이라 여기서 붙인다 — 실행 이력을 시나리오에 연결하는 키.
     body: JSON.stringify({
-      scenario_id:            sim.currentScenarioId || null,
-      agents:                 sim.agents,
-      background:             sim.background,
-      start_agent:            sim.start_agent,
-      max_waves:              sim.max_waves,
-      // 목표 기간(분). "사용 안 함"은 반드시 null — 0/음수는 백엔드가 422로 거부한다.
-      target_duration_minutes: normalizeTargetDuration(sim.target_duration_minutes),
-      step_delay:             sim.step_delay,
-      token_limit:            sim.token_limit,
-      llm_max_tokens:         sim.llm_max_tokens,
-      extra_fields:           sim.extra_fields,
-      events:                 sim.events,
-      output_format_override: sim.output_format_override || '',
-      sim_start_time:         sim.sim_start_time    || '09:00',
-      sim_start_weekday:      normalizeWeekday(sim.sim_start_weekday),
-      time_per_wave:          sim.time_per_wave    ?? 30,
-      time_mode:              sim.time_mode ?? 'fixed',
-      time_categories:        (sim.time_categories?.length ? sim.time_categories : DEFAULT_TIME_CATEGORIES),
-      // time_mode='variable'일 때만 의미 있음. 'ai' = LLM이 카테고리 대신 경과분을 직접 추론.
-      time_estimation_mode:   sim.time_estimation_mode === 'ai' ? 'ai' : 'category',
-      idle_minutes_schedule:  (sim.idle_minutes_schedule?.length ? sim.idle_minutes_schedule : DEFAULT_IDLE_MINUTES_SCHEDULE),
-      max_scene_jump_minutes:   sim.max_scene_jump_minutes   ?? 45,
-      max_daytime_jump_minutes: sim.max_daytime_jump_minutes ?? 180,
-      starvation_waves:       sim.starvation_waves   ?? 3,
-      server_id:              sim.server_id || null,
-      temperature:            normalizeTemperature(sim.temperature),
-      system_agent:           sim.system_agent,
-      lang_fix_enabled:       sim.lang_fix_enabled ?? true,
-      lang_fix_retries:       sim.lang_fix_retries ?? 2,
-      location_graph:         sim.location_graph || [],
-      // 'spatial' = 같은 방 엿듣기 + 같은 zone 다른 방으로의 대사 전달 + 혼잣말 행동 관찰.
-      // 'targeted'(기본)이면 엔진이 기존 라우팅 경로를 그대로 탄다.
-      perception_mode:        sim.perception_mode === 'spatial' ? 'spatial' : 'targeted',
-      // 전염 확률은 0~1, 모든 분 값은 0~52560000이고 max >= min — 벗어나면 서버가 422로 거부한다.
-      infection_model:        buildInfectionModel(sim.infection_model),
+      scenario_id: sim.currentScenarioId || null,
+      ...buildSimConfig(),
     }),
   });
 

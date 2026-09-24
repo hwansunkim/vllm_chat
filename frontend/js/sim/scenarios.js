@@ -6,6 +6,9 @@ import { sim, _expandedAgents, DEFAULT_TIME_CATEGORIES, DEFAULT_IDLE_MINUTES_SCH
          normalizeTargetDuration, buildInfectionModel, normalizeRelationships,
          DEFAULT_STATE_CATEGORIES, DEFAULT_ZONE_TRAVEL_MIN_MINUTES,
          DEFAULT_ZONE_TRAVEL_MAX_MINUTES } from './state.js';
+// 저장·파일 내보내기·실행(/start)이 같은 직렬화기를 쓴다 — 필드 목록은 ./config.js 한 곳에만 있다.
+// 저장본 config 에는 scenario_id 를 넣지 않는다(실행 요청에서만 붙는다, config.js 주석 참고).
+import { buildSimConfig } from './config.js';
 import { renderSettingsPage, readConfigFromUI } from './settings/page.js';
 import { refreshRunHistory } from './runs/history.js';
 import { downloadFile, safeFilename, nowTag } from './utils/download.js';
@@ -49,51 +52,6 @@ export async function loadScenarios() {
   if (histBtn) histBtn.disabled = !sim.currentScenarioId;
 }
 
-export function buildScenarioConfig() {
-  return {
-    // 관계 지도만 정규화해서 내보낸다 — 카드 편집기가 만든 값은 이미 평범한 객체지만,
-    // 파일로 가져온 시나리오/구버전 데이터에는 필드가 아예 없을 수 있다. 나머지 필드는
-    // 스프레드로 그대로 보존한다(role/goal 같은 "왕복 보존 전용" 필드 포함).
-    agents:                 sim.agents.map(a => ({ ...a, relationships: normalizeRelationships(a.relationships) })),
-    background:             sim.background,
-    start_agent:            sim.start_agent,
-    max_waves:              sim.max_waves,
-    // 목표 기간(분). null = 미사용 — 백엔드가 0/음수를 422로 거부하므로 정규화해서 저장한다.
-    target_duration_minutes: normalizeTargetDuration(sim.target_duration_minutes),
-    step_delay:             sim.step_delay,
-    token_limit:            sim.token_limit,
-    llm_max_tokens:         sim.llm_max_tokens,
-    extra_fields:           sim.extra_fields,
-    events:                 sim.events,
-    location_graph:         sim.location_graph || [],
-    perception_mode:        sim.perception_mode === 'spatial' ? 'spatial' : 'targeted',
-    lang_fix_enabled:       sim.lang_fix_enabled ?? true,
-    lang_fix_retries:       sim.lang_fix_retries ?? 2,
-    output_format_override: sim.output_format_override || '',
-    sim_start_time:         sim.sim_start_time    ?? '09:00',
-    sim_start_weekday:      normalizeWeekday(sim.sim_start_weekday),
-    time_per_wave:          sim.time_per_wave     ?? 30,
-    time_mode:              sim.time_mode ?? 'fixed',
-    time_categories:        (sim.time_categories?.length ? sim.time_categories : DEFAULT_TIME_CATEGORIES),
-    time_estimation_mode:   sim.time_estimation_mode === 'ai' ? 'ai' : 'category',
-    idle_minutes_schedule:  (sim.idle_minutes_schedule?.length ? sim.idle_minutes_schedule : DEFAULT_IDLE_MINUTES_SCHEDULE),
-    max_scene_jump_minutes:   sim.max_scene_jump_minutes   ?? 45,
-    max_daytime_jump_minutes: sim.max_daytime_jump_minutes ?? 180,
-    starvation_waves:       sim.starvation_waves   ?? 3,
-    // time_categories와 달리 **빈 배열이 유효한 값**이다(자기-선언형 상태 기능 off) —
-    // 기본값으로 되메우지 않는다.
-    state_categories:        sim.state_categories || [],
-    zone_travel_min_minutes: sim.zone_travel_min_minutes ?? 10,
-    zone_travel_max_minutes: sim.zone_travel_max_minutes ?? 20,
-    server_id:              sim.server_id         ?? null,
-    temperature:            normalizeTemperature(sim.temperature),
-    system_agent:           sim.system_agent,
-    // 전염 확률 범위(0~1)와 분 값의 범위·대소(max >= min)를 서버가 422로 거부하므로
-    // 정규화해서 저장한다.
-    infection_model:        buildInfectionModel(sim.infection_model),
-  };
-}
-
 export async function saveScenario() {
   readConfigFromUI();
   const nameEl = document.getElementById('sim-scenario-name');
@@ -104,7 +62,7 @@ export async function saveScenario() {
   const payload = {
     name,
     description: '',
-    config: buildScenarioConfig(),
+    config: buildSimConfig(),
   };
 
   let res;
@@ -298,7 +256,7 @@ export function applyScenario(s) {
 
 export function exportScenarioFile() {
   readConfigFromUI();
-  const config = buildScenarioConfig();
+  const config = buildSimConfig();
   const envelope = {
     app: APP_ID,
     schema_version: CURRENT_SCHEMA_VERSION,
