@@ -7620,6 +7620,302 @@ class NaturalStatusExpiryTests(unittest.TestCase):
             self.assertEqual(n("a", {"state": "traveling"}), "[씬] 목적지에 도착했다.")
 
 
+class SelfStateHoldTests(unittest.TestCase):
+    """자기 선언 상태(수면·busy·사용자 정의) 중 **비직접** 메시지 보류 (runner
+    next_wave 조립 + 턴 직전 관문, status.py `_summarize_held`).
+
+    실측(case1 v9 W108~114, spatial): 안방에서 먼저 잠든 아빠가 엄마의 도착 씬
+    하나로 턴을 받아 잠든 채 "(깊은 잠에 빠져 숨을 쉰다)"를 뱉고, 그 행동이 행동
+    관찰 씬으로 같은 방 엄마에게 가 엄마가 턴을 받고… 매 wave 핑퐁. next_wave 가
+    늘 차 있어 "전원 상태 잠금 → 해제 시점 점프"가 막혀 밤이 5~45분 단위로 갈렸다.
+    """
+
+    _HOUSE = [
+        {"name": "거실", "connects_to": ["안방"]},
+        {"name": "안방", "connects_to": ["거실"]},
+    ]
+    _TIME_CATS  = [{"id": "normal_scene", "label": "t", "min_minutes": 10, "max_minutes": 10}]
+    _STATE_CATS = [
+        {"id": "sleep",       "label": "수면", "min_minutes": 300, "max_minutes": 300},
+        {"id": "busy",        "label": "씻기", "min_minutes": 20,  "max_minutes": 20},
+        {"id": "custom_game", "label": "게임", "min_minutes": 60,  "max_minutes": 60},
+    ]
+    _SLEEP_ON = {"content": "...", "target": "self",
+                 "action_note": "깊은 잠에 빠져 숨을 쉰다", "enter_state": "sleep"}
+
+    def _run(self, script, locations, *, resume, max_waves, setup=None, **kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        kw.setdefault("time_categories", self._TIME_CATS)
+        kw.setdefault("state_categories", self._STATE_CATS)
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in script}
+            sim = Simulation(
+                agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+                llm=_ScriptedLLM(script),
+                agent_locations=locations, location_graph=self._HOUSE,
+                time_mode="variable", **kw,
+            )
+            if setup:
+                setup(sim)
+            emitted: list[tuple[str, dict]] = []
+            sim._emit = lambda t, d: emitted.append((t, d))
+            turns = NaturalStatusExpiryTests._record_turns(sim)
+            sim.run(resume[0], max_waves=max_waves, step_delay=0.0, starvation_waves=100,
+                    resume_wave={k: [] for k in resume})
+        return sim, turns, emitted
+
+    _of = staticmethod(NaturalStatusExpiryTests._of)
+
+    @staticmethod
+    def _time_jumps(emitted):
+        return [d for t, d in emitted if t == "time_jump"]
+
+    # ── 실측 재현 ─────────────────────────────────────────────────────────────
+
+    def test_case1_two_sleepers_same_room_no_pingpong_and_jump_to_release(self):
+        # W0: a 는 안방에서 잠들고, b 는 거실에서 안방으로 들어와 잠든다. a 에게 가는
+        # b 의 도착 씬은 비직접 → 보류. next_wave 가 비고 전원 상태 잠금 →
+        # 해제 시점(300분)까지 한 번에 점프, 그 wave 에 둘 다 해제 알림으로 깬다.
+        script = {
+            "a": [{"content": "...", "target": "self",
+                   "action_note": "불을 끄고 눕는다", "enter_state": "sleep"}],
+            "b": [{"content": "자야지.", "target": "self", "move_to": "안방",
+                   "action_note": "안방에 들어가 눕는다", "enter_state": "sleep"}],
+        }
+        sim, turns, emitted = self._run(
+            script, {"a": "안방", "b": "거실"}, resume=["a", "b"], max_waves=2,
+            perception_mode="spatial",
+        )
+        self.assertEqual([w for w, _ in self._of(turns, "a")], [0, 1])
+        self.assertEqual([w for w, _ in self._of(turns, "b")], [0, 1])
+        jumps = self._time_jumps(emitted)
+        self.assertEqual(jumps[0]["mode"], "idle")
+        self.assertEqual(jumps[0]["minutes"], 300)
+        self.assertIn("전원 상태", jumps[0]["reason"])
+        a_w1 = self._of(turns, "a")[1][1]
+        self.assertEqual(a_w1[0]["content"], "[씬] 잠에서 깼다. (안방)")
+        self.assertEqual(len(a_w1), 2, a_w1)
+        self.assertIn("b", a_w1[1]["content"])
+        self.assertIn("도착했다", a_w1[1]["content"])
+        self.assertNotIn("kind", a_w1[1])
+
+    def test_already_asleep_pair_continuing_sleep_does_not_pingpong(self):
+        # 둘 다 이미 잠든 상태에서 a 만 (안전장치 등으로) 턴을 받아 잠을 이어간다 —
+        # 그 숨소리 행동은 방송되지 않고, b 는 턴을 받지 않으며, 곧바로 a 의 해제
+        # 시점까지 점프한다.
+        def setup(sim):
+            sim._agent_status["a"] = {"state": "sleep", "until_elapsed": 300}
+            sim._agent_status["b"] = {"state": "sleep", "until_elapsed": 400}
+
+        script = {"a": [self._SLEEP_ON, {"content": "잘 잤다.", "target": "self"}],
+                  "b": [self._SLEEP_ON]}
+        sim, turns, emitted = self._run(
+            script, {"a": "안방", "b": "안방"}, resume=["a"], max_waves=2,
+            setup=setup, perception_mode="spatial",
+        )
+        self.assertEqual(self._of(turns, "b"), [])
+        self.assertEqual([w for w, _ in self._of(turns, "a")], [0, 1])
+        self.assertEqual(self._time_jumps(emitted)[0]["minutes"], 300)
+        self.assertEqual(sim._agent_status["b"].get("held_incoming"), None)
+
+    # ── 혼잣말 행동 방송 억제 / 소리 낸 대사는 엿들림 ────────────────────────
+
+    def test_continuing_state_monologue_action_not_broadcast_to_awake_roommate(self):
+        def setup(sim):
+            sim._agent_status["a"] = {"state": "sleep", "until_elapsed": 300}
+
+        script = {"a": [self._SLEEP_ON],
+                  "b": [{"content": "...", "target": "self"}]}
+        _, turns, _ = self._run(script, {"a": "안방", "b": "안방"}, resume=["a", "b"],
+                                max_waves=2, setup=setup, perception_mode="spatial")
+        b_turns = self._of(turns, "b")
+        # W1 은 전원 침묵 #1 재투입(빈 incoming) — 숨소리 행동 씬이 없다.
+        self.assertEqual(b_turns[1], (1, []))
+
+    def test_entering_sleep_action_is_still_visible(self):
+        # 이번 턴에 상태에 **들어가는** 행동(잠자리에 든다)은 그대로 보인다.
+        script = {"a": [{"content": "...", "target": "self",
+                         "action_note": "불을 끄고 눕는다", "enter_state": "sleep"}],
+                  "b": [{"content": "...", "target": "self"}]}
+        _, turns, _ = self._run(script, {"a": "안방", "b": "안방"}, resume=["a", "b"],
+                                max_waves=2, perception_mode="spatial")
+        b_w1 = dict(self._of(turns, "b"))[1]
+        self.assertEqual(len(b_w1), 1)
+        self.assertIn("불을 끄고 눕는다", b_w1[0]["content"])
+        self.assertNotIn("kind", b_w1[0])
+
+    def test_sleep_talk_aloud_is_overheard_by_awake_roommate(self):
+        def setup(sim):
+            sim._agent_status["a"] = {"state": "sleep", "until_elapsed": 300}
+
+        script = {"a": [{"content": "음냐… c야 문 닫아.", "target": "c",
+                         "enter_state": "sleep"}],
+                  "b": [{"content": "...", "target": "self"}],
+                  "c": [{"content": "...", "target": "self"}]}
+        _, turns, _ = self._run(script, {"a": "안방", "b": "안방", "c": "안방"},
+                                resume=["a"], max_waves=2, setup=setup,
+                                perception_mode="spatial")
+        by_key = {k: dict(self._of(turns, k)) for k in ("b", "c")}
+        self.assertEqual([m["content"] for m in by_key["c"][1]], ["음냐… c야 문 닫아."])
+        self.assertEqual([m["content"] for m in by_key["b"][1]], ["음냐… c야 문 닫아."])
+        self.assertNotIn("kind", by_key["b"][1][0])
+
+    # ── 직접 타깃 = 개입 턴, 보류분 먼저 + 즉시 해제에도 누락 없음 ─────────────
+
+    def test_direct_target_wakes_sleeper_with_held_first_and_no_loss_on_clear(self):
+        held = [{"speaker": "씬", "content": "[씬] c이(가) 이곳에 도착했다.",
+                 "action_note": ""}]
+
+        def setup(sim):
+            sim._agent_status["a"] = {"state": "sleep", "until_elapsed": 300,
+                                      "held_incoming": list(held)}
+
+        script = {"a": [{"content": "응? 왜?", "target": "b"}],   # enter_state 없음 → 해제
+                  "b": [{"content": "여보, 일어나 봐.", "target": "a"},
+                        {"content": "...", "target": "self"}]}
+        sim, turns, _ = self._run(script, {"a": "거실", "b": "거실"}, resume=["b"],
+                                  max_waves=2, setup=setup)
+        a_turns = self._of(turns, "a")
+        self.assertEqual(a_turns[0][0], 1)
+        self.assertEqual([m["content"] for m in a_turns[0][1]],
+                         ["[씬] c이(가) 이곳에 도착했다.", "여보, 일어나 봐."])
+        self.assertNotIn("a", sim._agent_status)
+
+    def test_direct_target_same_wave_also_delivers_non_direct(self):
+        # 잠든 a 에게 b 가 직접 말하고, 같은 wave 에 c 가 들어온다(도착 씬, 비직접).
+        # 직접 타깃이 턴을 만들므로 도착 씬도 그 턴에 함께 간다.
+        def setup(sim):
+            sim._agent_status["a"] = {"state": "sleep", "until_elapsed": 300}
+
+        script = {"a": [self._SLEEP_ON],
+                  "b": [{"content": "여보.", "target": "a"}, {"content": "...", "target": "self"}],
+                  "c": [{"content": "...", "target": "self", "move_to": "안방"},
+                        {"content": "...", "target": "self"}]}
+        _, turns, _ = self._run(script, {"a": "안방", "b": "안방", "c": "거실"},
+                                resume=["b", "c"], max_waves=2, setup=setup)
+        a_w1 = dict(self._of(turns, "a"))[1]
+        contents = [m["content"] for m in a_w1]
+        self.assertIn("여보.", contents)
+        self.assertTrue(any("c" in c and "도착했다" in c for c in contents), contents)
+
+    # ── busy·사용자 정의 상태도 동일, targeted 모드에서도 ──────────────────────
+
+    def test_busy_and_custom_states_hold_arrival_scene_in_targeted_mode(self):
+        for state in ("busy", "custom_game", "sleep"):
+            with self.subTest(state=state):
+                def setup(sim, state=state):
+                    sim._agent_status["a"] = {"state": state, "until_elapsed": 9999}
+
+                script = {"a": [{"content": "...", "target": "self"}],
+                          "b": [{"content": "...", "target": "self", "move_to": "안방"},
+                                {"content": "...", "target": "self"}]}
+                sim, turns, _ = self._run(script, {"a": "안방", "b": "거실"},
+                                          resume=["b"], max_waves=3, setup=setup)
+                self.assertEqual(self._of(turns, "a"), [])
+                held = sim._agent_status["a"].get("held_incoming") or []
+                self.assertEqual([m["content"] for m in held],
+                                 ["[씬] b이(가) 이곳에 도착했다."])
+
+    # ── 알람(예약 이벤트)은 상태 중에도 턴 ────────────────────────────────────
+
+    def test_scheduled_event_notification_still_wakes_the_sleeper(self):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        script = {"a": [self._SLEEP_ON],
+                  "b": [{"content": "오늘 어땠어?", "target": "c"}],
+                  "c": [{"content": "좋았어.", "target": "b"}]}
+        held = [{"speaker": "씬", "content": "[씬] b이(가) 자리를 떠났다.", "action_note": ""}]
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in script}
+            sim = Simulation(
+                agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+                llm=_ScriptedLLM(script),
+                agent_locations={"a": "안방", "b": "거실", "c": "거실"},
+                location_graph=self._HOUSE, time_mode="variable",
+                time_categories=self._TIME_CATS, state_categories=self._STATE_CATS,
+            )
+            sim._agent_status["a"] = {"state": "sleep", "until_elapsed": 9999,
+                                      "held_incoming": list(held)}
+            sim._emit = lambda t, d: None
+            turns = NaturalStatusExpiryTests._record_turns(sim)
+            sim.run("b", max_waves=3, step_delay=0.0, starvation_waves=100,
+                    resume_wave={"b": [], "c": []},
+                    events=[{"wave": 1, "type": "system_message",
+                             "message": "알람이 울린다.", "targets": ["a"]}])
+        a_turns = self._of(turns, "a")
+        self.assertEqual([w for w, _ in a_turns], [1])
+        self.assertEqual(a_turns[0][1], held)
+
+    # ── 자연 해제 시 요약·상한 ────────────────────────────────────────────────
+
+    @staticmethod
+    def _held_mix():
+        F = lambda i: {"speaker": "씬", "content": f"F{i}", "action_note": ""}
+        A = lambda i: {"speaker": "씬", "content": f"A{i}", "action_note": "",
+                       "kind": "action_scene"}
+        O = lambda i: {"speaker": f"[x→y]", "content": f"O{i}", "action_note": "",
+                       "kind": "overheard"}
+        return [F(0), A(0), O(0), A(1), O(1), A(2), F(1), O(2), A(3), O(3), A(4), F(2)]
+
+    def test_summarize_held_caps_actions_and_total_with_overflow_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            from ABM.agent import Agent
+            from ABM.simulation import Simulation
+            sim = Simulation({"a": Agent("a", "너는 a다.", tmp, token_limit=8192)},
+                             [{"role": "user", "content": "[배경]"}], tmp,
+                             llm=_ScriptedLLM({"a": [{}]}))
+            out = sim._summarize_held(self._held_mix(), "sleep")
+            self.assertEqual([m["content"] for m in out],
+                             ["F0", "O0", "O1", "F1", "O2", "O3", "A4", "F2",
+                              "[씬] (자는 동안) 그 밖에 4건의 일이 있었다."])
+            self.assertFalse(any("kind" in m for m in out))
+            # 행동 씬 2개 초과만 있고 상한 안이면 행동 씬만 줄어든다.
+            few = [m for m in self._held_mix() if m["content"].startswith(("A", "F"))]
+            out = sim._summarize_held(few, "busy")
+            self.assertEqual([m["content"] for m in out],
+                             ["F0", "F1", "A3", "A4", "F2",
+                              "[씬] (하던 일 중에) 그 밖에 3건의 일이 있었다."])
+            # 상한 이하·행동 씬 2개 이하면 그대로(traveling 기존 동작 불변).
+            small = [{"speaker": "b", "content": "잘 다녀와!", "action_note": ""}]
+            self.assertEqual(sim._summarize_held(small, "traveling"), small)
+
+    def test_natural_release_delivers_summarized_held_after_notice(self):
+        def setup(sim):
+            sim._agent_status["a"] = {"state": "sleep", "until_elapsed": 25,
+                                      "held_incoming": self._held_mix()}
+
+        script = {"a": [{"content": "잘 잤다.", "target": "self"}],
+                  "b": [{"content": "오늘 어땠어?", "target": "c"}],
+                  "c": [{"content": "좋았어.", "target": "b"}]}
+        sim, turns, _ = self._run(script, {"a": "안방", "b": "거실", "c": "거실"},
+                                  resume=["b", "c"], max_waves=5, setup=setup)
+        a_turns = self._of(turns, "a")
+        self.assertEqual(a_turns[0][0], 3)
+        self.assertEqual([m["content"] for m in a_turns[0][1]],
+                         ["[씬] 잠에서 깼다. (안방)",
+                          "F0", "O0", "O1", "F1", "O2", "O3", "A4", "F2",
+                          "[씬] (자는 동안) 그 밖에 4건의 일이 있었다."])
+
+    def test_held_survives_state_switch_and_is_in_status_snapshot(self):
+        # 보류분은 상태 dict 안에 있으므로 스냅샷(_export_status)에 그대로 실리고,
+        # 다른 상태로 바뀌어도(_enter_state 교체) 사라지지 않는다.
+        with tempfile.TemporaryDirectory() as tmp:
+            from ABM.agent import Agent
+            from ABM.simulation import Simulation
+            sim = Simulation({"a": Agent("a", "너는 a다.", tmp, token_limit=8192)},
+                             [{"role": "user", "content": "[배경]"}], tmp,
+                             llm=_ScriptedLLM({"a": [{}]}),
+                             state_categories=self._STATE_CATS)
+            sim._agent_status["a"] = {"state": "busy", "until_elapsed": 20}
+            sim._hold_incoming("a", [{"speaker": "씬", "content": "X", "action_note": ""}])
+            sim._enter_state("a", 0, category_id="sleep")
+            self.assertEqual(sim._agent_status["a"]["state"], "sleep")
+            self.assertEqual([m["content"] for m in sim._agent_status["a"]["held_incoming"]], ["X"])
+            snap = sim._export_status("a")
+            self.assertEqual([m["content"] for m in snap["held_incoming"]], ["X"])
+
+
 class MultiHopTravelTests(unittest.TestCase):
     """다중 hop 경로 + zone 경계 이동(traveling) — 이동 중엔 경로를 진행하지 않는다.
 
@@ -7718,24 +8014,21 @@ class MultiHopTravelTests(unittest.TestCase):
     def test_bystander_at_the_intermediate_node_gets_arrival_then_departure(self):
         # 중간 노드(거실)의 구경꾼 s 는 **잠들어 있다** — 경유지에 깨어 있는 사람이
         # 없으니 z 는 그대로 지나가고(멈추지 않음), s 는 도착 → 이탈을 차례로 받는다.
+        # 잠든 s 에게 도착·이탈 씬은 **비직접** 메시지라 턴을 만들지 않고 보류된다
+        # (자기 선언 상태 보류 — SelfStateHoldTests). 순서는 보류분에 그대로 남는다.
         def setup(sim):
             sim._agent_status["s"] = {"state": "sleep", "until_elapsed": 9999}
 
-        _, turns, _ = self._run(
+        sim, turns, _ = self._run(
             self._GO_OUT, max_waves=5, setup=setup,
             locations={**self._NOBODY_AT_VIA, "s": "거실"}, resume=["c", "m", "z"],
             extra_script={"s": [{"content": "쿨쿨...", "target": "self",
                                  "enter_state": "sleep"}]},
         )
 
-        scenes_by_wave = {
-            w: [m["content"] for m in inc if m["speaker"] == "씬"]
-            for w, inc in NaturalStatusExpiryTests._of(turns, "s")
-        }
-        # 도착 전(W1~W3)엔 도착 알림이 없고, 도착 다음 wave(W4)에 도착 → 이탈 순.
-        for w in (1, 2, 3):
-            self.assertEqual(scenes_by_wave.get(w, []), [], f"W{w}")
-        self.assertEqual(scenes_by_wave[4],
+        self.assertEqual(NaturalStatusExpiryTests._of(turns, "s"), [])
+        held = [m["content"] for m in sim._agent_status["s"].get("held_incoming", [])]
+        self.assertEqual(held,
                          ["[씬] z이(가) 이곳에 도착했다.", "[씬] z이(가) 자리를 떠났다."])
 
     def test_new_move_to_on_the_release_turn_replaces_the_remaining_path(self):

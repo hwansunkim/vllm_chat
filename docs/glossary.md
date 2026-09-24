@@ -411,6 +411,8 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin,
 | **initial_active / 초기 등장** | `false`면 비활성으로 시작 → `agent_enter` 이벤트로 등장 |
 | **소외 재투입 (starvation reinject)** | 대화가 오가는 wave에도 마지막 턴(`_last_turn_wave`, disp_wave) 이후 `starvation_waves` wave 이상 턴을 못 받은(상태에 안 묶인) 에이전트를 빈 incoming으로 재투입. 혼자 다른 방에 간 에이전트의 starvation 방지. 이벤트 `starvation_reinject`(비영속). 구 "고립 휴면(dormancy, `_solo_streak`/`max_silence_waves`)"을 대체 |
 | **전원 침묵 (all silent)** | next_wave가 빔 → 연속 1회째는 상태에 안 묶인(가용) 활성 에이전트 전원 재투입 + 일반 시간 경로, 2회째부터는 소외 기준 해당자만 재투입(없으면 next_wave 빈 채로) + `idle` 시간 점프. 전원 상태 잠금이면 가장 먼저 풀리는 한 명만 + 해제 시점까지 점프 |
+| **보류 (held_incoming)** | 지금 턴을 줄 수 없는 수신자의 메시지를 상태 dict의 `held_incoming`에 쌓아 두는 것(`_hold_incoming`). `traveling`이면 모든 메시지, **자기 선언 상태**(sleep·busy·사용자 정의)면 **비직접** 메시지(도착·이탈·외모·만남·여정 씬, 엿듣기, 행동 관찰 씬 — 그 wave에 그를 직접 타깃한 말이 없을 때). 자연 만료 시 해제 알림 뒤, 또는 상태 중 다른 이유(직접 타깃·알람·디렉터)로 받는 턴의 맨 앞에 요약(`_summarize_held`: 행동 씬 최근 2개, 전체 8개, 넘치면 "그 밖에 N건" 한 줄)해 전달. 재개 스냅샷에 포함 |
+| **직접 타깃 / 비직접 메시지** | 직접 타깃 = 화자의 target 해석(1차 라우팅·1-wave 유예·이동 후 보강 배달, `first_resolved`)에 든 수신자. 그 외 수신(씬·엿듣기)은 비직접 — 자기 선언 상태 수신자에게 턴을 만들지 않는다 |
 | **빈 wave 안전장치** | wave 시작(자연 만료·예정 이벤트 편입 뒤)에 current_wave가 비었는데 활성 에이전트가 있으면 `no_agents`로 끝내지 않고 가용 전원(전원 상태 잠금이면 가장 먼저 풀리는 한 명)을 빈 incoming으로 재투입(`_empty_wave_fallback`). 클램프 없이 크게 흐른 idle 점프 뒤 아무도 사유가 없을 때 전원을 부르는 경로 |
 | **진행 불가 (no_progress)** | 연속으로 성공한 발화가 하나도 없는 wave가 `max(6, starvation_waves×2)`회 → 사실상 고장(LLM 서버 다운 등)으로 보고 종료. 구 `early_stop`이 암묵적으로 하던 보호 |
 | **end_reason** | 종료 사유: `max_waves` / `target_duration` / `no_agents` / `no_progress` / `stopped`. (구 `early_stop_enabled` 플래그와 `silence` end_reason은 제거 — 대화가 시들해지는 것으로는 더 이상 종료하지 않고 시간을 건너뛴다) |
@@ -439,7 +441,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin,
 | **외부 공간 (exterior)** | 완전 격리 장소. 그 안의 에이전트는 아무도 못 보고 못 들음 (씬 메시지도 안 감) |
 | **관계 지도 (relationships)** | `{상대 key: 내가 그를 부르는 관계어}`. **각자 자기 시점** (김봉남→채민경 "아내", 채민경→김봉남 "남편"). 대칭 불필요. 시나리오 전체가 비어 있으면 기능 미사용(전원 아는 사이). 하나라도 있으면 각자 명시한 상대만 아는 사이 — 소속·호칭·인지관계를 모두 표현한다 (구 `groups`는 제거됨) |
 | **낯선 이 / stranger_N** | 관계 지도에 없는 상대를 만났을 때 부여되는 임시 ID (`stranger_1`, `stranger_2` …). 외모 묘사로 표시 |
-| **공간 기반 인지 (perception_mode)** | `targeted` (기본) = 발화는 target 지목 상대에게만. `spatial` = 그 위에 ①같은 방 제3자 엿듣기 ②혼잣말은 행동만 같은 방에 브로드캐스트를 추가. 대화 도달성(같은 방 + 1-wave 유예)은 두 모드 동일 |
+| **공간 기반 인지 (perception_mode)** | `targeted` (기본) = 발화는 target 지목 상대에게만. `spatial` = 그 위에 ①같은 방 제3자 엿듣기 ②혼잣말은 행동만 같은 방에 브로드캐스트를 추가(자기 선언 상태를 이어가는 화자의 혼잣말 행동은 방송 안 함). 받는 쪽이 자기 선언 상태면 둘 다 보류. 대화 도달성(같은 방 + 1-wave 유예)은 두 모드 동일 |
 | **1-wave 대화 유예** | 직접 타깃이 지금은 다른 방이어도 **직전 wave 시작 시점에 같은 방**이었으면 한 번 더 배달. 방금 자리를 뜬 상대에게 답·작별. `_recently_co_located` / `_prev_wave_start_location`. `"all"`·외부 공간 제외 |
 | **씬 메시지 (`[씬]`)** | 환경 관찰 메시지: 도착/이탈, 외모 변화, 재회 외모 알림, 독백 행동, 만남 취소. `speaker="씬"` |
 | **현재 내 모습** | `[현재 상황]`에 본인에게만 보이는 자기 외모 한 줄(`_agent_visual`). `update_appearance`는 이걸 바탕으로 옷차림까지 포함한 전체 모습을 다시 쓴다 |

@@ -85,7 +85,7 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
                  → 도착지 **다른 사람**의 "[씬] X이(가) 이곳에 도착했다" — 10번
                    scene_injections 의 초기값이 되어 **다음 wave** 에 전달
        활성인 만료자 본인 → current_wave[key] =
-                 [해제 알림(_status_release_notice), *held_incoming, *기존 incoming]
+                 [해제 알림(_status_release_notice), *_summarize_held(held_incoming), *기존 incoming]
                  → 이번 wave 에 바로 턴 ("[씬] 고등학교에 도착했다." /
                    "[씬] 잠에서 깼다. (누나방)" / "[씬] 하던 일을 마쳤다: 씻기. (안방화장실)")
                    여정 경유지면 "[씬] 거실에 도착했다. (동네로 가는 길에 들름, 잠시 멈춤)"
@@ -121,6 +121,11 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
          보류하고 그들 전원으로 채운다(3번 안전장치와 같은 규칙 — 18번 축소 이후 "일정
          알림 대상이 하필 이동 중인 한 명뿐"인 wave 가 흔해져서). 가용자도 없는 극단적
          경우만 옛 폴백(그대로 진행 + warning).
+ 4c. 자기 선언 상태 중 턴 — 보류분 먼저: current_wave 의 각 key 가 아직 자기 선언
+       상태(sleep·busy·사용자 정의, traveling 외)인데 턴을 받으면(직접 타깃·예약 이벤트
+       알람·디렉터·안전장치 wake_key) _pop_held_for_turn 으로 held_incoming 을 꺼내
+       요약(_summarize_held)해 incoming **맨 앞**에 붙인다. 상태는 유지 — 12b 에서
+       재선언하면 계속, 비우면 즉시 해제(보류분은 이미 여기서 전달돼 누락 없음).
  5. _emit("wave_start", {wave, agents})
  6. self._turn_executor.submit(...) × len(current_wave):
        각 (agent_key, incoming) → _step_agent(agent_key, run_wave, disp_wave, turn, incoming)
@@ -147,6 +152,10 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
        resolved = _resolve_targets(result.targets, speaker)   ← 같은 방 + 1-wave 유예
        routed[target] += {speaker, content, action_note}       ← 두 모드 공통
        spatial 모드  → _route_spatial(...) : 그 위에 엿듣기·독백 행동 관찰만 얹음
+                       (각 항목에 kind=overheard/action_scene 표식 — 17번 보류 판정·요약용.
+                        화자가 자기 선언 상태를 **이어가는** 턴(같은 상태 재선언)이면
+                        독백 행동 방송은 생략 — 숨소리 핑퐁 차단. 상태에 드는 행동·
+                        소리 낸 대사의 엿듣기는 그대로)
     ...
     (wave 끝) _prev_wave_start_location = wave_start_location   ← 다음 wave 유예 기준
 
@@ -195,6 +204,7 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
        못 받은 사람이 이제 같은 방(둘 다 traveling 아님, 인지 규칙 준수)이면 routed에 추가
        + edge + _emit("post_move_delivery"). "걸어가며 한 말은 도착지에서도 들린다".
        1차(이동 전) 라우팅은 그대로 — 출발지 사람도 계속 듣는다.
+       보강 배달 대상은 first_resolved 에도 합류한다(17번 직접 타깃 집합).
 
 ── 감염 (이동 후 위치 기준) ──
 15. _apply_infection_wave(run_wave, disp_wave)   : 같은 wave·같은 장소 접촉 → 확률 전염
@@ -205,7 +215,16 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
      성공 여부 무관. 소외 재투입의 기준)
 
 ── next_wave 조립 ──
-17. next_wave = scene_injections + routed   (active_agents인 것만)
+17. next_wave = scene_injections + routed   (active_agents인 것만, kind 표식은 뗀다)
+       수신자가 traveling      → 전부 _hold_incoming (기존)
+       수신자가 자기 선언 상태 → 이번 wave 에 그를 **직접 타깃**한 말(first_resolved —
+         1차 해석·1-wave 유예·14b 보강 배달)이 있으면 전부 배달(비직접 씬·엿듣기도 그
+         턴에 함께), 없으면 전부 _hold_incoming (도착·이탈·외모·만남·여정 씬, 엿듣기,
+         행동 관찰 씬). 보류분은 2b(자연 만료) 또는 4c(상태 중 턴)에서 요약돼 전달.
+       ※ 보류로 next_wave 가 비면 18번 전원 침묵 처리가 그대로 돈다 — 전원 상태 잠금이면
+         wake_key + 해제 시점 점프(case1 v9 W108~114 의 숨소리 핑퐁이 막던 밤 점프 복원).
+       ※ reached_someone/any_reached 는 11·14b 의 직접 해석으로만 정해져 보류와 무관
+         (보류분은 직접 타깃이 아니므로 "닿음"이 아니다).
 
 ── 침묵 처리 — 종료가 아니라 재투입/시간 점프 ──
 18. next_wave 비었으면 (전원 침묵): silence_count += 1

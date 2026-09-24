@@ -4,6 +4,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ._constants import _WEEKDAY_KEYS
+from .status import HELD_KIND_ACTION, HELD_KIND_KEY, HELD_KIND_OVERHEARD, strip_held_kind
 
 logger = logging.getLogger(__name__)
 
@@ -388,6 +389,18 @@ class _RunnerMixin:
                         f"{sorted(travelers)}"
                     )
 
+            # ── 자기 선언 상태 중 턴 — 보류분 먼저 ─────────────────────────────
+            # 수면·busy 등 상태 중인데도 이번 wave 에 턴을 받는 사람(직접 타깃·
+            # 예약 이벤트 알람·디렉터 개입·안전장치 wake_key)은 그동안 보류된
+            # 비직접 메시지(status.py)를 incoming 맨 앞에서 요약해 받는다 — 보류분이
+            # 이 턴 뒤의 사건이 아니라 이전 사건이므로. 턴에서 `enter_state`를 비워
+            # 즉시 해제되든 재선언하든, 보류분은 이미 여기서 전달돼 누락이 없다.
+            # 자연 만료자는 wave 시작 블록에서 상태가 지워지며 이미 받았다.
+            for key in list(current_wave):
+                released = self._pop_held_for_turn(key, now_elapsed)
+                if released:
+                    current_wave[key] = [*released, *current_wave[key]]
+
             self._emit("wave_start", {
                 "wave":   disp_wave,
                 "agents": list(current_wave.keys()),
@@ -491,6 +504,7 @@ class _RunnerMixin:
                     # 직접 배달 위에 얹히는 공간 효과(엿듣기·독백 행동 관찰)만.
                     self._route_spatial(
                         speaker_key, result, resolved, routed, scene_injections,
+                        now_elapsed=now_elapsed,
                     )
 
             # ── 외모·이동 처리 ────────────────────────────────────────────────
@@ -571,6 +585,14 @@ class _RunnerMixin:
                     st = self._agent_active_status(speaker_key, now_elapsed)
                     if st is not None and st.get("state") != "traveling":
                         del self._agent_status[speaker_key]
+                        # 보류분은 턴 직전 관문에서 이미 꺼냈지만, 방어적으로 남은
+                        # 게 있으면 다음 wave 로 넘긴다(상태 dict 와 함께 사라지지 않게).
+                        leftover = st.get("held_incoming")
+                        if leftover:
+                            scene_injections[speaker_key] = [
+                                *self._summarize_held(leftover, st.get("state")),
+                                *scene_injections.get(speaker_key, []),
+                            ]
                         logger.info(
                             f"[W{disp_wave}] {speaker_key} 상태 해제(재선언 없음): "
                             f"{st.get('state')}"
@@ -795,22 +817,47 @@ class _RunnerMixin:
             # 버리지 않고 상태에 보관했다가(`_hold_incoming`) 실제 도착 시점에
             # 본인에게 돌려준다(`_release_held_incoming` — wave 시작 시점 만료
             # 처리가 해제 알림 바로 뒤에 붙여 그 wave incoming으로 준다).
-            next_wave: dict[str, list] = {}
-            for agent_key, msgs in scene_injections.items():
-                if agent_key not in self.active_agents:
-                    continue
-                if self._agent_traveling(agent_key, now_elapsed):
-                    self._hold_incoming(agent_key, msgs)
-                    continue
-                next_wave.setdefault(agent_key, []).extend(msgs)
+            #
+            # **자기 선언 상태**(수면·busy·사용자 정의 — traveling 외) 수신자는
+            # 이번 wave 에 그 사람을 **직접 타깃**한 말(1차 해석·1-wave 유예·이동 후
+            # 보강 배달 = `first_resolved`)이 있을 때만 턴을 받는다. 그 턴이 어차피
+            # 생기므로 같은 wave 의 비직접 메시지(씬·엿듣기)도 원래 순서대로 함께
+            # 준다. 직접 타깃이 없으면 전부 보류 — 도착 씬·행동 관찰 씬 하나로 잠든
+            # 사람이 턴을 받아 "(깊은 잠에 빠져 숨을 쉰다)"를 주고받던 핑퐁(case1 v9
+            # W108~114) 차단. 보류분은 해제 알림 뒤(자연 만료) 또는 상태 중 다른
+            # 이유로 받는 턴의 맨 앞(턴 직전 관문)에서 요약돼 전달된다(status.py).
+            # 이로써 next_wave 가 비면 아래 전원 침묵 처리가 그대로 돈다 — 전원
+            # 상태 잠금이면 wake_key + 해제 시점 점프(밤 점프 복원).
+            # `reached_someone`/`any_reached` 는 위에서 직접 해석으로만 정해져
+            # 보류와 무관하다(보류분은 애초에 직접 타깃이 아니라 "닿음"이 아니다).
+            direct_recipients: set[str] = set().union(*first_resolved.values())
 
-            for agent_key, msgs in routed.items():
-                if agent_key not in self.active_agents:
-                    continue
+            def _hold_reason(agent_key: str) -> str | None:
                 if self._agent_traveling(agent_key, now_elapsed):
-                    self._hold_incoming(agent_key, msgs)
-                    continue
-                next_wave.setdefault(agent_key, []).extend(msgs)
+                    return "traveling"
+                if (agent_key not in direct_recipients
+                        and self._agent_self_state(agent_key, now_elapsed) is not None):
+                    return "self_state"
+                return None
+
+            next_wave: dict[str, list] = {}
+            held_now: dict[str, int] = {}
+            for buffer in (scene_injections, routed):
+                for agent_key, msgs in buffer.items():
+                    if agent_key not in self.active_agents or not msgs:
+                        continue
+                    reason = _hold_reason(agent_key)
+                    if reason is not None:
+                        self._hold_incoming(agent_key, msgs)
+                        if reason == "self_state":
+                            held_now[agent_key] = held_now.get(agent_key, 0) + len(msgs)
+                        continue
+                    next_wave.setdefault(agent_key, []).extend(strip_held_kind(msgs))
+            if held_now:
+                logger.info(
+                    f"[W{disp_wave}] 자기 선언 상태 중 비직접 메시지 보류: "
+                    + ", ".join(f"{k}({n}건)" for k, n in sorted(held_now.items()))
+                )
 
             # ── 침묵 처리 — 종료가 아니라 재투입/시간 점프 ────────────────────────
             organically_filled = bool(next_wave)
@@ -1265,6 +1312,9 @@ class _RunnerMixin:
             if not extra:
                 continue
             reached_someone[speaker_key] = True
+            # 직접 타깃 집합에 합류 — next_wave 조립이 자기 선언 상태 수신자의
+            # 직접/비직접을 이 dict 로 가른다.
+            first_resolved.setdefault(speaker_key, set()).update(extra)
             speaker_name = getattr(self.agents.get(speaker_key), "name", speaker_key)
             meta = dict(result.get("meta") or {})
             for target_key in extra:
@@ -1305,6 +1355,7 @@ class _RunnerMixin:
         resolved:         list[str],
         routed:           dict[str, list],
         scene_injections: dict[str, list],
+        now_elapsed:      int | None = None,
     ) -> None:
         """한 화자의 발화의 **공간 부가 효과**를 배달한다 (spatial 모드 전용).
 
@@ -1323,6 +1374,18 @@ class _RunnerMixin:
 
         다른 방의 제3자에겐 아무것도 가지 않는다. 화자/수신자가 외부 공간
         (exterior)이면 전부 차단된다.
+
+        두 경로의 항목엔 `kind` 표식(overheard/action_scene)을 붙인다 — 수신자가
+        자기 선언 상태(수면 등)면 run()의 next_wave 조립이 이들을 **비직접**으로
+        보류하고, 해제 시 요약 우선순위(`_summarize_held`)에 쓴다. 정상 배달 시엔
+        조립 단계가 표식을 뗀다.
+
+        화자가 자기 선언 상태를 **이어가는** 턴(같은 상태 재선언)의 (2) 행동 방송은
+        하지 않는다 — 실측 case1 v9 W108~114: 잠든 아빠의 "(깊은 잠에 빠져 숨을
+        쉰다)"가 같은 방 엄마에게 행동 씬으로 가 엄마가 턴을 받고, 엄마의 같은
+        독백이 다시 아빠에게… 핑퐁. 이 턴에 상태에 **들어가는**(잠자리에 든다)
+        행동이나 상태를 끝내는 행동은 그대로 보인다. 상태 중이라도 소리 내어 누군가
+        에게 한 말(1)은 기존대로 엿들린다.
         """
         content = result.get("clean_content", "") or ""
         action  = (result.get("action_note", "") or "").strip()
@@ -1355,9 +1418,13 @@ class _RunnerMixin:
                     ),
                     "content":     content,
                     "action_note": action,
+                    HELD_KIND_KEY: HELD_KIND_OVERHEARD,
                 })
         elif action:
             # 혼잣말이거나 대사가 비었지만 몸으로 한 일이 있는 턴 — 행동만 보인다.
+            # 단 자기 선언 상태를 이어가는 턴이면 방송하지 않는다(docstring).
+            if self._continuing_self_state(speaker_key, result, now_elapsed):
+                return
             display = self._key_to_alias.get(speaker_key, speaker_key)
             for bystander in bystanders:
                 scene_injections.setdefault(bystander, []).append({
@@ -1366,7 +1433,25 @@ class _RunnerMixin:
                         speaker_key, bystander, display, action,
                     ),
                     "action_note": "",
+                    HELD_KIND_KEY: HELD_KIND_ACTION,
                 })
+
+    def _continuing_self_state(
+        self, speaker_key: str, result: dict, now_elapsed: int | None,
+    ) -> bool:
+        """이번 턴 시작 시점에 자기 선언 상태였고, 이번 턴에 **같은 상태**를 다시
+        선언해 이어가는가. `enter_state` 해석은 `_enter_state`와 같은 폴백 규칙
+        (`_resolve_state_category`)."""
+        if now_elapsed is None:
+            now_elapsed = self._elapsed_minutes
+        st = self._agent_self_state(speaker_key, now_elapsed)
+        if st is None:
+            return False
+        declared = result.get("enter_state")
+        if not declared:
+            return False
+        cat = self._resolve_state_category(declared)
+        return bool(cat and cat.get("id") == st.get("state"))
 
     def _classify_wave_time(self, wave_num: int, results: dict,
                             any_reached: bool = True) -> str:

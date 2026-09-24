@@ -45,8 +45,47 @@
 알림(`_deferred_arrival_scene_injections`)은 예전처럼 다음 wave로 간다. 개입으로
 턴을 받아 `enter_state`를 비워 즉시 해제되는 경로는 이미 턴을 받은 것이라 알림
 대상이 아니다(그 해제는 이 만료 처리를 거치지 않는다).
+
+**자기 선언 상태 중 비직접 메시지 보류** (`sleep`·`busy`·사용자 정의 등 traveling
+외 전부) — 실측(case1 v9 W108~114, spatial): 안방에서 먼저 잠든 아빠가 엄마의
+"도착" 씬 하나로 턴을 받아 잠든 채 "(깊은 잠에 빠져 숨을 쉰다)"를 뱉고, 그 행동이
+행동 관찰 씬으로 같은 방 엄마에게 가 엄마가 턴을 받고… 매 wave 핑퐁했다. next_wave
+가 늘 차 있어 "전원 상태 잠금 → 해제 시점 점프"도 막혀 밤이 5~45분 단위로 갈렸다.
+그래서 runner의 next_wave 조립에서:
+- **턴을 주는 것**(기존대로): 그 사람을 **직접 타깃**한 말(1차 라우팅·1-wave 유예·
+  이동 후 보강 배달), 예약 이벤트 알림(notified/entrant — 알람), 디렉터 개입,
+  자연 만료(해제 알림). 이 중 앞의 것은 next_wave 조립에서, 나머지는 wave 시작에서
+  current_wave에 직접 들어온다.
+- **보류하는 것**: 직접 타깃이 아닌 모든 메시지(도착·이탈 씬, 엿듣기, 행동 관찰 씬,
+  외모 변경 씬, 만남·여정 씬 등) — traveling과 같은 `held_incoming` 저장소에 쌓는다.
+  같은 wave에 그 사람을 직접 타깃한 말이 하나라도 있으면 그 턴이 어차피 생기므로
+  비직접 메시지도 함께(원래 순서대로) 배달한다.
+- **보류분 전달**: 자연 만료면 wave 시작 블록의 해제 알림 뒤에, 상태 중에 다른
+  이유로 턴을 받으면(직접 타깃·알람·디렉터·안전장치) runner의 턴 직전 관문에서
+  incoming 맨 앞에 — 어느 쪽이든 `_summarize_held`로 상한·요약을 거친다. 그래서
+  개입 턴에서 `enter_state`를 비워 즉시 해제돼도 보류분은 이미 그 턴에 전달된 뒤다.
+또 `_route_spatial`은 상태를 **이어가는**(같은 상태 재선언) 화자의 혼잣말 행동을
+방송하지 않는다 — 숨소리·잠꼬대가 깨어 있는 동거인에게 턴을 만들지 않게.
 """
 import random
+
+# 보류 메시지 표식 — `_route_spatial`이 만든 항목에만 붙는다(요약 우선순위용).
+# 소비처(`_inject_incoming`)는 speaker/content/action_note만 읽으므로 추가 키로
+# 깨지지 않지만, 정상 배달·해제 시에는 떼어 내 기존 shape을 유지한다.
+HELD_KIND_KEY      = "kind"
+HELD_KIND_OVERHEARD = "overheard"     # 엿듣기(`_eavesdrop_tag` 경로)
+HELD_KIND_ACTION    = "action_scene"  # 독백 행동 관찰(`_action_scene_msg` 경로)
+# 해제 시 상한: 행동 관찰 씬은 최근 N개만, 전체는 M개. 넘친 건 한 줄 요약.
+HELD_ACTION_KEEP = 2
+HELD_TOTAL_CAP   = 8
+
+
+def strip_held_kind(msgs: list[dict]) -> list[dict]:
+    """`kind` 표식을 뗀 사본 — 소비처에 기존 shape(speaker/content/action_note)만."""
+    return [
+        {k: v for k, v in m.items() if k != HELD_KIND_KEY} if HELD_KIND_KEY in m else m
+        for m in msgs
+    ]
 
 
 class _StatusMixin:
@@ -148,6 +187,14 @@ class _StatusMixin:
         대상이 아닌지. 재투입(wakeable) 필터 전용 — 직접 타깃팅에는 안 쓴다."""
         return self._agent_active_status(key, now_elapsed) is not None
 
+    def _agent_self_state(self, key: str, now_elapsed: int) -> dict | None:
+        """key가 지금 **자기 선언 상태**(traveling 외 — sleep·busy·사용자 정의)면
+        그 dict, 아니면 None. 비직접 메시지 보류·혼잣말 행동 방송 억제의 판정."""
+        st = self._agent_active_status(key, now_elapsed)
+        if st is None or st.get("state") == "traveling":
+            return None
+        return st
+
     def _agent_traveling(self, key: str, now_elapsed: int) -> bool:
         """key가 지금 zone 경계를 건너는 중(traveling)인지.
 
@@ -199,11 +246,17 @@ class _StatusMixin:
         if minutes is None or state is None:
             return None
         minutes = max(1, int(minutes))
+        # 상태가 바뀌어도(예: busy → sleep, 또는 만료 대기 중인 옛 dict 위에 새
+        # 진입) 아직 전달 안 된 보류분은 새 상태로 넘긴다 — dict 통째 교체로
+        # 조용히 사라지지 않게.
+        prev_held = (self._agent_status.get(key) or {}).get("held_incoming")
         self._agent_status[key] = {
             "state": state,
             "until_elapsed": now_elapsed + minutes,
             **extra,
         }
+        if prev_held:
+            self._agent_status[key]["held_incoming"] = list(prev_held)
         return minutes
 
     # ── 이동 중 수신 보류 ────────────────────────────────────────────────────
@@ -216,8 +269,13 @@ class _StatusMixin:
     # traveling 여부를 확인해, 대상이 이동 중이면 배달을 보류(hold)했다가
     # 실제로 도착한 순간(_expire_agent_states) 본인에게 돌려준다.
 
+    #
+    # 같은 저장소를 자기 선언 상태(수면·busy 등)의 **비직접 메시지** 보류에도 쓴다
+    # (모듈 docstring "자기 선언 상태 중 비직접 메시지 보류").
+
     def _hold_incoming(self, key: str, msgs: list[dict]) -> None:
-        """key가 지금 이동 중이라 받을 수 없는 메시지를 상태에 보관한다.
+        """key가 지금 이동 중이거나(모든 메시지) 자기 선언 상태라(비직접 메시지)
+        지금 턴을 줄 수 없는 메시지를 상태에 보관한다.
 
         상태 자체가 없으면(예: 이미 만료돼 다음 턴에 정리 대기 중인 극히
         드문 순간) 아무 것도 하지 않는다 — 그 경우는 정상 배달 경로로 이미
@@ -238,8 +296,56 @@ class _StatusMixin:
         for key, st in expired.items():
             held = st.get("held_incoming")
             if held:
-                released[key] = held
+                released[key] = self._summarize_held(held, st.get("state"))
         return released
+
+    def _pop_held_for_turn(self, key: str, now_elapsed: int) -> list[dict]:
+        """자기 선언 상태 중인 key가 이번 wave에 **다른 이유로 턴을 받을 때**(직접
+        타깃·예약 이벤트 알람·디렉터·안전장치) 보류분을 꺼내 요약해 돌려준다.
+        상태 자체는 유지된다(턴에서 재선언하면 계속 잔다). 없으면 []."""
+        st = self._agent_self_state(key, now_elapsed)
+        if st is None:
+            return []
+        held = st.pop("held_incoming", None)
+        return self._summarize_held(held, st.get("state")) if held else []
+
+    @staticmethod
+    def _held_overflow_line(state: str | None, n: int) -> str:
+        when = {"sleep": "자는 동안", "traveling": "이동하는 동안"}.get(state or "", "하던 일 중에")
+        return f"[씬] ({when}) 그 밖에 {n}건의 일이 있었다."
+
+    def _summarize_held(self, msgs: list[dict], state: str | None) -> list[dict]:
+        """보류분 → 해제 시 실제로 건넬 목록(상한·요약). 순서는 원래 도착 순서.
+
+        규칙(밤새 쌓인 보류분이 수십 개가 되지 않게):
+        1. 행동 관찰 씬(`kind=action_scene` — 옆 사람의 숨소리·뒤척임)은 **최근
+           `HELD_ACTION_KEEP`개**만.
+        2. 그래도 `HELD_TOTAL_CAP`개를 넘으면 우선순위대로 채운다 — ① 표식 없는 항목
+           (도착·이탈·외모 변경 씬, 만남·여정 씬, traveling 중 보류된 직접 대사 등
+           **사실 정보**) ② 엿듣기(`kind=overheard`) ③ 행동 관찰 씬. 같은 등급 안에서는
+           최근 것부터.
+        3. 버려진 게 있으면 맨 끝에 "[씬] (자는 동안/이동하는 동안/하던 일 중에) 그
+           밖에 N건의 일이 있었다." 한 줄.
+        상한 이하·행동 씬 2개 이하면 원본 그대로(표식만 뗌) — traveling의 기존
+        보류 동작은 그래서 사실상 바뀌지 않는다(공통 적용).
+        """
+        if not msgs:
+            return []
+        idx_action = [i for i, m in enumerate(msgs) if m.get(HELD_KIND_KEY) == HELD_KIND_ACTION]
+        keep = set(range(len(msgs))) - set(idx_action[:-HELD_ACTION_KEEP] if HELD_ACTION_KEEP else idx_action)
+        if len(keep) > HELD_TOTAL_CAP:
+            def tier(i: int) -> int:
+                kind = msgs[i].get(HELD_KIND_KEY)
+                return 2 if kind == HELD_KIND_ACTION else 1 if kind == HELD_KIND_OVERHEARD else 0
+            # 등급 오름차순, 같은 등급은 최근(인덱스 큰) 것 먼저.
+            ranked = sorted(keep, key=lambda i: (tier(i), -i))
+            keep = set(ranked[:HELD_TOTAL_CAP])
+        out = strip_held_kind([msgs[i] for i in sorted(keep)])
+        dropped = len(msgs) - len(keep)
+        if dropped:
+            out.append({"speaker": "씬", "action_note": "",
+                        "content": self._held_overflow_line(state, dropped)})
+        return out
 
     # ── 만료 ─────────────────────────────────────────────────────────────────
 
