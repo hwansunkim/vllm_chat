@@ -155,6 +155,7 @@ class _EventsMixin:
                             agent_key, name, display, message
                         ),
                     }, elapsed_minutes=at_minutes)
+                    self._mark_seen(name, agent_key, message)
             logger.info(f"[외모 변경] {agent_key}: {message}")
 
         return result

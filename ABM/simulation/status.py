@@ -303,6 +303,8 @@ class _StatusMixin:
                         f"[씬] 낯선 이가 나타났다: {mover_visual}"
                         if mover_visual else "[씬] 낯선 이가 나타났다."
                     )
+                    # 외모가 알림에 실렸다 = 인지함(재회 알림 기준, runner 이동 루프와 같음).
+                    self._mark_seen(other_key, agent_key, self._agent_visual.get(agent_key, ""))
                 injections.setdefault(other_key, []).append({
                     "speaker": "씬", "content": scene_msg, "action_note": "",
                 })

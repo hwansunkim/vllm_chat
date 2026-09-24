@@ -143,6 +143,47 @@ start|pause|pass|resume|arrive|cancel, at, via, reason, at_wave_start}` (영속)
 - 기준 스냅샷 `_prev_wave_start_location`은 `run()`이 매 wave 끝에서 갱신. 재개
   스냅샷엔 안 들어가므로 **재개 직후 첫 wave는 유예 없이 시작**.
 
+### 외모 인지 — 본인 모습 · 재회 알림 (`location.py`)
+
+외모는 `_agent_visual[key]` 문자열 하나(시작값 = 시나리오 `visual_description`, 턴의
+`update_appearance`·예약 이벤트가 **통째로 교체**). 유통 경로:
+
+| 경로 | 누가 | 언제 |
+|---|---|---|
+| **본인** `현재 내 모습: …` | 본인 | 매 턴 `[현재 상황]`(외부 공간 포함, 외모 미설정이면 생략) |
+| 변경 씬 `[씬] X의 외모가 변했다: …` | 변경 순간 **같은 방** 사람 | 1회(이동 전 스냅샷) |
+| 낯선 이 도착 `[씬] 낯선 이가 나타났다: …` | 도착지의 모르는 사람 | 도착 시 |
+| `[이 자리의 사람들]` | 모르는 사람의 외모만 매 턴 | 아는 사람은 이름·ID·관계만 |
+| **재회 알림** `[씬] 다시 보니 X의 모습이 달라져 있다: …` | 관찰자 | 아래 |
+
+**재회 알림** — `_seen_visual[관찰자][대상]` = 관찰자가 **마지막으로 인지한** 대상 외모.
+변경 순간 자리에 없던 가족(안방에서 트레이닝복으로 갈아입은 아빠를 거실에서 다시 만남)은
+예전엔 "도착했다"만 받고 새 옷차림을 영영 몰랐다.
+
+- **기록 시점**: 변경 씬을 받음(runner·`update_appearance` 이벤트), 낯선 이 도착 알림
+  (외모 동봉 — runner 이동 루프·`_deferred_arrival_scene_injections`), 재회 판정.
+  아는 사람의 "도착했다"는 외모가 없으므로 기록하지 않는다 → 다음 턴 재회 알림이 채운다.
+- **시작 시드** (`_seed_seen_visual`): 아는 사이 쌍 전부 + 같은 방(외부 공간 제외)에서
+  시작하는 모르는 사이 쌍을 시작 외모로. 아는 사이는 시작 외모를 "평소 모습"으로 이미
+  안다고 본다 — 없으면 시작부터 다른 방인 가족의 첫 변화가 "처음 봄"에 묻힌다.
+- **미기록 = 처음 봄**: 알림 없이 조용히 기록만(첫 만남은 도착 알림·`[이 자리의 사람들]`).
+- **판정·전달** (`_reunion_appearance_notices`, `_step_agent`): 관찰자가 **턴을 받을 때**
+  지금 같은 방 사람(`_compute_wave_targets`와 같은 판정 — 외부 공간·양쪽 traveling
+  제외) 중 `seen ≠ 현재 외모`인 사람마다 1회 씬을 이번 incoming **끝에** 얹는다. 턴을
+  새로 만들지 않는다(재투입 폭주 방지) — 턴이 없으면 다음 턴까지 보류된다. 관찰자가
+  잠들어(`sleep`) 있으면 못 본 것으로 두고 기록도 미룬다. 표기는 `_appearance_scene_msg`와
+  같다(아는 사이 실명, 아니면 `stranger_N`).
+- **커밋은 턴 성공 시** (`_commit_seen`, 회복 안내 `_consume_recovery_notice`와 같은
+  원칙) — LLM 실패·파싱 실패로 incoming이 롤백되면 알림도 다음 턴에 다시 나간다.
+- 같은 wave에 변경 씬을 받은 사람은 그 순간 기록돼 재회 알림이 중복되지 않는다.
+- 재개 스냅샷 `seen_visual`(관찰자별 dict). 없는 구버전 스냅샷은 복원된 위치·외모로 다시
+  시드(거짓 "달라져 있다" 방지). 관전용 이벤트·마크다운엔 싣지 않는다(에이전트 메모리용).
+
+계약 문구(`prompt_contract.py`): `update_appearance`는 옷을 갈아입는 등 **눈에 띄는
+변화가 있을 때만**, `현재 내 모습`을 바탕으로 **옷차림까지 포함한 전체 모습**을 다시
+쓴다(잠깐의 상태·표정만 쓰지 말 것 — 실측: "부스스한 머리에 잠옷 차림" → "세수를 마쳐
+뽀송뽀송해진 얼굴"로 옷차림이 덮어써짐).
+
 ---
 
 ## 2. zone (인지 구역)
@@ -792,7 +833,7 @@ disease_name}` — `cause` = `event`(시드, S→E) / `transmission`(접촉 전�
 | `agent_enter` | `active_agents.add(agent)`, 알림 주입, `current_wave`에 추가 (`entrant`) — `system_message`의 `notified`와 같은 강제 편입 메커니즘 |
 | `agent_exit` | `active_agents.discard(agent)`, `_pending_wave`에서 제거, 알림 주입. 이벤트 실행 후 `current_wave`를 `active_agents`로 필터 → 나간 인물은 **그 wave부터** 발화 안 함 |
 | `infect_agent` | `_set_infected(agent, wave, "event", at_minutes=…)` — 환자 0번 시드 (감염 모델 꺼져 있으면 무시). 시각 앵커는 runner가 스탬프한 `at_minutes`(= `_current_elapsed_minutes(run_wave)`); disp_wave를 환산하면 재개 후 fixed 모드에서 두 번 세어 밀린다. `message`는 관전용, memory엔 안 감 |
-| `update_appearance` | `_agent_visual[agent] = message`, 같은 장소 사람들에게 씬 메시지 (아는 사이면 실명, 아니면 `stranger_N`) |
+| `update_appearance` | `_agent_visual[agent] = message`, 같은 장소 사람들에게 씬 메시지 (아는 사이면 실명, 아니면 `stranger_N`) + 그들의 `_seen_visual` 갱신(§1 외모 인지) |
 
 **이벤트** — `scene_event {event_type, message, targets, agent, observer_only}`.
 

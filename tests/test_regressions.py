@@ -12038,5 +12038,235 @@ class MemoryCompressionIntegrationTests(unittest.TestCase):
                 self.assertGreater(ep["elapsed_minutes"], 20)   # wave 수(≤20)보다 훨씬 큼
 
 
+class AppearanceReunionTests(unittest.TestCase):
+    """외모 인지 — 본인 현재 모습 표시 + 재회 시 1회 알림 (location.py `_seen_visual`).
+
+    빈틈: 외모 변경 씬은 변경 순간 같은 방 사람에게만 1회 간다. 안방에서 갈아입은
+    아빠가 거실로 오면 가족은 "도착했다"만 받고, [이 자리의 사람들]은 아는 사람의
+    외모를 보여주지 않아 영영 모른다. 재회 알림은 관찰자의 **다음 턴** incoming 에만
+    얹는다(턴을 새로 만들지 않음) — 기록(seen)은 턴 성공 시 갱신.
+    """
+
+    GRAPH = [
+        {"name": "안방", "connects_to": ["거실"]},
+        {"name": "거실", "connects_to": ["안방", "옥상"]},
+        {"name": "옥상", "connects_to": ["거실"], "is_exterior": True},
+    ]
+    NEW = "편한 티셔츠와 트레이닝 바지 차림"
+
+    def _build(self, tmp, script, locations, visuals, groups=None, **kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        groups = groups or {"d": ["가족"], "k": ["가족"]}
+        rels, extra = _groups_to_relationships(groups, anchor_location="옥상")
+        locations = {**locations, **extra}
+        visuals   = {**visuals, **{k: "" for k in extra}}
+        keys = list(groups) + list(extra)
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096) for k in keys}
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=_ScriptedLLM(script),
+            agent_locations=locations, agent_visuals=visuals,
+            agent_relationships=rels, location_graph=self.GRAPH,
+            name_aliases={"신영식": "d", "짱아": "k"}, **kw,
+        )
+        sim._emit = lambda t, d: None
+        return sim
+
+    @staticmethod
+    def _mem_scenes(sim, key, needle="다시 보니"):
+        return [m["content"] for m in sim.agents[key].memory
+                if needle in str(m.get("content", ""))]
+
+    # ── 1. 본인 현재 모습 + 계약 ────────────────────────────────────────────
+
+    def test_situation_shows_own_appearance_only_when_set(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(tmp, {}, {"d": "거실", "k": "거실"},
+                              {"d": "정장 차림", "k": ""})
+            known, strangers = sim._compute_wave_targets("d")
+            text = sim._build_situation_context("d", known, strangers)
+            self.assertIn("현재 내 모습: 정장 차림", text)
+            known, strangers = sim._compute_wave_targets("k")
+            self.assertNotIn("현재 내 모습", sim._build_situation_context("k", known, strangers))
+            # 외부 공간에서도 보인다.
+            sim._agent_location["d"] = "옥상"
+            self.assertIn("현재 내 모습: 정장 차림",
+                          sim._build_situation_context("d", [], []))
+
+    def test_contract_asks_for_full_appearance(self):
+        from ABM.prompt_contract import DEFAULT_OUTPUT_FORMAT_TEMPLATE as T
+        self.assertIn("현재 내 모습", T)
+        self.assertIn("전체 모습", T)
+        self.assertIn("옷차림", T)
+
+    # ── 2. 재회 알림 ─────────────────────────────────────────────────────────
+
+    def test_reunion_notice_once_after_change_in_other_room(self):
+        # 아빠(d)가 안방에서 갈아입고 거실로 온다. 짱아(k)는 거실에서 변화를 못 봤다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(
+                tmp,
+                {"d": [{"content": "갈아입자.", "target": "self",
+                        "update_appearance": self.NEW, "move_to": "거실"}],
+                 "k": [{"content": "음.", "target": "self"}]},
+                {"d": "안방", "k": "거실"}, {"d": "정장 차림", "k": "교복"},
+            )
+            sim.run("d", max_waves=1, step_delay=0.0, resume_wave={"d": [], "k": []})
+            self.assertEqual(sim._agent_location["d"], "거실")
+            # 변경 순간 자리에 없었다 — 외모 변경 씬 없음, 도착 알림만.
+            k_in = [m["content"] for m in sim._pending_wave.get("k", [])]
+            self.assertIn("[씬] 신영식이(가) 이곳에 도착했다.", k_in)
+            self.assertFalse(any("외모가 변했다" in c for c in k_in))
+            self.assertEqual(sim._seen_visual["k"]["d"], "정장 차림")
+
+            sim.run("d", max_waves=1, step_delay=0.0,
+                    resume_wave={"k": sim._pending_wave.get("k", [])})
+            self.assertEqual(
+                self._mem_scenes(sim, "k"),
+                [f"[씬] 다시 보니 신영식의 모습이 달라져 있다: {self.NEW}"],
+            )
+            self.assertEqual(sim._seen_visual["k"]["d"], self.NEW)
+
+            # 다음 턴엔 반복되지 않는다.
+            sim.run("d", max_waves=1, step_delay=0.0, resume_wave={"k": []})
+            self.assertEqual(len(self._mem_scenes(sim, "k")), 1)
+
+    def test_witness_of_change_gets_no_duplicate_reunion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(
+                tmp,
+                {"d": [{"content": "갈아입자.", "target": "self",
+                        "update_appearance": self.NEW}],
+                 "k": [{"content": "음.", "target": "self"}]},
+                {"d": "거실", "k": "거실"}, {"d": "정장 차림", "k": ""},
+            )
+            sim.run("d", max_waves=1, step_delay=0.0, resume_wave={"d": [], "k": []})
+            self.assertEqual(
+                [m["content"] for m in sim._pending_wave.get("k", [])
+                 if m["speaker"] == "씬"],
+                [f"[씬] 신영식의 외모가 변했다: {self.NEW}"],
+            )
+            sim.run("d", max_waves=1, step_delay=0.0,
+                    resume_wave={"k": sim._pending_wave.get("k", [])})
+            self.assertEqual(self._mem_scenes(sim, "k"), [])
+
+    def test_no_notice_when_appearance_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(
+                tmp,
+                {"d": [{"content": "간다.", "target": "self", "move_to": "거실"}],
+                 "k": [{"content": "음.", "target": "self"}]},
+                {"d": "안방", "k": "거실"}, {"d": "정장 차림", "k": ""},
+            )
+            sim.run("d", max_waves=1, step_delay=0.0, resume_wave={"d": [], "k": []})
+            sim.run("d", max_waves=1, step_delay=0.0,
+                    resume_wave={"k": sim._pending_wave.get("k", [])})
+            self.assertEqual(self._mem_scenes(sim, "k"), [])
+
+    def test_stranger_reunion_uses_stranger_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(tmp, {}, {"d": "거실", "k": "거실"},
+                              {"d": "검은 코트", "k": ""},
+                              groups={"d": ["g1"], "k": ["g2"]})
+            # 같은 방에서 시작 → 시드됨. d가 안방에서 갈아입고, k가 안방으로 찾아옴
+            # (k의 이동이라 d의 도착 알림이 없다 — 재회 알림만이 변화를 알린다).
+            self.assertEqual(sim._seen_visual["k"]["d"], "검은 코트")
+            sim._agent_location["d"] = "안방"
+            sim._agent_visual["d"] = "빨간 코트"
+            sim._agent_location["k"] = "안방"
+            msgs, updates = sim._reunion_appearance_notices("k", 0)
+            self.assertEqual(
+                [m["content"] for m in msgs],
+                ['[씬] 다시 보니 낯선 이(ID: "stranger_1")의 모습이 달라져 있다: 빨간 코트'],
+            )
+            self.assertNotIn("신영식", msgs[0]["content"])
+            self.assertEqual(updates, {"d": "빨간 코트"})
+            # 계산만으로는 기록하지 않는다(턴 성공 시 커밋).
+            self.assertEqual(sim._seen_visual["k"]["d"], "검은 코트")
+
+    def test_first_sight_is_silent_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(tmp, {}, {"d": "안방", "k": "거실"},
+                              {"d": "검은 코트", "k": ""},
+                              groups={"d": ["g1"], "k": ["g2"]})
+            self.assertNotIn("d", sim._seen_visual["k"])   # 모르는 사이·다른 방
+            sim._agent_location["k"] = "안방"
+            msgs, updates = sim._reunion_appearance_notices("k", 0)
+            self.assertEqual(msgs, [])
+            self.assertEqual(updates, {"d": "검은 코트"})
+
+    def test_exterior_traveling_and_sleep_observers_excluded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(tmp, {}, {"d": "거실", "k": "거실"},
+                              {"d": "정장 차림", "k": ""})
+            sim._agent_visual["d"] = self.NEW
+            # 기준: 같은 방·깨어 있음 → 알림.
+            self.assertEqual(len(sim._reunion_appearance_notices("k", 0)[0]), 1)
+            # 수면 중인 관찰자는 못 본다(기록도 미룸).
+            sim._agent_status["k"] = {"state": "sleep", "until_elapsed": 100}
+            self.assertEqual(sim._reunion_appearance_notices("k", 0), ([], {}))
+            del sim._agent_status["k"]
+            # 대상이 이동 중이면 아직 그 방에 없다.
+            sim._agent_status["d"] = {"state": "traveling", "until_elapsed": 100,
+                                      "arrival_location": "거실"}
+            self.assertEqual(sim._reunion_appearance_notices("k", 0), ([], {}))
+            del sim._agent_status["d"]
+            # 외부 공간은 격리.
+            sim._agent_location["k"] = "옥상"
+            sim._agent_location["d"] = "옥상"
+            self.assertEqual(sim._reunion_appearance_notices("k", 0), ([], {}))
+
+    def test_reunion_does_not_create_turn(self):
+        # 변한 d와 같은 방에 있어도 k에게 턴이 없으면 알림도 기록도 없다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(
+                tmp, {"d": [{"content": "음.", "target": "self"}],
+                      "k": [{"content": "음.", "target": "self"}]},
+                {"d": "거실", "k": "거실"}, {"d": "정장 차림", "k": ""},
+            )
+            sim._agent_visual["d"] = self.NEW
+            sim.run("d", max_waves=1, step_delay=0.0, resume_wave={"d": []})
+            self.assertEqual(self._mem_scenes(sim, "k"), [])
+            self.assertEqual(sim._seen_visual["k"]["d"], "정장 차림")
+
+    def test_failed_turn_does_not_consume_notice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(tmp, {}, {"d": "거실", "k": "거실"},
+                              {"d": "정장 차림", "k": ""})
+            sim._agent_visual["d"] = self.NEW
+            sim._llm = lambda *a, **k: (None, "", {})
+            sim._llm_for = lambda key: sim._llm
+            res = sim._step_agent("k", 0, 0, 0, [])
+            self.assertFalse(res["success"])
+            self.assertEqual(sim._seen_visual["k"]["d"], "정장 차림")
+            self.assertEqual(self._mem_scenes(sim, "k"), [])
+
+    # ── 3. 재개 스냅샷 ───────────────────────────────────────────────────────
+
+    def test_seen_visual_survives_resume_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(tmp, {}, {"d": "거실", "k": "거실"},
+                              {"d": "정장 차림", "k": ""})
+            sim._agent_visual["d"] = self.NEW   # k는 아직 못 봄
+            state = sim.export_agent_state()
+            self.assertEqual(state["k"]["seen_visual"], {"d": "정장 차림"})
+            fresh = self._build(tmp, {}, {"d": "거실", "k": "거실"},
+                                {"d": "정장 차림", "k": ""})
+            fresh.restore_agent_state(state)
+            self.assertEqual(fresh._seen_visual["k"], {"d": "정장 차림"})
+            self.assertEqual(len(fresh._reunion_appearance_notices("k", 0)[0]), 1)
+
+            # 구버전 스냅샷(seen_visual 없음) → 복원된 외모로 다시 시드, 거짓 알림 없음.
+            old = {k: {kk: vv for kk, vv in v.items() if kk != "seen_visual"}
+                   for k, v in state.items()}
+            legacy = self._build(tmp, {}, {"d": "거실", "k": "거실"},
+                                 {"d": "정장 차림", "k": ""})
+            legacy.restore_agent_state(old)
+            self.assertEqual(legacy._seen_visual["k"], {"d": self.NEW})
+            self.assertEqual(legacy._reunion_appearance_notices("k", 0), ([], {}))
+
+
 if __name__ == "__main__":
     unittest.main()

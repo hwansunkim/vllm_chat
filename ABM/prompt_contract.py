@@ -67,7 +67,7 @@ DEFAULT_OUTPUT_FORMAT_TEMPLATE = """
 - action_note: 행동이나 생각 묘사. 이 내용은 다른 에이전트에게 **시각적 정보**로 전달됨.
 <FIELD_HINTS>
 <MOVE_TO_HINT>
-- update_appearance: 외모 변화가 있을 때 새 외모 전체 묘사 (없으면 null)
+- update_appearance: 옷을 갈아입는 등 눈에 띄는 외모 변화가 있을 때만. [현재 상황]의 '현재 내 모습'을 바탕으로 옷차림까지 포함한 **전체 모습**을 다시 쓸 것 (잠깐의 상태·표정만 쓰지 말 것). 없으면 null
 <STATE_HINT>
 - target: 반드시 아래 시스템 ID만 사용 (표시 이름 절대 금지):
 <TARGETS><TARGETS_FOOTER>

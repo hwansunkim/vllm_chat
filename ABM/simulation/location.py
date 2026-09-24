@@ -182,6 +182,100 @@ class _LocationMixin:
         sid = self._get_or_assign_stranger_id(observer_key, subject_key)
         return f'[씬] 낯선 이(ID: "{sid}")의 외모가 변했다: {description}'
 
+    # ── 관찰자별 "마지막으로 본 외모" (재회 알림) ─────────────────────────────
+    #
+    # `_seen_visual[observer][subject]` = observer가 subject의 외모를 **마지막으로
+    # 실제 인지한** 묘사. 외모 변경 씬은 변경 순간 같은 방 사람에게 1회만 가므로,
+    # 그 자리에 없던 사람(안방에서 갈아입은 아빠를 거실에서 다시 만난 가족)은 영영
+    # 모르고, 아는 사이는 [이 자리의 사람들]에 외모가 안 나와 알 길이 없었다.
+    # 기록 시점: 변경 순간 같은 방 씬(runner/events), 낯선 이 도착 알림(외모 동봉),
+    # 턴 시작 시 재회 판정(`_reunion_appearance_notices` → 턴 성공 시 커밋).
+    # 미기록 = "처음 봄" — 알림 없이 조용히 기록만 한다(첫 만남은 도착 알림·
+    # [이 자리의 사람들]이 담당). 시작 시드는 `_seed_seen_visual`.
+
+    def _mark_seen(self, observer_key: str, subject_key: str, visual: str) -> None:
+        """observer가 subject의 외모 `visual`을 방금 인지했다고 기록."""
+        v = (visual or "").strip()
+        if v:
+            self._seen_visual.setdefault(observer_key, {})[subject_key] = v
+
+    def _seed_seen_visual(self, observers=None) -> None:
+        """시작 시점 seen 시드 — 아는 사이 + 같은 방(외부 공간 제외) 쌍을 현재 외모로.
+
+        아는 사이는 시나리오 시작 외모를 "평소 모습"으로 이미 안다고 본다 — 시드가
+        없으면 시작부터 다른 방에 있던 가족의 첫 변화가 "처음 봄"으로 묻혀 재회
+        알림이 안 나간다. 모르는 사이는 같은 방에서 시작할 때만(이미 보고 있음).
+        `observers`를 주면 그 관찰자 행만 다시 만든다(구 스냅샷 복원 폴백).
+        """
+        keys = list(self.agents) if observers is None else list(observers)
+        for obs in keys:
+            row: dict[str, str] = {}
+            obs_loc   = self._agent_location.get(obs, "")
+            knowledge = self._agent_knowledge.get(obs, set())
+            for subj in self.agents:
+                if subj == obs:
+                    continue
+                visual = (self._agent_visual.get(subj) or "").strip()
+                if not visual:
+                    continue
+                subj_loc = self._agent_location.get(subj, "")
+                same_room = (
+                    obs_loc and obs_loc == subj_loc
+                    and obs_loc not in self._exterior_locations
+                )
+                if subj in knowledge or same_room:
+                    row[subj] = visual
+            self._seen_visual[obs] = row
+
+    def _reunion_appearance_notices(
+        self, observer_key: str, now_elapsed: int
+    ) -> tuple[list[dict], dict[str, str]]:
+        """턴을 받은 관찰자가 지금 같은 방에서 보는 사람 중, 마지막으로 본 외모와
+        달라진 사람의 1회 씬 알림을 만든다. **부작용 없음**(stranger_N 할당 제외) —
+        반환한 갱신분은 턴이 성공했을 때 `_commit_seen`으로 반영한다(LLM 실패로
+        incoming이 롤백되면 알림도 다음 턴에 다시 나간다).
+
+        동석 판정은 `_compute_wave_targets`와 같다(외부 공간·양쪽 traveling 제외).
+        관찰자가 잠들어 있으면(sleep) 아무것도 보지 못한 것으로 두고 기록도 미룬다.
+        """
+        st = self._agent_active_status(observer_key, now_elapsed)
+        if st is not None and st.get("state") in ("sleep", "traveling"):
+            return [], {}
+        known, strangers = self._compute_wave_targets(observer_key)
+        subjects = list(known) + [real for _, real, _ in strangers]
+        seen = self._seen_visual.get(observer_key, {})
+        msgs: list[dict] = []
+        updates: dict[str, str] = {}
+        for subj in subjects:
+            cur = (self._agent_visual.get(subj) or "").strip()
+            if not cur:
+                continue
+            prev = seen.get(subj)
+            if prev == cur:
+                continue
+            updates[subj] = cur
+            if prev is None:
+                continue  # 처음 봄 — 조용히 기록만
+            msgs.append({
+                "speaker": "씬", "action_note": "",
+                "content": self._reunion_appearance_msg(subj, observer_key, cur),
+            })
+        return msgs, updates
+
+    def _commit_seen(self, observer_key: str, updates: dict[str, str]) -> None:
+        for subj, visual in (updates or {}).items():
+            self._mark_seen(observer_key, subj, visual)
+
+    def _reunion_appearance_msg(
+        self, subject_key: str, observer_key: str, description: str
+    ) -> str:
+        """재회 알림 문구 — 이름 표기는 `_appearance_scene_msg`와 같은 규칙."""
+        if subject_key in self._agent_knowledge.get(observer_key, set()):
+            display = self._key_to_alias.get(subject_key, subject_key)
+            return f"[씬] 다시 보니 {display}의 모습이 달라져 있다: {description}"
+        sid = self._get_or_assign_stranger_id(observer_key, subject_key)
+        return f'[씬] 다시 보니 낯선 이(ID: "{sid}")의 모습이 달라져 있다: {description}'
+
     def _action_scene_msg(
         self, subject_key: str, observer_key: str, display: str, action_note: str
     ) -> str:
@@ -321,6 +415,13 @@ class _LocationMixin:
 
         is_exterior = my_loc in self._exterior_locations
         lines = ["[현재 상황]", f"현재 위치: {my_loc}"]
+        # 본인의 현재 모습 — update_appearance 계약("현재 내 모습을 바탕으로 전체
+        # 모습을 다시 쓸 것")의 근거다. 예전엔 본인도 자기 외모를 볼 방법이 없어
+        # 잠깐의 상태("세수를 마쳐 뽀송뽀송해진 얼굴")만 써서 옷차림 정보가 덮어써졌다.
+        # 외부 공간에서도 보인다(자기 몸은 어디서든 안다). 외모 미설정이면 생략.
+        my_visual = (self._agent_visual.get(agent_key) or "").strip()
+        if my_visual:
+            lines.append(f"현재 내 모습: {my_visual}")
 
         if now_elapsed is not None:
             own_status = self._agent_active_status(agent_key, now_elapsed)

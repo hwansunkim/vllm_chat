@@ -334,6 +334,13 @@ class _StepMixin:
         # 비활성 시나리오에서도 `_current_elapsed_minutes`가 안전한 기본값(보통 0)을
         # 준다.
         now_elapsed   = self._current_elapsed_minutes(run_wave)
+        # 재회 외모 알림 — 지금 같은 방 사람 중 마지막으로 본 모습과 달라진 사람을
+        # 이번 incoming 끝에 1회 얹는다(location.py `_reunion_appearance_notices`).
+        # 턴을 새로 만들지 않고 이미 턴이 있을 때만 싣는다 — 기록(seen) 갱신은
+        # 턴 성공 시(아래 `_commit_seen`)라 실패·롤백되면 다음 턴에 다시 나간다.
+        reunion_msgs, seen_updates = self._reunion_appearance_notices(agent_key, now_elapsed)
+        if reunion_msgs:
+            incoming = [*incoming, *reunion_msgs]
         incoming_msgs = self._inject_incoming(active_agent, incoming, now_elapsed)
 
         ctx             = self._assemble_agent_prompt(agent_key, run_wave)
@@ -446,4 +453,5 @@ class _StepMixin:
         # 위에서 롤백됐다면 이 줄에 도달하지 않으므로, 안내는 다음 성공한 턴에
         # 그대로 다시 뜬다(유실되지 않음).
         self._consume_recovery_notice(agent_key)
+        self._commit_seen(agent_key, seen_updates)
         return result

@@ -441,7 +441,9 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin,
 | **낯선 이 / stranger_N** | 관계 지도에 없는 상대를 만났을 때 부여되는 임시 ID (`stranger_1`, `stranger_2` …). 외모 묘사로 표시 |
 | **공간 기반 인지 (perception_mode)** | `targeted` (기본) = 발화는 target 지목 상대에게만. `spatial` = 그 위에 ①같은 방 제3자 엿듣기 ②혼잣말은 행동만 같은 방에 브로드캐스트를 추가. 대화 도달성(같은 방 + 1-wave 유예)은 두 모드 동일 |
 | **1-wave 대화 유예** | 직접 타깃이 지금은 다른 방이어도 **직전 wave 시작 시점에 같은 방**이었으면 한 번 더 배달. 방금 자리를 뜬 상대에게 답·작별. `_recently_co_located` / `_prev_wave_start_location`. `"all"`·외부 공간 제외 |
-| **씬 메시지 (`[씬]`)** | 환경 관찰 메시지: 도착/이탈, 외모 변화, 독백 행동, 만남 취소. `speaker="씬"` |
+| **씬 메시지 (`[씬]`)** | 환경 관찰 메시지: 도착/이탈, 외모 변화, 재회 외모 알림, 독백 행동, 만남 취소. `speaker="씬"` |
+| **현재 내 모습** | `[현재 상황]`에 본인에게만 보이는 자기 외모 한 줄(`_agent_visual`). `update_appearance`는 이걸 바탕으로 옷차림까지 포함한 전체 모습을 다시 쓴다 |
+| **재회 알림 (`_seen_visual`)** | 관찰자별 "마지막으로 본 외모". 턴을 받을 때 같은 방 사람의 외모가 그것과 다르면 `[씬] 다시 보니 X의 모습이 달라져 있다: …` 1회(턴을 새로 만들지 않음, 수면 중 제외). 시작 시드 = 아는 사이 + 같은 방. 재개 스냅샷 `seen_visual` |
 | **만남 lock (`_meeting_intent`)** | `move_to`에 장소가 아닌 **사람**을 지목 → 그 사람을 따라감(추격/랑데부). 동석·다른 `move_to`·목표 이탈에서 해제 |
 | **경유지 (via)** | 경로의 **중간** 노드 중 zone 경계를 넘는 hop으로 도착하는 곳(예: 고등학교→동네의 거실). 구역 안 다중 hop의 중간 방은 경유지가 아니다. `_path_via` |
 | **여정 (journey, `_journey`)** | 경유지가 있는 장소 `move_to`의 의도 `{destination, origin, via, status: en_route\|paused, paused_at}`. 경유지에 가용한(상태 없는) 사람이 있으면 **멈춤**(남은 경로 삭제, paused), 없으면 **통과**. 같은 목적지를 다시 고르면 재출발, 목적지 도착·다른 `move_to`·지금 위치(머무름)·퇴장·수면 진입에서 해제. 재개 스냅샷 `journey` |

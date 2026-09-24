@@ -543,6 +543,8 @@ class _RunnerMixin:
                         ),
                         "action_note": "",
                     })
+                    # 변경 순간을 봤다 — 재회 알림 기준 갱신(다음 턴 중복 알림 방지).
+                    self._mark_seen(other_key, speaker_key, update_appearance)
 
             # ── 상태 선언 처리 (enter_state, 이동 적용과 무관) ──────────────────
             # 자기-선언형 상태(수면·개인 용무 등)는 "지금부터"라 이동/외모 처리
@@ -727,6 +729,10 @@ class _RunnerMixin:
                                 scene_msg = (
                                     f"[씬] 낯선 이가 나타났다: {mover_visual}"
                                     if mover_visual else "[씬] 낯선 이가 나타났다."
+                                )
+                                # 외모가 알림에 실렸다 = 인지함(재회 알림 기준).
+                                self._mark_seen(
+                                    other_key, agent_key, self._agent_visual.get(agent_key, "")
                                 )
                             scene_injections.setdefault(other_key, []).append({
                                 "speaker": "씬", "content": scene_msg, "action_note": ""

@@ -384,6 +384,9 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
         self._agent_knowledge: dict[str, set]  = {}
         self._stranger_map:    dict[str, dict] = {}
         self._stranger_rmap:   dict[str, dict] = {}
+        # 관찰자별 "마지막으로 본 외모" {observer: {subject: visual}} — 재회 알림용
+        # (location.py `_reunion_appearance_notices`). 아래 knowledge 시드 뒤에 채운다.
+        self._seen_visual:     dict[str, dict[str, str]] = {}
         # stranger_N 할당은 워커 스레드(_step_agent)에서 read-modify-write 되므로
         # 직렬화한다. 락 없이 두면 같은 wave에 두 관찰자가 서로를 처음 볼 때
         # 번호가 중복되거나 건너뛸 수 있다.
@@ -426,6 +429,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
                 self._agent_knowledge[key] = set(self._agent_relationships.get(key, {}))
             else:
                 self._agent_knowledge[key] = {k for k in all_keys if k != key}
+        self._seed_seen_visual()
 
         os.makedirs(log_dir, exist_ok=True)
         self._save_shared_log()
@@ -626,6 +630,9 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
                 "visual":       self._agent_visual.get(key, ""),
                 "knowledge":    sorted(self._agent_knowledge.get(key, set())),
                 "stranger_map": dict(self._stranger_map.get(key, {})),
+                # 관찰자별 마지막으로 본 외모. 빼먹으면 resume 직후 재회 알림 기준이
+                # 시작 시드로 되돌아가, 이미 본 옷차림을 "달라져 있다"고 다시 알린다.
+                "seen_visual":  dict(self._seen_visual.get(key, {})),
                 "path":         list(self._agent_path.get(key, [])),
                 # 만남 lock. 빼먹으면 resume 직후 "누굴 만나러 가던 중"이라는 사실만
                 # 사라지고 경로는 남아, 상대가 움직여도 더 이상 따라가지 않는다.
@@ -689,9 +696,22 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
         """export_agent_state()가 만든 상태를 복원. 없는 키/에이전트는 초기값 유지."""
         if not states:
             return
+        # seen_visual 이 없는 관찰자(구버전 스냅샷) — 복원된 위치·외모로 루프 뒤에
+        # 다시 시드한다. 시작 외모 기준 시드를 그대로 두면 재개 첫 턴에 이미 본
+        # 옷차림을 "달라져 있다"고 일제히 알린다.
+        reseed_seen: list[str] = []
         for key, st in states.items():
             if key not in self.agents or not isinstance(st, dict):
                 continue
+            seen_visual = st.get("seen_visual")
+            if isinstance(seen_visual, dict):
+                self._seen_visual[key] = {
+                    subj: v.strip() for subj, v in seen_visual.items()
+                    if subj in self.agents and subj != key
+                    and isinstance(v, str) and v.strip()
+                }
+            else:
+                reseed_seen.append(key)
             if st.get("location") is not None:
                 self._agent_location[key] = st["location"] or ""
             if st.get("visual") is not None:
@@ -773,6 +793,8 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
                 restored  = {k: v for k, v in agent_status.items() if k != "remaining_minutes"}
                 restored["until_elapsed"] = base + remaining
                 self._agent_status[key] = restored
+        if reseed_seen:
+            self._seed_seen_visual(reseed_seen)
 
     # ── I/O ──────────────────────────────────────────────────────────────────
 
