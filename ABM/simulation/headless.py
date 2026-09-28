@@ -150,6 +150,8 @@ def run_config(
         idle_minutes_schedule=cfg.idle_minutes_schedule,
         max_scene_jump_minutes=cfg.max_scene_jump_minutes,
         max_daytime_jump_minutes=cfg.max_daytime_jump_minutes,
+        memory_time_anchor_enabled=cfg.memory_time_anchor_enabled,
+        memory_time_anchor_threshold_minutes=cfg.memory_time_anchor_threshold_minutes,
         state_categories=[c.model_dump() for c in cfg.state_categories],
         zone_travel_min_minutes=cfg.zone_travel_min_minutes,
         zone_travel_max_minutes=cfg.zone_travel_max_minutes,

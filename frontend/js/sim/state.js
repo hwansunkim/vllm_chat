@@ -21,11 +21,16 @@ export const DEFAULT_IDLE_MINUTES_SCHEDULE = [60, 120, 180];
 
 // ── 에이전트 상태(수면·개인 용무) 기본값 (백엔드 SimStartConfig 기본값과 동일하게 유지) ──
 // id는 화면에 안 보이는 순수 내부 키다(time_categories와 같은 규칙) — 사용자는
-// label·min_minutes·max_minutes만 편집한다. 이동(zone 경계) 상태는 에이전트가
-// 고르는 게 아니라 엔진이 자동으로 적용하므로 여기 포함되지 않는다(zoneTravel*).
+// label·min_minutes·max_minutes·completion_style만 편집한다. 이동(zone 경계) 상태는
+// 에이전트가 고르는 게 아니라 엔진이 자동으로 적용하므로 여기 포함되지 않는다(zoneTravel*).
+// completion_style: 'completive'(기본) = 만료 시 "하던 일을 마쳤다: …"(자기완결형) /
+// 'ongoing'("지속형" 체크박스) = "잠깐 정신이 들었다. (여전히 … 중)" — 실제 종료를 다른
+// 신호(예정 이벤트 등)가 정하는 학업·업무류. 백엔드 StateCategory 의 기본값과 같은 값을
+// **명시**해 둔다(생략해도 undefined 가 'ongoing' 이 아니라 동작은 같지만, 위 주석대로
+// 두 목록은 모양까지 일치해야 한다). 수면은 전용 문구를 써서 이 값의 영향을 받지 않는다.
 export const DEFAULT_STATE_CATEGORIES = [
-  { id: 'sleep', label: '수면 — 상대가 알고도 말 걸지 않는 한 반응 없음', min_minutes: 300, max_minutes: 540 },
-  { id: 'busy',  label: '자리를 비우고 하는 개인적인 일(씻기 등)',       min_minutes: 10,  max_minutes: 30  },
+  { id: 'sleep', label: '수면 — 상대가 알고도 말 걸지 않는 한 반응 없음', min_minutes: 300, max_minutes: 540, completion_style: 'completive' },
+  { id: 'busy',  label: '자리를 비우고 하는 개인적인 일(씻기 등)',       min_minutes: 10,  max_minutes: 30,  completion_style: 'completive' },
 ];
 export const DEFAULT_ZONE_TRAVEL_MIN_MINUTES = 10;
 export const DEFAULT_ZONE_TRAVEL_MAX_MINUTES = 20;
@@ -379,6 +384,12 @@ export const sim = {
   // 동석 상황 기준으로 캡한다(schemas.py SimStartConfig와 동일 기본값). 0 = 캡 비활성.
   max_scene_jump_minutes:   45,   // 실내 한 곳에 2명+ 동석 발화 중일 때
   max_daytime_jump_minutes: 180,  // 밤(22~06시)이 아니고 집에 남은 사람이 있을 때
+  // 압축 전(raw) 메모리의 시간 앵커 — 압축된 기억에는 이미 날짜 헤더가 붙지만
+  // 아직 압축되지 않은 최근 대화에는 시간 정보가 없다. 켜면 자정을 넘거나 문턱값
+  // 이상 시간이 점프할 때만 "[시간] 3일차 수요일 오후 7시 20분" 같은 라벨 한 줄을
+  // 그 에이전트 기억에 남긴다(schemas.py SimStartConfig와 동일 기본값).
+  memory_time_anchor_enabled:           false,
+  memory_time_anchor_threshold_minutes: 45,
   // 소외 재투입 간격(wave) — 대화가 오가는 중에도 마지막 턴 이후 이 wave 수 이상
   // 지난(상태에 묶이지 않은) 에이전트를 빈 incoming 으로 재투입한다(구 max_silence_waves
   // "고립 휴면 기준"을 대체). 대화가 시들해지는 것만으로는 시뮬레이션이 끝나지

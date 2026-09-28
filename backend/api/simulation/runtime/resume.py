@@ -144,6 +144,10 @@ def resume_simulation(run_id: str):
                 idle_minutes_schedule=cfg.idle_minutes_schedule,
                 max_scene_jump_minutes=cfg.max_scene_jump_minutes,
                 max_daytime_jump_minutes=cfg.max_daytime_jump_minutes,
+                # load.py 와 같은 이유 — 빠뜨리면 재개한 실행만 raw 메모리
+                # 시간 앵커가 꺼진다.
+                memory_time_anchor_enabled=cfg.memory_time_anchor_enabled,
+                memory_time_anchor_threshold_minutes=cfg.memory_time_anchor_threshold_minutes,
                 # load.py 와 같은 이유 — 빠뜨리면 재개한 실행만 상태(수면·이동)
                 # 기능이 꺼진다.
                 state_categories=[c.model_dump() for c in cfg.state_categories],

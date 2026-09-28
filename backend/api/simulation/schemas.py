@@ -143,13 +143,31 @@ class TimeCategory(BaseModel):
         return v
 
 
-# 에이전트가 스스로 선택하는 상태(수면·개인 용무 등) 카테고리. 구조가 TimeCategory와
-# 완전히 같아(id/label/min_minutes/max_minutes, id는 화면에 안 보이는 순수 내부 키)
-# 별칭으로 쓴다 — 그래도 쓰이는 목적이 다르므로(시간 판정 vs 발화 억제) 이름은
-# 분리해 계약・설정 코드가 각자의 개념으로 읽히게 한다. 이동(zone 경계) 상태는
-# 에이전트가 고르는 게 아니라 엔진이 자동으로 적용하므로 여기 포함되지 않는다 —
-# 별도 zone_travel_min/max_minutes로 설정한다.
-StateCategory = TimeCategory
+# 에이전트가 스스로 선택하는 상태(수면·개인 용무 등) 카테고리. 시간 범위 구조는
+# TimeCategory와 같아(id/label/min_minutes/max_minutes, id는 화면에 안 보이는 순수
+# 내부 키) 그대로 상속하지만, 쓰이는 목적이 다르므로(시간 판정 vs 발화 억제) 이름을
+# 분리해 계약・설정 코드가 각자의 개념으로 읽히게 한다. 별칭이 아니라 서브클래스인
+# 이유는 아래 completion_style — 상태에만 있는 개념이라 시간 분류 쪽에 얹을 수 없다.
+# `_max_not_below_min` validator는 상속으로 그대로 동작한다.
+# 이동(zone 경계) 상태는 에이전트가 고르는 게 아니라 엔진이 자동으로 적용하므로
+# 여기 포함되지 않는다 — 별도 zone_travel_min/max_minutes로 설정한다.
+class StateCategory(TimeCategory):
+    # 상태가 자연 만료될 때 본인에게 주는 알림 문구 분기 — ABM/simulation/status.py
+    # ::_status_release_notice 참고. "completive"(기본, 하위 호환) = 완결 단정
+    # ("하던 일을 마쳤다: ..."), "ongoing" = 비완결("잠깐 정신이 들었다. 여전히
+    # ... 중") — 카테고리가 대표하는 게 스스로 끝나는 자기완결형 일(씻기 등)이
+    # 아니라, 실제 종료는 다른 신호(예정 이벤트 등)가 담당하는 지속형 상황(학업·
+    # 업무 등)일 때 사용자가 직접 켠다. 자동 추정 없음.
+    #
+    # 실측 버그: "집 밖에서 수행하는 고유 업무(학업)" 카테고리의 지속 시간은
+    # min~max 무작위로 뽑히는데 실제 학원 종료는 별도 예정 이벤트(21:30)가 정한다.
+    # 무작위 타이머가 먼저 만료돼 "하던 일을 마쳤다: 학업."을 받은 에이전트가
+    # "학원이 끝났다"로 오해해 20:12에 조퇴 서사를 만들어냈다.
+    #
+    # `sleep`/`traveling`은 `_status_release_notice`에서 이 분기보다 **먼저** 전용
+    # 문구로 갈라지므로 이 필드의 영향을 받지 않는다 — 기본 수면 카테고리에 UI
+    # 체크박스가 보여도 실질적으로 무시된다(막지 않고 사실만 남긴다).
+    completion_style: Literal["completive", "ongoing"] = "completive"
 
 # ABM/simulation/core.py::_DEFAULT_STATE_CATEGORIES 와 같은 기본값이어야 한다 —
 # 생략된 계약 프리뷰 요청이 실제 실행과 다른 모습을 보여주면 오도한다.
@@ -313,6 +331,21 @@ class SimStartConfig(BaseModel):
     # 두 캡 모두 0 = 해당 캡 비활성(순수 카테고리 랜덤값 사용).
     max_scene_jump_minutes:   int            = 45   # 실내 한 곳에 2명+ 동석 발화 중일 때의 점프 상한
     max_daytime_jump_minutes: int            = 180  # 밤(22~06시)이 아니고 집에 남은 사람이 있을 때의 점프 상한
+    # ── 압축 전(raw) 메모리의 시간 앵커 ────────────────────────────────────────
+    # 압축된 구조화 기억은 이미 `format_sim_day_period` 헤더로 시간 인식이 되지만,
+    # 아직 압축되지 않은 최근 대화에는 시간 정보가 전혀 없다(elapsed_minutes 는
+    # 엔진 내부용이고 LLM 호출 직전에 벗겨진다). 켜면 문턱값 이상 시간이 점프했을
+    # 때, 또는 자정(날짜) 경계를 넘었을 때는 문턱값과 무관하게 항상, 라벨 한 줄
+    # ("[시간] 3일차 수요일 오후 7시 20분" / "[날짜 변경] ...")을 그 에이전트의
+    # raw 메모리에 영구 기록한다. 매 메시지에 타임스탬프를 붙이지 않는 이유:
+    # 엔진이 매 wave 끝에 시계를 갱신하므로 "바뀌면 기록"이 곧 "매번 기록"이 된다.
+    # 문구가 문장이 아니라 라벨인 이유: 현재형 서술("지금은 ~입니다")은 그 줄이
+    # 과거가 된 뒤 다시 읽힐 때 시제가 꼬인다. 기본 문턱값 45 =
+    # max_scene_jump_minutes 와 같은 값(엔진이 이미 장면 연속성이 끊긴다고 보는 지점).
+    # 프롬프트 계약 문자열에는 전혀 영향이 없어 ContractPreviewRequest 에는 없고,
+    # /continue 는 최초 실행 설정을 그대로 이어받아 SimContinueConfig 에도 없다.
+    memory_time_anchor_enabled:           bool = False
+    memory_time_anchor_threshold_minutes: int  = Field(default=45, ge=0)
     # ── 에이전트 상태(수면·이동 등) ────────────────────────────────────────────
     # 재투입(전원 침묵 처리)이 에이전트의 상태를 전혀 모른 채 무조건 다시 초대해서,
     # 이미 잠든 에이전트가 매 침묵 사이클마다 잠꼬대를 반복하거나 zone 경계를

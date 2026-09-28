@@ -488,6 +488,18 @@ relationships/self_state는 "계속 참인 것"이라 recency 라벨을 안 붙�
 `[system] + background_log + [memory_block?] + agent.memory + [ephemeral_msgs]`
 (`memory_block` 인자를 주면 그걸, 생략하면 `self._memory_block`으로 폴백)
 
+**raw 구간의 시간 인식 갭** — 위 3층은 **압축된** 기억에만 적용된다. 아직 압축되지
+않은 `agent.memory`(최근 대화)는 층 1이 새긴 `elapsed_minutes`를 갖고 있지만
+`build_messages()`가 LLM 호출 직전에 그걸 벗겨내므로, 최근 대화만 남아 있는 동안은
+에이전트가 "그게 언제 있었던 일인지" 알 방법이 없었다. 이 갭은 **시간 앵커**
+(`location.py::_time_anchor_notice`, `memory_time_anchor_enabled`)가 채운다 — 매
+메시지에 타임스탬프를 붙이는 대신, 문턱값 이상 시간이 점프했을 때 또는 자정 경계를
+넘었을 때만 `[시간] 3일차 수요일 오후 7시 20분` / `[날짜 변경] ...` 라벨 한 줄을 그
+에이전트의 raw 메모리에 영구 기록한다. 일차 계산은 압축 헤더(`format_sim_day_period`)와
+같은 공식을 쓰고 문구도 같은 라벨 스타일이라, 그 줄이 나중에 압축될 때 층 2의 구획
+헤더와 충돌하지 않는다. 상세는
+[`simulation-features.md §6 시간 앵커`](simulation-features.md#시간-앵커--압축-전raw-메모리의-시간-인식-locationpy).
+
 구조화 메모리 테이블 (`episodic_memory`, `semantic_memory`, `relationship_memory` +
 `relationship_history`, `agent_self_state`, `compression_log`) → [`database.md`](database.md).
 `GET /agents/{name}/memory`가 `db.get_full_memory(sim_id, agent_key)`로 4개를 묶어 반환.

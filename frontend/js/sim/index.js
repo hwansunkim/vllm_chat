@@ -23,6 +23,7 @@ import {
 } from './scenarios.js';
 import { addLocationNode, addTimeCategory, initTimeModeToggle, initTargetDurationUI,
          initTimeEstimationModeToggle, initPerceptionModeToggle, addSymptomStage,
+         initMemoryTimeAnchorToggle,
          addStateCategory, resetStateCategoriesToDefault } from './settings/page.js';
 import { toggleRunHistory, openAllRunsModal } from './runs/history.js';
 import { exportGraph } from './graph/d3.js';
@@ -80,6 +81,7 @@ export function initSimulationEvents() {
   initTimeModeToggle();
   initTimeEstimationModeToggle();
   initPerceptionModeToggle();
+  initMemoryTimeAnchorToggle();
   initTargetDurationUI();
 
   // 설정 페이지 레이아웃 — 섹션 아코디언 + 네비 레일, auto-grow textarea, 확대 오버레이.

@@ -351,6 +351,19 @@
               <span class="sim-lang-fix-unit">wave 연속</span>
             </div>
           </div>
+          <div class="sim-option-row">
+            <label>시간 앵커 기록<span class="sim-help" aria-hidden="true" data-tooltip="압축 전 최근 대화에 자정이 넘거나 이 값 이상 시간이 지날 때만 시간 라벨을 남깁니다. 매 대화마다 남기지 않아 서사가 부자연스러워지지 않습니다.">?</span></label>
+            <div class="sim-lang-fix-row">
+              <label class="sim-toggle-small">
+                <input type="checkbox" id="sim-mem-anchor-enabled">
+                <span>활성화</span>
+              </label>
+              <span class="sim-lang-fix-sep" id="sim-mem-anchor-threshold-sep">문턱값</span>
+              <input type="number" id="sim-mem-anchor-threshold" value="45" min="0" step="5"
+                     class="sim-lang-fix-count"/>
+              <span class="sim-lang-fix-unit" id="sim-mem-anchor-threshold-unit">분</span>
+            </div>
+          </div>
 
           <!-- 가변 시간 설정 — 시간 모드가 '가변'일 때만 표시 (page.js:_updateVariableTimeUI) -->
           <div class="sim-sec-sub sim-hidden" id="sim-variable-time-section">
@@ -398,7 +411,7 @@
         <div class="sim-sec-inner">
           <div class="sim-sec-sub">
             <div class="sim-sec-sub-title">
-              <span>자기-선언형 상태(수면·개인 용무)<span class="sim-help" aria-hidden="true" data-tooltip="에이전트가 스스로 '이제 잔다/씻는다' 등을 선언할 때 고르는 카테고리 목록입니다. 정확한 지속 시간은 에이전트가 정하지 않고, 여기 설정한 범위에서 자동으로 뽑힙니다. 전부 지우면(0개) 이 기능이 꺼집니다 — enter_state 안내 자체가 계약에서 빠집니다.">?</span></span>
+              <span>자기-선언형 상태(수면·개인 용무)<span class="sim-help" aria-hidden="true" data-tooltip="에이전트가 스스로 '이제 잔다/씻는다' 등을 선언할 때 고르는 카테고리 목록입니다. 정확한 지속 시간은 에이전트가 정하지 않고, 여기 설정한 범위에서 자동으로 뽑힙니다. 전부 지우면(0개) 이 기능이 꺼집니다 — enter_state 안내 자체가 계약에서 빠집니다. '지속형'을 켜면 상태가 끝날 때 '하던 일을 마쳤다' 대신 '여전히 … 중'으로 알립니다 — 학업·업무처럼 실제 종료를 다른 신호(예정 이벤트 등)가 정하는 상황에 쓰세요.">?</span></span>
               <div>
                 <button id="sim-reset-statecat-btn" type="button" class="sim-settings-add-btn" title="기본값(수면/개인 용무)으로 되돌리기">↺ 기본값</button>
                 <button id="sim-add-statecat-btn" type="button" class="sim-settings-add-btn">+ 상태 추가</button>

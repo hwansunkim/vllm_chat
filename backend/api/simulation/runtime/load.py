@@ -125,6 +125,12 @@ def load_simulation(run_id: str):
             idle_minutes_schedule=cfg.idle_minutes_schedule,
             max_scene_jump_minutes=cfg.max_scene_jump_minutes,
             max_daytime_jump_minutes=cfg.max_daytime_jump_minutes,
+            # headless.py 와 같은 이유 — 빠뜨리면 /start 로는 raw 메모리 시간
+            # 앵커가 켜지고 /load 로 되살린 실행에서만 조용히 꺼진다(엔진
+            # 기본값 False). 구버전 config_json 에는 필드가 없지만
+            # SimStartConfig 기본값이 채워주므로 안전하다.
+            memory_time_anchor_enabled=cfg.memory_time_anchor_enabled,
+            memory_time_anchor_threshold_minutes=cfg.memory_time_anchor_threshold_minutes,
             # headless.py 와 같은 이유 — 빠뜨리면 /start 로는 상태(수면·이동) 기능이
             # 걸리고 /load 로 되살린 실행에서만 조용히 꺼진다(엔진 기본값). 구버전
             # config_json 에는 필드가 없지만 SimStartConfig 기본값이 채워주므로 안전하다.

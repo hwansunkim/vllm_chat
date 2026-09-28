@@ -146,6 +146,29 @@ export function readIdleSchedule() {
   return nums.length ? nums : [...DEFAULT_IDLE_MINUTES_SCHEDULE];
 }
 
+// ── raw 메모리 시간 앵커 ─────────────────────────────────────────────────────
+// 압축 전 최근 대화에는 시간 정보가 전혀 없다(압축된 기억에는 이미 날짜 헤더가
+// 붙는다). 켜면 자정을 넘거나 문턱값 이상 시간이 점프할 때만 라벨 한 줄을 남긴다.
+// 꺼져 있으면 문턱값 입력은 의미가 없으므로 같이 숨긴다(infection-config.js 의
+// chk.onchange 와 같은 sim-hidden 토글 컨벤션).
+
+export function updateMemoryTimeAnchorUI(enabled) {
+  for (const id of ['sim-mem-anchor-threshold-sep', 'sim-mem-anchor-threshold',
+                    'sim-mem-anchor-threshold-unit']) {
+    document.getElementById(id)?.classList.toggle('sim-hidden', !enabled);
+  }
+}
+
+export function initMemoryTimeAnchorToggle() {
+  const chk = document.getElementById('sim-mem-anchor-enabled');
+  if (!chk) return;
+  // renderSettingsPage()가 여러 번 호출되므로 addEventListener 대신 onchange로 덮어쓴다.
+  chk.onchange = () => {
+    sim.memory_time_anchor_enabled = chk.checked;
+    updateMemoryTimeAnchorUI(chk.checked);
+  };
+}
+
 export function initTimeModeToggle() {
   const sel = document.getElementById('sim-time-mode');
   if (!sel) return;

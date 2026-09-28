@@ -266,6 +266,77 @@ class _LocationMixin:
         for subj, visual in (updates or {}).items():
             self._mark_seen(observer_key, subj, visual)
 
+    # ── 압축 전(raw) 메모리의 시간 앵커 ───────────────────────────────────────
+    #
+    # 압축된 구조화 기억은 `format_sim_day_period` 헤더로 "며칠차 언제 일인지"를
+    # 이미 알지만, 아직 압축되지 않은 최근 대화(raw 메모리)에는 시간 정보가 전혀
+    # 없다 — `elapsed_minutes`는 내부적으로만 붙고 `Agent.build_messages()`가 LLM
+    # 호출 직전에 벗겨낸다. 그래서 "그게 언제 있었던 일인지"를 알 방법이 없었다.
+    # 매 메시지에 타임스탬프를 붙이지는 않는다(엔진이 매 wave 끝에 시계를
+    # 갱신하므로 "바뀌면 기록"이 곧 "매번 기록"이다). 큰 점프·자정 경계에서만
+    # 라벨 한 줄을 남긴다.
+    #
+    # 문구는 문장이 아니라 **라벨**이다("지금은 ~입니다" 같은 현재형 서술은 이
+    # 줄이 과거가 된 뒤 다시 읽힐 때 시제가 꼬인다). 압축 헤더와 같은 스타일이다.
+
+    def _time_anchor_notice(
+        self, agent_key: str, now_elapsed: int
+    ) -> tuple[list[dict], int | None]:
+        """이 에이전트의 raw 메모리에 시간 경과 마커를 조건부로 만든다.
+
+        **부작용 없음** — 반환한 커밋값은 턴이 성공했을 때만 `_commit_time_anchor`
+        로 반영한다(`_reunion_appearance_notices`와 같은 실패-안전 패턴: LLM 실패로
+        incoming 이 롤백되면 이 판정도 다음 턴에 다시 일어난다).
+
+        설정이 꺼져 있으면 추적 dict 를 건드리지 않고 아무것도 하지 않는다 —
+        나중에 켜져도 그 순간부터 새로 시작한다.
+
+        추적 dict 에서 이 에이전트를 처음 보는 거면(첫 턴) 마커 없이 조용히 시드만
+        한다 — `_seen_visual`의 "처음 봄 = 알림 없이 기록만"과 같은 규칙이다.
+        비교할 과거 시점이 없는데 마커를 만들 이유가 없다.
+
+        그 외에는 마지막 커밋 시점(= 그 에이전트가 마지막으로 턴을 받은 때) 이후
+        자정을 넘었으면 문턱값과 무관하게, 아니면 경과분이 문턱값 이상일 때만
+        마커를 만든다. 어느 쪽이든 커밋값은 항상 `now_elapsed`다 — 다음 판정
+        기준이 "이 에이전트가 마지막으로 턴을 받은 시점부터의 간격"이어야 하기
+        때문이다(자주 발화하는 에이전트는 매번 짧은 간격으로 리셋되어 마커가 거의
+        안 붙고, 한동안 조용했던 에이전트가 돌아오면 그 공백이 그대로 잡힌다).
+
+        **문턱값 0 = 경과분 조건 자체를 끈다**(자정 경계에서만 기록). `>=` 비교만
+        두면 0 은 "항상 참"이 되어 매 턴 마커가 붙는데, 그건 이 기능이 애초에
+        피하려던 "바뀌면 기록 = 매번 기록" 실패 모드다. UI·스키마·문서가 모두 0을
+        "자정 경계에서만"으로 약속하고 `page.js`가 0을 기본값으로 되돌리지 않고
+        보존하므로(사용자가 실제로 넣을 수 있는 값) 여기서 명시적으로 걸러낸다.
+        """
+        if not self._memory_time_anchor_enabled:
+            return [], None
+        last = self._agent_time_anchor_seen.get(agent_key)
+        if last is None:
+            return [], now_elapsed
+        now_total   = self._sim_start_minutes + now_elapsed
+        last_total  = self._sim_start_minutes + last
+        crossed_day = now_total // (24 * 60) > last_total // (24 * 60)
+        thr         = self._memory_time_anchor_threshold_minutes
+        big_jump    = thr > 0 and (now_elapsed - last) >= thr
+        if not crossed_day and not big_jump:
+            return [], now_elapsed
+        tag   = "[날짜 변경]" if crossed_day else "[시간]"
+        label = self._time_anchor_label(now_total)
+        return [{"speaker": "씬", "action_note": "", "content": f"{tag} {label}"}], now_elapsed
+
+    def _commit_time_anchor(self, agent_key: str, value: int | None) -> None:
+        if value is not None:
+            self._agent_time_anchor_seen[agent_key] = value
+
+    def _time_anchor_label(self, total_min: int) -> str:
+        """'N일차 요일 오전/오후 N시 M분' — 새 포맷 함수를 만들지 않고 기존
+        `_format_time_str` 앞에 1-based 일차만 덧붙인다. day-count 공식은
+        `_constants.format_sim_day_period`와 **정확히 같아야** 한다(`day_offset + 1`)
+        — 다르면 압축 헤더와 이 라벨이 몇 주 뒤 서로 다른 날짜를 가리킨다.
+        """
+        day_offset, _ = divmod(total_min, 24 * 60)
+        return f"{day_offset + 1}일차 {self._format_time_str(total_min)}"
+
     def _reunion_appearance_msg(
         self, subject_key: str, observer_key: str, description: str
     ) -> str:

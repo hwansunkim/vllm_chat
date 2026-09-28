@@ -16,7 +16,8 @@ import { renderTargetDuration, readTargetDuration, initTargetDurationUI } from '
 import { updateVariableTimeUI, renderTimeCategories, readTimeCategories,
          readIdleSchedule, addTimeCategory, initTimeModeToggle,
          normalizeTimeEstimationMode, updateTimeEstimationModeUI,
-         readTimeEstimationMode, initTimeEstimationModeToggle } from './time-categories.js';
+         readTimeEstimationMode, initTimeEstimationModeToggle,
+         updateMemoryTimeAnchorUI, initMemoryTimeAnchorToggle } from './time-categories.js';
 import { renderStateCategories, readStateCategories, addStateCategory,
          resetStateCategoriesToDefault } from './state-categories.js';
 import { renderSystemAgentConfig } from './system-agent.js';
@@ -30,6 +31,7 @@ import { renderContractPreview, readOutputFormatOverride } from './contract-prev
 // 기존 사용처(index.js 등)가 계속 './settings/page.js' 하나만 import 하도록 재수출한다.
 export { initTargetDurationUI, initTimeModeToggle,
          initTimeEstimationModeToggle, initPerceptionModeToggle,
+         initMemoryTimeAnchorToggle,
          addTimeCategory, addSymptomStage, addLocationNode,
          addStateCategory, resetStateCategoriesToDefault };
 
@@ -73,6 +75,13 @@ export function renderSettingsPage() {
   if (maxDaytimeJumpEl) maxDaytimeJumpEl.value = sim.max_daytime_jump_minutes ?? 180;
   const starvationEl = document.getElementById('sim-starvation-waves');
   if (starvationEl) starvationEl.value = sim.starvation_waves ?? 3;
+  const memAnchorEl = document.getElementById('sim-mem-anchor-enabled');
+  if (memAnchorEl) {
+    memAnchorEl.checked = sim.memory_time_anchor_enabled ?? false;
+    updateMemoryTimeAnchorUI(memAnchorEl.checked);
+  }
+  const memAnchorThrEl = document.getElementById('sim-mem-anchor-threshold');
+  if (memAnchorThrEl) memAnchorThrEl.value = sim.memory_time_anchor_threshold_minutes ?? 45;
   renderStateCategories();
   const zoneTravelMinEl = document.getElementById('sim-zone-travel-min');
   if (zoneTravelMinEl) zoneTravelMinEl.value = sim.zone_travel_min_minutes ?? 10;
@@ -136,6 +145,12 @@ export function readConfigFromUI() {
   sim.max_daytime_jump_minutes = (_daytimeJump == null || _daytimeJump === '')
     ? 180 : Math.max(0, parseInt(_daytimeJump) || 0);
   sim.starvation_waves   = Math.max(1, parseInt(document.getElementById('sim-starvation-waves')?.value) || 3);
+  sim.memory_time_anchor_enabled = document.getElementById('sim-mem-anchor-enabled')?.checked ?? false;
+  // 점프 상한과 같은 규칙 — 0 이 유효값("자정 경계에서만 기록")이라 `|| 기본값`을
+  // 쓰면 안 된다. 빈칸일 때만 기본값 45.
+  const _memAnchorThr = document.getElementById('sim-mem-anchor-threshold')?.value;
+  sim.memory_time_anchor_threshold_minutes = (_memAnchorThr == null || _memAnchorThr === '')
+    ? 45 : Math.max(0, parseInt(_memAnchorThr) || 0);
   sim.state_categories   = readStateCategories();
   // zone 이동 시간도 점프 상한과 같은 규칙 — 0이 유효값("기능 끔")이므로
   // `|| 기본값`을 쓰면 안 된다.

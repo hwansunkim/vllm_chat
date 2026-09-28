@@ -121,6 +121,18 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
         # 벽시계·동석 상황 기준으로 결정론적으로 캡한다. 0 = 해당 캡 비활성.
         max_scene_jump_minutes:   int                  = 45,
         max_daytime_jump_minutes: int                  = 180,
+        # 압축 전(raw) 메모리의 시간 인식 마커. 압축된 구조화 기억은 이미
+        # `format_sim_day_period` 헤더로 "며칠차 언제 일인지"를 알지만, 아직
+        # 압축되지 않은 최근 대화에는 시간 정보가 전혀 없다(elapsed_minutes 는
+        # `Agent.build_messages()`가 LLM 호출 직전에 벗겨낸다). 켜면 큰 시간
+        # 점프·자정 경계에서만 라벨 한 줄을 raw 메모리에 영구 기록한다 —
+        # 매 메시지에 타임스탬프를 붙이지 않는 이유는 엔진이 매 wave 끝에
+        # 시계를 갱신하므로 "바뀌면 기록"이 곧 "매번 기록"이 되기 때문이다.
+        memory_time_anchor_enabled: bool               = False,
+        # 기본 45 = `max_scene_jump_minutes`와 같은 값. 엔진이 이미 "이 이상
+        # 점프하면 장면 연속성이 끊긴다"고 보는 지점을 그대로 재사용한다 —
+        # 장면이 끊길 만큼 시간이 흘렀다면 에이전트도 그 사실을 알아야 한다.
+        memory_time_anchor_threshold_minutes: int      = 45,
         # 에이전트가 스스로 선택하는 상태(수면·개인 용무 등). None이면 기본
         # 카테고리(수면/개인 용무), 빈 리스트([])면 기능 자체를 끈다(enter_state
         # 힌트가 계약에서 빠지고 발화 억제도 일어나지 않는다).
@@ -241,6 +253,11 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
         # 가변 시간 점프 상한. _RunnerMixin._clamp_time_jump 가 소비한다.
         self._max_scene_jump_minutes:   int = max(0, int(max_scene_jump_minutes))
         self._max_daytime_jump_minutes: int = max(0, int(max_daytime_jump_minutes))
+        # raw 메모리 시간 앵커 (location.py `_time_anchor_notice`).
+        self._memory_time_anchor_enabled: bool = bool(memory_time_anchor_enabled)
+        self._memory_time_anchor_threshold_minutes: int = max(
+            0, int(memory_time_anchor_threshold_minutes)
+        )
         self._elapsed_minutes: int = elapsed_minutes_init
         # 이번 run() 호출의 목표 기간 마감(절대 경과분). run()이 매 호출마다
         # 새로 계산해 넣는다 — _clamp_time_jump가 다른 캡들과 함께 min()으로
@@ -387,6 +404,14 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
         # 관찰자별 "마지막으로 본 외모" {observer: {subject: visual}} — 재회 알림용
         # (location.py `_reunion_appearance_notices`). 아래 knowledge 시드 뒤에 채운다.
         self._seen_visual:     dict[str, dict[str, str]] = {}
+        # {agent_key: 그 에이전트의 raw 메모리에 시간 앵커를 마지막으로 남긴(또는
+        # 조용히 시드한) 시점의 절대 경과분} — location.py `_time_anchor_notice`.
+        # `_seen_visual`과 달리 **재개 스냅샷에 넣지 않는다**: 복원 후 비어 있으면
+        # 각 에이전트의 다음 턴이 "처음 봄"으로 조용히 시드되어 마커 하나를 놓칠
+        # 뿐이고, 재회 알림처럼 "이미 아는 사이를 처음 봄으로 오판해 거짓 알림을
+        # 만드는" 종류의 버그가 아니다. 그 경미한 트레이드오프를 받아들이고
+        # 스냅샷 스키마는 건드리지 않는다.
+        self._agent_time_anchor_seen: dict[str, int] = {}
         # stranger_N 할당은 워커 스레드(_step_agent)에서 read-modify-write 되므로
         # 직렬화한다. 락 없이 두면 같은 wave에 두 관찰자가 서로를 처음 볼 때
         # 번호가 중복되거나 건너뛸 수 있다.

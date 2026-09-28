@@ -645,6 +645,13 @@
 }
 .sim-time-cat-min:focus, .sim-time-cat-max:focus { border-color: #6366f1; }
 .sim-time-cat-sep, .sim-time-cat-unit { font-size: 11px; color: #94a3b8; flex-shrink: 0; }
+/* 상태 카테고리 전용 — "지속형"(completion_style: ongoing) 토글. 상태 목록에만
+   렌더되고 시간 카테고리 행에는 없다(같은 .sim-time-cat-row 클래스를 공유). */
+.sim-time-cat-ongoing-wrap {
+  display: flex; align-items: center; gap: 3px; flex-shrink: 0;
+  font-size: 11px; color: #64748b; cursor: pointer; user-select: none;
+}
+.sim-time-cat-ongoing { margin: 0; cursor: pointer; }
 /* 위치 그래프의 .sim-loc-node-del과 동일한 삭제 버튼 스타일.
    카테고리가 1개만 남으면 disabled 상태로 흐려져 0개가 되는 것을 막는다(백엔드 422 방지). */
 .sim-time-cat-del {

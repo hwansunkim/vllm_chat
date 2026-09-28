@@ -148,10 +148,23 @@ class _StatusMixin:
         - `sleep` → "[씬] 잠에서 깼다. (현재 위치)". 기본 카테고리 id `sleep`에만
           전용 문구를 준다 — "하던 일을 마쳤다: 수면"은 어색하다. id를 바꾼 사용자
           정의 수면은 아래 일반 문구로 떨어질 뿐 틀린 말은 아니다.
-        - 그 외(`busy`·사용자 정의 카테고리) → "[씬] 하던 일을 마쳤다: {라벨}.
-          (현재 위치)". 라벨은 배너·상태 진입 이벤트와 같은 정본
+        - 그 외(`busy`·사용자 정의 카테고리) → 카테고리의 `completion_style`로 갈린다.
+          - `"completive"`(기본, 하위 호환) → "[씬] 하던 일을 마쳤다: {라벨}.
+            (현재 위치)". 상태가 대표하는 일이 **스스로 끝나는** 자기완결형일 때
+            (씻기 등 — 타이머 만료 = 실제 완료) 맞는 문구다.
+          - `"ongoing"` → "[씬] 잠깐 정신이 들었다. (여전히 {라벨} 중, 현재 위치)".
+            실제 종료를 **다른 신호**(예정 이벤트 등)가 정하는 지속형 상황(학업·
+            업무 등)용. 타이머 만료는 "이제 조용히 있을 필요는 없다"일 뿐이라,
+            완결 단정을 주면 안 된다 — 실측: "집 밖에서 수행하는 고유 업무(학업)"
+            의 무작위 타이머가 실제 학원 종료(21:30 시스템 이벤트)보다 먼저 만료돼
+            "하던 일을 마쳤다: 학업."을 받은 에이전트가 20:12에 "학원 끝났다"며
+            하교하는 서사를 만들어냈다. 자동 추정은 없다 — 전적으로 설정값이다.
+          라벨은 어느 쪽이든 배너·상태 진입 이벤트와 같은 정본
           `_status_display_label`.
-        위치가 없는 레거시(위치 미사용) 시나리오는 괄호를 생략한다.
+        위치가 없는 레거시(위치 미사용) 시나리오는 괄호(ongoing은 콤마+위치만)를
+        생략한다. `completion_style` 키 자체가 없는 레거시 카테고리 dict(옛 저장
+        시나리오, pydantic 검증을 안 거친 경로)는 `"completive"`로 떨어져 문구가
+        전혀 바뀌지 않는다.
         """
         state = st.get("state")
         here  = self._agent_location.get(key, "") or ""
@@ -167,6 +180,13 @@ class _StatusMixin:
         if state == "sleep":
             return f"[씬] 잠에서 깼다.{where}"
         label = (self._status_display_label(st) or "").rstrip(" .") or "하던 일"
+        # `_status_display_label`과 같은 패턴의 정확 일치 조회(폴백 없음). 키가 없는
+        # 레거시 raw dict는 기본 "completive" — 기존 문구 그대로.
+        cat = next((c for c in (self._state_categories or []) if c.get("id") == state), None)
+        style = (cat or {}).get("completion_style", "completive")
+        if style == "ongoing":
+            loc_suffix = f", {here}" if here else ""
+            return f"[씬] 잠깐 정신이 들었다. (여전히 {label} 중{loc_suffix})"
         return f"[씬] 하던 일을 마쳤다: {label}.{where}"
 
     # ── 조회 ─────────────────────────────────────────────────────────────────

@@ -64,6 +64,9 @@ export function buildSimConfig(s = sim) {
     idle_minutes_schedule:  (s.idle_minutes_schedule?.length ? s.idle_minutes_schedule : DEFAULT_IDLE_MINUTES_SCHEDULE),
     max_scene_jump_minutes:   s.max_scene_jump_minutes   ?? 45,
     max_daytime_jump_minutes: s.max_daytime_jump_minutes ?? 180,
+    // raw 메모리 시간 앵커. 0 은 유효값("자정 경계에서만 기록")이라 `??`.
+    memory_time_anchor_enabled:           !!s.memory_time_anchor_enabled,
+    memory_time_anchor_threshold_minutes: s.memory_time_anchor_threshold_minutes ?? 45,
     starvation_waves:       s.starvation_waves ?? 3,
     // time_categories와 달리 **빈 배열이 유효한 값**이다(자기-선언형 상태 기능 off) —
     // 배열이면 그대로 보존. 값 자체가 없을(undefined/null) 때만 기본 상태로 폴백한다

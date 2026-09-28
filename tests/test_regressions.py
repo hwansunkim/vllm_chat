@@ -3517,7 +3517,10 @@ class ResumeContinueWaveBaseTests(unittest.TestCase):
             state_categories=custom_states,
             zone_travel_min_minutes=7, zone_travel_max_minutes=15,
         )))
-        self.assertEqual(calls["sim_kwargs"].get("state_categories"), custom_states)
+        # completion_style 을 생략한 저장 config 는 기본값 "completive"(= 기존
+        # "하던 일을 마쳤다" 문구)로 하이드레이트돼 그대로 엔진에 전달된다.
+        self.assertEqual(calls["sim_kwargs"].get("state_categories"),
+                         [{**custom_states[0], "completion_style": "completive"}])
         self.assertEqual(calls["sim_kwargs"].get("zone_travel_min_minutes"), 7)
         self.assertEqual(calls["sim_kwargs"].get("zone_travel_max_minutes"), 15)
 
@@ -6081,7 +6084,9 @@ class RelationshipRestorePathTests(unittest.TestCase):
             zone_travel_min_minutes=7, zone_travel_max_minutes=15,
         )
         _, cap = self._load(cfg)
-        self.assertEqual(cap.get("state_categories"), custom_states)
+        # completion_style 생략 → 기본값 "completive"(기존 문구)로 하이드레이트.
+        self.assertEqual(cap.get("state_categories"),
+                         [{**custom_states[0], "completion_style": "completive"}])
         self.assertEqual(cap.get("zone_travel_min_minutes"), 7)
         self.assertEqual(cap.get("zone_travel_max_minutes"), 15)
 
@@ -7618,6 +7623,87 @@ class NaturalStatusExpiryTests(unittest.TestCase):
             sim._agent_location["a"] = ""
             self.assertEqual(n("a", {"state": "sleep"}), "[씬] 잠에서 깼다.")
             self.assertEqual(n("a", {"state": "traveling"}), "[씬] 목적지에 도착했다.")
+
+    # ── completion_style (완결형 vs 지속형 해제 알림) ──────────────────────────
+    #
+    # 실측 버그: "집 밖에서 수행하는 고유 업무(학업)" 카테고리의 지속 시간은 min~max
+    # 무작위인데 실제 학원 종료는 별도 예정 이벤트(21:30)가 정한다. 무작위 타이머가
+    # 먼저 만료돼 완결 단정("하던 일을 마쳤다: 학업.")을 받은 에이전트가 "학원이
+    # 끝났다"로 오해해 20:12에 하교하는 조퇴 서사를 만들어냈다.
+
+    def test_completion_style_absent_or_completive_keeps_the_existing_wording(self):
+        # 하위 호환의 핵심 — 키 **자체가 없는** 레거시 raw dict(옛 저장 시나리오,
+        # pydantic 검증을 안 거친 경로)와 명시적 "completive"가 완전히 같아야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp, {"a": [{"content": "..."}]}, {"a": "거실"},
+                graph=[{"name": "거실", "connects_to": []}],
+                state_categories=[
+                    {"id": "legacy",    "label": "씻기", "min_minutes": 20, "max_minutes": 20},
+                    {"id": "explicit",  "label": "씻기", "min_minutes": 20, "max_minutes": 20,
+                     "completion_style": "completive"},
+                ],
+            )
+            n = sim._status_release_notice
+            self.assertEqual(n("a", {"state": "legacy"}),   "[씬] 하던 일을 마쳤다: 씻기. (거실)")
+            self.assertEqual(n("a", {"state": "explicit"}), "[씬] 하던 일을 마쳤다: 씻기. (거실)")
+            # 카테고리 목록에 아예 없는 id(엔진 부여 등)도 기본 문구로 떨어진다.
+            self.assertEqual(n("a", {"state": "unknown"}),  "[씬] 하던 일을 마쳤다: unknown. (거실)")
+
+    def test_ongoing_completion_style_notice_does_not_claim_completion(self):
+        # 지속형 = "이제 조용히 있을 필요는 없다"일 뿐 실제 상황은 계속된다.
+        _, turns, _ = self._run_expiry(
+            "study", "누나방",
+            state_categories=[{"id": "study", "label": "학업",
+                               "min_minutes": 60, "max_minutes": 120,
+                               "completion_style": "ongoing"}],
+        )
+        a_turns = self._of(turns, "a")
+        self.assertEqual(a_turns[0][0], 3)
+        self.assertEqual(a_turns[0][1][0]["content"],
+                         "[씬] 잠깐 정신이 들었다. (여전히 학업 중, 누나방)")
+
+    def test_ongoing_completion_style_omits_location_suffix_when_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp, {"a": [{"content": "..."}]}, {"a": "거실"},
+                graph=[{"name": "거실", "connects_to": []}],
+                state_categories=[{"id": "work", "label": "업무.", "min_minutes": 60,
+                                   "max_minutes": 60, "completion_style": "ongoing"}],
+            )
+            # 위치 미사용(레거시) 경로 — 콤마+위치만 빠지고 나머지는 같다.
+            sim._agent_location["a"] = ""
+            self.assertEqual(sim._status_release_notice("a", {"state": "work"}),
+                             "[씬] 잠깐 정신이 들었다. (여전히 업무 중)")
+
+    def test_sleep_and_traveling_ignore_completion_style(self):
+        # 둘은 completion_style 분기보다 **먼저** 전용 문구로 갈린다 — 수면은
+        # "깼다"가 이미 완결 단정이 아니라 사실 그대로라 이 메커니즘이 필요 없고,
+        # traveling 은 애초에 카테고리에서 오지 않는다. 설정해도 무시돼야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(
+                tmp, {"a": [{"content": "..."}]}, {"a": "거실"},
+                graph=[{"name": "거실", "connects_to": ["동네"]},
+                       {"name": "동네", "connects_to": ["거실"], "is_exterior": True}],
+                state_categories=[
+                    {"id": "sleep",     "label": "수면", "min_minutes": 300, "max_minutes": 300,
+                     "completion_style": "ongoing"},
+                    {"id": "traveling", "label": "이동", "min_minutes": 10,  "max_minutes": 10,
+                     "completion_style": "ongoing"},
+                ],
+            )
+            n = sim._status_release_notice
+            self.assertEqual(n("a", {"state": "sleep"}), "[씬] 잠에서 깼다. (거실)")
+            self.assertEqual(n("a", {"state": "traveling", "arrival_location": "동네"}),
+                             "[씬] 동네에 도착했다.")
+
+        # 전체 실행 경로에서도 같다(수면).
+        _, turns, _ = self._run_expiry(
+            "sleep", "누나방",
+            state_categories=[{"id": "sleep", "label": "수면", "min_minutes": 300,
+                               "max_minutes": 300, "completion_style": "ongoing"}],
+        )
+        self.assertEqual(self._of(turns, "a")[0][1][0]["content"], "[씬] 잠에서 깼다. (누나방)")
 
 
 class SelfStateHoldTests(unittest.TestCase):
@@ -12559,6 +12645,212 @@ class AppearanceReunionTests(unittest.TestCase):
             legacy.restore_agent_state(old)
             self.assertEqual(legacy._seen_visual["k"], {"d": self.NEW})
             self.assertEqual(legacy._reunion_appearance_notices("k", 0), ([], {}))
+
+
+class MemoryTimeAnchorTests(unittest.TestCase):
+    """압축 전(raw) 메모리의 시간 앵커 (location.py `_time_anchor_notice`).
+
+    빈틈: 압축된 구조화 기억은 `elapsed_minutes` + `format_sim_day_period` 헤더로
+    "며칠차 언제 일인지"를 알지만, 아직 압축되지 않은 최근 대화에는 시간 정보가
+    전혀 없다(`Agent.build_messages()`가 LLM 호출 직전에 벗겨낸다). 매 메시지에
+    타임스탬프를 붙이는 대신 **문턱값 이상 점프** 또는 **자정 경계**에서만 라벨
+    한 줄을 남긴다. 기록은 턴 성공 시에만 커밋한다(재회 알림과 같은 실패-안전).
+    """
+
+    def _build(self, tmp, *, script=None, **kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096) for k in ("a", "b")}
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=_ScriptedLLM(script or {"a": [{"content": "음.", "target": "self"}],
+                                        "b": [{"content": "음.", "target": "self"}]}),
+            # variable 모드면 `_current_elapsed_minutes`가 `_elapsed_minutes`를 그대로
+            # 돌려주므로 테스트가 "지금 몇 분 지났나"를 한 줄로 조작할 수 있다.
+            time_mode="variable",
+            name_aliases={"에이": "a", "비": "b"}, **kw,
+        )
+        sim._emit = lambda t, d: None
+        return sim
+
+    @staticmethod
+    def _anchors(sim, key):
+        return [m["content"] for m in sim.agents[key].memory
+                if str(m.get("content", "")).startswith(("[시간]", "[날짜 변경]"))]
+
+    # ── 1. 문턱값 판정 ────────────────────────────────────────────────────────
+
+    def test_no_marker_below_threshold_same_day(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(tmp, memory_time_anchor_enabled=True,
+                              memory_time_anchor_threshold_minutes=45)
+            sim._agent_time_anchor_seen["a"] = 0
+            # 30분 < 45분, 자정도 안 넘었다 → 마커 없음. 커밋값은 그래도 갱신된다.
+            self.assertEqual(sim._time_anchor_notice("a", 30), ([], 30))
+
+    def test_marker_at_threshold_has_exact_label(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(tmp, sim_start_time="09:00", sim_start_weekday="mon",
+                              memory_time_anchor_enabled=True,
+                              memory_time_anchor_threshold_minutes=45)
+            sim._agent_time_anchor_seen["a"] = 0
+            # 경계값(정확히 문턱값)도 마커가 붙는다(`>=`).
+            self.assertEqual(sim._time_anchor_notice("a", 45)[0][0]["content"],
+                             "[시간] 1일차 월요일 오전 9시 45분")
+            # 같은 날 큰 점프 — 09:00 + 600분 = 19:00.
+            msgs, commit = sim._time_anchor_notice("a", 600)
+            self.assertEqual(msgs, [{"speaker": "씬", "action_note": "",
+                                     "content": "[시간] 1일차 월요일 오후 7시 00분"}])
+            self.assertEqual(commit, 600)
+            # 계산만으로는 기록하지 않는다(턴 성공 시 커밋).
+            self.assertEqual(sim._agent_time_anchor_seen["a"], 0)
+
+    def test_day_boundary_marker_ignores_threshold(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(tmp, sim_start_time="23:50", sim_start_weekday="mon",
+                              memory_time_anchor_enabled=True,
+                              memory_time_anchor_threshold_minutes=45)
+            sim._agent_time_anchor_seen["a"] = 0
+            # 23:50 → 다음날 00:10 = 20분. 문턱값(45) 미달이지만 자정을 넘었다.
+            msgs, commit = sim._time_anchor_notice("a", 20)
+            self.assertEqual([m["content"] for m in msgs],
+                             ["[날짜 변경] 2일차 화요일 오전 0시 10분"])
+            self.assertEqual(commit, 20)
+
+    def test_threshold_zero_means_day_boundary_only(self):
+        # 문턱값 0 = "경과분 조건 끔"(UI·스키마·문서가 약속한 의미). `>=` 비교만
+        # 두면 0 이 항상 참이 되어 **매 턴** 마커가 붙는다 — 이 기능이 피하려던
+        # "바뀌면 기록 = 매번 기록" 실패 모드가 그대로 재현된다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(tmp, sim_start_time="22:00", sim_start_weekday="mon",
+                              memory_time_anchor_enabled=True,
+                              memory_time_anchor_threshold_minutes=0)
+            self.assertTrue(sim._step_agent("a", 0, 0, 0, [])["success"])   # 시드(0분)
+            # 같은 날 안에서 시간이 계속 흘러도(1분·30분·110분) 마커가 전혀 없다.
+            for turn, elapsed in enumerate((1, 31, 110), start=1):
+                sim._elapsed_minutes = elapsed
+                self.assertTrue(sim._step_agent("a", 0, 0, turn, [])["success"])
+                self.assertEqual(self._anchors(sim, "a"), [],
+                                 f"elapsed={elapsed} 에서 마커가 붙었다")
+            # 자정을 넘는 순간에만 붙는다 — 22:00 + 125분 = 다음날 00:05.
+            sim._elapsed_minutes = 125
+            self.assertTrue(sim._step_agent("a", 0, 0, 4, [])["success"])
+            self.assertEqual(self._anchors(sim, "a"),
+                             ["[날짜 변경] 2일차 화요일 오전 0시 05분"])
+
+    def test_day_label_matches_compression_header_formula(self):
+        # 일차 공식이 압축 헤더(`format_sim_day_period`)와 갈라지면 몇 주 뒤
+        # 두 라벨이 서로 다른 날짜를 가리킨다.
+        from ABM.simulation._constants import format_sim_day_period
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(tmp, sim_start_time="09:00", sim_start_weekday="thu",
+                              memory_time_anchor_enabled=True)
+            for elapsed in (0, 60, 1440, 1441, 14400, 40320):
+                total = sim._sim_start_minutes + elapsed
+                header = format_sim_day_period(total, sim._sim_start_weekday_idx)
+                label  = sim._time_anchor_label(total)
+                # "N일차 요일" 까지가 두 포맷의 공통 접두사다(라벨은 분까지, 헤더는 오전/오후).
+                self.assertTrue(label.startswith(" ".join(header.split()[:2])),
+                                f"{label!r} vs {header!r}")
+
+    # ── 2. 기본값 off · 첫 턴 시드 ────────────────────────────────────────────
+
+    def test_disabled_by_default_even_on_huge_jump(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(tmp)   # 인자 생략 = 기존 시나리오
+            self.assertFalse(sim._memory_time_anchor_enabled)
+            sim._agent_time_anchor_seen["a"] = 0
+            # 꺼져 있으면 추적 dict 도 건드리지 않는다(커밋값 None).
+            self.assertEqual(sim._time_anchor_notice("a", 100000), ([], None))
+            sim._elapsed_minutes = 100000
+            self.assertTrue(sim._step_agent("a", 0, 0, 0, [])["success"])
+            self.assertEqual(self._anchors(sim, "a"), [])
+            self.assertEqual(sim._agent_time_anchor_seen["a"], 0)
+
+    def test_first_turn_is_silent_seed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(tmp, memory_time_anchor_enabled=True,
+                              memory_time_anchor_threshold_minutes=45)
+            self.assertNotIn("a", sim._agent_time_anchor_seen)
+            # 비교할 과거 시점이 없다 — 큰 경과분이어도 마커 없이 시드만.
+            self.assertEqual(sim._time_anchor_notice("a", 5000), ([], 5000))
+            sim._elapsed_minutes = 5000
+            self.assertTrue(sim._step_agent("a", 0, 0, 0, [])["success"])
+            self.assertEqual(self._anchors(sim, "a"), [])
+            self.assertEqual(sim._agent_time_anchor_seen["a"], 5000)
+
+    # ── 3. 턴 통합 · 실패 롤백 ───────────────────────────────────────────────
+
+    def test_marker_injected_into_memory_on_successful_turn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(tmp, sim_start_time="09:00", sim_start_weekday="mon",
+                              memory_time_anchor_enabled=True,
+                              memory_time_anchor_threshold_minutes=45)
+            self.assertTrue(sim._step_agent("a", 0, 0, 0, [])["success"])   # 시드
+            sim._elapsed_minutes = 600
+            self.assertTrue(sim._step_agent("a", 0, 0, 1, [])["success"])
+            # "씬" 화자라 화자 이름이 덧붙지 않는다(`_inject_incoming`).
+            self.assertEqual(self._anchors(sim, "a"),
+                             ["[시간] 1일차 월요일 오후 7시 00분"])
+            # 기준이 갱신됐으므로 바로 다음 턴엔 반복되지 않는다.
+            sim._elapsed_minutes = 610
+            self.assertTrue(sim._step_agent("a", 0, 0, 2, [])["success"])
+            self.assertEqual(len(self._anchors(sim, "a")), 1)
+
+    def test_anchor_precedes_this_wave_utterances(self):
+        # 마커는 이번 wave에 들은 발화 **앞**에 와야 한다 — 뒤에 붙으면 나중에
+        # 다시 읽을 때 방금 들은 말이 이전(공백 전) 시간대에 속한 것처럼 보인다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(tmp, sim_start_time="09:00", sim_start_weekday="mon",
+                              memory_time_anchor_enabled=True,
+                              memory_time_anchor_threshold_minutes=45)
+            self.assertTrue(sim._step_agent("a", 0, 0, 0, [])["success"])   # 시드
+            before = len(sim.agents["a"].memory)
+            sim._elapsed_minutes = 600                                      # 10시간 공백
+            heard = [{"speaker": "b", "action_note": "", "content": "안녕"}]
+            self.assertTrue(sim._step_agent("a", 0, 0, 1, heard)["success"])
+            injected = [str(m.get("content", "")) for m in sim.agents["a"].memory[before:]]
+            self.assertEqual(injected[0], "[시간] 1일차 월요일 오후 7시 00분")
+            self.assertTrue(injected[1].startswith("[b] 안녕"), injected)
+
+    def test_anchor_precedes_reunion_notice(self):
+        # "시간이 지났다" → "누구를 다시 본다" 순서.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(tmp, memory_time_anchor_enabled=True,
+                              memory_time_anchor_threshold_minutes=45)
+            sim._agent_visual["b"] = "정장 차림"
+            sim._seed_seen_visual()
+            self.assertTrue(sim._step_agent("a", 0, 0, 0, [])["success"])   # 시드
+            sim._agent_visual["b"] = "편한 티셔츠 차림"
+            sim._elapsed_minutes = 600
+            self.assertTrue(sim._step_agent("a", 0, 0, 1, [])["success"])
+            scenes = [m["content"] for m in sim.agents["a"].memory
+                      if str(m.get("content", "")).startswith(("[시간]", "[씬]"))]
+            self.assertTrue(scenes[0].startswith("[시간]"), scenes)
+            self.assertTrue(any("다시 보니" in s for s in scenes), scenes)
+
+    def test_failed_turn_does_not_consume_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._build(tmp, sim_start_time="09:00", sim_start_weekday="mon",
+                              memory_time_anchor_enabled=True,
+                              memory_time_anchor_threshold_minutes=45)
+            self.assertTrue(sim._step_agent("a", 0, 0, 0, [])["success"])   # 시드(0분)
+            ok_llm = sim._llm
+            sim._llm = lambda *a, **k: (None, "", {})
+            sim._llm_for = lambda key: sim._llm
+            sim._elapsed_minutes = 600
+            self.assertFalse(sim._step_agent("a", 0, 0, 1, [])["success"])
+            # 롤백 — 메모리에도 안 남고 기준도 안 움직였다.
+            self.assertEqual(self._anchors(sim, "a"), [])
+            self.assertEqual(sim._agent_time_anchor_seen["a"], 0)
+            # 다음(성공) 턴에 다시 판정된다.
+            sim._llm = ok_llm
+            sim._llm_for = lambda key: ok_llm
+            self.assertTrue(sim._step_agent("a", 0, 0, 2, [])["success"])
+            self.assertEqual(self._anchors(sim, "a"),
+                             ["[시간] 1일차 월요일 오후 7시 00분"])
+            self.assertEqual(sim._agent_time_anchor_seen["a"], 600)
 
 
 if __name__ == "__main__":
