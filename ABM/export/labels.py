@@ -5,9 +5,9 @@
 때문이다(브라우저 다운로드 vs ``python -m ABM.cli``). 한쪽만 고치면
 ``tests/fixtures/*.md`` 골든 테스트가 깨진다.
 
-포팅 대상: ``normalizeWeekday`` · ``normalizeDurationMinutes`` ·
+포팅 대상: ``normalizeWeekday`` ·
 ``normalizeProbability`` · ``normalizeBeta`` · ``normalizeSymptomStages`` ·
-``buildInfectionModel`` · ``formatDayHour`` · ``infectionBadge`` ·
+``normalizeDurationSpec`` · ``buildInfectionModel`` · ``infectionBadge`` ·
 ``meetingNarration`` · ``detectGender`` · ``getAgentIcon`` · ``agentLabel`` ·
 ``simTimeLabel``.
 
@@ -100,28 +100,11 @@ def js_str(v) -> str:
     return str(v)
 
 
-# ── 분 단위 입력 ──────────────────────────────────────────────────────────────
+# ── 분 단위 상수 ──────────────────────────────────────────────────────────────
+# (옛 증상 단계 "일 + 시간" 입력용 normalize_duration_minutes/format_day_hour는 증상 문구가
+#  상태 기반으로 바뀌며 JS·파이썬 양쪽에서 쓰이지 않게 돼 제거했다.)
 
 MINUTES_PER_DAY = 1440
-MINUTES_PER_HOUR = 60
-MAX_TARGET_DURATION_MINUTES = 52560000   # 100년
-
-
-def normalize_duration_minutes(v, fallback: int = 0) -> int:
-    n = _parse_float(v)
-    if n is None:
-        return fallback
-    return min(MAX_TARGET_DURATION_MINUTES, max(0, _js_round(n)))
-
-
-def format_day_hour(minutes) -> str:
-    """분 → "2일 12시간" 사람이 읽는 문자열 (0분은 "0시간")."""
-    m = normalize_duration_minutes(minutes)
-    days = m // MINUTES_PER_DAY
-    hours = (m % MINUTES_PER_DAY) // MINUTES_PER_HOUR
-    if not days and not hours:
-        return "0시간"
-    return " ".join(p for p in (f"{days}일" if days else "", f"{hours}시간" if hours else "") if p)
 
 
 def normalize_probability(v, fallback: float = 0) -> float:
@@ -140,44 +123,88 @@ def normalize_beta(v, fallback: float = 0) -> float:
     return max(0, _js_round(n * 10000) / 10000)
 
 
-# ── 감염병 모델 (SEIR) ────────────────────────────────────────────────────────
+# ── 감염병 모델 (SEPIR) ───────────────────────────────────────────────────────
 
 DEFAULT_BETA = 0.04
 
+# E/P/I 지속 시간 분포(DurationSpec, 일 단위) — 백엔드 스키마 기본값과 1:1.
+# state.js 의 DEFAULT_*_DURATION 과 같은 값이어야 한다.
+MAX_DURATION_DAYS = 36500
+DURATION_KINDS = ("uniform", "gamma", "gaussian")
+_DURATION_BASE = {"kind": "uniform", "shape": 2.0, "scale": 1.0, "mean": 5.0,
+                  "stddev": 2.0, "min_days": 1.0, "max_days": 10.0}
+DEFAULT_EXPOSED_DURATION = {**_DURATION_BASE, "kind": "gamma", "shape": 1.926,
+                            "scale": 1.775, "min_days": 1.0, "max_days": 10.0}
+DEFAULT_PRESYMPTOMATIC_DURATION = {**_DURATION_BASE, "min_days": 0.0, "max_days": 0.0}
+DEFAULT_INFECTIOUS_DURATION = {**_DURATION_BASE, "min_days": 8.0, "max_days": 8.0}
+
+
+def _round4(n: float):
+    return _js_round(n * 10000) / 10000
+
+
+def normalize_duration_spec(raw, default: dict) -> dict:
+    """DurationSpec 정규화 — state.js ``normalizeDurationSpec`` 과 동일 규칙.
+
+    kind 가 알 수 없으면 기본 kind, 양수여야 하는 파라미터(shape/scale/stddev)가
+    0 이하·비숫자면 기본값, min 은 0~36500, max 가 min 보다 작으면 min 을 max 로
+    낮춘다(증상 단계와 같은 규칙).
+    """
+    src = raw if isinstance(raw, dict) else {}
+    kind = src.get("kind") if src.get("kind") in DURATION_KINDS else default["kind"]
+
+    def _pos(key):
+        n = _parse_float(src.get(key))
+        return _round4(n) if (n is not None and n > 0) else default[key]
+
+    def _any(key):
+        n = _parse_float(src.get(key))
+        return _round4(n) if n is not None else default[key]
+
+    def _days(key, fallback):
+        n = _parse_float(src.get(key))
+        if n is None:
+            return fallback
+        return min(MAX_DURATION_DAYS, max(0, _round4(n)))
+
+    lo = _days("min_days", default["min_days"])
+    hi = _days("max_days", default["max_days"])
+    if hi < lo:
+        lo = hi
+    return {"kind": kind, "shape": _pos("shape"), "scale": _pos("scale"),
+            "mean": _any("mean"), "stddev": _pos("stddev"),
+            "min_days": lo, "max_days": hi}
+
+# 증상 문구 — 상태(E/P/I)별. 같은 status 항목은 등록 순서가 곧 그 상태 안의 진행
+# 순서다(엔진이 그 상태의 진행률로 균등 분할). state.js 의 DEFAULT_SYMPTOM_STAGES 와 같아야 한다.
+SYMPTOM_STATUSES = ("E", "P", "I")
+SYMPTOM_STATUS_LABELS = {"E": "잠복기(E)", "P": "무증상 전염기(P)", "I": "감염기(I)"}
+
 DEFAULT_SYMPTOM_STAGES: list[dict] = [
-    {"id": "incubation", "label": "잠복기", "min_minutes": 0,    "max_minutes": 2880,
-     "symptom_text": "목이 조금 칼칼하다. 피곤해서 그런 거겠지, 별일 아닐 것이다."},
-    {"id": "onset",      "label": "발현기", "min_minutes": 2880, "max_minutes": 7200,
-     "symptom_text": "몸이 으슬으슬하고 기침이 멎지 않는다. 이마가 뜨겁다."},
-    {"id": "acute",      "label": "급성기", "min_minutes": 7200, "max_minutes": 20160,
-     "symptom_text": "고열로 눈앞이 흐리다. 온몸이 쑤시고 서 있기조차 버겁다."},
+    {"status": "E", "symptom_text": "목이 조금 칼칼하고 살짝 피곤하다. 별일 아니겠지 싶은 정도다."},
+    {"status": "P", "symptom_text": "특별히 아픈 데는 없지만 왠지 몸이 무겁게 느껴진다."},
+    {"status": "I", "symptom_text": "열이 나고 기침이 멎지 않는다. 코가 막히고 목이 따갑다. 냄새와 맛이 잘 안 느껴진다."},
+    {"status": "I", "symptom_text": "고열로 눈앞이 흐리다. 온몸이 쑤시고 기침이 심해 숨쉬기도 버겁다. 서 있기조차 힘들다."},
 ]
+
+MODEL_TYPES = ("sir", "seir", "sepir")
 
 
 def normalize_symptom_stages(raw) -> list[dict]:
+    """state.js ``normalizeSymptomStages`` 와 동일 규칙.
+
+    status 가 E/P/I 가 아닌 항목(구버전 min/max 형식 포함)은 버리고, E→P→I 순으로
+    **안정 정렬**한다 — 같은 status 안의 상대 순서(= 진행 순서)는 그대로라 엔진 결과는
+    바뀌지 않고, 편집 화면·내보내기가 상태별로 묶여 보인다.
+    """
     if not isinstance(raw, list):
         return []
-    seen: set[str] = set()
     out: list[dict] = []
-    for i, item in enumerate(raw):
-        if not isinstance(item, dict):
+    for item in raw:
+        if not isinstance(item, dict) or item.get("status") not in SYMPTOM_STATUSES:
             continue
-        sid = str(item.get("id") or "").strip() or f"stage{i + 1}"
-        if sid in seen:
-            sid = f"{sid}_{i + 1}"
-        seen.add(sid)
-        lo = normalize_duration_minutes(item.get("min_minutes"), 0)
-        hi = normalize_duration_minutes(item.get("max_minutes"), lo)
-        # min 을 max 쪽으로 낮춘다(그 반대가 아니라) — state.js 와 같은 규칙.
-        if hi < lo:
-            lo = hi
-        out.append({
-            "id":           sid,
-            "label":        str(item.get("label") or "").strip() or sid,
-            "min_minutes":  lo,
-            "max_minutes":  hi,
-            "symptom_text": str(item.get("symptom_text") or ""),
-        })
+        out.append({"status": item["status"], "symptom_text": str(item.get("symptom_text") or "")})
+    out.sort(key=lambda st: SYMPTOM_STATUSES.index(st["status"]))
     return out
 
 
@@ -202,6 +229,14 @@ def build_infection_model(raw) -> dict:
                                     if (src is not None and isinstance(stages_raw, list))
                                     else [dict(s) for s in DEFAULT_SYMPTOM_STAGES],
         "immune_after_recovery":    True if immune is None else immune,
+        "model_type":               (src.get("model_type") if src and src.get("model_type") in MODEL_TYPES
+                                     else "sepir"),
+        "exposed_duration":         normalize_duration_spec(
+            src.get("exposed_duration") if src else None, DEFAULT_EXPOSED_DURATION),
+        "presymptomatic_duration":  normalize_duration_spec(
+            src.get("presymptomatic_duration") if src else None, DEFAULT_PRESYMPTOMATIC_DURATION),
+        "infectious_duration":      normalize_duration_spec(
+            src.get("infectious_duration") if src else None, DEFAULT_INFECTIOUS_DURATION),
     }
 
 
@@ -213,6 +248,8 @@ def infection_badge(status, cause) -> dict | None:
     """
     if status == "E":
         return {"icon": "⏳", "label": "잠복기",   "cls": "exposed"}
+    if status == "P":
+        return {"icon": "😶", "label": "무증상 전염기", "cls": "presymptomatic"}
     if status == "I":
         return {"icon": "🦠", "label": "감염",     "cls": "infected"}
     if status == "R":

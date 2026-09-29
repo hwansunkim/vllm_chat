@@ -14,7 +14,8 @@ from ..prompt_contract import (
 )
 from .location import _LocationMixin
 from .infection import (
-    _InfectionMixin, _sample_incubation_minutes, _infectious_duration_minutes,
+    _InfectionMixin, _sample_duration_minutes,
+    DEFAULT_EXPOSED_DURATION, DEFAULT_PRESYMPTOMATIC_DURATION, DEFAULT_INFECTIOUS_DURATION,
 )
 from .meeting import _MeetingMixin
 from .journey import _JourneyMixin
@@ -332,34 +333,40 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
         # 프롬프트를 오염시키고 (2) 새 계약 블록이 생길 때마다 주입 지점이 흩어져
         # "코드엔 기능이 있는데 지시어가 없어 조용히 죽는" 버그를 만들었다.
 
-        # 감염병 모델 설정(SEIR). enabled=False(기본)면 _agent_infection은 전원 "S"로
+        # 감염병 모델 설정(SEPIR). enabled=False(기본)면 _agent_infection은 전원 "S"로
         # 초기화만 되고 상태 전이도, 프롬프트 주입도 일어나지 않는다(완전한 하위 호환).
         im = infection_model or {}
         self._infection_enabled:      bool  = bool(im.get("enabled", False))
         self._infection_disease_name: str   = im.get("disease_name", "") or ""
-        # 전염 확률(Monte Carlo λ=β×t_d, P=1-exp(-λ))의 β. 잠복기(감마분포)·감염기
-        # (8일 고정)는 연구 스펙 상수라 사용자 설정 대상이 아니다(ABM/simulation/
-        # infection.py 상단 docstring 참고). 증상 진행·회복은 시뮬레이션 내 경과
-        # 시간(분) 기준이다 — 같은 wave라도 야간 취침처럼 오래 경과한 wave와 5분짜리
-        # wave가 병의 진행에 다르게 기여해야 하기 때문.
+        # 전염 확률(Monte Carlo λ=β×t_d, P=1-exp(-λ))의 β. 증상 진행·회복은 시뮬레이션
+        # 내 경과 시간(분) 기준이다 — 같은 wave라도 야간 취침처럼 오래 경과한 wave와
+        # 5분짜리 wave가 병의 진행에 다르게 기여해야 하기 때문.
         self._infection_beta:   float = max(0.0, float(im.get("beta", 0.04) or 0.0))
         self._infection_immune: bool  = bool(im.get("immune_after_recovery", True))
+        # E/P/I 지속 시간 분포(DurationSpec dict). infection_model 안에 중첩돼 오므로
+        # (`cfg.infection_model.model_dump()`) 호출부 배선은 따로 필요 없다. 없으면
+        # 스키마 기본값 = SEPIR 도입 전 동작(E 절단 감마, P 0일, I 8일 고정).
+        def _dur(key: str, default: dict) -> dict:
+            v = im.get(key)
+            return dict(v) if isinstance(v, dict) else dict(default)
+        self._exposed_duration_spec:        dict = _dur("exposed_duration",        DEFAULT_EXPOSED_DURATION)
+        self._presymptomatic_duration_spec: dict = _dur("presymptomatic_duration", DEFAULT_PRESYMPTOMATIC_DURATION)
+        self._infectious_duration_spec:     dict = _dur("infectious_duration",     DEFAULT_INFECTIOUS_DURATION)
         # 전염 판정용 접촉 시간(t_d) 기준 시각 — "지난 판정 이후 실제로 경과한 시간"을
         # 매 wave 갱신한다(infection.py::_apply_infection_wave). None이면 "아직 한
         # 번도 판정 안 함" = 이번이 첫 판정이라 t_d=0(전염 없음)으로 시작한다.
         self._infection_last_check_minutes: int | None = None
         self._infection_stages:       list[dict] = []
+        # 증상 문구: {status: "E"|"P"|"I", symptom_text}. 같은 status 항목들은 등록 순서가
+        # 곧 그 상태 안의 진행 순서다(infection.py::_find_symptom_stage). status가 없거나
+        # 잘못된 항목(구버전 min/max 형식 등)은 버린다 — 스키마 validator와 같은 규칙.
+        # `model_type`(sir/seir/sepir)은 순수 UI 상태라 엔진은 읽지 않는다.
         for s in (im.get("symptom_stages") or []):
-            lo = max(0, int(s.get("min_minutes", 0) or 0))
-            hi = max(0, int(s.get("max_minutes", 0) or 0))
-            if lo > hi:
-                lo = hi  # 스키마 validator와 같은 규칙 — min을 max로 낮춘다
+            if not isinstance(s, dict) or s.get("status") not in ("E", "P", "I"):
+                continue
             self._infection_stages.append({
-                "id":           s.get("id", ""),
-                "label":        s.get("label", ""),
-                "min_minutes":  lo,
-                "max_minutes":  hi,
-                "symptom_text": s.get("symptom_text", ""),
+                "status":       s["status"],
+                "symptom_text": s.get("symptom_text", "") or "",
             })
 
         # ── 엔진 계약 층 주입 ────────────────────────────────────────────────
@@ -388,9 +395,10 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
         # 풀린다. 상세는 journey.py. 재개 스냅샷(`journey`)에 실린다.
         self._journey: dict[str, dict] = {}
 
-        # {agent_key: {"status": "S"|"E"|"I"|"R",
+        # {agent_key: {"status": "S"|"E"|"P"|"I"|"R",
         #              "infected_at_minutes":   int|None,  # 노출(E 진입) 시점의 경과분 앵커
-        #              "infectious_at_minutes": int|None,  # 노출→감염성 획득(E→I)까지의 델타
+        #              "presymptomatic_at_minutes": int|None,  # 노출→P 진입까지의 델타(=E 지속)
+        #              "infectious_at_minutes": int|None,  # 노출→I 진입까지의 델타(=E+P 지속)
         #              "recover_at_minutes":    int|None,  # 노출→회복(E→R)까지의 총 델타
         #              "recovered_wave": int|None, "recovered_at_minutes": int|None,
         #              "notify_recovery": bool}}
@@ -427,9 +435,10 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
             self._agent_visual[key] = (agent_visuals or {}).get(key, "")
             self._agent_infection[key] = {
                 "status":                "S",
-                "infected_at_minutes":   None,
-                "infectious_at_minutes": None,
-                "recover_at_minutes":    None,
+                "infected_at_minutes":        None,
+                "presymptomatic_at_minutes":  None,
+                "infectious_at_minutes":      None,
+                "recover_at_minutes":         None,
                 "recovered_wave":        None,
                 "recovered_at_minutes":  None,
                 "notify_recovery":       False,
@@ -690,14 +699,14 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
         elapsed_minutes와 다른 `elapsed_minutes_init`으로 되살아나는 경우).
         그래서 앵커를 그대로 믿지 않고 저장 시점의 **노출 후 경과 분**을
         `elapsed_minutes_since_infection`으로 함께 남겨, 복원 쪽에서 새 run의
-        원점 기준으로 다시 계산한다. E(잠복기)도 I(감염기)와 같은 이유로 이
-        재기준화가 필요하다 — 둘 다 `infected_at_minutes` 앵커를 쓰기 때문.
-        `infectious_at_minutes`/`recover_at_minutes`는 절대값이 아니라 노출
-        시점부터의 델타라 앵커와 무관하게 그대로 저장하면 된다.
+        원점 기준으로 다시 계산한다. E(잠복기)·P(무증상 전염기)도 I(감염기)와 같은
+        이유로 이 재기준화가 필요하다 — 모두 `infected_at_minutes` 앵커를 쓰기 때문.
+        `presymptomatic_at_minutes`/`infectious_at_minutes`/`recover_at_minutes`는
+        절대값이 아니라 노출 시점부터의 델타라 앵커와 무관하게 그대로 저장하면 된다.
         """
         entry = dict(self._agent_infection.get(key, {}))
         since = entry.get("infected_at_minutes")
-        if entry.get("status") in ("E", "I") and isinstance(since, int):
+        if entry.get("status") in ("E", "P", "I") and isinstance(since, int):
             now = self._current_elapsed_minutes(self.completed_waves)
             entry["elapsed_minutes_since_infection"] = max(0, now - since)
         return entry
@@ -778,33 +787,48 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
                     "paused_at":   journey.get("paused_at"),
                 }
             infection = st.get("infection")
-            if isinstance(infection, dict) and infection.get("status") in ("S", "E", "I", "R"):
-                status       = infection["status"]
-                rec          = infection.get("recovered_wave")
-                rec_min      = infection.get("recovered_at_minutes")
-                since        = None
+            if isinstance(infection, dict) and infection.get("status") in ("S", "E", "P", "I", "R"):
+                status        = infection["status"]
+                rec           = infection.get("recovered_wave")
+                rec_min       = infection.get("recovered_at_minutes")
+                since         = None
+                presymp_at    = None
                 infectious_at = None
-                recover_at   = None
-                if status in ("E", "I"):
+                recover_at    = None
+                if status in ("E", "P", "I"):
                     # base = 재개 첫 wave의 '지금'. 두 모드 모두 elapsed_minutes_init
                     # (finalize_run이 저장한 총 경과)이 반영되므로, 저장된 노출 후
-                    # 경과분만큼 과거로 앵커를 옮기면 잠복기/감염기 진행이 정확히
+                    # 경과분만큼 과거로 앵커를 옮기면 E/P/I 진행이 정확히
                     # 이어진다. fixed 모드도 이제 `_elapsed_minutes + wave*tpw`라
                     # base가 올바른 원점이 된다 — 별도 보정 불필요.
                     base    = self._current_elapsed_minutes(0)
                     elapsed = infection.get("elapsed_minutes_since_infection")
                     since   = base - max(0, elapsed) if isinstance(elapsed, int) else base
+                    presymp_at    = infection.get("presymptomatic_at_minutes")
                     infectious_at = infection.get("infectious_at_minutes")
                     recover_at    = infection.get("recover_at_minutes")
                     if not isinstance(infectious_at, int) or not isinstance(recover_at, int):
-                        # 구버전 스냅샷(잠복기/회복 목표 없음) — 지금 규칙으로 새로 뽑는다.
-                        infectious_at = _sample_incubation_minutes()
-                        recover_at    = infectious_at + _infectious_duration_minutes()
+                        # 구버전 스냅샷(잠복기/회복 목표 없음) — 지금 설정으로 새로 뽑는다.
+                        e_dur = _sample_duration_minutes(self._exposed_duration_spec)
+                        p_dur = _sample_duration_minutes(self._presymptomatic_duration_spec)
+                        i_dur = _sample_duration_minutes(self._infectious_duration_spec)
+                        presymp_at    = e_dur
+                        infectious_at = e_dur + p_dur
+                        recover_at    = e_dur + p_dur + i_dur
+                    elif not isinstance(presymp_at, int):
+                        # ⚠ SEPIR 이전 스냅샷 마이그레이션: 그때의 `infectious_at_minutes`는
+                        # "E→I 직행 델타"였다(P가 없었음). P 지속 0과 정확히 동치이므로
+                        # E→P 델타를 같은 값으로 채운다 — 그러면 진행 판정이 P를 건너뛰고
+                        # 예전과 같은 시점에 E→I, 같은 시점에 I→R로 흐른다.
+                        presymp_at = infectious_at
+                    elif presymp_at > infectious_at:
+                        presymp_at = infectious_at   # 순서 뒤집힘 방어
                 self._agent_infection[key] = {
-                    "status":                status,
-                    "infected_at_minutes":   since,
-                    "infectious_at_minutes": infectious_at,
-                    "recover_at_minutes":    recover_at,
+                    "status":                    status,
+                    "infected_at_minutes":       since,
+                    "presymptomatic_at_minutes": presymp_at,
+                    "infectious_at_minutes":     infectious_at,
+                    "recover_at_minutes":        recover_at,
                     "recovered_wave":        rec     if isinstance(rec, int)     else None,
                     "recovered_at_minutes":  rec_min if isinstance(rec_min, int) else None,
                     "notify_recovery":       bool(infection.get("notify_recovery", False)),

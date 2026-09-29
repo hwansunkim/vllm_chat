@@ -3,8 +3,8 @@
 //
 // 이 파일의 **순수 헬퍼 일부**는 ABM/export/labels.py 에 파이썬으로도 구현돼 있다
 // (마크다운 내보내기가 브라우저와 CLI 양쪽에서 돌기 때문). 포팅된 것:
-//   normalizeWeekday · normalizeDurationMinutes · normalizeProbability ·
-//   normalizeSymptomStages · buildInfectionModel · formatDayHour ·
+//   normalizeWeekday · normalizeProbability · normalizeBeta ·
+//   normalizeSymptomStages · normalizeDurationSpec · buildInfectionModel ·
 //   infectionBadge · meetingNarration · detectGender · getAgentIcon ·
 //   agentLabel · simTimeLabel
 // 이 중 하나라도 문구/규칙을 바꾸면 파이썬 쪽도 같이 고칠 것 —
@@ -135,48 +135,6 @@ export function durationPartsToMinutes(value, unitId) {
   return normalizeTargetDuration(n * durationUnitMinutes(unitId));
 }
 
-// ── 일 + 시간 복합 입력 (감염병 모델의 증상 단계 경과 시간 필드 전용) ───────────
-// target_duration_minutes가 (숫자 + 단위 셀렉트)인 것과 달리, 증상 단계는
-// "2일 12시간"처럼 두 칸을 동시에 채우는 편이 자연스럽다. 저장은 언제나 분(int).
-// durationPartsToMinutes()와 달리 0을 null로 바꾸지 않는다 — 여기서는 0이 유효한
-// 값이다(min_minutes=0 = 노출 즉시부터 이 단계 적용).
-const MINUTES_PER_DAY  = 1440;
-const MINUTES_PER_HOUR = 60;
-
-/** 임의의 입력을 [0, MAX_TARGET_DURATION_MINUTES] 범위의 정수 분으로. 비숫자는 fallback. */
-export function normalizeDurationMinutes(v, fallback = 0) {
-  const n = typeof v === 'number' ? v : parseFloat(v);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.min(MAX_TARGET_DURATION_MINUTES, Math.max(0, Math.round(n)));
-}
-
-/** (일, 시간) → 분. 빈 칸/비숫자는 0으로 본다(둘 다 비면 0분). */
-export function dayHourToMinutes(days, hours) {
-  const d = normalizeDurationMinutes(String(days ?? '').trim() === '' ? 0 : days);
-  const h = normalizeDurationMinutes(String(hours ?? '').trim() === '' ? 0 : hours);
-  return normalizeDurationMinutes(d * MINUTES_PER_DAY + h * MINUTES_PER_HOUR);
-}
-
-/**
- * 분 → { days, hours } 역산 (입력 폼 복원용).
- * 시간 미만(분 단위 나머지)은 두 칸으로 표현할 수 없어 버려진다 — 화면에 보이는 값과
- * 저장값이 어긋나지 않도록, 호출부는 사용자가 그 칸을 건드릴 때만 다시 분으로 환산한다.
- */
-export function minutesToDayHour(minutes) {
-  const m = normalizeDurationMinutes(minutes);
-  return {
-    days:  Math.floor(m / MINUTES_PER_DAY),
-    hours: Math.floor((m % MINUTES_PER_DAY) / MINUTES_PER_HOUR),
-  };
-}
-
-/** 분 → "2일 12시간" 사람이 읽는 문자열 (0분은 "0시간"). */
-export function formatDayHour(minutes) {
-  const { days, hours } = minutesToDayHour(minutes);
-  if (!days && !hours) return '0시간';
-  return [days ? `${days}일` : '', hours ? `${hours}시간` : ''].filter(Boolean).join(' ');
-}
-
 /**
  * 시간 개념 자체가 꺼져 있는지 판정 — 이때만 백엔드가 목표 기간을 무시한다.
  * 주의: time_mode='variable'이면 wave당 시간이 0이어도 LLM 분류로 시간이 흐르므로 활성이다.
@@ -191,28 +149,102 @@ export function isTimeConceptDisabled(timeMode, timePerWave) {
   return timeMode !== 'variable' && !tpw;
 }
 
-// ── 감염병 모델 SEIR (백엔드 InfectionModelConfig / SymptomStage와 1:1 대응) ────
-// 상태는 S(감염 가능)→E(잠복기, 비전염)→I(감염기, 전염 가능)→R(회복) 순으로
-// 전이한다. E 지속 시간(절단 감마분포)·I 지속 시간(8일 고정)은 연구 스펙 상수라
-// 사용자가 못 바꾼다 — beta만 옵션이다(ABM/simulation/infection.py 참고).
-// 전염 확률은 λ=beta×t_d, P=1-exp(-λ) (Monte Carlo). 증상 진행은 "노출 후 경과 분"
-// 기준이다.
+// ── 감염병 모델 SEPIR (백엔드 InfectionModelConfig / SymptomStage와 1:1 대응) ───
+// 상태는 S(감염 가능)→E(잠복기, 비전염)→P(무증상 전염기, 전염 가능)→I(감염기,
+// 전염 가능)→R(회복) 순으로 전이한다. E/P/I 지속 시간은 DurationSpec(분포 종류 +
+// 파라미터 + min~max 절단 범위, 일 단위)으로 설정한다 — 기본값은 SEPIR 도입 전의
+// 연구 스펙 상수(E 절단 감마, P 0일 = 건너뜀, I 8일 고정)와 동일하다
+// (ABM/simulation/infection.py 참고). 전염 확률은 λ=beta×t_d, P=1-exp(-λ)
+// (Monte Carlo). 증상 진행은 "노출 후 경과 분" 기준이다.
 export const DEFAULT_BETA = 0.04;
 
-// 백엔드 기본값은 빈 배열이지만, 단계가 하나도 없는 채로 감염 모델을 켜면 주입할 서사가
-// 없어 에이전트가 자기 몸 상태를 영영 인지하지 못한다. 그래서 "감염 설정을 만든 적이 없는"
-// 시나리오에는 바로 쓸 수 있는 3단계를 채워준다(time_categories가 항상 4슬롯을 채워
-// 보내는 것과 같은 규칙). 사용자가 명시적으로 전부 지운 경우(빈 배열)는 그대로 존중한다.
-// 구간은 "감염 후 경과 분"이고 양끝을 포함한다. 첫 단계는 반드시 0분에서 시작해야
-// 감염 직후에도 증상이 주입된다(min_minutes > 0이면 그 전까지는 증상 없음).
+// DurationSpec 기본값 — ABM/export/labels.py 의 DEFAULT_*_DURATION 과 같은 값이어야 한다.
+export const MAX_DURATION_DAYS = 36500;
+export const DURATION_KINDS = ['uniform', 'gamma', 'gaussian'];
+const _DURATION_BASE = { kind: 'uniform', shape: 2, scale: 1, mean: 5, stddev: 2, min_days: 1, max_days: 10 };
+export const DEFAULT_EXPOSED_DURATION        = { ..._DURATION_BASE, kind: 'gamma', shape: 1.926, scale: 1.775, min_days: 1, max_days: 10 };
+export const DEFAULT_PRESYMPTOMATIC_DURATION = { ..._DURATION_BASE, min_days: 0, max_days: 0 };
+export const DEFAULT_INFECTIOUS_DURATION     = { ..._DURATION_BASE, min_days: 8, max_days: 8 };
+
+const _round4 = n => Math.round(n * 10000) / 10000;
+
+/**
+ * DurationSpec 정규화 — labels.py normalize_duration_spec 과 동일 규칙.
+ * kind 가 알 수 없으면 기본 kind, 양수 파라미터(shape/scale/stddev)가 0 이하·비숫자면
+ * 기본값, min 은 0~36500, max < min 이면 min 을 max 로 낮춘다(증상 단계와 같은 규칙 —
+ * 백엔드는 max < min 을 422 로 거부한다).
+ */
+export function normalizeDurationSpec(raw, def) {
+  const src  = (raw && typeof raw === 'object') ? raw : {};
+  const num  = v => { const n = typeof v === 'number' ? v : parseFloat(v); return Number.isFinite(n) ? n : null; };
+  const pos  = k => { const n = num(src[k]); return n !== null && n > 0 ? _round4(n) : def[k]; };
+  const any  = k => { const n = num(src[k]); return n !== null ? _round4(n) : def[k]; };
+  const days = (k, fb) => { const n = num(src[k]); return n === null ? fb : Math.min(MAX_DURATION_DAYS, Math.max(0, _round4(n))); };
+  let lo = days('min_days', def.min_days);
+  const hi = days('max_days', def.max_days);
+  if (hi < lo) lo = hi;
+  return {
+    kind:     DURATION_KINDS.includes(src.kind) ? src.kind : def.kind,
+    shape:    pos('shape'),
+    scale:    pos('scale'),
+    mean:     any('mean'),
+    stddev:   pos('stddev'),
+    min_days: lo,
+    max_days: hi,
+  };
+}
+
+// 증상 문구 — 상태(E/P/I)별. 같은 status 항목은 등록 순서가 곧 그 상태 안의 진행 순서다
+// (엔진이 "그 상태에 머문 비율"로 균등 분할해 고른다 — infection.py::_find_symptom_stage).
+// "노출 후 경과분" 시간창은 없다. ABM/export/labels.py 의 DEFAULT_SYMPTOM_STAGES 와 같아야 한다.
+// 백엔드 기본값은 빈 배열이지만 "감염 설정을 만든 적이 없는" 시나리오에는 바로 쓸 수 있는
+// 기본 문구를 채운다. 사용자가 명시적으로 전부 지운 경우(빈 배열)는 그대로 존중한다.
+export const SYMPTOM_STATUSES = ['E', 'P', 'I'];
+export const SYMPTOM_STATUS_LABELS = { E: '잠복기(E)', P: '무증상 전염기(P)', I: '감염기(I)' };
 export const DEFAULT_SYMPTOM_STAGES = [
-  { id: 'incubation', label: '잠복기', min_minutes: 0,    max_minutes: 2880,  // 0 ~ 2일
-    symptom_text: '목이 조금 칼칼하다. 피곤해서 그런 거겠지, 별일 아닐 것이다.' },
-  { id: 'onset',      label: '발현기', min_minutes: 2880, max_minutes: 7200,  // 2일 ~ 5일
-    symptom_text: '몸이 으슬으슬하고 기침이 멎지 않는다. 이마가 뜨겁다.' },
-  { id: 'acute',      label: '급성기', min_minutes: 7200, max_minutes: 20160, // 5일 ~ 14일
-    symptom_text: '고열로 눈앞이 흐리다. 온몸이 쑤시고 서 있기조차 버겁다.' },
+  { status: 'E', symptom_text: '목이 조금 칼칼하고 살짝 피곤하다. 별일 아니겠지 싶은 정도다.' },
+  { status: 'P', symptom_text: '특별히 아픈 데는 없지만 왠지 몸이 무겁게 느껴진다.' },
+  { status: 'I', symptom_text: '열이 나고 기침이 멎지 않는다. 코가 막히고 목이 따갑다. 냄새와 맛이 잘 안 느껴진다.' },
+  { status: 'I', symptom_text: '고열로 눈앞이 흐리다. 온몸이 쑤시고 기침이 심해 숨쉬기도 버겁다. 서 있기조차 힘들다.' },
 ];
+
+// 모델 선택(UI 전용 — 엔진은 model_type을 읽지 않는다). 숨긴 구간은 지속 0으로 강제한다.
+export const MODEL_TYPES = ['sir', 'seir', 'sepir'];
+const _ZERO_DURATION = { kind: 'uniform', min_days: 0, max_days: 0 };
+/** model_type별로 편집기를 보여줄 지속 시간 슬롯. */
+export function visibleDurationKeys(modelType) {
+  if (modelType === 'sir')  return ['infectious_duration'];
+  if (modelType === 'seir') return ['exposed_duration', 'infectious_duration'];
+  return ['exposed_duration', 'presymptomatic_duration', 'infectious_duration'];
+}
+/**
+ * 이 상태가 **항상 건너뛰어지는지** — E/P는 지속이 0일 고정(max_days<=0)이거나 model_type이
+ * 숨기는 구간이면 엔진이 그 상태를 거치지 않는다(infection.py::_set_infected 가 길이 0
+ * 구간을 건너뛰고, 진행 판정도 0일 P를 건너뜀). 그 상태의 증상 문구는 쓰이지 않는다.
+ * I는 0일이어도 한 번은 거친다(다음 판정에서 회복)라 건너뛰지 않는 것으로 본다.
+ */
+export function isStatusAlwaysSkipped(model, status) {
+  const key = { E: 'exposed_duration', P: 'presymptomatic_duration' }[status];
+  if (!key) return false;
+  if (!visibleDurationKeys(model?.model_type).includes(key)) return true;
+  return !(Number(model?.[key]?.max_days) > 0);
+}
+
+/**
+ * model_type 에서 숨겨지는 구간의 지속 시간을 0~0일로 강제한다(제자리 수정 후 반환).
+ * 예전에 SEPIR로 P>0을 설정해두고 SIR/SEIR로 바꾸면, 화면엔 안 보이는 P가 실제로는
+ * 계속 동작하는 모순을 막는다. buildInfectionModel 이 항상 거치므로 저장·전송 경로 모두 보장된다.
+ */
+export function applyModelType(model) {
+  const visible = visibleDurationKeys(model.model_type);
+  if (!visible.includes('exposed_duration')) {
+    model.exposed_duration = normalizeDurationSpec(_ZERO_DURATION, DEFAULT_EXPOSED_DURATION);
+  }
+  if (!visible.includes('presymptomatic_duration')) {
+    model.presymptomatic_duration = normalizeDurationSpec(_ZERO_DURATION, DEFAULT_PRESYMPTOMATIC_DURATION);
+  }
+  return model;
+}
 
 /** 임의의 입력을 [0,1] 확률로 정규화. 비숫자는 fallback, 범위 밖은 클램프. */
 export function normalizeProbability(v, fallback = 0) {
@@ -235,34 +267,19 @@ export function normalizeBeta(v, fallback = 0) {
 }
 
 /**
- * 증상 단계 목록 정규화.
- * 백엔드는 max_minutes < min_minutes를 422로 거부하므로(TimeCategory와 같은 검증 패턴)
- * 여기서 미리 바로잡는다. id는 엔진이 쓰지 않지만 편집 UI의 키라 비지 않고 유일해야 한다.
+ * 증상 문구 목록 정규화 — labels.py normalize_symptom_stages 와 동일 규칙.
+ * status 가 E/P/I 가 아닌 항목(구버전 min/max 형식 포함)은 버리고, E→P→I 순으로 안정
+ * 정렬한다 — 같은 status 안의 상대 순서(= 진행 순서)는 그대로라 엔진 결과는 같다.
  */
 export function normalizeSymptomStages(list) {
   if (!Array.isArray(list)) return [];
-  const seen = new Set();
-  const out  = [];
-  list.forEach((raw, i) => {
-    if (!raw || typeof raw !== 'object') return;
-    let id = String(raw.id ?? '').trim() || `stage${i + 1}`;
-    if (seen.has(id)) id = `${id}_${i + 1}`;
-    seen.add(id);
-    let min = normalizeDurationMinutes(raw.min_minutes, 0);
-    let max = normalizeDurationMinutes(raw.max_minutes, min);
-    // min을 max에 맞춰 낮춘다(그 반대가 아니라) — 사용자가 방금 고친 쪽은 보통 max이고,
-    // max를 min까지 끌어올리면 화면에 남은 값과 실제 전송값이 어긋나며, 끌어올린 값이
-    // 다른 단계 구간과 겹치거나 그 사이에 공백을 만들 수 있다.
-    if (max < min) min = max;
-    out.push({
-      id,
-      label:        String(raw.label ?? '').trim() || id,
-      min_minutes:  min,
-      max_minutes:  max,
-      symptom_text: String(raw.symptom_text ?? ''),
-    });
+  const out = [];
+  list.forEach(raw => {
+    if (!raw || typeof raw !== 'object' || !SYMPTOM_STATUSES.includes(raw.status)) return;
+    out.push({ status: raw.status, symptom_text: String(raw.symptom_text ?? '') });
   });
-  return out;
+  // Array.prototype.sort 는 안정 정렬(ES2019+).
+  return out.sort((a, b) => SYMPTOM_STATUSES.indexOf(a.status) - SYMPTOM_STATUSES.indexOf(b.status));
 }
 
 /**
@@ -272,7 +289,7 @@ export function normalizeSymptomStages(list) {
  */
 export function buildInfectionModel(raw) {
   const src = (raw && typeof raw === 'object') ? raw : null;
-  return {
+  return applyModelType({
     enabled:                  !!src?.enabled,
     disease_name:             String(src?.disease_name ?? '').trim(),
     beta:                     normalizeBeta(src?.beta, DEFAULT_BETA),
@@ -281,7 +298,11 @@ export function buildInfectionModel(raw) {
                                 ? normalizeSymptomStages(src.symptom_stages)
                                 : DEFAULT_SYMPTOM_STAGES.map(s => ({ ...s })),
     immune_after_recovery:    src?.immune_after_recovery ?? true,
-  };
+    exposed_duration:         normalizeDurationSpec(src?.exposed_duration,        DEFAULT_EXPOSED_DURATION),
+    presymptomatic_duration:  normalizeDurationSpec(src?.presymptomatic_duration, DEFAULT_PRESYMPTOMATIC_DURATION),
+    infectious_duration:      normalizeDurationSpec(src?.infectious_duration,     DEFAULT_INFECTIOUS_DURATION),
+    model_type:               MODEL_TYPES.includes(src?.model_type) ? src.model_type : 'sepir',
+  });
 }
 
 /**
@@ -291,6 +312,7 @@ export function buildInfectionModel(raw) {
  */
 export function infectionBadge(status, cause) {
   if (status === 'E') return { icon: '⏳', label: '잠복기',      cls: 'exposed'   };
+  if (status === 'P') return { icon: '😶', label: '무증상 전염기', cls: 'presymptomatic' };
   if (status === 'I') return { icon: '🦠', label: '감염',        cls: 'infected'  };
   if (status === 'R') return { icon: '💚', label: '회복·면역',    cls: 'recovered' };
   if (status === 'S' && cause === 'recovery') return { icon: '💚', label: '회복', cls: 'recovered' };

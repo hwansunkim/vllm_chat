@@ -16,9 +16,9 @@ import time
 from datetime import datetime
 
 from .labels import (
+    SYMPTOM_STATUS_LABELS,
     AgentIndex,
     build_infection_model,
-    format_day_hour,
     infection_badge,
     js_str,
     js_truthy,
@@ -320,7 +320,16 @@ def _fmt_infection(data: dict, index: AgentIndex, disease_fallback: str) -> str:
         tail = " (면역)" if data.get("status") == "R" else " (재감염 가능)"
         text = f"{name}이(가) {frm}회복했다.{tail}"
     elif cause == "progression":
-        text = f"{name}이(가) 잠복기를 지나 전염성을 갖게 됐다."   # E → I
+        if data.get("status") == "P":
+            text = f"{name}이(가) 잠복기를 지나 증상 없이 전염성을 갖게 됐다."   # E → P
+        elif data.get("from_status") == "P":
+            text = f"{name}에게 증상이 나타나기 시작했다."                        # P → I
+        else:
+            text = f"{name}이(가) 잠복기를 지나 전염성을 갖게 됐다."   # E → I (P 지속 0)
+    elif cause == "event" and data.get("status") == "P":
+        text = f"{name}이(가) {what} 감염돼 이미 무증상 전염기에 있다. (최초 감염자)"  # 시드 → P
+    elif cause == "event" and data.get("status") == "I":
+        text = f"{name}이(가) {what} 감염돼 이미 감염기에 있다. (최초 감염자)"        # 시드 → I
     elif cause == "event":
         text = f"{name}이(가) {what} 노출됐다. (최초 감염자)"        # S → E, 시드
     else:
@@ -445,17 +454,24 @@ def render_markdown(
 
     # 감염병 모델이 켜져 있을 때만 — 꺼진 실행에는 아무 영향이 없는 설정이라 노이즈다.
     if infection["enabled"]:
-        md += "## 🦠 감염병 모델 (SEIR)\n\n"
+        md += f"## 🦠 감염병 모델 ({infection['model_type'].upper()})\n\n"
         md += f"> **질병** {infection['disease_name'] or '(이름 없음)'}\n"
         md += f"> **전염 계수(β)** {_js_num(infection['beta'])} — 접촉 확률 λ=β×t_d, P=1-exp(-λ)\n"
-        md += "> **잠복기(E)** 절단 감마분포(k=1.926, θ=1.775, 1~10일, 평균 약 3.4일) · **감염기(I)** 8일 고정\n"
-        md += f"> **회복 후** {'면역 획득 (SIR)' if infection['immune_after_recovery'] else '재감염 가능 (SEIRS)'}\n\n"
+        md += (f"> **잠복기(E)** {_describe_duration(infection['exposed_duration'])}"
+               f" · **무증상 전염기(P)** {_describe_duration(infection['presymptomatic_duration'])}"
+               f" · **감염기(I)** {_describe_duration(infection['infectious_duration'])}\n")
+        md += f"> **회복 후** {'영구 면역' if infection['immune_after_recovery'] else '재감염 가능'}\n\n"
         if infection["symptom_stages"]:
-            md += "| 단계 | 감염 후 경과 시간 | 증상 서사 |\n|------|------------------|-----------|\n"
-            for s in infection["symptom_stages"]:
+            # 순서 k/n = 그 상태 안에서 n등분한 진행 구간 중 k번째(엔진 _find_symptom_stage).
+            md += "| 상태 | 순서 | 증상 서사 |\n|------|------|-----------|\n"
+            stages = infection["symptom_stages"]
+            totals = {st: sum(1 for x in stages if x["status"] == st) for st in SYMPTOM_STATUS_LABELS}
+            seen: dict[str, int] = {}
+            for s in stages:
+                seen[s["status"]] = seen.get(s["status"], 0) + 1
                 text = (s.get("symptom_text") or "").replace("|", "\\|").replace("\n", " ")
-                md += (f"| {s['label']} | {format_day_hour(s['min_minutes'])} ~ "
-                       f"{format_day_hour(s['max_minutes'])} | {text} |\n")
+                md += (f"| {SYMPTOM_STATUS_LABELS[s['status']]} | "
+                       f"{seen[s['status']]}/{totals[s['status']]} | {text} |\n")
             md += "\n"
         md += "---\n\n"
 
@@ -517,6 +533,19 @@ def render_markdown(
             md += _fmt_status(payload, index)
     md += "\n"
     return md
+
+
+def _describe_duration(spec: dict) -> str:
+    """DurationSpec → 한 줄 설명. markdown.js ``describeDuration`` 과 글자 단위로 같아야 한다."""
+    lo, hi = spec["min_days"], spec["max_days"]
+    rng = f"{_js_num(lo)}~{_js_num(hi)}일"
+    if lo == hi:
+        return "없음(0일)" if lo == 0 else f"{_js_num(lo)}일 고정"
+    if spec["kind"] == "gamma":
+        return f"절단 감마분포(k={_js_num(spec['shape'])}, θ={_js_num(spec['scale'])}, {rng})"
+    if spec["kind"] == "gaussian":
+        return f"절단 정규분포(μ={_js_num(spec['mean'])}, σ={_js_num(spec['stddev'])}, {rng})"
+    return f"균등분포({rng})"
 
 
 def _js_num(v) -> str:

@@ -851,20 +851,41 @@ until_time_str}`, label/minutes/until_time_str는 enter에만)를 emit하고, �
 
 ---
 
-## 9. 감염병 모델 (`infection_model`) — SEIR (2026-09 리서치 스펙 반영)
+## 9. 감염병 모델 (`infection_model`) — SEPIR (2026-09, SEIR에서 확장)
 
-**목적** — 결정론적 SEIR/SEIRS 확산. **LLM은 감염 여부를 절대 판단하지 않는다** — 엔진이
+**목적** — 결정론적 SEPIR/SEPIRS 확산. **LLM은 감염 여부를 절대 판단하지 않는다** — 엔진이
 접촉만 보고 상태를 계산하고, 결과를 오직 "증상 서사 텍스트"로만 알린다.
 
-**상태** — S(감염 가능) → E(잠복기, 비전염) → I(감염기, 전염 가능) → R(회복). E·I의
-지속 시간은 **연구 스펙 상수**라 사용자가 못 바꾼다(`ABM/simulation/infection.py`
-상단 참고):
-- **E(잠복기)**: 절단 감마분포 `Gamma(k=1.926, θ=1.775)`를 `[1,10]`일로 절단 후
-  반올림(Julia `Print_Duration_E`와 동일 파라미터). 평균 약 3.4일.
-- **I(감염기)**: 8일 고정(Julia `Print_Duration_I`와 동일).
+**상태** — S → E → P → I → R.
 
-두 지속 시간 모두 **노출 시점에 한 번만** 뽑혀 그 뒤로는 결정론적으로 흐른다(감염
-시점 이후 재추첨 없음).
+| 상태 | 의미 | 전파원? |
+|---|---|---|
+| S | 감염 가능(한 번도 안 걸림, 또는 SEPIRS에서 회복 후 복귀) | — |
+| E | 잠복기 — 노출됐지만 아직 전염력 없음 | ✗ |
+| P | 무증상 전염기 — 이미 전염력은 있지만 아직 증상 없음 | ✓ |
+| I | 감염기 — 전염력 있음(증상 있음) | ✓ |
+| R | 회복 — `immune_after_recovery=true`면 면역(종결), `false`면 S로 복귀 | — |
+
+**지속 시간 분포** — E/P/I 각 구간 길이는 `DurationSpec`(스키마 `backend/api/simulation/
+schemas.py`, 샘플러 `infection.py::_sample_duration_minutes`)으로 사용자가 설정한다.
+단위는 **일**이고 결과는 일 단위로 반올림된 뒤 분으로 환산된다.
+
+| 필드 | 의미 |
+|---|---|
+| `kind` | `uniform` / `gamma` / `gaussian` |
+| `shape`, `scale` | gamma 전용 (k, θ) |
+| `mean`, `stddev` | gaussian 전용 (μ, σ) |
+| `min_days`, `max_days` | **어느 kind든 항상 적용되는 절단 범위**. uniform은 이 범위가 곧 지지집합. gamma/gaussian은 범위 밖 표본을 재추첨(거부 표집). `min == max`면 kind와 무관하게 그 값으로 고정 |
+
+- 거부 표집은 최대 `_MAX_REJECTION_ATTEMPTS`(10,000)회 — 범위와 안 맞는 파라미터(예: 평균이
+  범위 밖 멀리 있는 가우시안)여도 무한루프 없이 마지막 표본을 범위로 **clamp**해 경계값으로
+  폴백한다(경고 로그). 설정 화면도 "평균이 절단 범위 밖" 경고를 띄운다.
+- **기본값 = SEPIR 이전 연구 스펙과 100% 동일**: E = 절단 감마(k=1.926, θ=1.775, 1~10일,
+  Julia `Print_Duration_E`), P = 0~0일, I = 8~8일(Julia `Print_Duration_I`). 난수 소비
+  순서까지 같아(P/I가 고정값이면 난수를 쓰지 않음) 같은 시드면 같은 잠복기가 나온다.
+- 세 지속 시간은 **노출 시점에 한 번만** 모두 뽑혀 그 뒤로는 결정론적으로 흐른다.
+- 이 분포 메커니즘은 E/P/I 지속 시간 전용이다(`time_categories`·`state_categories` 같은
+  다른 min/max 설정에는 쓰지 않는다).
 
 **설정** — 설정 뷰 "감염병 모델" 섹션. `InfectionModelConfig`:
 
@@ -873,45 +894,127 @@ until_time_str}`, label/minutes/until_time_str는 enter에만)를 emit하고, �
 | `enabled` | 활성화 |
 | `disease_name` | 질병명 (안내 문구용) |
 | `beta` | 전염 확률 계수(β). 기본 0.04. Monte Carlo: λ=β×t_d, P=1-exp(-λ) |
-| `symptom_stages[]` | `{min_minutes, max_minutes, symptom_text}` — **노출 후 경과 분** 구간별 서사(E·I 공통) |
-| `immune_after_recovery` | `true` = SIR (회복 후 면역, 재감염 불가) / `false` = SEIRS (재감염 가능) |
+| `symptom_stages[]` | `{status: "E"\|"P"\|"I", symptom_text}` — **상태별** 증상 문구. 같은 status 여러 개 = 그 상태 안의 순서대로 진행(아래 "증상 문구") |
+| `immune_after_recovery` | `true` = 영구 면역(화면 라벨 "영구 면역") / `false` = 재감염 가능(SEPIRS, 라벨 "재감염 가능") |
+| `model_type` | `"sir"`\|`"seir"`\|`"sepir"`(기본) — **UI 전용**, 엔진은 읽지 않는다(아래 "모델 선택") |
+| `exposed_duration` | E 지속 `DurationSpec` (기본 gamma 1.926/1.775, 1~10일) |
+| `presymptomatic_duration` | P 지속 `DurationSpec` (기본 uniform 0~0일 = P 없음) |
+| `infectious_duration` | I 지속 `DurationSpec` (기본 uniform 8~8일) |
 
-환자 0번은 `ScenarioEvent` `infect_agent` (설정 뷰에서 "환자 0번" 체크 → 해당 wave에
-`infect_agent` 이벤트 생성) — 시드된 환자도 곧바로 I가 아니라 E로 들어간다.
+설정 UI(`settings/infection-config.js`)는 세 구간을 같은 컴포넌트로 그린다 — 분포 종류
+select, kind에 따라 k/θ 또는 μ/σ 칸, 항상 보이는 최소~최대(일) 칸, 요약/경고 힌트.
+
+**환자 0번과 시작 상태** — `ScenarioEvent` `infect_agent` (설정 뷰에서 "환자 0번" 체크 →
+해당 wave에 `infect_agent` 이벤트 생성). `start_status`(`"E"`|`"P"`|`"I"`, 기본 `"E"`)로
+시작 단계를 고른다(설정 뷰 "시작 상태" select — 모든 환자 0번에 일괄 적용, 이벤트
+편집기에서 개별 조정 가능). P/I로 시작하면 **건너뛴 앞 구간(E, 또는 E+P)을 실제로
+추첨한 뒤 그만큼 `infected_at_minutes`를 과거로 앵커링**한다 — 그러면 기존 진행 판정·
+진행 판정이 그대로 "이미 그 단계에 와 있는 환자"를 표현한다(시작 첫 턴부터 그 상태의 증상
+문구가 나오고, 남은 구간 길이도 정확히 설정대로). 접촉 전파(`transmission`)는
+E에서 출발한다.
+
+**길이 0 구간 즉시 건너뛰기** — `_set_infected`는 시작 지점(`start_status`, 전파는 E)에서
+출발해 **이번에 뽑힌 길이가 0인 구간을 순서대로 건너뛴** 첫 구간에서 시작하고, 건너뛴 구간
+길이의 합만큼 과거로 앵커링한다(I에서 멈춤 — I가 0일이면 다음 판정에서 회복). 그래서
+SIR(E=0·P=0)은 환자 0번이든 전파든 **감염 순간 곧바로 I**다. 예전에는 무조건 E로 들어가
+진행 판정이 다음 wave에만 일어나, 최소 한 wave를 E로 살며 잠복기 문구를 받았다(QA 재현).
+E>0이면 E에서 멈추므로 SEIR/SEPIR 동작은 그대로다. E=0·P>0이면 P에서, 명시적 P 시작인데
+P=0이면 I에서 시작한다. 설정 화면의 증상 문구 묶음도 같은 규칙으로 "이 상태를 건너뜀"을
+안내한다(`state.js::isStatusAlwaysSkipped` — 모델이 숨긴 구간 또는 `max_days`가 0인 E/P).
 
 **엔진 동작** (`infection.py`) — **시간 축이 둘**:
 
 - **전염 = wave·접촉 기준 Monte Carlo** — `_apply_infection_wave`가 **이동 반영 후**
-  위치로 `_compute_contact_groups`(같은 장소 2명+, 외부 공간 제외). **I(감염기)** 상태인
-  사람만 전파원이 될 수 있다(E는 아직 비전염). 감염기 × 감염가능(S) 쌍마다
-  `λ = β × t_d`, `P = 1 - exp(-λ)`, `random.random() < P`로 독립 판정. `t_d`(접촉
-  시간, 일 단위)는 **직전 판정 이후 실제로 경과한 시간**을 일로 환산한 값이다 — 가변
-  시간 모드에서 5분짜리 식사 wave와 7시간짜리 취침 wave가 접촉 시간에 다르게
-  기여해야 하기 때문. 최초 판정(직전 기준 시각 없음)은 t_d=0으로 보아 전염을
-  걸지 않는다. **시간 개념이 꺼져 있으면(경과분이 항상 0) t_d도 항상 0이라 β가
-  아무리 커도 전염이 일어나지 않는다** — 회귀가 아니라 새 모델의 정의상 결과.
-- **잠복기·감염기 진행 = 경과 분 기준** — 노출 시점에 `infectious_at_minutes`
-  (E→I까지의 델타)와 `recover_at_minutes`(E→R까지의 총 델타)를 함께 뽑는다.
-  `now - infected_at_minutes >= infectious_at_minutes`면 E→I, `>= recover_at_minutes`면
-  I→R. 둘 다 같은 wave 시작 시점 명단(snapshot) 기준이라 갓 전이된 사람이 같은
-  wave에 곧장 다음 단계로 넘어가지 않는다. `_find_symptom_stage(elapsed)`가 경과
-  분이 속한 단계의 `symptom_text` 반환(E·I 공통, 범위 밖은 마지막 단계 유지, 첫
-  단계가 0에서 시작 안 하면 그 전엔 증상 없음).
+  위치로 `_compute_contact_groups`(같은 장소 2명+, 외부 공간 제외). **P 또는 I** 상태인
+  사람이 전파원이다(E는 아직 비전염). 전파원 × 감염가능(S) 쌍마다
+  `λ = β × t_d`, `P = 1 - exp(-λ)`, `random.random() < P`로 독립 판정(β·판정 방식은
+  SEIR 때와 동일 — 바뀐 건 전파원 집합에 P가 추가된 것뿐). `t_d`(접촉 시간, 일 단위)는
+  **직전 판정 이후 실제로 경과한 시간**을 일로 환산한 값이다 — 가변 시간 모드에서
+  5분짜리 식사 wave와 7시간짜리 취침 wave가 접촉 시간에 다르게 기여해야 하기 때문.
+  최초 판정(직전 기준 시각 없음)은 t_d=0으로 보아 전염을 걸지 않는다. **시간 개념이
+  꺼져 있으면(경과분이 항상 0) t_d도 항상 0이라 β가 아무리 커도 전염이 일어나지
+  않는다** — 회귀가 아니라 모델의 정의상 결과.
+- **E→P→I→R 진행 = 경과 분 기준** — 노출 시점에 세 델타를 저장한다(모두 노출 시점
+  기준): `presymptomatic_at_minutes`(=E), `infectious_at_minutes`(=E+P),
+  `recover_at_minutes`(=E+P+I). `now - infected_at_minutes`가 각 델타에 도달하면
+  E→P / P→I / I→R. 모두 같은 wave 시작 시점 명단(snapshot) 기준이라 **한 wave에 한
+  단계만** 넘어간다(E→P와 P→I를 같은 wave에 태우지 않음).
+  **예외: P 지속이 0이면(`presymptomatic_at == infectious_at`) P는 존재하지 않는 구간이라
+  E에서 곧바로 I로 간다**(P 이벤트 emit 없음). 이게 기본 설정·구버전 상태가 SEIR과
+  **정확히 같은 wave에** I가 되는 이유다(없으면 한 wave 늦어져 기존 회귀 테스트가 깨진다).
+  증상 문구는 이 진행과 **같은 상태값**을 그대로 쓴다(아래 "증상 문구").
 - **재개 시 앵커 복원** — `infected_at_minutes`(노출 시점)는 경과분 축의 절대 앵커.
   재개 방식에 따라 원점이 달라질 수 있어 `elapsed_minutes_since_infection`(저장
-  시점의 노출 후 경과분)을 함께 저장하고 복원 쪽에서 새 원점 기준으로 재계산.
-  `infectious_at_minutes`/`recover_at_minutes`는 노출 시점부터의 델타라 앵커와
-  무관하게 그대로 저장된다. `/continue`는 `rebase_infection_anchors(now=before)`
-  (정상 시 no-op, 접기 누락 회귀 흡수) — 이때 `t_d` 기준 시각도 함께 초기화된다.
+  시점의 노출 후 경과분, E·P·I 모두)을 함께 저장하고 복원 쪽에서 새 원점 기준으로
+  재계산. 세 델타는 노출 시점부터의 델타라 앵커와 무관하게 그대로 저장된다.
+  `/continue`는 `rebase_infection_anchors(now=before)` (정상 시 no-op, 접기 누락 회귀
+  흡수) — 이때 `t_d` 기준 시각도 함께 초기화된다.
+- **⚠ 하위호환 마이그레이션 (SEIR → SEPIR)** — P 도입 전에 저장된 `_agent_infection`
+  딕셔너리(이어하기·불러오기 스냅샷)에는 `presymptomatic_at_minutes`가 없고, 그때의
+  `infectious_at_minutes`는 **옛 의미(E→I 직행 델타)**였다. 새 코드에서 같은 필드명은
+  **노출→I 델타(E+P)**다. P가 없던 시절이므로 옛 값은 "P 지속 0"과 정확히 동치 —
+  그래서 누락된 `presymptomatic_at_minutes`를 **`infectious_at_minutes`와 같은 값으로**
+  채운다. 두 겹으로 처리한다: (1) `restore_agent_state`가 복원 시점에 누락 키를 채워
+  정규화하고, (2) 진행 판정의 `_progression_thresholds`도 키가 없으면 같은 폴백을 한다
+  (스냅샷을 거치지 않고 딕셔너리를 직접 주입하는 경로 방어). 결과적으로 구버전 상태는
+  예전과 **같은 wave에 I, 같은 wave에 R**로 전이한다(`SepirModelTests.test_legacy_*`).
+  `infectious_at`/`recover_at` 자체가 없는 더 오래된 스냅샷은 현재 설정으로 세 구간을
+  새로 뽑는다.
 - 시간 개념 비활성 → 경과분 항상 0 → 노출(E) 상태에 영구 고정, 진행·전염 전혀 없음.
 
+**모델 선택 (`model_type`, UI 전용)** — 엔진 구조는 S→E→P→I→R 하나뿐이고, E·P 지속을
+0으로 두면 SIR/SEIR이 된다. 그래서 `model_type`은 **저장만 되고 엔진(`infection.py`/
+`core.py`)은 전혀 참조하지 않는** 설정 화면 상태다. 프론트(`state.js::applyModelType`,
+`settings/infection-config.js::setModelType`)가:
+- `sir` → E·P 편집기를 숨기고 `exposed_duration`·`presymptomatic_duration`을 uniform 0~0일로 강제, I만 노출
+- `seir` → P 편집기를 숨기고 `presymptomatic_duration`을 0~0일로 강제, E·I 노출
+- `sepir` → 전부 노출, 강제 없음(SIR/SEIR에서 0으로 강제된 값은 되돌려도 복원하지 않는다)
+
+숨길 때 0으로 강제하는 이유: 예전에 SEPIR로 P>0을 설정해두고 SIR/SEIR로 바꾸면, 화면엔
+안 보이는 P가 실제로는 계속 동작하는 모순이 생긴다. `buildInfectionModel`이 항상
+`applyModelType`을 거치므로 저장·전송·불러오기 모든 경로에서 보장된다.
+
+**증상 문구 (`symptom_stages`) — 상태 + 진행률 기반** (`infection.py::_find_symptom_stage`,
+`_build_symptom_context`):
+
+- 문구는 `{status, symptom_text}`. 엔진은 **지금 실제 상태(E/P/I)**와 **그 상태에 머문
+  비율** `ratio = (지금 - 상태 진입 시각) / 그 상태의 뽑힌 길이`(0~1, 길이 0이면 0)만 본다.
+  상태 진입 시각·길이는 이미 저장된 누적 델타로 계산한다 — E: `[노출, 노출+E]`,
+  P: `[노출+E, 노출+E+P]`, I: `[노출+E+P, 노출+E+P+I]`.
+- 같은 status 항목이 n개면 등록 순서대로 그 상태의 진행 구간을 n등분한다
+  (`idx = min(n-1, int(ratio × n))`) — 예: I에 "초반"/"후반" 2개 → I 앞 절반/뒤 절반.
+  상태 길이가 사람마다 다르게 뽑혀도 비율이라 서사 흐름이 항상 맞는다.
+- 어떤 상태에 등록된 문구가 없으면(또는 빈 문자열) 그 상태 동안에는 증상 카드가 뜨지
+  않는다(None). 회복 안내(`notify_recovery`) 분기는 그대로다.
+- 기본 문구(`DEFAULT_SYMPTOM_STAGES`, `labels.py`·`state.js` 미러): E 1개, P 1개, I 2개
+  (초반/후반 악화 — 옛 "발현기"/"급성기" 문구의 진행감을 I 안으로 옮김).
+- 정규화(`normalize_symptom_stages`/`normalizeSymptomStages`)는 E→P→I 순으로 **안정
+  정렬**한다(같은 상태 안의 순서 = 진행 순서는 보존). 설정 화면은 상태별 묶음으로 보여주고
+  묶음 안에서 ↑/↓로 순서를 바꾼다.
+
+**왜 "노출 후 경과분" 시간창을 없앴나** — 예전 `{min_minutes, max_minutes, symptom_text}`는
+상태와 별개인 두 번째 시간 축이었다. E/P/I 길이가 확률분포로 뽑히고 환자 0번을 P/I에서
+시작시킬 수 있게 되면서 이 축은 실제 상태와 언제든 어긋날 수 있었다(QA 실측: I로 즉시
+시작해도 경과분이 작으면 잠복기 문구가 나옴, P인데 발현 문구가 나옴 등). 문구 선택을 상태
+자체에 묶으면 이 불일치는 **구조적으로 재발할 수 없다**.
+
+**하위 호환** — status가 없거나 E/P/I가 아닌 항목(구버전 min/max 형식)은 스키마
+(`InfectionModelConfig._drop_legacy_stages`)·엔진(`core.py`)·정규화 함수 모두 **조용히
+버린다**. 옛 문구를 새 의미로 옮길 방법이 없고, 버리지 않으면 옛 시나리오·저장된 run의
+config_json이 422/ValidationError로 아예 열리지 않기 때문이다 — 그런 시나리오는 증상 문구가
+빈 채로 열리므로(설정 화면에 "문구 없음" 안내) 다시 작성해야 한다.
+
 **이벤트** — `infection_update {wave, elapsed_minutes, agent, status, cause,
-disease_name}` — `cause` = `event`(시드, S→E) / `transmission`(접촉 전파, S→E) /
-`progression`(잠복기 종료, E→I) / `recovery`(I→R 또는 I→S).
+disease_name[, from_status]}` — `cause` = `event`(시드, S→`start_status`) /
+`transmission`(접촉 전파, S→E) / `progression`(E→P, P→I, 또는 P 지속 0일 때 E→I) /
+`recovery`(I→R 또는 I→S). `status="I"`인 `progression`에는 `from_status`(`"E"`|`"P"`)가
+실려 피드·내보내기가 "잠복기 종료"와 "증상 발현"을 구분한다. 표시 뱃지
+(`labels.py::infection_badge` / `state.js::infectionBadge`): E ⏳ 잠복기(`exposed`),
+P 😶 무증상 전염기(`presymptomatic`), I 🦠 감염(`infected`), R 💚.
 
 **계약 블록** — `build_infection_contract` → `[몸 상태 인식]`: "[몸 상태] 블록이 오면
 그게 네 몸이고, 안 오면 멀쩡하다. 수치나 상태값으로는 알 수 없다". 에이전트에겐
-노출(E) 또는 감염기(I) 중일 때만 ephemeral `[몸 상태]\n{symptom_text}`.
+E·P·I 중일 때만 ephemeral `[몸 상태]\n{symptom_text}`.
 
 ---
 

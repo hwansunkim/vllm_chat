@@ -9,7 +9,7 @@
 
 import { sim, agentLabel, getAgentIcon, simTimeLabel, normalizeWeekday,
          normalizeTargetDuration, buildInfectionModel, infectionBadge,
-         meetingNarration, formatDayHour } from '../state.js';
+         meetingNarration, SYMPTOM_STATUS_LABELS } from '../state.js';
 import { stripCodeFence } from '../utils/json.js';
 import { downloadFile, safeFilename, nowTag } from '../utils/download.js';
 import { exportLocationHistoryCsv } from './csv.js';
@@ -244,6 +244,18 @@ function fmtSceneEvent(data) {
 }
 
 /**
+ * DurationSpec → 한 줄 설명. ABM/export/markdown.py의 _describe_duration과 글자 단위로 같아야 한다.
+ */
+function describeDuration(spec) {
+  const lo = spec.min_days, hi = spec.max_days;
+  const rng = `${lo}~${hi}일`;
+  if (lo === hi) return lo === 0 ? '없음(0일)' : `${lo}일 고정`;
+  if (spec.kind === 'gamma')    return `절단 감마분포(k=${spec.shape}, θ=${spec.scale}, ${rng})`;
+  if (spec.kind === 'gaussian') return `절단 정규분포(μ=${spec.mean}, σ=${spec.stddev}, ${rng})`;
+  return `균등분포(${rng})`;
+}
+
+/**
  * 감염 상태 변화 한 줄. 엔진이 판정한 사실이지 등장인물이 아는 정보가 아니므로
  * 다른 씬 이벤트와 같은 형식으로 관전자 시점 서술처럼 적는다.
  */
@@ -254,13 +266,22 @@ function fmtInfection(data) {
   // 이벤트 페이로드가 우선. 구버전/누락 시 실행 설정의 질병명으로 폴백한다.
   const disease = data.disease_name || sim.infection_model?.disease_name || '';
   const what    = disease ? `${disease}에` : '병에';
-  const text = data.cause === 'recovery'
-    ? `${name}이(가) ${disease ? `${disease}에서 ` : ''}회복했다.${data.status === 'R' ? ' (면역)' : ' (재감염 가능)'}`
-    : data.cause === 'progression'
-      ? `${name}이(가) 잠복기를 지나 전염성을 갖게 됐다.`   // E → I
-      : data.cause === 'event'
-        ? `${name}이(가) ${what} 노출됐다. (최초 감염자)`     // S → E, 시드
-        : `${name}이(가) ${what} 노출됐다. (접촉 전파)`;      // S → E, 접촉 전파
+  let text;
+  if (data.cause === 'recovery') {
+    text = `${name}이(가) ${disease ? `${disease}에서 ` : ''}회복했다.${data.status === 'R' ? ' (면역)' : ' (재감염 가능)'}`;
+  } else if (data.cause === 'progression') {
+    if (data.status === 'P')           text = `${name}이(가) 잠복기를 지나 증상 없이 전염성을 갖게 됐다.`;  // E → P
+    else if (data.from_status === 'P') text = `${name}에게 증상이 나타나기 시작했다.`;                       // P → I
+    else                               text = `${name}이(가) 잠복기를 지나 전염성을 갖게 됐다.`;             // E → I (P 지속 0)
+  } else if (data.cause === 'event' && data.status === 'P') {
+    text = `${name}이(가) ${what} 감염돼 이미 무증상 전염기에 있다. (최초 감염자)`;  // 시드 → P
+  } else if (data.cause === 'event' && data.status === 'I') {
+    text = `${name}이(가) ${what} 감염돼 이미 감염기에 있다. (최초 감염자)`;        // 시드 → I
+  } else if (data.cause === 'event') {
+    text = `${name}이(가) ${what} 노출됐다. (최초 감염자)`;     // S → E, 시드
+  } else {
+    text = `${name}이(가) ${what} 노출됐다. (접촉 전파)`;       // S → E, 접촉 전파
+  }
   return `\n> **[${badge.icon} 감염]** *${text}*\n`;
 }
 
@@ -366,16 +387,24 @@ function _buildMarkdown(log, events, statusStr, checks) {
   // 감염병 모델이 켜져 있을 때만 — 꺼진 실행에는 아무 영향이 없는 설정이라 노이즈다.
   const infection = buildInfectionModel(sim.infection_model);
   if (infection.enabled) {
-    md += `## 🦠 감염병 모델 (SEIR)\n\n`;
+    md += `## 🦠 감염병 모델 (${infection.model_type.toUpperCase()})\n\n`;
     md += `> **질병** ${infection.disease_name || '(이름 없음)'}\n`;
     md += `> **전염 계수(β)** ${infection.beta} — 접촉 확률 λ=β×t_d, P=1-exp(-λ)\n`;
-    md += `> **잠복기(E)** 절단 감마분포(k=1.926, θ=1.775, 1~10일, 평균 약 3.4일) · **감염기(I)** 8일 고정\n`;
-    md += `> **회복 후** ${infection.immune_after_recovery ? '면역 획득 (SIR)' : '재감염 가능 (SEIRS)'}\n\n`;
+    md += `> **잠복기(E)** ${describeDuration(infection.exposed_duration)}`
+        + ` · **무증상 전염기(P)** ${describeDuration(infection.presymptomatic_duration)}`
+        + ` · **감염기(I)** ${describeDuration(infection.infectious_duration)}\n`;
+    md += `> **회복 후** ${infection.immune_after_recovery ? '영구 면역' : '재감염 가능'}\n\n`;
     if (infection.symptom_stages.length) {
-      md += `| 단계 | 감염 후 경과 시간 | 증상 서사 |\n|------|------------------|-----------|\n`;
-      for (const s of infection.symptom_stages) {
+      // 순서 k/n = 그 상태 안에서 n등분한 진행 구간 중 k번째(엔진 _find_symptom_stage).
+      md += `| 상태 | 순서 | 증상 서사 |\n|------|------|-----------|\n`;
+      const stages = infection.symptom_stages;
+      const totals = {};
+      for (const s of stages) totals[s.status] = (totals[s.status] || 0) + 1;
+      const seen = {};
+      for (const s of stages) {
+        seen[s.status] = (seen[s.status] || 0) + 1;
         const text = (s.symptom_text || '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
-        md += `| ${s.label} | ${formatDayHour(s.min_minutes)} ~ ${formatDayHour(s.max_minutes)} | ${text} |\n`;
+        md += `| ${SYMPTOM_STATUS_LABELS[s.status]} | ${seen[s.status]}/${totals[s.status]} | ${text} |\n`;
       }
       md += `\n`;
     }

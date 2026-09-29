@@ -2562,13 +2562,11 @@ class InfectionTimeModelTests(unittest.TestCase):
     시나리오가 쓴 symptom_text만 들어간다.
     """
 
+    # 상태 기반 증상 문구(시간창 없음). I에 두 개 → I 진행률 앞 절반/뒤 절반.
     STAGES = [
-        {"id": "incubation", "label": "잠복기", "min_minutes": 0,   "max_minutes": 119,
-         "symptom_text": "아직 아무렇지도 않다."},
-        {"id": "onset",      "label": "발현기", "min_minutes": 120, "max_minutes": 299,
-         "symptom_text": "목이 칼칼하다."},
-        {"id": "acute",      "label": "급성기", "min_minutes": 300, "max_minutes": 600,
-         "symptom_text": "온몸이 불덩이다."},
+        {"status": "E", "symptom_text": "아직 아무렇지도 않다."},
+        {"status": "I", "symptom_text": "목이 칼칼하다."},
+        {"status": "I", "symptom_text": "온몸이 불덩이다."},
     ]
 
     def _model(self, **over) -> dict:
@@ -2606,48 +2604,69 @@ class InfectionTimeModelTests(unittest.TestCase):
         text = sim._build_symptom_context(key, wave)
         return None if text is None else text.split("\n", 1)[1]
 
-    # ── 1. fixed 모드: 경과 분에 따라 단계가 바뀐다 ──────────────────────────────
+    @staticmethod
+    def _pin(sim, key, e=120, p=0, i=480):
+        """E/P/I 길이(분)를 결정론적으로 고정 — 노출 기준 누적 델타로 저장된다.
+        기본값이면 I 구간은 노출 후 120~600분, I 진행률 50% 지점은 360분."""
+        entry = sim._agent_infection[key]
+        entry["presymptomatic_at_minutes"] = e
+        entry["infectious_at_minutes"]     = e + p
+        entry["recover_at_minutes"]        = e + p + i
 
-    def test_fixed_mode_stage_follows_elapsed_minutes(self):
+    # ── 1. fixed 모드: 문구는 상태 + 그 상태 안의 진행률(경과 분 기준)로 고른다 ────────
+
+    def test_fixed_mode_symptom_follows_status_and_progress_in_minutes(self):
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(tmp, infection=self._model(), time_per_wave=60)
             self.assertTrue(sim._set_infected("a", 0, "event"))
-
-            # wave * 60분 = 경과분. 단계 경계는 분으로만 판정된다.
-            self.assertEqual(self._symptom(sim, "a", 0),  "아직 아무렇지도 않다.")  #    0분
-            self.assertEqual(self._symptom(sim, "a", 1),  "아직 아무렇지도 않다.")  #   60분
-            self.assertEqual(self._symptom(sim, "a", 2),  "목이 칼칼하다.")        #  120분
-            self.assertEqual(self._symptom(sim, "a", 5),  "온몸이 불덩이다.")      #  300분
-            # 정의 범위(600분)를 넘어가면 가장 늦은 단계를 계속 유지한다.
-            self.assertEqual(self._symptom(sim, "a", 40), "온몸이 불덩이다.")      # 2400분
+            self._pin(sim, "a")
+            expected = {
+                0:  "아직 아무렇지도 않다.",   #   0분 E
+                1:  "아직 아무렇지도 않다.",   #  60분 E
+                2:  "목이 칼칼하다.",          # 120분 → I 진입, 진행률 0
+                5:  "목이 칼칼하다.",          # 300분 I 37.5%
+                6:  "온몸이 불덩이다.",        # 360분 I 50% → 두 번째 문구
+                9:  "온몸이 불덩이다.",        # 540분 I 87.5%
+            }
+            for w in range(0, 10):
+                sim._apply_infection_wave(w)
+                if w in expected:
+                    self.assertEqual(self._symptom(sim, "a", w), expected[w], f"wave {w}")
+            sim._apply_infection_wave(10)   # 600분 — 회복(문구 대신 회복 안내)
+            self.assertIn("씻은 듯이", sim._build_symptom_context("a", 10))
 
     def test_same_wave_count_gives_different_stage_when_wave_is_longer(self):
-        # 같은 "2 wave 경과"라도 wave 길이가 다르면 단계가 달라야 한다 —
+        # 같은 "2 wave 경과"라도 wave 길이가 다르면 상태·진행률이 달라야 한다 —
         # 이 어서션이 실패하면 모델이 다시 wave 기준으로 되돌아간 것이다.
         with tempfile.TemporaryDirectory() as tmp:
             short = self._sim(tmp, infection=self._model(), time_per_wave=10)
-            long  = self._sim(tmp, infection=self._model(), time_per_wave=180)
-            short._set_infected("a", 0, "event")
-            long._set_infected("a", 0, "event")
+            long  = self._sim(tmp, infection=self._model(), time_per_wave=240)
+            for sim in (short, long):
+                sim._set_infected("a", 0, "event")
+                self._pin(sim, "a")
+                sim._apply_infection_wave(1)
+                sim._apply_infection_wave(2)
 
-            self.assertEqual(self._symptom(short, "a", 2), "아직 아무렇지도 않다.")  #  20분
-            self.assertEqual(self._symptom(long,  "a", 2), "온몸이 불덩이다.")       # 360분
+            self.assertEqual(self._symptom(short, "a", 2), "아직 아무렇지도 않다.")  #  20분 E
+            self.assertEqual(self._symptom(long,  "a", 2), "온몸이 불덩이다.")       # 480분 I 75%
 
-    # ── 2. variable 모드: 누적 _elapsed_minutes로 단계 전이 ──────────────────────
+    # ── 2. variable 모드: 누적 _elapsed_minutes로 진행 ─────────────────────────────
 
     def test_variable_mode_stage_follows_accumulated_minutes(self):
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(tmp, infection=self._model(), time_mode="variable",
                             time_per_wave=0)
             self.assertTrue(sim._set_infected("a", 0, "event"))
+            self._pin(sim, "a")
             self.assertEqual(sim._agent_infection["a"]["infected_at_minutes"], 0)
 
             # variable 모드에서는 wave 번호가 아니라 누적 경과분만이 기준이다.
             self.assertEqual(self._symptom(sim, "a", 99), "아직 아무렇지도 않다.")
             sim._elapsed_minutes = 150
-            self.assertEqual(self._symptom(sim, "a", 0),  "목이 칼칼하다.")
+            sim._apply_infection_wave(0)                                     # E→I
+            self.assertEqual(self._symptom(sim, "a", 0),  "목이 칼칼하다.")    # I 6%
             sim._elapsed_minutes = 400
-            self.assertEqual(self._symptom(sim, "a", 0),  "온몸이 불덩이다.")
+            self.assertEqual(self._symptom(sim, "a", 0),  "온몸이 불덩이다.")  # I 58%
 
     def test_variable_mode_anchors_infection_at_current_elapsed(self):
         # 유행 도중(경과 500분)에 감염된 사람은 500분을 0으로 삼아 다시 잠복기부터.
@@ -2655,10 +2674,13 @@ class InfectionTimeModelTests(unittest.TestCase):
             sim = self._sim(tmp, infection=self._model(), time_mode="variable",
                             time_per_wave=0, elapsed_init=500)
             sim._set_infected("a", 3, "transmission")
+            self._pin(sim, "a")
 
             self.assertEqual(sim._agent_infection["a"]["infected_at_minutes"], 500)
             self.assertEqual(self._symptom(sim, "a", 3), "아직 아무렇지도 않다.")
-            sim._elapsed_minutes = 500 + 320
+            sim._elapsed_minutes = 500 + 130
+            sim._apply_infection_wave(9)
+            sim._elapsed_minutes = 500 + 400
             self.assertEqual(self._symptom(sim, "a", 9), "온몸이 불덩이다.")
 
     # ── 3. 회복: recover_at_minutes 도달 시 회복 / max<=0이면 영구 감염 ──────────
@@ -2742,13 +2764,17 @@ class InfectionTimeModelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(tmp, infection=self._model(), time_per_wave=60)
             sim._set_infected("a", 0, "event")
-            sim.completed_waves = 5                       # 경과 300분 = 급성기
-            self.assertEqual(self._symptom(sim, "a", 5), "온몸이 불덩이다.")
+            self._pin(sim, "a")
+            for w in range(1, 7):
+                sim._apply_infection_wave(w)
+            sim.completed_waves = 6                       # 경과 360분 = I 진행률 50%
+            self.assertEqual(self._symptom(sim, "a", 6), "온몸이 불덩이다.")
 
             sim.rebase_infection_anchors()
             sim.completed_waves = 0
+            # rebase 없이 되감기면 I 진입 시각보다 '지금'이 앞서 진행률 0 → 첫 문구로 퇴행.
             self.assertEqual(self._symptom(sim, "a", 0), "온몸이 불덩이다.")
-            self.assertEqual(sim._agent_infection["a"]["infected_at_minutes"], -300)
+            self.assertEqual(sim._agent_infection["a"]["infected_at_minutes"], -360)
 
     def test_continue_rebase_is_noop_in_variable_mode(self):
         # variable 모드는 _elapsed_minutes가 그대로 누적된 채 이어지므로 '지금'이
@@ -2757,7 +2783,9 @@ class InfectionTimeModelTests(unittest.TestCase):
             sim = self._sim(tmp, infection=self._model(), time_mode="variable",
                             time_per_wave=0)
             sim._set_infected("a", 0, "event")
+            self._pin(sim, "a")
             sim._elapsed_minutes  = 400
+            sim._apply_infection_wave(0)                  # E→I
             sim.completed_waves   = 5
 
             sim.rebase_infection_anchors()
@@ -2769,12 +2797,10 @@ class InfectionTimeModelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(tmp, time_per_wave=60, infection=self._model())
             sim._set_infected("a", 0, "event")
-            # 결정론적 진행을 위해 잠복기/회복 델타를 직접 고정한다(잠복기는
-            # 감마분포 난수라 테스트에서 직접 제어) — 100분에 감염성 획득,
-            # 노출로부터 총 900분 뒤 회복.
-            sim._agent_infection["a"]["infectious_at_minutes"] = 100
-            sim._agent_infection["a"]["recover_at_minutes"] = 900
-            sim._apply_infection_wave(5)   # 300분 경과 → E→I 전이 적용
+            # 결정론적 진행을 위해 델타를 직접 고정한다(잠복기는 감마분포 난수라
+            # 테스트에서 직접 제어) — 100분에 I 진입, 노출로부터 총 500분 뒤 회복.
+            self._pin(sim, "a", e=100, i=400)
+            sim._apply_infection_wave(5)   # 300분 경과 → E→I 전이 적용(I 진행률 50%)
             sim.completed_waves = 5        # export가 읽는 '지금' 기준
             self.assertEqual(sim._agent_infection["a"]["status"], "I")
 
@@ -2782,19 +2808,19 @@ class InfectionTimeModelTests(unittest.TestCase):
             saved = state["a"]["infection"]
             self.assertEqual(saved["elapsed_minutes_since_infection"], 300)
             self.assertEqual(saved["infectious_at_minutes"], 100)  # 델타라 그대로 저장
-            self.assertEqual(saved["recover_at_minutes"], 900)     # 델타라 그대로 저장
+            self.assertEqual(saved["recover_at_minutes"], 500)     # 델타라 그대로 저장
 
             fresh = self._sim(tmp, time_per_wave=60, infection=self._model())
             fresh.restore_agent_state(state)
 
             self.assertEqual(fresh._agent_infection["a"]["status"], "I")
             self.assertEqual(fresh._agent_infection["a"]["infected_at_minutes"], -300)
-            self.assertEqual(fresh._agent_infection["a"]["recover_at_minutes"], 900)
+            self.assertEqual(fresh._agent_infection["a"]["recover_at_minutes"], 500)
             self.assertEqual(self._symptom(fresh, "a", 0), "온몸이 불덩이다.")
-            # 남은 600분(=10 wave)이 지나야 회복한다 — 복원으로 시계가 리셋되지 않는다.
-            fresh._apply_infection_wave(9)
+            # 남은 200분이 지나야 회복한다(wave 4 = 540분) — 복원으로 시계가 리셋되지 않는다.
+            fresh._apply_infection_wave(3)
             self.assertEqual(fresh._agent_infection["a"]["status"], "I")
-            fresh._apply_infection_wave(10)
+            fresh._apply_infection_wave(4)
             self.assertEqual(fresh._agent_infection["a"]["status"], "R")
 
     def test_restore_preserves_elapsed_minutes_in_variable_mode(self):
@@ -2802,13 +2828,15 @@ class InfectionTimeModelTests(unittest.TestCase):
             sim = self._sim(tmp, infection=self._model(), time_mode="variable",
                             time_per_wave=0)
             sim._set_infected("a", 0, "event")
-            sim._elapsed_minutes = 350
+            self._pin(sim, "a")
+            sim._elapsed_minutes = 400
+            sim._apply_infection_wave(0)                  # E→I
             state = sim.export_agent_state()
-            self.assertEqual(state["a"]["infection"]["elapsed_minutes_since_infection"], 350)
+            self.assertEqual(state["a"]["infection"]["elapsed_minutes_since_infection"], 400)
 
             # /resume은 누적 경과를 elapsed_minutes_init으로 되살린 새 Simulation을 만든다.
             fresh = self._sim(tmp, infection=self._model(), time_mode="variable",
-                              time_per_wave=0, elapsed_init=350)
+                              time_per_wave=0, elapsed_init=400)
             fresh.restore_agent_state(state)
             self.assertEqual(fresh._agent_infection["a"]["infected_at_minutes"], 0)
             self.assertEqual(self._symptom(fresh, "a", 0), "온몸이 불덩이다.")
@@ -2868,14 +2896,16 @@ class InfectionTimeModelTests(unittest.TestCase):
     def test_prompt_never_leaks_raw_infection_values(self):
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(tmp, time_per_wave=60, infection=self._model())
-            sim._set_infected("a", 0, "event")
+            sim._set_infected("a", 0, "event", start_status="I")
+            sim.completed_waves = 5
             ctx = sim._assemble_agent_prompt("a", 5)
             blob = json.dumps(ctx, ensure_ascii=False, default=str)
 
             for leak in ("infected_at_minutes", "infectious_at_minutes",
-                         "recover_at_minutes", "beta", "elapsed_minutes"):
+                         "recover_at_minutes", "presymptomatic_at_minutes",
+                         "beta", "elapsed_minutes", "ratio"):
                 self.assertNotIn(leak, blob, f"raw 값 누출: {leak}")
-            self.assertIn("온몸이 불덩이다.", blob)
+            self.assertIn("목이 칼칼하다.", blob)
 
     # ── 스키마 계약 (backend/api/simulation/schemas.py) ──────────────────────────
 
@@ -2895,31 +2925,770 @@ class InfectionTimeModelTests(unittest.TestCase):
                 stale, InfectionModelConfig(**{stale: 0.5}).model_dump(),
             )
 
-        stage = SymptomStage(id="s", label="l", min_minutes=0, max_minutes=2880,
-                             symptom_text="t")
-        self.assertEqual(stage.max_minutes, 2880)
+        # 상태 기반 문구 — 시간창 필드는 없다.
+        stage = SymptomStage(status="I", symptom_text="t")
+        self.assertEqual(stage.model_dump(), {"status": "I", "symptom_text": "t"})
         with self.assertRaises(ValidationError):
-            SymptomStage(id="s", label="l", min_minutes=100, max_minutes=50,
-                         symptom_text="t")
+            SymptomStage(status="R", symptom_text="t")
         with self.assertRaises(ValidationError):
-            SymptomStage(id="s", label="l", min_minutes=-1, max_minutes=50,
-                         symptom_text="t")
+            SymptomStage(symptom_text="t")
+        # 구버전(min/max, status 없음) 항목은 422 대신 조용히 버려진다 — 옛 config_json 열기 보장.
+        legacy = InfectionModelConfig(symptom_stages=[
+            {"id": "s", "label": "l", "min_minutes": 0, "max_minutes": 60, "symptom_text": "옛"},
+            {"status": "P", "symptom_text": "새"},
+        ])
+        self.assertEqual([st.model_dump() for st in legacy.symptom_stages],
+                         [{"status": "P", "symptom_text": "새"}])
+        self.assertEqual(cfg.model_type, "sepir")
+        with self.assertRaises(ValidationError):
+            InfectionModelConfig(model_type="sis")
 
         with self.assertRaises(ValidationError):
             InfectionModelConfig(beta=-0.1)
 
     def test_engine_clamps_defensively(self):
         # 스키마를 거치지 않는 경로(저장된 시나리오 JSON 등)로 잘못된 값이 들어와도
-        # 엔진이 방어적으로 처리한다: beta 음수는 0으로, 증상 단계의 뒤집힌 범위는
-        # min을 max로 낮춘다.
+        # 엔진이 방어적으로 처리한다: beta 음수는 0으로, status가 없거나 잘못된 증상
+        # 항목(구버전 min/max 형식 등)은 버린다. model_type은 엔진이 읽지 않는다.
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(tmp, infection=self._model(
-                beta=-5,
+                beta=-5, model_type="sir",
                 symptom_stages=[{"id": "x", "label": "x", "min_minutes": 300,
-                                 "max_minutes": 100, "symptom_text": "어지럽다."}],
+                                 "max_minutes": 100, "symptom_text": "어지럽다."},
+                                {"status": "R", "symptom_text": "이상"},
+                                {"status": "I", "symptom_text": "기침"}],
             ))
             self.assertEqual(sim._infection_beta, 0.0)
-            self.assertEqual(sim._infection_stages[0]["min_minutes"], 100)
+            self.assertEqual(sim._infection_stages, [{"status": "I", "symptom_text": "기침"}])
+            self.assertFalse(hasattr(sim, "_infection_model_type"))
+
+
+class SepirModelTests(unittest.TestCase):
+    """SEPIR 확장 (ABM/simulation/infection.py) — S→E→P→I→R.
+
+    - E/P/I 지속 시간은 DurationSpec(uniform/gamma/gaussian + min~max 절단)으로 뽑는다.
+    - P(무증상 전염기)도 전파원이다.
+    - 환자 0번은 E/P/I 중 어디서든 시작할 수 있고, 건너뛴 앞 구간만큼 과거로 앵커링된다.
+    - 기본값(E 절단 감마, P 0일, I 8일)은 SEPIR 이전과 **같은 난수 소비·같은 전이 시점**.
+    - P 도입 전 저장된 딕셔너리(presymptomatic_at_minutes 없음)는 예전과 같은 시점에 I/R.
+    """
+
+    DAY = 1440
+    # 상태별 증상 문구 — 상태당 하나
+    STAGES = [
+        {"status": "E", "symptom_text": "아직 아무렇지도 않다."},
+        {"status": "P", "symptom_text": "특별한 증상은 없다."},
+        {"status": "I", "symptom_text": "열이 오르고 기침이 난다."},
+    ]
+
+    @staticmethod
+    def _fixed(days):
+        return {"kind": "uniform", "min_days": days, "max_days": days}
+
+    def _model(self, **over):
+        model = {
+            "enabled": True, "disease_name": "테스트열", "beta": 0.0,
+            "symptom_stages": [dict(s) for s in self.STAGES],
+            "immune_after_recovery": True,
+        }
+        model.update(over)
+        return model
+
+    def _sim(self, tmp, *, infection, time_per_wave=60, keys=("a", "b"), locations=None):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096) for k in keys}
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=_ScriptedLLM({k: [{"content": "...", "target": "self"}] for k in keys}),
+            time_per_wave=time_per_wave, time_mode="fixed",
+            agent_locations=locations, infection_model=infection,
+        )
+        sim._emitted = []
+        sim._emit = lambda t, d: sim._emitted.append((t, d))
+        return sim
+
+    def _statuses(self, sim, key="a"):
+        return [d["status"] for t, d in sim._emitted
+                if t == "infection_update" and d["agent"] == key]
+
+    # ── 1. 분포 샘플러 ─────────────────────────────────────────────────────────
+
+    def test_sampler_stays_within_truncation_range_for_every_kind(self):
+        import random
+        from ABM.simulation.infection import _sample_duration_minutes
+        random.seed(1234)
+        specs = {
+            "uniform":  {"kind": "uniform",  "min_days": 2, "max_days": 6},
+            "gamma":    {"kind": "gamma",    "shape": 1.926, "scale": 1.775, "min_days": 1, "max_days": 10},
+            "gaussian": {"kind": "gaussian", "mean": 5, "stddev": 3, "min_days": 3, "max_days": 7},
+        }
+        for kind, spec in specs.items():
+            with self.subTest(kind=kind):
+                seen = set()
+                for _ in range(500):
+                    m = _sample_duration_minutes(spec)
+                    self.assertEqual(m % self.DAY, 0, "일 단위로 반올림돼야 한다")
+                    self.assertTrue(spec["min_days"] * self.DAY <= m <= spec["max_days"] * self.DAY, m)
+                    seen.add(m)
+                self.assertGreater(len(seen), 1, "범위 안에서 실제로 흩어져야 한다")
+
+    def test_sampler_min_equals_max_is_fixed_regardless_of_kind(self):
+        from ABM.simulation.infection import _sample_duration_minutes
+        for kind in ("uniform", "gamma", "gaussian"):
+            for _ in range(20):
+                self.assertEqual(
+                    _sample_duration_minutes({"kind": kind, "min_days": 8, "max_days": 8}), 8 * self.DAY)
+        self.assertEqual(_sample_duration_minutes({"kind": "uniform", "min_days": 0, "max_days": 0}), 0)
+
+    def test_sampler_mismatched_params_terminate_and_clamp(self):
+        # 평균이 범위 밖 멀리 있는 가우시안 / 범위 밖 감마 — 무한루프 없이 끝나고 경계값으로 clamp.
+        from ABM.simulation import infection as inf
+        calls = {"n": 0}
+        real_gauss = inf.random.gauss
+
+        def counting_gauss(mu, sigma):
+            calls["n"] += 1
+            return real_gauss(mu, sigma)
+
+        from unittest import mock
+        with mock.patch.object(inf.random, "gauss", counting_gauss):
+            m = inf._sample_duration_minutes(
+                {"kind": "gaussian", "mean": 1000, "stddev": 0.1, "min_days": 1, "max_days": 3})
+        self.assertEqual(m, 3 * self.DAY)
+        self.assertEqual(calls["n"], inf._MAX_REJECTION_ATTEMPTS)
+
+        m = inf._sample_duration_minutes(
+            {"kind": "gamma", "shape": 500, "scale": 10, "min_days": 1, "max_days": 2})
+        self.assertEqual(m, 2 * self.DAY)
+        m = inf._sample_duration_minutes(
+            {"kind": "gaussian", "mean": -1000, "stddev": 0.1, "min_days": 4, "max_days": 6})
+        self.assertEqual(m, 4 * self.DAY)
+
+    # ── 2. 기본값 = SEPIR 이전 동작 ────────────────────────────────────────────
+
+    def test_default_config_reproduces_pre_sepir_sampling_and_timing(self):
+        import random
+
+        def old_incubation():   # SEPIR 이전 `_sample_incubation_minutes` 원본
+            while True:
+                days = random.gammavariate(1.926, 1.775)
+                if 1.0 <= days <= 10.0:
+                    return round(days) * 1440
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for seed in range(25):
+                random.seed(seed)
+                expected_e = old_incubation()
+                sim = self._sim(tmp, infection=self._model(), time_per_wave=self.DAY)
+                random.seed(seed)
+                sim._set_infected("a", 0, "event")
+                entry = sim._agent_infection["a"]
+                # 난수 소비까지 동일 — 같은 시드면 같은 잠복기가 나온다.
+                self.assertEqual(entry["infectious_at_minutes"], expected_e)
+                self.assertEqual(entry["presymptomatic_at_minutes"], expected_e)   # P = 0
+                self.assertEqual(entry["recover_at_minutes"], expected_e + 8 * self.DAY)
+
+                # 전이 시점: E→I는 경과 ≥ 잠복기인 첫 wave, I→R은 그다음 이후 ≥ 총 델타.
+                e_days = expected_e // self.DAY
+                for w in range(1, e_days):
+                    sim._apply_infection_wave(w)
+                    self.assertEqual(entry["status"], "E")
+                sim._apply_infection_wave(e_days)
+                self.assertEqual(entry["status"], "I", "P 지속 0이면 P를 건너뛰고 같은 wave에 I")
+                for w in range(e_days + 1, e_days + 8):
+                    sim._apply_infection_wave(w)
+                    self.assertEqual(entry["status"], "I")
+                sim._apply_infection_wave(e_days + 8)
+                self.assertEqual(entry["status"], "R")
+                self.assertEqual(self._statuses(sim), ["E", "I", "R"], "P 이벤트는 없어야 한다")
+
+    # ── 3. P > 0: 세 단계 순서대로 ─────────────────────────────────────────────
+
+    def test_positive_presymptomatic_goes_e_p_i_r_at_each_delta(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=720, infection=self._model(
+                exposed_duration=self._fixed(1), presymptomatic_duration=self._fixed(2),
+                infectious_duration=self._fixed(3)))
+            sim._set_infected("a", 0, "event")
+            entry = sim._agent_infection["a"]
+            self.assertEqual((entry["presymptomatic_at_minutes"], entry["infectious_at_minutes"],
+                              entry["recover_at_minutes"]), (1440, 4320, 8640))
+            expected = {1: "E", 2: "P", 3: "P", 5: "P", 6: "I", 11: "I", 12: "R"}
+            for w in range(1, 13):
+                sim._apply_infection_wave(w)
+                if w in expected:
+                    self.assertEqual(entry["status"], expected[w], f"wave {w} ({w * 720}분)")
+            self.assertEqual(self._statuses(sim), ["E", "P", "I", "R"])
+            p_to_i = [d for t, d in sim._emitted if t == "infection_update" and d["status"] == "I"][0]
+            self.assertEqual(p_to_i["from_status"], "P")
+            self.assertEqual(p_to_i["cause"], "progression")
+
+    def test_long_wave_does_not_cascade_through_multiple_stages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=30 * self.DAY, infection=self._model(
+                exposed_duration=self._fixed(1), presymptomatic_duration=self._fixed(1),
+                infectious_duration=self._fixed(1)))
+            sim._set_infected("a", 0, "event")
+            for w, st in ((1, "P"), (2, "I"), (3, "R")):
+                sim._apply_infection_wave(w)
+                self.assertEqual(sim._agent_infection["a"]["status"], st)
+
+    def test_presymptomatic_agent_is_a_transmission_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=60, locations={"a": "매장", "b": "매장"},
+                            infection=self._model(
+                                beta=1000.0,
+                                exposed_duration=self._fixed(1),
+                                presymptomatic_duration=self._fixed(5),
+                                infectious_duration=self._fixed(3)))
+            sim._set_infected("a", 0, "event", start_status="P")
+            self.assertEqual(sim._agent_infection["a"]["status"], "P")
+            sim._apply_infection_wave(0)   # 첫 판정 — t_d 기준점만 세운다
+            self.assertEqual(sim._agent_infection["b"]["status"], "S")
+            sim._apply_infection_wave(1)   # 60분 경과 — P가 같은 방의 S를 감염시킨다
+            self.assertEqual(sim._agent_infection["a"]["status"], "P")
+            self.assertEqual(sim._agent_infection["b"]["status"], "E")
+
+    def test_exposed_agent_is_still_not_a_transmission_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=60, locations={"a": "매장", "b": "매장"},
+                            infection=self._model(beta=1000.0, exposed_duration=self._fixed(5)))
+            sim._set_infected("a", 0, "event")
+            for w in range(0, 5):
+                sim._apply_infection_wave(w)
+            self.assertEqual(sim._agent_infection["b"]["status"], "S")
+
+    # ── 4. 환자 0번 시작 상태 앵커링 ───────────────────────────────────────────
+
+    def _seed_model(self):
+        return self._model(exposed_duration=self._fixed(2), presymptomatic_duration=self._fixed(1),
+                           infectious_duration=self._fixed(8))
+
+    def test_start_in_infectious_backdates_anchor_and_shows_late_symptom(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=self.DAY, infection=self._seed_model())
+            sim._execute_event({"type": "infect_agent", "agent": "a", "wave": 3,
+                                "at_minutes": 3 * self.DAY, "start_status": "I"})
+            entry = sim._agent_infection["a"]
+            self.assertEqual(entry["status"], "I")
+            self.assertEqual(entry["infected_at_minutes"], 3 * self.DAY - 3 * self.DAY)  # E2 + P1 만큼 과거
+            ctx = sim._build_symptom_context("a", 3)
+            self.assertEqual(ctx.split("\n", 1)[1], "열이 오르고 기침이 난다.")
+            ev = [d for t, d in sim._emitted if t == "infection_update"][0]
+            self.assertEqual((ev["status"], ev["cause"]), ("I", "event"))
+            # 감염기 8일이 온전히 남아 있다 — 시작 wave(3) + 8일 = wave 11에 회복.
+            for w in range(4, 11):
+                sim._apply_infection_wave(w)
+                self.assertEqual(entry["status"], "I")
+            sim._apply_infection_wave(11)
+            self.assertEqual(entry["status"], "R")
+
+    def test_start_in_presymptomatic_backdates_by_exposed_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=self.DAY, infection=self._seed_model())
+            sim._execute_event({"type": "infect_agent", "agent": "a", "wave": 0,
+                                "at_minutes": 0, "start_status": "P"})
+            entry = sim._agent_infection["a"]
+            self.assertEqual(entry["status"], "P")
+            self.assertEqual(entry["infected_at_minutes"], -2 * self.DAY)
+            self.assertEqual(sim._build_symptom_context("a", 0).split("\n", 1)[1], "특별한 증상은 없다.")
+            sim._apply_infection_wave(1)   # P 1일 경과 → I
+            self.assertEqual(entry["status"], "I")
+            self.assertEqual(sim._build_symptom_context("a", 1).split("\n", 1)[1], "열이 오르고 기침이 난다.")
+
+    def test_start_status_defaults_to_exposed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=self.DAY, infection=self._seed_model())
+            sim._execute_event({"type": "infect_agent", "agent": "a", "wave": 0, "at_minutes": 0})
+            self.assertEqual(sim._agent_infection["a"]["status"], "E")
+            self.assertEqual(sim._agent_infection["a"]["infected_at_minutes"], 0)
+            self.assertEqual(sim._build_symptom_context("a", 0).split("\n", 1)[1], "아직 아무렇지도 않다.")
+
+    # ── 5. 하위호환 마이그레이션 ─────────────────────────────────────────────
+
+    OLD_ENTRY = {   # SEPIR 이전 형식 — presymptomatic_at_minutes 없음, infectious_at = E→I 직행 델타
+        "status": "E", "infected_at_minutes": 0, "infectious_at_minutes": 180,
+        "recover_at_minutes": 300, "recovered_wave": None, "recovered_at_minutes": None,
+        "notify_recovery": False,
+    }
+
+    def test_legacy_live_dict_transitions_at_same_waves_as_before(self):
+        # 옛 코드: wave 3(180분)에 E→I, wave 5(300분)에 I→R.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=60, infection=self._model())
+            sim._agent_infection["a"] = dict(self.OLD_ENTRY)
+            timeline = []
+            for w in range(1, 8):
+                sim._apply_infection_wave(w)
+                timeline.append(sim._agent_infection["a"]["status"])
+            self.assertEqual(timeline, ["E", "E", "I", "I", "R", "R", "R"])
+            self.assertEqual(self._statuses(sim), ["I", "R"], "P를 거치지 않아야 한다")
+
+    def test_legacy_snapshot_restore_fills_key_and_keeps_timing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_snapshot = {"a": {"infection": {**self.OLD_ENTRY, "elapsed_minutes_since_infection": 60}}}
+            fresh = self._sim(tmp, time_per_wave=60, infection=self._model())
+            fresh.restore_agent_state(old_snapshot)
+            entry = fresh._agent_infection["a"]
+            self.assertEqual(entry["infected_at_minutes"], -60)
+            self.assertEqual(entry["presymptomatic_at_minutes"], 180, "누락 키는 옛 infectious_at으로 채운다")
+            self.assertEqual(entry["infectious_at_minutes"], 180)
+            timeline = []
+            for w in range(1, 6):
+                fresh._apply_infection_wave(w)
+                timeline.append(entry["status"])
+            # 저장 시점 경과 60분 → 120분 더(wave 2)에 I, 240분 더(wave 4)에 R — 옛 코드와 동일.
+            self.assertEqual(timeline, ["E", "I", "I", "R", "R"])
+
+    def test_legacy_snapshot_in_infectious_state_restores_and_recovers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            snap = {"a": {"infection": {**self.OLD_ENTRY, "status": "I",
+                                        "elapsed_minutes_since_infection": 200}}}
+            fresh = self._sim(tmp, time_per_wave=60, infection=self._model())
+            fresh.restore_agent_state(snap)
+            fresh._apply_infection_wave(1)
+            self.assertEqual(fresh._agent_infection["a"]["status"], "I")   # 260분
+            fresh._apply_infection_wave(2)
+            self.assertEqual(fresh._agent_infection["a"]["status"], "R")   # 320분 ≥ 300
+
+    def test_presymptomatic_state_round_trips_through_export_restore(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = self._seed_model()
+            sim = self._sim(tmp, time_per_wave=self.DAY, infection=model)
+            sim._set_infected("a", 0, "event", start_status="P")
+            sim.completed_waves = 0
+            state = sim.export_agent_state()
+            saved = state["a"]["infection"]
+            self.assertEqual(saved["status"], "P")
+            self.assertEqual(saved["elapsed_minutes_since_infection"], 2 * self.DAY)
+            self.assertEqual(saved["presymptomatic_at_minutes"], 2 * self.DAY)
+            fresh = self._sim(tmp, time_per_wave=self.DAY, infection=model)
+            fresh.restore_agent_state(state)
+            self.assertEqual(fresh._agent_infection["a"]["status"], "P")
+            fresh._apply_infection_wave(1)
+            self.assertEqual(fresh._agent_infection["a"]["status"], "I")
+
+    # ── 6. 스키마·표시 계약 ──────────────────────────────────────────────────
+
+    def test_schema_duration_defaults_and_validation(self):
+        from backend.api.simulation.schemas import DurationSpec, InfectionModelConfig, ScenarioEvent
+        cfg = InfectionModelConfig().model_dump()
+        self.assertEqual(
+            {k: cfg["exposed_duration"][k] for k in ("kind", "shape", "scale", "min_days", "max_days")},
+            {"kind": "gamma", "shape": 1.926, "scale": 1.775, "min_days": 1, "max_days": 10})
+        self.assertEqual((cfg["presymptomatic_duration"]["min_days"], cfg["presymptomatic_duration"]["max_days"]), (0, 0))
+        self.assertEqual((cfg["infectious_duration"]["kind"], cfg["infectious_duration"]["min_days"],
+                          cfg["infectious_duration"]["max_days"]), ("uniform", 8, 8))
+        with self.assertRaises(ValidationError):
+            DurationSpec(min_days=5, max_days=2)
+        with self.assertRaises(ValidationError):
+            DurationSpec(kind="poisson")
+        with self.assertRaises(ValidationError):
+            DurationSpec(kind="gamma", shape=0)
+        self.assertEqual(ScenarioEvent(type="infect_agent", agent="a").start_status, "E")
+        self.assertEqual(ScenarioEvent(type="infect_agent", agent="a", start_status="I").model_dump()["start_status"], "I")
+        with self.assertRaises(ValidationError):
+            ScenarioEvent(type="infect_agent", agent="a", start_status="R")
+
+    def test_presymptomatic_badge_and_markdown_lines(self):
+        from ABM.export.labels import AgentIndex, infection_badge
+        from ABM.export.markdown import _fmt_infection
+        self.assertEqual(infection_badge("P", "progression")["cls"], "presymptomatic")
+        idx = AgentIndex([{"name": "a", "display_name": "가온"}])
+        base = {"agent": "a", "display_name": "가온", "disease_name": "감기"}
+        self.assertIn("증상 없이 전염성", _fmt_infection({**base, "status": "P", "cause": "progression"}, idx, ""))
+        self.assertIn("증상이 나타나기", _fmt_infection({**base, "status": "I", "cause": "progression", "from_status": "P"}, idx, ""))
+        self.assertIn("잠복기를 지나 전염성", _fmt_infection({**base, "status": "I", "cause": "progression", "from_status": "E"}, idx, ""))
+        self.assertIn("이미 감염기", _fmt_infection({**base, "status": "I", "cause": "event"}, idx, ""))
+        self.assertIn("이미 무증상 전염기", _fmt_infection({**base, "status": "P", "cause": "event"}, idx, ""))
+
+    def test_prompt_never_leaks_new_raw_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, infection=self._seed_model())
+            sim._set_infected("a", 0, "event", start_status="P")
+            blob = json.dumps(sim._assemble_agent_prompt("a", 0), ensure_ascii=False, default=str)
+            for leak in ("presymptomatic_at_minutes", "start_status", "무증상 전염기"):
+                self.assertNotIn(leak, blob)
+
+    # ── 7. QA 후속: 소수 경계 반올림 / NaN·inf 방어 / 이벤트 에디터 동기화 ──────────
+
+    def test_fractional_bounds_never_round_outside_range(self):
+        # clamp 후 반올림하던 시절: {0.5,0.5}→항상 0일(P 소멸), {1.2,1.4}→항상 1일(범위 밖).
+        import random
+        from ABM.simulation.infection import _sample_duration_minutes
+        random.seed(99)
+        self.assertEqual(_sample_duration_minutes({"kind": "uniform", "min_days": 0.5, "max_days": 0.5}),
+                         1 * self.DAY, "양수로 설정한 P가 반올림으로 사라지면 안 된다")
+        self.assertEqual(_sample_duration_minutes({"kind": "uniform", "min_days": 0.2, "max_days": 0.2}),
+                         1 * self.DAY)
+        for kind in ("uniform", "gamma", "gaussian"):
+            for _ in range(200):
+                m = _sample_duration_minutes({"kind": kind, "shape": 2, "scale": 1, "mean": 1.3,
+                                              "stddev": 1, "min_days": 1.2, "max_days": 1.4})
+                self.assertIn(m, (1 * self.DAY, 2 * self.DAY))   # 범위에 정수가 없으면 가까운 정수 경계
+            for _ in range(200):
+                m = _sample_duration_minutes({"kind": kind, "shape": 2, "scale": 1, "mean": 2.5,
+                                              "stddev": 1, "min_days": 1.6, "max_days": 3.4})
+                self.assertTrue(2 * self.DAY <= m <= 3 * self.DAY, m)   # [ceil(lo), floor(hi)]
+
+    def test_fractional_presymptomatic_still_produces_a_p_stage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, time_per_wave=720, infection=self._model(
+                exposed_duration=self._fixed(1), presymptomatic_duration=self._fixed(0.5),
+                infectious_duration=self._fixed(3)))
+            sim._set_infected("a", 0, "event")
+            for w in range(1, 8):
+                sim._apply_infection_wave(w)
+            self.assertIn("P", self._statuses(sim))
+
+    def test_schema_rejects_nan_and_inf_duration_params(self):
+        from backend.api.simulation.schemas import DurationSpec
+        for bad in ({"mean": float("nan")}, {"shape": float("inf")}, {"scale": float("inf")},
+                    {"stddev": float("nan")}, {"max_days": float("inf")}, {"min_days": float("nan")}):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValidationError):
+                    DurationSpec(kind="gamma", **bad)
+
+    def test_engine_falls_back_on_non_finite_params_without_hang_or_crash(self):
+        # 스키마를 우회한 raw dict(손편집 config_json 등). shape=inf는 예전엔 gammavariate가
+        # 끝나지 않아 런 전체가 멈췄고, mean=NaN은 round(NaN)에서 크래시했다.
+        import threading
+        from ABM.simulation.infection import _sample_duration_minutes
+        specs = [
+            {"kind": "gamma",    "shape": float("inf"), "scale": 1.0, "min_days": 1, "max_days": 10},
+            {"kind": "gamma",    "shape": 2.0, "scale": float("nan"), "min_days": 1, "max_days": 10},
+            {"kind": "gaussian", "mean": float("nan"), "stddev": 1.0, "min_days": 1, "max_days": 10},
+            {"kind": "gaussian", "mean": 5.0, "stddev": float("inf"), "min_days": 1, "max_days": 10},
+            {"kind": "uniform",  "min_days": float("nan"), "max_days": float("inf")},
+            {"kind": "gamma",    "shape": "abc", "scale": None, "min_days": 1, "max_days": 10},
+        ]
+        for spec in specs:
+            with self.subTest(spec=spec):
+                out = {}
+
+                def run():
+                    try:
+                        out["v"] = [_sample_duration_minutes(spec) for _ in range(20)]
+                    except Exception as e:   # noqa: BLE001 — 크래시 자체를 검증 대상에 포함
+                        out["err"] = e
+
+                t = threading.Thread(target=run, daemon=True)
+                t.start()
+                t.join(timeout=10)
+                self.assertFalse(t.is_alive(), "무한 대기")
+                self.assertNotIn("err", out, out.get("err"))
+                lo = spec["min_days"] if isinstance(spec["min_days"], (int, float)) and spec["min_days"] == spec["min_days"] else 0
+                for m in out["v"]:
+                    self.assertEqual(m % self.DAY, 0)
+                    if spec["kind"] != "uniform":
+                        self.assertTrue(lo * self.DAY <= m <= 10 * self.DAY, m)
+
+    def test_events_editor_start_status_change_repaints_patient_zero_picker(self):
+        # 정적 계약: 이벤트 에디터의 start_status 변경 분기가 상단 피커를 다시 그린다.
+        src = (Path(__file__).resolve().parent.parent / "frontend" / "js" / "sim" / "settings"
+               / "events.js").read_text(encoding="utf-8")
+        body = src[src.index("function syncEventField"):]
+        branch = body[body.index("field === 'start_status'"):]
+        branch = branch[:branch.index("} else")]
+        self.assertIn("renderPatientZeroPicker()", branch)
+        self.assertRegex(src, r"import \{[^}]*renderPatientZeroPicker[^}]*\} from './infection-config\.js'")
+
+
+
+class SymptomStageByStatusTests(unittest.TestCase):
+    """증상 문구 = 상태(E/P/I) + 그 상태 안의 진행률 (infection.py::_find_symptom_stage).
+
+    예전 "노출 후 경과분" 시간창은 E/P/I 길이가 분포로 뽑히는 구조와 어긋날 수 있었다
+    (I로 즉시 시작했는데 잠복기 문구 등). 지금은 실제 상태만 보므로 그 불일치가 구조적으로
+    불가능하다 — 아래 테스트가 그 불변식을 지킨다.
+    """
+
+    DAY = 1440
+
+    @staticmethod
+    def _fixed(days):
+        return {"kind": "uniform", "min_days": days, "max_days": days}
+
+    def _sim(self, tmp, stages, *, e=2, p=2, i=4, tpw=None):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096) for k in ("a", "b")}
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=_ScriptedLLM({k: [{"content": "...", "target": "self"}] for k in agents}),
+            time_per_wave=tpw or self.DAY // 2, time_mode="fixed",
+            infection_model={
+                "enabled": True, "disease_name": "테스트열", "beta": 0.0,
+                "symptom_stages": stages, "immune_after_recovery": True,
+                "exposed_duration": self._fixed(e), "presymptomatic_duration": self._fixed(p),
+                "infectious_duration": self._fixed(i),
+            },
+        )
+        sim._emit = lambda t, d: None
+        return sim
+
+    @staticmethod
+    def _text(sim, wave):
+        ctx = sim._build_symptom_context("a", wave)
+        return None if ctx is None else ctx.split("\n", 1)[1]
+
+    def _walk(self, sim, waves):
+        """wave마다 진행 판정 후 (wave, 상태, 문구)."""
+        out = []
+        for w in range(waves):
+            sim._apply_infection_wave(w)
+            out.append((w, sim._agent_infection["a"]["status"], self._text(sim, w)))
+        return out
+
+    ONE_EACH = [{"status": "E", "symptom_text": "E문구"},
+                {"status": "P", "symptom_text": "P문구"},
+                {"status": "I", "symptom_text": "I문구"}]
+
+    def test_single_text_per_status_is_shown_exactly_while_in_that_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, self.ONE_EACH)   # E 2일 · P 2일 · I 4일, wave = 12시간
+            sim._set_infected("a", 0, "event")
+            seen = {"E": set(), "P": set(), "I": set()}
+            for _, st, text in self._walk(sim, 16):
+                if st in seen:
+                    seen[st].add(text)
+            self.assertEqual(seen, {"E": {"E문구"}, "P": {"P문구"}, "I": {"I문구"}})
+
+    def test_multiple_texts_in_one_status_advance_with_progress_ratio(self):
+        stages = [{"status": "I", "symptom_text": f"I-{k}"} for k in range(3)]
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, stages, e=0, p=0, i=6, tpw=self.DAY)
+            sim._set_infected("a", 0, "event", start_status="I")
+            texts = [text for _, st, text in self._walk(sim, 6) if st == "I"]
+            # 6일 I를 3등분: 0~1일 → 0번, 2~3일 → 1번, 4~5일 → 2번 (진행률 0,1/6,…,5/6)
+            self.assertEqual(texts, ["I-0", "I-0", "I-1", "I-1", "I-2", "I-2"])
+
+    def test_progress_ratio_uses_the_sampled_status_length_not_absolute_time(self):
+        # 같은 "I 진입 후 2일"이라도 I 길이가 4일이면 후반, 8일이면 초반 문구.
+        stages = [{"status": "I", "symptom_text": "초반"}, {"status": "I", "symptom_text": "후반"}]
+        with tempfile.TemporaryDirectory() as tmp:
+            short = self._sim(tmp, stages, e=0, p=0, i=4, tpw=self.DAY)
+            long  = self._sim(tmp, stages, e=0, p=0, i=8, tpw=self.DAY)
+            for sim in (short, long):
+                sim._set_infected("a", 0, "event", start_status="I")
+            self.assertEqual(self._text(short, 2), "후반")
+            self.assertEqual(self._text(long, 2), "초반")
+
+    def test_start_in_infectious_never_shows_exposed_text(self):
+        # QA가 잡은 원래 버그: I로 바로 시작해도 "노출 후 경과분"이 작으면 잠복기 문구가 나왔다.
+        stages = [{"status": "E", "symptom_text": "잠복기 문구"},
+                  {"status": "P", "symptom_text": "무증상 문구"},
+                  {"status": "I", "symptom_text": "감염기 초반"},
+                  {"status": "I", "symptom_text": "감염기 후반"}]
+        with tempfile.TemporaryDirectory() as tmp:
+            for e, p in ((1, 0), (10, 0), (1, 5), (0, 0)):
+                with self.subTest(e=e, p=p):
+                    sim = self._sim(tmp, stages, e=e, p=p, i=4)
+                    sim._execute_event({"type": "infect_agent", "agent": "a", "wave": 0,
+                                        "at_minutes": 0, "start_status": "I"})
+                    self.assertEqual(self._text(sim, 0), "감염기 초반")
+                    walk = self._walk(sim, 12)
+                    texts = [text for _, st, text in walk if st == "I"]
+                    self.assertTrue(texts and set(texts) <= {"감염기 초반", "감염기 후반"}, walk)
+                    self.assertIn("감염기 후반", texts)
+                    for _, _, text in walk:
+                        self.assertNotIn(text, ("잠복기 문구", "무증상 문구"))
+
+    def test_status_without_texts_shows_no_card(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, [{"status": "I", "symptom_text": "I문구"}], e=2, p=2, i=2)
+            sim._set_infected("a", 0, "event")
+            by_status = {}
+            for _, st, text in self._walk(sim, 12):
+                by_status.setdefault(st, set()).add(text)
+            self.assertEqual(by_status["E"], {None})
+            self.assertEqual(by_status["P"], {None})
+            self.assertEqual(by_status["I"], {"I문구"})
+            # 빈 문자열 문구도 카드 없음
+            sim2 = self._sim(tmp, [{"status": "E", "symptom_text": ""}])
+            sim2._set_infected("a", 0, "event")
+            self.assertIsNone(sim2._build_symptom_context("a", 0))
+
+    # ── 길이 0 구간 즉시 건너뛰기 (QA: SIR인데 한 wave는 E로 살며 잠복기 문구) ─────────
+
+    def _sir_sim(self, tmp, *, e=0, p=0, i=4, beta=0.0, tpw=60):
+        sim = self._sim(tmp, self.STAGES_EPI, e=e, p=p, i=i, tpw=tpw)
+        sim._infection_beta = beta
+        sim._agent_location = {"a": "방", "b": "방"}
+        emitted = []
+        sim._emit = lambda t, d: emitted.append((t, d)) if t == "infection_update" else None
+        return sim, emitted
+
+    STAGES_EPI = [{"status": "E", "symptom_text": "잠복기 문구"},
+                  {"status": "P", "symptom_text": "무증상 문구"},
+                  {"status": "I", "symptom_text": "감염기 문구"}]
+
+    def test_sir_patient_zero_starts_infectious_immediately(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, emitted = self._sir_sim(tmp)   # E=0, P=0 (SIR)
+            sim._execute_event({"type": "infect_agent", "agent": "a", "wave": 0, "at_minutes": 0})
+            entry = sim._agent_infection["a"]
+            self.assertEqual(entry["status"], "I")
+            self.assertEqual(entry["infected_at_minutes"], 0, "건너뛴 구간 길이가 0이라 과거 앵커도 0")
+            self.assertEqual(emitted[0][1]["status"], "I")
+            self.assertEqual(self._text(sim, 0), "감염기 문구")
+            for _, st, text in self._walk(sim, 3):
+                self.assertNotIn(st, ("E", "P"))
+                self.assertNotIn(text, ("잠복기 문구", "무증상 문구"))
+
+    def test_sir_transmission_starts_infectious_in_the_same_wave(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, emitted = self._sir_sim(tmp, beta=1000.0)
+            sim._set_infected("a", 0, "event")
+            sim._apply_infection_wave(0)                 # t_d 기준점
+            sim._apply_infection_wave(1)                 # 60분 → b 감염
+            b = sim._agent_infection["b"]
+            self.assertEqual(b["status"], "I", "감염 wave에 곧바로 I — E로 한 wave를 살지 않는다")
+            self.assertEqual(self._text_of(sim, "b", 1), "감염기 문구")
+            b_events = [d for _, d in emitted if d["agent"] == "b"]
+            self.assertEqual([(d["status"], d["cause"]) for d in b_events], [("I", "transmission")])
+
+    def test_zero_length_skip_keeps_seir_and_sepir_starting_in_exposed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for e, p in ((2, 0), (1, 1)):
+                with self.subTest(e=e, p=p):
+                    sim, _ = self._sir_sim(tmp, e=e, p=p, beta=1000.0)
+                    sim._set_infected("a", 0, "event", start_status="I")
+                    sim._apply_infection_wave(0)
+                    sim._apply_infection_wave(1)
+                    self.assertEqual(sim._agent_infection["b"]["status"], "E")   # 전파
+                    self.assertEqual(sim._agent_infection["b"]["infected_at_minutes"], 60)
+                    self.assertEqual(self._text_of(sim, "b", 1), "잠복기 문구")
+
+    def test_zero_length_skip_resolves_first_positive_stage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _ = self._sir_sim(tmp, e=0, p=2)               # E만 0 → P에서 시작
+            sim._set_infected("a", 0, "event")
+            self.assertEqual(sim._agent_infection["a"]["status"], "P")
+            self.assertEqual(sim._agent_infection["a"]["infected_at_minutes"], 0)
+            sim2, _ = self._sir_sim(tmp, e=3, p=0)              # 명시적 P 시작인데 P=0 → I
+            sim2._set_infected("a", 0, "event", start_status="P")
+            self.assertEqual(sim2._agent_infection["a"]["status"], "I")
+            self.assertEqual(sim2._agent_infection["a"]["infected_at_minutes"], -3 * self.DAY)
+            sim3, _ = self._sir_sim(tmp, e=0, p=0, i=0)         # 전부 0 → I에서 멈추고 다음 판정에 회복
+            sim3._set_infected("a", 0, "event")
+            self.assertEqual(sim3._agent_infection["a"]["status"], "I")
+            sim3._apply_infection_wave(1)
+            self.assertEqual(sim3._agent_infection["a"]["status"], "R")
+
+    @staticmethod
+    def _text_of(sim, key, wave):
+        ctx = sim._build_symptom_context(key, wave)
+        return None if ctx is None else ctx.split("\n", 1)[1]
+
+
+
+@unittest.skipUnless(__import__("shutil").which("node"), "node 필요")
+class InfectionModelTypeFrontendTests(unittest.TestCase):
+    """model_type(sir/seir/sepir) — 순수 UI 상태. 프론트가 숨긴 구간을 0일로 강제한다.
+
+    node로 실제 ES 모듈(state.js, settings/infection-config.js)을 불러와, 최소한의 DOM
+    스텁 위에서 setModelType()을 호출해 본다.
+    """
+
+    SCRIPT = r"""
+    const els = {};
+    // innerHTML 대입은 실제 DOM처럼 자식을 비운다(재렌더 때 옛 묶음이 남지 않게).
+    const mkEl = () => ({ className: '', dataset: {}, _html: '', children: [], value: '',
+                          get innerHTML() { return this._html; },
+                          set innerHTML(v) { this._html = v; this.children = []; },
+                          appendChild(c) { this.children.push(c); },
+                          querySelector() { return null; }, classList: { toggle() {}, contains() { return false; } } });
+    globalThis.document = {
+      getElementById: id => (id === 'sim-inf-durations' || id === 'sim-inf-stages') ? (els[id] ??= mkEl()) : null,
+      createElement: () => mkEl(),
+    };
+    const st = await import(ROOT + '/frontend/js/sim/state.js');
+    const ic = await import(ROOT + '/frontend/js/sim/settings/infection-config.js');
+    const out = {};
+    const blocks = () => Object.fromEntries(els['sim-inf-durations'].children
+                          .map(b => [b.dataset.slot, !b.className.includes('sim-hidden')]));
+    // SEPIR에서 P를 3~5일로 설정해 둔 상태
+    st.sim.infection_model = st.buildInfectionModel({ enabled: true,
+      exposed_duration: { kind: 'uniform', min_days: 2, max_days: 4 },
+      presymptomatic_duration: { kind: 'uniform', min_days: 3, max_days: 5 } });
+    for (const mt of ['seir', 'sir', 'sepir']) {
+      ic.setModelType(mt);
+      const m = st.sim.infection_model;
+      out[mt] = { visible: blocks(),
+                  E: [m.exposed_duration.min_days, m.exposed_duration.max_days],
+                  P: [m.presymptomatic_duration.min_days, m.presymptomatic_duration.max_days],
+                  I: [m.infectious_duration.min_days, m.infectious_duration.max_days],
+                  sent: st.buildInfectionModel(m).model_type };
+    }
+    // 저장된 설정이 sir인데 P>0이 박혀 있어도(손편집) 정규화 경로가 0으로 맞춘다.
+    const hand = st.buildInfectionModel({ model_type: 'sir',
+      presymptomatic_duration: { kind: 'uniform', min_days: 3, max_days: 3 } });
+    out.hand = [hand.presymptomatic_duration.max_days, hand.exposed_duration.max_days];
+    out.bogus = st.buildInfectionModel({ model_type: 'xyz' }).model_type;
+    // 기본 SEPIR(P = 0일)에서 P 묶음은 "건너뜀"으로 표시돼야 한다 — 지속을 늘리면 해제.
+    st.sim.infection_model = st.buildInfectionModel({ enabled: true });
+    ic.setModelType('sepir');
+    const skipped = () => Object.fromEntries(els['sim-inf-stages'].children
+                            .map(g => [g.dataset.status, g.dataset.skipped === '1']));
+    out.skipDefault = skipped();
+    out.skipDefaultNote = els['sim-inf-stages'].children.find(g => g.dataset.status === 'P').innerHTML.includes('건너뜁니다');
+    st.sim.infection_model.presymptomatic_duration = { kind: 'uniform', min_days: 1, max_days: 2 };
+    ic.setModelType('sepir');
+    out.skipWithP = skipped();
+    ic.setModelType('sir');
+    out.skipSir = skipped();
+    // Python labels.normalize_symptom_stages 와 같은 결과인지(파리티)
+    out.stages = st.normalizeSymptomStages([
+      { status: 'I', symptom_text: 'i1' }, { id: 'old', min_minutes: 0, max_minutes: 60, symptom_text: '옛' },
+      { status: 'E', symptom_text: 'e1' }, { status: 'I', symptom_text: 'i2' }, { status: 'R', symptom_text: 'x' }]);
+    console.log(JSON.stringify(out));
+    """
+
+    def _run(self):
+        import subprocess
+        root = str(Path(__file__).resolve().parent.parent)
+        proc = subprocess.run(
+            ["node", "--input-type=module", "-e", f"const ROOT = {json.dumps(root)};\n" + self.SCRIPT],
+            capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return json.loads(proc.stdout.strip().splitlines()[-1])
+
+    def test_model_type_hides_editors_and_forces_zero_durations(self):
+        out = self._run()
+        self.assertEqual(out["seir"]["visible"], {"exposed_duration": True,
+                                                  "presymptomatic_duration": False,
+                                                  "infectious_duration": True})
+        self.assertEqual(out["seir"]["P"], [0, 0])
+        self.assertEqual(out["seir"]["E"], [2, 4], "SEIR은 E를 건드리지 않는다")
+        self.assertEqual(out["sir"]["visible"], {"exposed_duration": False,
+                                                 "presymptomatic_duration": False,
+                                                 "infectious_duration": True})
+        self.assertEqual((out["sir"]["E"], out["sir"]["P"]), ([0, 0], [0, 0]))
+        self.assertEqual(out["sir"]["I"], [8, 8])
+        # SEPIR로 되돌리면 전부 보이지만, 강제된 0은 복원하지 않는다(강제 설정 없음).
+        self.assertEqual(set(out["sepir"]["visible"].values()), {True})
+        self.assertEqual(out["sepir"]["P"], [0, 0])
+        self.assertEqual([out[m]["sent"] for m in ("seir", "sir", "sepir")], ["seir", "sir", "sepir"])
+        self.assertEqual(out["hand"], [0, 0])
+        self.assertEqual(out["bogus"], "sepir")
+
+    def test_symptom_group_note_flags_zero_length_status_even_in_sepir(self):
+        out = self._run()
+        self.assertEqual(out["skipDefault"], {"E": False, "P": True, "I": False})
+        self.assertTrue(out["skipDefaultNote"])
+        self.assertEqual(out["skipWithP"], {"E": False, "P": False, "I": False})
+        self.assertEqual(out["skipSir"], {"E": True, "P": True, "I": False})
+
+    def test_js_symptom_normalization_matches_python(self):
+        from ABM.export.labels import normalize_symptom_stages
+        raw = [{"status": "I", "symptom_text": "i1"},
+               {"id": "old", "min_minutes": 0, "max_minutes": 60, "symptom_text": "옛"},
+               {"status": "E", "symptom_text": "e1"}, {"status": "I", "symptom_text": "i2"},
+               {"status": "R", "symptom_text": "x"}]
+        self.assertEqual(self._run()["stages"], normalize_symptom_stages(raw))
 
 
 class FixedClockContinuityTests(unittest.TestCase):
@@ -3069,7 +3838,10 @@ class FixedClockContinuityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(tmp, time_per_wave=60, infection=self._infection_model())
             sim._set_infected("a", 0, "event")
-            sim.completed_waves = 5                       # 300분 = 급성기
+            # 60분에 I 진입, I 480분 → 300분 지점이 I 진행률 50%(두 번째 문구).
+            InfectionTimeModelTests._pin(sim, "a", e=60, i=480)
+            sim._apply_infection_wave(1)
+            sim.completed_waves = 5                       # 300분 = I 후반
             anchor_before = sim._agent_infection["a"]["infected_at_minutes"]
 
             fold_elapsed_and_reset_waves(sim)
@@ -3077,7 +3849,7 @@ class FixedClockContinuityTests(unittest.TestCase):
             # 경과를 먼저 접었으므로 rebase는 앵커를 건드리지 않는다(no-op).
             self.assertEqual(sim._agent_infection["a"]["infected_at_minutes"],
                              anchor_before)
-            # 그래도 증상 단계는 되감기지 않는다 — '지금'이 연속이기 때문.
+            # 그래도 증상 문구는 되감기지 않는다 — '지금'이 연속이기 때문.
             self.assertEqual(
                 InfectionTimeModelTests._symptom(sim, "a", 0), "온몸이 불덩이다.",
             )
@@ -3089,6 +3861,9 @@ class FixedClockContinuityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(tmp, time_per_wave=60, infection=self._infection_model())
             sim._set_infected("a", 0, "event")
+            # 60분에 I 진입, I 480분 → 300분 지점이 I 진행률 50%(두 번째 문구).
+            InfectionTimeModelTests._pin(sim, "a", e=60, i=480)
+            sim._apply_infection_wave(1)
             sim.completed_waves = 5
 
             before = sim._current_elapsed_minutes(sim.completed_waves)
@@ -3106,7 +3881,10 @@ class FixedClockContinuityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(tmp, time_per_wave=60, infection=self._infection_model())
             sim._set_infected("a", 0, "event")
-            sim.completed_waves = 5                       # 300분 = 급성기
+            # 60분에 I 진입, I 480분 → 300분 지점이 I 진행률 50%(두 번째 문구).
+            InfectionTimeModelTests._pin(sim, "a", e=60, i=480)
+            sim._apply_infection_wave(1)
+            sim.completed_waves = 5                       # 300분 = I 후반
 
             state     = sim.export_agent_state()
             persisted = _total_elapsed_minutes(sim)
@@ -10287,7 +11065,17 @@ class MarkdownLabelPortTests(unittest.TestCase):
         from ABM.export.labels import build_infection_model
         m = build_infection_model(None)
         self.assertFalse(m["enabled"])
-        self.assertEqual(len(m["symptom_stages"]), 3)   # 설정 없던 시나리오는 기본 3단계
+        # 설정 없던 시나리오는 기본 문구(E 1 · P 1 · I 2) — 상태 기반, 시간창 없음
+        self.assertEqual([st["status"] for st in m["symptom_stages"]], ["E", "P", "I", "I"])
+        self.assertEqual(m["model_type"], "sepir")
+        # 구버전(min/max, status 없음) 항목은 버리고, 남은 항목은 E→P→I 안정 정렬
+        mixed = build_infection_model({"symptom_stages": [
+            {"status": "I", "symptom_text": "i1"},
+            {"id": "old", "min_minutes": 0, "max_minutes": 60, "symptom_text": "옛"},
+            {"status": "E", "symptom_text": "e1"},
+            {"status": "I", "symptom_text": "i2"},
+        ]})["symptom_stages"]
+        self.assertEqual([st["symptom_text"] for st in mixed], ["e1", "i1", "i2"])
         self.assertTrue(m["immune_after_recovery"])
         # 명시적 빈 배열은 존중한다
         self.assertEqual(build_infection_model({"symptom_stages": []})["symptom_stages"], [])
@@ -10303,13 +11091,6 @@ class MarkdownLabelPortTests(unittest.TestCase):
         self.assertEqual(build_infection_model({"beta": "abc"})["beta"], DEFAULT_BETA)
         self.assertEqual(build_infection_model({"beta": -0.5})["beta"], 0)
         self.assertEqual(build_infection_model({"beta": 2.5})["beta"], 2.5)
-
-    def test_format_day_hour(self):
-        from ABM.export.labels import format_day_hour
-        self.assertEqual(format_day_hour(0), "0시간")
-        self.assertEqual(format_day_hour(60), "1시간")
-        self.assertEqual(format_day_hour(1440), "1일")
-        self.assertEqual(format_day_hour(3600), "2일 12시간")
 
     def test_sim_time_label_matches_the_engine_formatter(self):
         """구버전 로그 폴백이 엔진의 `_format_time_str` 과 글자 단위로 같아야 한다."""

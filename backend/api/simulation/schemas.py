@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class AgentConfig(BaseModel):
@@ -59,10 +59,16 @@ class ScenarioEvent(BaseModel):
     message: str       = ""
     targets: list[str] = ["all"]
     # agent_enter / agent_exit / update_appearance / infect_agent 전용.
-    # infect_agent: 해당 에이전트를 이 wave에서 즉시 감염(I) 상태로 전이시키는 "환자 0번" 시드.
+    # infect_agent: 해당 에이전트를 이 wave에서 감염(기본 E, start_status로 P/I 선택) 상태로
+    #               전이시키는 "환자 0번" 시드.
     #               message는 관전용 이벤트 피드에만 쓰이고 에이전트 메모리에는 주입되지 않는다
     #               (LLM은 증상 서사 텍스트로만 감염을 인지한다).
     agent:   str       = ""
+    # infect_agent 전용. 환자 0번이 어느 상태로 바로 시작할지. 기본 "E"(기존 동작과 동일).
+    # "P"/"I"면 건너뛴 앞 구간(E, 또는 E+P)을 실제로 추첨한 뒤 그만큼 노출 시점을 과거로
+    # 앵커링한다(ABM/simulation/infection.py::_set_infected) — 증상 서사가 시작부터 그
+    # 단계의 경과분에 맞게 보인다.
+    start_status: Literal["E", "P", "I"] = "E"
 
     @field_validator("at_time")
     @classmethod
@@ -187,56 +193,106 @@ MAX_DURATION_MINUTES = 52560000
 
 
 class SymptomStage(BaseModel):
-    """감염 후 **경과 시간(분)** 구간별 증상 서사.
+    """상태(E/P/I)별 증상 서사.
 
-    ``min_minutes <= (지금의 경과분 - 감염 시점의 경과분) <= max_minutes`` 인 첫 구간의
-    ``symptom_text``가 해당 에이전트의 상황 컨텍스트에 매 턴 주입된다. 정의된 최대 구간을
-    넘어서면 가장 늦은 단계를 계속 유지한다.
+    엔진은 **지금 실제 상태**와 **그 상태에 머문 비율**(상태 진입 후 경과 ÷ 그 상태의
+    뽑힌 길이)만으로 문구를 고른다(``ABM/simulation/infection.py::_find_symptom_stage``).
+    같은 status로 여러 항목을 등록할 수 있고, 등록 순서가 곧 그 상태 안의 진행 순서다
+    (2개면 앞 절반/뒤 절반). 어떤 상태에 항목이 없으면 그 상태에선 증상 카드가 안 뜬다.
 
-    wave가 아니라 분으로 정의하는 이유: variable 시간 모드에서는 wave 길이가 5분~7시간까지
-    들쭉날쭉해 "N wave 경과"가 병의 진행을 전혀 대표하지 못한다. 프론트는 이 값을
-    (일 + 시간) 복합 입력으로 받아 분으로 변환해 보낸다.
-
-    주의: 시간 개념이 꺼진 시나리오(``time_mode="fixed"`` AND ``time_per_wave == 0``)에서는
-    경과분이 항상 0이라 모든 감염자가 첫 단계에 머물고 자연 회복도 일어나지 않는다.
+    예전의 "노출 후 경과분" 구간(``min_minutes``/``max_minutes``)은 제거됐다 — E/P/I
+    길이가 확률분포로 뽑히는 구조에서는 그 별도 시간 축이 실제 상태와 항상 어긋날 수
+    있었다(I로 즉시 시작했는데 잠복기 문구가 나오는 등).
     """
-    id:           str
-    label:        str
-    min_minutes:  int = Field(default=0, ge=0, le=MAX_DURATION_MINUTES)
-    max_minutes:  int = Field(default=0, ge=0, le=MAX_DURATION_MINUTES)
+    status:       Literal["E", "P", "I"]
     symptom_text: str
 
-    @field_validator("max_minutes")
+
+MAX_DURATION_DAYS = 36500  # = MAX_DURATION_MINUTES / 1440 (100년)
+
+
+class DurationSpec(BaseModel):
+    """며칠(day) 단위 지속시간을 뽑는 확률분포 설정 — E(잠복기)/P(무증상 전염기)/I(감염기) 공통.
+
+    kind에 따라 shape/scale(gamma) 또는 mean/stddev(gaussian)만 의미가 있다 — uniform은
+    min_days~max_days 자체가 전체 지지집합이라 별도 파라미터가 없다. min_days~max_days는
+    어느 kind든 항상 절단 범위로 적용된다(감마·가우시안이 그 범위 밖으로 나오면 재추첨).
+    min_days == max_days면 kind와 무관하게 그 값으로 고정된다.
+    엔진 쪽 샘플러: ``ABM/simulation/infection.py::_sample_duration_minutes``.
+
+    NaN/±inf는 거부한다 — shape=inf면 감마 표본이 전부 inf라 거부 표집이 상한까지
+    헛돌고, mean=NaN이면 런 도중 반올림에서 크래시한다(엔진도 이중 방어를 한다).
+    """
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    kind:     Literal["uniform", "gamma", "gaussian"] = "uniform"
+    shape:    float = Field(default=2.0, gt=0)   # gamma 전용 (k)
+    scale:    float = Field(default=1.0, gt=0)   # gamma 전용 (θ)
+    mean:     float = Field(default=5.0)         # gaussian 전용 (μ)
+    stddev:   float = Field(default=2.0, gt=0)   # gaussian 전용 (σ)
+    min_days: float = Field(default=1.0, ge=0, le=MAX_DURATION_DAYS)
+    max_days: float = Field(default=10.0, le=MAX_DURATION_DAYS)
+
+    @field_validator("max_days")
     @classmethod
-    def _max_not_below_min(cls, v: int, info) -> int:
-        min_v = info.data.get("min_minutes")
+    def _max_not_below_min(cls, v, info):
+        min_v = info.data.get("min_days")
         if min_v is not None and v < min_v:
-            raise ValueError("max_minutes must be >= min_minutes")
+            raise ValueError("max_days must be >= min_days")
         return v
 
 
 class InfectionModelConfig(BaseModel):
-    """결정론적 감염병 모델(SEIR/SEIRS) 설정.
+    """결정론적 감염병 모델(SEPIR/SEPIRS) 설정.
 
     감염 판정은 전적으로 엔진(순수 파이썬)이 수행한다. LLM은 status·확률·경과 시간 같은
     raw 값을 절대 보지 않고, 오직 ``symptom_stages``의 서사 텍스트만 상황 컨텍스트로 받는다.
 
-    상태는 S(감염 가능) → E(잠복기, 비전염) → I(감염기, 전염 가능) → R(회복) 순으로
-    전이한다. E의 지속 시간(절단 감마분포)과 I의 지속 시간(8일 고정)은 연구 스펙
-    상수이며 사용자가 바꿀 수 없다 — ``beta``만 옵션으로 노출된다
-    (``ABM/simulation/infection.py`` 상단 docstring 참고).
+    상태는 S(감염 가능) → E(잠복기, 비전염) → P(무증상 전염기, 전염 가능) →
+    I(감염기, 전염 가능) → R(회복) 순으로 전이한다. E/P/I 각 구간의 지속 시간은
+    ``DurationSpec``(분포 종류 + 파라미터 + min/max 절단 범위)으로 설정한다. 기본값은
+    SEPIR 도입 전의 연구 스펙 상수(E = 절단 감마 k=1.926/θ=1.775/[1,10]일, P = 0일,
+    I = 8일 고정)를 그대로 재현한다 — P가 0일이면 P 단계는 건너뛰어 기존 SEIR과
+    같은 시점에 E→I가 일어난다(``ABM/simulation/infection.py`` 상단 docstring 참고).
 
     시간 축이 둘로 나뉜다: **전염은 wave·접촉 기준 Monte Carlo 확률**(λ=β×t_d,
-    P=1-exp(-λ)), **잠복기·감염기 진행은 시뮬레이션 내 경과 시간(분) 기준**이다.
+    P=1-exp(-λ)), **E/P/I 진행은 시뮬레이션 내 경과 시간(분) 기준**이다.
     """
+    # `model_type` 필드명이 pydantic의 보호 네임스페이스("model_")와 겹쳐 경고가 난다 —
+    # BaseModel 메서드와 실제 충돌은 없으므로 보호를 끈다.
+    model_config = ConfigDict(protected_namespaces=())
     enabled:                  bool  = False
     disease_name:             str   = ""
     # 전염 확률의 β(λ=β×t_d, P=1-exp(-λ)). t_d는 직전 판정 이후 실제로 경과한
     # 시간(일 단위)이다 — infection.py::_apply_infection_wave 참고.
     beta:                     float = Field(default=0.04, ge=0.0)
     symptom_stages:           list[SymptomStage] = []
-    # True = SIR(회복 후 면역, 재감염 불가) / False = SEIRS(회복 후 S로 복귀, 재감염 가능)
+    # 설정 화면의 모델 선택(UI 전용). 엔진은 읽지 않는다 — S→E→P→I→R 하나의 구조에서
+    # E/P 지속을 0으로 두면 SIR/SEIR이 된다. 프론트가 sir/seir 선택 시 숨긴 구간의
+    # 지속을 0으로 강제한다(frontend/js/sim/state.js::applyModelType).
+    model_type:               Literal["sir", "seir", "sepir"] = "sepir"
+    # True = 영구 면역(회복 후 다시 걸리지 않음) / False = 재감염 가능(회복 후 S로 복귀 — SEPIRS)
     immune_after_recovery:    bool  = True
+    # E/P/I 지속 시간 분포 — 기본값은 SEPIR 도입 전 동작과 100% 동일한 결과를 낸다.
+    exposed_duration:        DurationSpec = DurationSpec(
+        kind="gamma", shape=1.926, scale=1.775, min_days=1, max_days=10)
+    presymptomatic_duration: DurationSpec = DurationSpec(
+        kind="uniform", min_days=0, max_days=0)
+    infectious_duration:     DurationSpec = DurationSpec(
+        kind="uniform", min_days=8, max_days=8)
+
+    @field_validator("symptom_stages", mode="before")
+    @classmethod
+    def _drop_legacy_stages(cls, v):
+        """status가 없거나 E/P/I가 아닌 항목(구버전 min/max 형식)은 조용히 버린다.
+
+        구조가 바뀌어 옛 항목을 새 의미로 옮길 방법이 없다. 버리지 않으면 옛 시나리오·
+        저장된 run의 config_json을 불러오거나 이어하기할 때 422/ValidationError로
+        아예 열리지 않는다 — 증상 문구만 빠진 채 여는 편이 낫다.
+        """
+        if not isinstance(v, list):
+            return v
+        return [s for s in v if not isinstance(s, dict) or s.get("status") in ("E", "P", "I")]
 
 
 DEFAULT_SYSTEM_AGENT_PROMPT = (

@@ -311,12 +311,14 @@ export function addInfectionCard(d) {
   removeFeedEmpty();
   const badge = infectionBadge(d.status, d.cause);
   if (!badge) return;                       // 표시할 상태 변화가 아님
-  const causeLabel = {
-    event:        '시드 (환자 0번)',
-    transmission: '접촉 전파',
-    progression:  '잠복기 종료',
-    recovery:     '회복',
-  }[d.cause] || d.cause || '';
+  const causeLabel = (d.cause === 'progression' && d.from_status === 'P')
+    ? '증상 발현'                          // P → I
+    : ({
+        event:        '시드 (환자 0번)',
+        transmission: '접촉 전파',
+        progression:  '잠복기 종료',       // E → P, 또는 P 지속 0일 때 E → I
+        recovery:     '회복',
+      }[d.cause] || d.cause || '');
   const disease = d.disease_name ? `${d.disease_name} · ` : '';
   const el = document.createElement('div');
   el.className = `sim-infection-card inf-${badge.cls}`;

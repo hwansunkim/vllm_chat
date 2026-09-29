@@ -115,7 +115,11 @@ class _EventsMixin:
             # 이벤트는 시작 시점에 실행되므로 "이번 wave에 감염됨"으로 기록한다.
             # message는 관전용 이벤트 피드에만 쓰이고 에이전트 메모리에는 넣지 않는다 —
             # LLM은 오직 증상 서사(_build_symptom_context)로만 자기 몸 상태를 인지한다.
-            if self._set_infected(agent_key, wave, "event", at_minutes=at_minutes):
+            # start_status(E/P/I): 환자 0번을 어느 단계에서 시작할지. P/I면 건너뛴 앞
+            # 구간만큼 노출 시점을 과거로 앵커링한다(_set_infected 참고).
+            start_status = event.get("start_status") or "E"
+            if self._set_infected(agent_key, wave, "event", at_minutes=at_minutes,
+                                  start_status=start_status):
                 self._emit("scene_event", {
                     "event_type": "infect_agent",
                     "wave":       wave,
@@ -123,7 +127,7 @@ class _EventsMixin:
                     "message":    message or f"{agent_key}이(가) 감염되었다.",
                     "observer_only": True,
                 })
-            logger.info(f"[감염 시드] {agent_key} (wave {wave})")
+            logger.info(f"[감염 시드] {agent_key} (wave {wave}, 시작 {start_status})")
 
         elif etype == "update_appearance":
             if not agent_key or agent_key not in self.agents:

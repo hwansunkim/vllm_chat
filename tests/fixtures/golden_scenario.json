@@ -52,13 +52,9 @@
       "disease_name": "감기",
       "transmission_probability": 1.0,
       "symptom_stages": [
-        {
-          "id": "incubation",
-          "label": "잠복기",
-          "min_minutes": 0,
-          "max_minutes": 60,
-          "symptom_text": "목이 칼칼하다."
-        }
+        { "status": "E", "symptom_text": "목이 칼칼하다." },
+        { "status": "I", "symptom_text": "기침이 난다." },
+        { "status": "I", "symptom_text": "열이 펄펄 끓는다." }
       ],
       "recovery_min_minutes": 60,
       "recovery_max_minutes": 60,

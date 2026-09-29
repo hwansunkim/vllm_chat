@@ -1,18 +1,21 @@
 // frontend/js/sim/settings/infection-config.js
-// 감염병 모델(SEIR) 설정 — 폼 ↔ sim.infection_model 동기화. 서버 검증(beta >= 0,
-// 모든 분 값 0~52560000, max >= min)을 통과하도록 읽어들이는 모든 경로가
-// buildInfectionModel()을 거친다.
+// 감염병 모델(SEPIR) 설정 — 폼 ↔ sim.infection_model 동기화. 서버 검증(beta >= 0,
+// 모든 분 값 0~52560000, max >= min, 분포 파라미터 > 0)을 통과하도록 읽어들이는 모든
+// 경로가 buildInfectionModel()을 거친다.
 //
 // 단위 규칙: 전염(β)만 wave·접촉 기준이고, 증상 단계 진행은 "노출 후 경과 분"
-// 기준이다. 잠복기(E)·감염기(I) 지속 시간은 연구 스펙 상수(감마분포/8일 고정)라
-// 이 화면에서 편집하지 않는다 — ABM/simulation/infection.py 참고. 증상 단계는
-// 사람이 쓰기 편하도록 (일 + 시간) 두 칸으로 입력받고 dayHourToMinutes()로
-// 분으로 환산해 저장한다.
+// 기준이다. 잠복기(E)·무증상 전염기(P)·감염기(I) 지속 시간은 DurationSpec(분포
+// 종류 + 파라미터 + min~max 절단 범위, **일 단위**)으로 편집한다 — 엔진 샘플러는
+// ABM/simulation/infection.py::_sample_duration_minutes. 증상 단계는 사람이 쓰기
+// 편하도록 … (증상 문구는 이제 시간창이 없다 — 상태(E/P/I) + 그 상태 안의 순서만 편집한다.)
+// 모델 선택(sir/seir/sepir)은 UI 전용이다 — 쓰지 않는 구간은 편집기를 숨기고 지속을 0으로 강제한다.
 
-import { sim, esc, buildInfectionModel, normalizeBeta,
-         normalizeSymptomStages, dayHourToMinutes, minutesToDayHour,
-         formatDayHour, isTimeConceptDisabled, getAgentIcon } from '../state.js';
-import { renderScenarioEvents } from './events.js';
+import { sim, esc, buildInfectionModel, normalizeBeta, normalizeDurationSpec,
+         DEFAULT_EXPOSED_DURATION, DEFAULT_PRESYMPTOMATIC_DURATION, DEFAULT_INFECTIOUS_DURATION,
+         normalizeSymptomStages, SYMPTOM_STATUSES, SYMPTOM_STATUS_LABELS,
+         MODEL_TYPES, visibleDurationKeys, applyModelType, isStatusAlwaysSkipped,
+         isTimeConceptDisabled, getAgentIcon } from '../state.js';
+import { renderScenarioEvents, INFECT_START_STATUS } from './events.js';
 
 export function renderInfectionConfig() {
   const model = sim.infection_model = buildInfectionModel(sim.infection_model);
@@ -29,6 +32,8 @@ export function renderInfectionConfig() {
   if (immuneEl) immuneEl.value = model.immune_after_recovery ? 'sir' : 'sis';
 
   _bindBetaInput();
+  _bindModelType();
+  _renderDurationEditors();
   renderPatientZeroPicker();
   _renderSymptomStages();
   updateInfectionTimeWarning();
@@ -63,11 +68,141 @@ function _bindBetaInput() {
   };
 }
 
+// ── E/P/I 지속 시간 분포 에디터 ──────────────────────────────────────────────────
+// 세 구간이 같은 DurationSpec 모양이라 한 컴포넌트(_durationBlockHtml)를 세 번 그린다.
+// 입력은 즉시(oninput) 상태에 반영하고, 포커스를 벗어날 때(change) normalizeDurationSpec
+// 으로 정규화해 다시 그린다 — 증상 단계 에디터와 같은 규칙(타이핑 중 커서 보존).
+const DURATION_SLOTS = [
+  { key: 'exposed_duration',        title: '잠복기 (E)',        sub: '비전염 · 노출 직후',
+    def: DEFAULT_EXPOSED_DURATION },
+  { key: 'presymptomatic_duration', title: '무증상 전염기 (P)', sub: '전염 가능 · 아직 증상 없음 · 0~0일이면 건너뜀',
+    def: DEFAULT_PRESYMPTOMATIC_DURATION },
+  { key: 'infectious_duration',     title: '감염기 (I)',        sub: '전염 가능 · 증상 있음',
+    def: DEFAULT_INFECTIOUS_DURATION },
+];
+const DURATION_KIND_LABELS = { uniform: '균등분포', gamma: '감마분포', gaussian: '정규분포(가우시안)' };
+const DURATION_NUM_FIELDS  = ['shape', 'scale', 'mean', 'stddev', 'min_days', 'max_days'];
+
+function _durNum(slot, field, value, label, attrs = '') {
+  return `
+    <label class="sim-inf-dur-field">
+      <span class="sim-inf-stage-tag">${label}</span>
+      <input type="number" class="sim-inf-stage-num sim-inf-dur-num" step="any" ${attrs}
+             data-slot="${slot}" data-field="${field}" value="${esc(String(value))}"/>
+    </label>`;
+}
+
+/** 분포 설정 한 벌(E/P/I 공통). kind 에 따라 파라미터 칸을 조건부로 보인다. */
+function _durationBlockHtml(slot, spec) {
+  const kindOpts = Object.entries(DURATION_KIND_LABELS)
+    .map(([v, l]) => `<option value="${v}" ${spec.kind === v ? 'selected' : ''}>${l}</option>`).join('');
+  return `
+    <div class="sim-inf-dur-title">${esc(slot.title)} <span class="sim-inf-dur-sub">${esc(slot.sub)}</span></div>
+    <div class="sim-inf-dur-row">
+      <select class="sim-inf-dur-kind" data-slot="${slot.key}" data-field="kind">${kindOpts}</select>
+      <span class="sim-inf-dur-params${spec.kind === 'gamma' ? '' : ' sim-hidden'}" data-kind-only="gamma">
+        ${_durNum(slot.key, 'shape', spec.shape, 'k(형상)', 'min="0"')}
+        ${_durNum(slot.key, 'scale', spec.scale, 'θ(척도)', 'min="0"')}
+      </span>
+      <span class="sim-inf-dur-params${spec.kind === 'gaussian' ? '' : ' sim-hidden'}" data-kind-only="gaussian">
+        ${_durNum(slot.key, 'mean',   spec.mean,   'μ(평균)')}
+        ${_durNum(slot.key, 'stddev', spec.stddev, 'σ(표준편차)', 'min="0"')}
+      </span>
+    </div>
+    <div class="sim-inf-dur-row">
+      ${_durNum(slot.key, 'min_days', spec.min_days, '최소', 'min="0"')}
+      <span class="sim-inf-stage-sep">~</span>
+      ${_durNum(slot.key, 'max_days', spec.max_days, '최대', 'min="0"')}
+      <span class="sim-inf-stage-unit">일 (절단 범위 · 결과는 일 단위 반올림)</span>
+    </div>
+    <div class="sim-inf-stage-hint sim-inf-dur-hint"></div>`;
+}
+
+/** 블록 아래 요약 + "조용히 경계값에 몰리는" 설정 경고. */
+function _paintDurationHint(block, spec) {
+  const hintEl = block?.querySelector('.sim-inf-dur-hint');
+  if (!hintEl || !spec) return;
+  const lo = spec.min_days, hi = spec.max_days;
+  const warns = [];
+  let summary;
+  if (lo === hi) {
+    summary = lo === 0 ? '이 구간 없음 (0일)' : `${lo}일 고정 (분포 종류와 무관)`;
+  } else if (spec.kind === 'gamma') {
+    const mean = Math.round(spec.shape * spec.scale * 100) / 100;
+    summary = `절단 감마 — 원 분포 평균 k×θ = ${mean}일, ${lo}~${hi}일 밖의 표본은 재추첨`;
+    if (mean < lo || mean > hi) warns.push('원 분포 평균이 절단 범위 밖이라 대부분 재추첨되고, 실패하면 경계값으로 몰립니다');
+  } else if (spec.kind === 'gaussian') {
+    summary = `절단 정규 — μ=${spec.mean}일, σ=${spec.stddev}일, ${lo}~${hi}일 밖의 표본은 재추첨`;
+    if (spec.mean < lo || spec.mean > hi) warns.push('평균이 절단 범위 밖이라 대부분 재추첨되고, 실패하면 경계값으로 몰립니다');
+  } else {
+    summary = `${lo}~${hi}일 균등`;
+  }
+  if (hi < lo) warns.push('최대가 최소보다 작습니다 — 입력을 마치면 최소가 최대에 맞춰 조정됩니다');
+  hintEl.classList.toggle('sim-inf-stage-hint-warn', warns.length > 0);
+  hintEl.textContent = [summary, ...warns.map(w => `⚠ ${w}`)].join(' · ');
+}
+
+/** 모델 select(sir/seir/sepir) — 값은 즉시 상태에 반영되고 숨긴 구간은 0일로 강제된다. */
+function _bindModelType() {
+  const el = document.getElementById('sim-inf-model-type');
+  if (!el) return;
+  el.value = sim.infection_model.model_type;
+  el.onchange = () => setModelType(el.value);
+}
+
+/**
+ * 모델 종류 변경. 숨겨지는 구간(SIR: E·P / SEIR: P)의 지속을 0~0일로 강제한 뒤 편집기를
+ * 다시 그린다 — 화면엔 안 보이는데 예전 P>0이 남아 계속 동작하는 모순을 막는다.
+ * 되돌려 SEPIR로 바꿔도 이전 값은 복원하지 않는다(0일에서 다시 시작).
+ */
+export function setModelType(modelType) {
+  sim.infection_model.model_type = MODEL_TYPES.includes(modelType) ? modelType : 'sepir';
+  applyModelType(sim.infection_model);
+  _renderDurationEditors();
+  _renderSymptomStages();
+}
+
+function _renderDurationEditors() {
+  const container = document.getElementById('sim-inf-durations');
+  if (!container) return;
+  container.innerHTML = '';
+  const visible = visibleDurationKeys(sim.infection_model.model_type);
+  DURATION_SLOTS.forEach(slot => {
+    const spec  = sim.infection_model[slot.key];
+    const block = document.createElement('div');
+    // 숨긴 구간도 DOM에는 두고 감춘다(값은 applyModelType이 0일로 고정해 둔다).
+    block.className = `sim-inf-dur-block${visible.includes(slot.key) ? '' : ' sim-hidden'}`;
+    block.dataset.slot = slot.key;
+    block.innerHTML = _durationBlockHtml(slot, spec);
+    container.appendChild(block);
+    _paintDurationHint(block, spec);
+  });
+
+  // renderInfectionConfig()가 여러 번 불려도 리스너가 쌓이지 않도록 프로퍼티로 덮어쓴다.
+  container.oninput = e => {
+    const el   = e.target;
+    const spec = sim.infection_model[el.dataset?.slot];
+    if (!spec || !DURATION_NUM_FIELDS.includes(el.dataset.field)) return;
+    const n = parseFloat(el.value);
+    if (Number.isFinite(n)) spec[el.dataset.field] = n;   // 지우는 도중(빈 칸)은 무시
+    _paintDurationHint(el.closest('.sim-inf-dur-block'), spec);
+  };
+  container.onchange = e => {
+    const el   = e.target;
+    const slot = DURATION_SLOTS.find(s => s.key === el.dataset?.slot);
+    if (!slot) return;
+    if (el.dataset.field === 'kind') sim.infection_model[slot.key].kind = el.value;
+    sim.infection_model[slot.key] = normalizeDurationSpec(sim.infection_model[slot.key], slot.def);
+    _renderDurationEditors();
+    _renderSymptomStages();   // 0일 ↔ 양수 전환이 "이 상태를 건너뜀" 안내를 바꾼다
+  };
+}
+
 // ── 환자 0번 피커 ─────────────────────────────────────────────────────────────
 // 별도 상태를 두지 않는다. 이 피커는 sim.events의 infect_agent 이벤트를 그대로 보여주고
 // 고칠 뿐이라, 아래쪽 "시나리오 이벤트" 편집기와 언제나 같은 데이터를 본다.
 //   체크됨  = 그 에이전트를 가리키는 infect_agent 이벤트가 하나 이상 있음
-//   체크    = { type:'infect_agent', agent, wave:<발병 시점>, message:'' } 추가
+//   체크    = { type:'infect_agent', agent, wave:<발병 시점>, start_status:<시작 상태>, message:'' } 추가
 //   체크 해제 = 그 에이전트의 infect_agent 이벤트 전부 제거
 // 피커가 이벤트를 건드리면 renderScenarioEvents()로 편집기를 다시 그려 둘을 맞춘다.
 const INFECT_EVENT = 'infect_agent';
@@ -155,7 +290,46 @@ export function renderPatientZeroPicker() {
 
   _paintOnsetWave();
   _bindOnsetWave();
+  _paintStartStatus();
+  _bindStartStatus();
   updatePatientZeroWarning();
+}
+
+// ── 환자 0번 시작 상태 (E/P/I) ──────────────────────────────────────────────────
+// 발병 시점 입력과 같은 규칙: 이 select 는 모든 infect_agent 이벤트의 start_status 를
+// 보여주고 한꺼번에 고친다. 값이 섞여 있으면(이벤트 편집기에서 개별 조정) "혼합"을
+// 보이고, 사용자가 실제로 고르기 전에는 통일하지 않는다.
+function _readStartStatus() {
+  const v = document.getElementById('sim-inf-start-status')?.value;
+  return INFECT_START_STATUS.some(([k]) => k === v) ? v : 'E';
+}
+
+function _paintStartStatus() {
+  const el = document.getElementById('sim-inf-start-status');
+  if (!el) return;
+  const statuses = [...new Set(_infectEvents().map(e => e.start_status || 'E'))];
+  const mixedOpt = el.querySelector('option[value=""]');
+  if (statuses.length > 1) {
+    if (!mixedOpt) el.insertAdjacentHTML('afterbegin', '<option value="">혼합</option>');
+    el.value = '';
+  } else {
+    mixedOpt?.remove();
+    // 환자 0번이 아직 없으면 사용자가 미리 고른 값을 그대로 둔다(다음 체크에 쓰인다).
+    if (statuses.length === 1) el.value = statuses[0];
+  }
+}
+
+function _bindStartStatus() {
+  const el = document.getElementById('sim-inf-start-status');
+  if (!el) return;
+  el.onchange = () => {
+    if (!el.value) return;                 // "혼합" 재선택 — 아무것도 바꾸지 않음
+    const v = _readStartStatus();
+    let changed = false;
+    _infectEvents().forEach(e => { if ((e.start_status || 'E') !== v) { e.start_status = v; changed = true; } });
+    _paintStartStatus();
+    if (changed) _syncEventsEditor();
+  };
 }
 
 /** 칩 클릭 — 그 에이전트의 infect_agent 이벤트를 만들거나 전부 지운다. */
@@ -170,7 +344,8 @@ function _togglePatientZero(name) {
   } else {
     // 중복 방지는 위 has 검사가 담당한다(이미 있으면 추가하지 않고 해제로 간다).
     // targets는 감염 시드에서 쓰이지 않아 서버 기본값(["all"])에 맡긴다.
-    sim.events.push({ type: INFECT_EVENT, agent: name, wave: _readOnsetWave(), message: '' });
+    sim.events.push({ type: INFECT_EVENT, agent: name, wave: _readOnsetWave(),
+                      start_status: _readStartStatus(), message: '' });
   }
   renderPatientZeroPicker();
   _syncEventsEditor();
@@ -254,153 +429,110 @@ function _bindTimeWatchers() {
   _timeWatchersBound = true;
 }
 
-// ── 증상 단계 에디터 ──────────────────────────────────────────────────────────
-// time_categories 에디터와 같은 구조(id/label/min/max)에 symptom_text textarea를 더한
-// 형태. 단위는 웨이브가 아니라 **감염 후 경과 시간**이고, 일 + 시간 두 칸으로 입력받는다.
+// ── 증상 문구 에디터 ──────────────────────────────────────────────────────────
+// 시간창(min/max) 없이 "상태(E/P/I) + 그 상태 안의 순서"만 편집한다. 상태별로 묶어 보여주고
+// (normalizeSymptomStages가 E→P→I로 안정 정렬하므로 같은 상태 항목은 배열에서도 붙어 있다),
+// 묶음 안에서 ↑/↓로 순서를 바꾼다 — 위에서 아래 순서가 곧 그 상태 안의 진행 순서다.
+const STATUS_ICONS = { E: '⏳', P: '😶', I: '🦠' };
+const STATUS_DURATION_KEY = { E: 'exposed_duration', P: 'presymptomatic_duration', I: 'infectious_duration' };
+
 function _renderSymptomStages() {
   const container = document.getElementById('sim-inf-stages');
   if (!container) return;
-  const stages = sim.infection_model.symptom_stages;
+  sim.infection_model.symptom_stages = normalizeSymptomStages(sim.infection_model.symptom_stages);
+  const stages  = sim.infection_model.symptom_stages;
+  const visible = visibleDurationKeys(sim.infection_model.model_type);
   container.innerHTML = '';
 
-  if (!stages.length) {
-    const empty = document.createElement('div');
-    empty.className = 'sim-inf-stage-empty';
-    empty.textContent = '증상 단계가 없습니다 — 단계를 추가해야 에이전트가 자기 몸 상태를 인지합니다.';
-    container.appendChild(empty);
-  }
-
-  stages.forEach((stage, idx) => {
-    const row = document.createElement('div');
-    row.className = 'sim-inf-stage-row';
-    row.dataset.stageId = stage.id;
-    row.innerHTML = `
-      <div class="sim-inf-stage-top">
-        <input type="text" class="sim-inf-stage-label" data-idx="${idx}"
-               value="${esc(stage.label)}" placeholder="단계 이름"/>
-        <button class="sim-inf-stage-del" data-idx="${idx}" title="단계 삭제">×</button>
+  SYMPTOM_STATUSES.forEach(status => {
+    const members = stages.map((st, idx) => ({ st, idx })).filter(m => m.st.status === status);
+    const hidden  = !visible.includes(STATUS_DURATION_KEY[status]);
+    // 모델이 숨긴 구간뿐 아니라, SEPIR이라도 지속이 0일 고정이면 엔진이 이 상태를 건너뛴다
+    // (기본 P = 0일). 그때 "이 상태 내내 이 문구를 씁니다"라고 안내하면 거짓말이 된다.
+    const skipped = isStatusAlwaysSkipped(sim.infection_model, status);
+    const group = document.createElement('div');
+    group.className = 'sim-inf-sym-group';
+    group.dataset.status = status;
+    group.dataset.skipped = skipped ? '1' : '';
+    const note = hidden
+      ? '현재 모델은 이 상태를 건너뛰므로 이 문구는 쓰이지 않습니다'
+      : skipped
+        ? '지속 시간이 0일이라 이 상태를 건너뜁니다 — 문구를 쓰려면 위 지속 시간 분포에서 최대를 1일 이상으로 늘리세요'
+      : members.length
+        ? (members.length > 1 ? `이 상태의 진행 구간을 ${members.length}등분해 위에서부터 순서대로 씁니다` : '이 상태 내내 이 문구를 씁니다')
+        : '문구가 없으면 이 상태 동안 몸 상태가 전달되지 않습니다';
+    group.innerHTML = `
+      <div class="sim-inf-sym-head">
+        <span class="sim-inf-sym-title">${STATUS_ICONS[status]} ${esc(SYMPTOM_STATUS_LABELS[status])}</span>
+        <span class="sim-inf-sym-note">${esc(note)}</span>
+        <button class="sim-settings-add-btn sim-inf-sym-add" data-add="${status}">+ 추가</button>
       </div>
-      <div class="sim-inf-stage-range">
-        ${_boundInputs(idx, 'min', stage.min_minutes, '시작')}
-        <span class="sim-inf-stage-sep">~</span>
-        ${_boundInputs(idx, 'max', stage.max_minutes, '끝')}
-      </div>
-      <div class="sim-inf-stage-hint"></div>
-      <textarea class="sim-inf-stage-text" data-idx="${idx}" rows="2"
-                placeholder="이 단계에서 에이전트가 느끼는 몸 상태를 서술하세요. 이 문장이 LLM에게 전달되는 유일한 정보입니다.">${esc(stage.symptom_text)}</textarea>`;
-    container.appendChild(row);
-    _paintStageHint(row, stage, idx);
+      ${members.map(({ st, idx }, k) => `
+      <div class="sim-inf-stage-row" data-idx="${idx}">
+        <div class="sim-inf-stage-top">
+          <select class="sim-inf-sym-status" data-idx="${idx}" title="이 문구가 쓰일 상태">
+            ${SYMPTOM_STATUSES.map(v => `<option value="${v}" ${v === st.status ? 'selected' : ''}>${STATUS_ICONS[v]} ${esc(SYMPTOM_STATUS_LABELS[v])}</option>`).join('')}
+          </select>
+          <span class="sim-inf-sym-order">${k + 1}/${members.length}</span>
+          <button class="sim-inf-sym-move" data-idx="${idx}" data-dir="-1" title="위로" ${k === 0 ? 'disabled' : ''}>↑</button>
+          <button class="sim-inf-sym-move" data-idx="${idx}" data-dir="1"  title="아래로" ${k === members.length - 1 ? 'disabled' : ''}>↓</button>
+          <button class="sim-inf-stage-del" data-idx="${idx}" title="문구 삭제">×</button>
+        </div>
+        <textarea class="sim-inf-stage-text" data-idx="${idx}" rows="2"
+                  placeholder="이 상태에서 에이전트가 느끼는 몸 상태를 서술하세요. 이 문장이 LLM에게 전달되는 유일한 정보입니다.">${esc(st.symptom_text)}</textarea>
+      </div>`).join('')}`;
+    container.appendChild(group);
   });
 
-  // 입력은 즉시 상태에 반영한다 — 삭제/추가로 다시 그릴 때 편집 중이던 값이 날아가지 않게.
+  // 텍스트는 즉시 반영한다 — 다시 그릴 때 편집 중이던 값이 날아가지 않게.
   container.oninput = e => {
-    const el  = e.target;
-    const idx = parseInt(el.dataset?.idx);
-    const stage = sim.infection_model.symptom_stages[idx];
-    if (!stage) return;
-    if (el.classList.contains('sim-inf-stage-label'))     stage.label        = el.value;
-    else if (el.classList.contains('sim-inf-stage-text')) stage.symptom_text = el.value;
-    else if (el.dataset.bound) {
-      const row   = el.closest('.sim-inf-stage-row');
-      const bound = el.dataset.bound;
-      const dEl = row?.querySelector(`[data-bound="${bound}"][data-part="d"]`);
-      const hEl = row?.querySelector(`[data-bound="${bound}"][data-part="h"]`);
-      const mins = dayHourToMinutes(dEl?.value, hEl?.value);
-      if (bound === 'min') stage.min_minutes = mins;
-      else                 stage.max_minutes = mins;
-      _paintAllStageHints();   // 이 단계의 끝을 줄이면 다음 단계에 공백 경고가 생긴다
-    }
+    const el = e.target;
+    if (!el.classList?.contains('sim-inf-stage-text')) return;
+    const stage = sim.infection_model.symptom_stages[parseInt(el.dataset.idx)];
+    if (stage) stage.symptom_text = el.value;
   };
-  // 일/시간은 포커스를 벗어날 때(change) 정규화해서 다시 그린다 — 그래야 사용자가
-  // 방금 고친 값이 실제로 clamp된 뒤의 값과 화면에서 어긋나지 않는다(예: 30시간 → 1일 6시간).
-  // 매 키 입력마다(oninput) 다시 그리면 타이핑 중간에 커서가 날아가므로 change 시점에만 한다.
   container.onchange = e => {
-    if (!e.target.dataset?.bound) return;
-    sim.infection_model.symptom_stages = normalizeSymptomStages(sim.infection_model.symptom_stages);
+    const el = e.target;
+    if (!el.classList?.contains('sim-inf-sym-status')) return;
+    const stage = sim.infection_model.symptom_stages[parseInt(el.dataset.idx)];
+    if (!stage) return;
+    // 새 상태 묶음의 맨 끝으로 간다(배열 뒤로 옮긴 뒤 안정 정렬).
+    const list = sim.infection_model.symptom_stages;
+    list.splice(parseInt(el.dataset.idx), 1);
+    list.push({ ...stage, status: el.value });
     _renderSymptomStages();
   };
   container.onclick = e => {
-    const del = e.target.closest('.sim-inf-stage-del');
-    if (!del) return;
-    sim.infection_model.symptom_stages.splice(parseInt(del.dataset.idx), 1);
-    _renderSymptomStages();
+    const add = e.target.closest?.('.sim-inf-sym-add');
+    if (add) { addSymptomStage(add.dataset.add); return; }
+    const del = e.target.closest?.('.sim-inf-stage-del');
+    if (del) {
+      sim.infection_model.symptom_stages.splice(parseInt(del.dataset.idx), 1);
+      _renderSymptomStages();
+      return;
+    }
+    const mv = e.target.closest?.('.sim-inf-sym-move');
+    if (mv) moveSymptomStage(parseInt(mv.dataset.idx), parseInt(mv.dataset.dir));
   };
 }
 
-/** "시작 [N]일 [M]시간" 한 벌. bound는 'min' | 'max'. */
-function _boundInputs(idx, bound, minutes, tag) {
-  const { days, hours } = minutesToDayHour(minutes);
-  return `
-    <span class="sim-inf-stage-tag">${tag}</span>
-    <input type="number" class="sim-inf-stage-num" min="0" max="36500" step="1"
-           data-idx="${idx}" data-bound="${bound}" data-part="d" value="${days}"/>
-    <span class="sim-inf-stage-unit">일</span>
-    <input type="number" class="sim-inf-stage-num" min="0" step="1"
-           data-idx="${idx}" data-bound="${bound}" data-part="h" value="${hours}"/>
-    <span class="sim-inf-stage-unit">시간</span>`;
+/** 같은 상태 묶음 안에서 한 칸 이동(dir=-1 위, +1 아래). 묶음 경계를 넘지 않는다. */
+export function moveSymptomStage(idx, dir) {
+  const list = sim.infection_model.symptom_stages;
+  const j = idx + dir;
+  if (!list[idx] || !list[j] || list[j].status !== list[idx].status) return;
+  [list[idx], list[j]] = [list[j], list[idx]];
+  _renderSymptomStages();
 }
 
 /**
- * 행 아래 미리보기 — 실제 저장되는 분 값과 "증상이 조용히 안 나오는" 구간 이상을 표시.
- * 엔진 조회 규칙(min <= 경과분 <= max인 **첫** 단계, 정의된 최대를 넘으면 마지막 단계 유지)에서
- * 사용자가 눈치채기 어려운 세 가지를 잡는다: 뒤집힌 범위 / 길이 0 구간 / 단계 사이 공백.
+ * 문구 추가 — 지정한 상태 묶음의 끝(= 그 상태의 가장 늦은 진행 구간)에 붙인다.
+ * 상단 "+ 문구 추가" 버튼은 인자 없이 불리며 감염기(I)에 추가한다.
  */
-function _paintStageHint(row, stage, idx) {
-  const hintEl = row?.querySelector('.sim-inf-stage-hint');
-  if (!hintEl || !stage) return;
-  const stages = sim.infection_model.symptom_stages;
-  const warns  = [];
-
-  if (stage.max_minutes < stage.min_minutes) {
-    // 저장 시 normalizeSymptomStages()가 min을 max로 낮춘다(서버는 422로 거부한다).
-    warns.push('끝이 시작보다 빠릅니다 — 입력을 마치면 시작이 끝에 맞춰 조정됩니다');
-  } else if (stage.max_minutes === stage.min_minutes && stages.length > 1) {
-    // 구버전 시나리오는 모든 단계가 0~0으로 리셋된다. 이때 엔진의 "최대 구간을 넘으면
-    // 가장 늦은 단계 유지" 폴백이 동점에서 첫 원소를 고르므로, 1단계 증상만 영구히 나온다.
-    warns.push('구간 길이가 0이라 이 단계는 사실상 진행하지 않습니다 — 끝을 다시 입력하세요');
-  }
-
-  if (idx === 0) {
-    if (stage.min_minutes > 0) {
-      warns.push('첫 단계가 0에서 시작하지 않아 그 전까지는 증상이 전달되지 않습니다');
-    }
-  } else {
-    // 이전 단계의 끝과 이번 시작 사이가 비면 그 구간은 어느 단계에도 안 걸려 증상이 None이다
-    // (마지막 단계를 넘긴 뒤와 달리 폴백이 없다). addSymptomStage는 틈을 안 만들지만
-    // 사용자가 앞 단계의 "끝"을 줄이면 생긴다.
-    const prev = stages[idx - 1];
-    if (prev && stage.min_minutes > prev.max_minutes) {
-      warns.push(`앞 단계 끝(${formatDayHour(prev.max_minutes)})과 이 단계 시작 사이가 비어 그 구간에는 증상이 전달되지 않습니다`);
-    }
-  }
-
-  hintEl.classList.toggle('sim-inf-stage-hint-warn', warns.length > 0);
-  hintEl.textContent = [
-    `감염 후 ${formatDayHour(stage.min_minutes)} ~ ${formatDayHour(stage.max_minutes)}`,
-    ...warns.map(w => `⚠ ${w}`),
-  ].join(' · ');
-}
-
-/** 한 칸을 고치면 이웃 단계의 공백 경고도 달라지므로 행 전체의 힌트를 다시 칠한다. */
-function _paintAllStageHints() {
-  const rows = document.getElementById('sim-inf-stages')?.querySelectorAll('.sim-inf-stage-row') ?? [];
-  rows.forEach((row, i) => _paintStageHint(row, sim.infection_model.symptom_stages[i], i));
-}
-
-/** "+ 단계 추가" 버튼 — 이전 단계가 끝나는 시각부터 시작하는 빈 단계를 붙인다(틈 방지). */
-export function addSymptomStage() {
+export function addSymptomStage(status) {
   sim.infection_model = buildInfectionModel(sim.infection_model);
-  const stages = sim.infection_model.symptom_stages;
-  const last   = stages[stages.length - 1];
-  // 경계는 양끝을 포함하므로 한 분이 겹치지만, 엔진은 "첫 매치"를 쓰므로 앞 단계가 이긴다.
-  const start  = last ? last.max_minutes : 0;
-  stages.push({
-    id:           `stage${stages.length + 1}`,
-    label:        `단계 ${stages.length + 1}`,
-    min_minutes:  start,
-    max_minutes:  start + 2880,   // 기본 2일 구간
-    symptom_text: '',
-  });
+  const st = SYMPTOM_STATUSES.includes(status) ? status : 'I';
+  sim.infection_model.symptom_stages.push({ status: st, symptom_text: '' });
   _renderSymptomStages();
 }
 
@@ -415,5 +547,10 @@ export function readInfectionModel() {
     // 편집기가 비어 있으면 빈 배열 그대로 — 백엔드도 빈 목록을 허용한다(증상 없음).
     symptom_stages:           sim.infection_model?.symptom_stages ?? [],
     immune_after_recovery:    document.getElementById('sim-inf-immune')?.value !== 'sis',
+    model_type:               sim.infection_model?.model_type,
+    // 분포 에디터는 입력 즉시 sim.infection_model 에 반영하므로 상태에서 읽는다.
+    exposed_duration:         sim.infection_model?.exposed_duration,
+    presymptomatic_duration:  sim.infection_model?.presymptomatic_duration,
+    infectious_duration:      sim.infection_model?.infectious_duration,
   });
 }

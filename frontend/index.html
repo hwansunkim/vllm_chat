@@ -641,7 +641,7 @@
             <div id="sim-inf-time-warn" class="sim-inf-warn sim-hidden">
               ⚠ 감염 증상 진행과 회복에는 시간 개념이 필요합니다 (전염은 정상 동작) —
               위 “세계 설정”에서 시간 모드를 “가변”으로 바꾸거나 wave당 시간을 1분 이상으로 설정하세요.
-              지금 상태에서는 경과 시간이 늘 0분이라 모든 감염자가 첫 단계에 머물고 자연 회복도 일어나지 않습니다.
+              지금 상태에서는 경과 시간이 늘 0분이라 모든 감염자가 처음 상태에 머물고 자연 회복도 일어나지 않습니다.
             </div>
             <div class="sim-fields-hint">
               감염 판정은 전적으로 엔진이 합니다 — LLM은 상태·확률을 절대 보지 않고,
@@ -671,34 +671,57 @@
                 <span class="sim-inf-onset-hint">이 wave부터 감염이 시작됩니다</span>
               </div>
             </div>
+            <div class="sim-option-row sim-inf-onset-row">
+              <label>시작 상태</label>
+              <select id="sim-inf-start-status" style="flex:1;max-width:220px"
+                      title="환자 0번이 어느 단계에서 시작할지. P/I를 고르면 건너뛴 앞 구간만큼 이미 시간이 흐른 것으로 보아, 시작부터 그 단계의 증상 서사가 나옵니다.">
+                <option value="E">⏳ 잠복기(E)부터</option>
+                <option value="P">😶 무증상 전염기(P)부터</option>
+                <option value="I">🦠 감염기(I)부터</option>
+              </select>
+            </div>
             <div class="sim-option-row">
               <label>전염 계수 β <span id="sim-inf-beta-val">0.04</span></label>
               <input type="number" id="sim-inf-beta" min="0" step="0.001" value="0.04"
                      style="flex:1;max-width:120px"
                      title="접촉 확률 λ=β×t_d, P=1-exp(-λ). t_d는 직전 판정 이후 실제로 경과한 접촉 시간(일 단위)입니다."/>
             </div>
+            <div class="sim-option-row">
+              <label>모델</label>
+              <select id="sim-inf-model-type" style="flex:1;max-width:220px"
+                      title="어떤 단계를 쓸지 고릅니다. 쓰지 않는 단계는 편집기가 숨겨지고 지속 시간이 0일로 고정됩니다.">
+                <option value="sir">SIR — 감염되면 바로 전염(I만)</option>
+                <option value="seir">SEIR — 잠복기(E) 후 전염(I)</option>
+                <option value="sepir">SEPIR — 잠복기(E)·무증상 전염기(P)·감염기(I)</option>
+              </select>
+            </div>
+            <div class="sim-option-row sim-inf-stages-head">
+              <label style="font-weight:600">지속 시간 분포</label>
+            </div>
+            <div id="sim-inf-durations"></div>
             <div class="sim-fields-hint">
-              잠복기(E)는 절단 감마분포(k=1.926, θ=1.775, 1~10일, 평균 약 3.4일), 감염기(I)는 8일 고정입니다 —
-              연구 스펙 상수라 β만 조정할 수 있습니다. 노출(E) 중에는 아직 남을 감염시키지 못하고,
-              8일간의 감염기(I) 동안만 전염됩니다.
+              S → E(잠복기, 비전염) → P(무증상 전염기) → I(감염기) → R 순으로 진행하며, P와 I 동안 전염됩니다.
+              각 구간 길이는 노출 시점에 한 번 뽑혀(일 단위 반올림) 그 뒤로는 고정됩니다.
+              기본값(E = 절단 감마 k=1.926·θ=1.775·1~10일, P = 0일, I = 8일 고정)은 연구 스펙과 같으며,
+              P를 0~0일로 두면 P 단계를 건너뜁니다. 모델을 SIR/SEIR로 고르면 쓰지 않는 구간(E·P / P)은 0일로 고정됩니다.
             </div>
             <div class="sim-option-row">
               <label>회복 후</label>
               <select id="sim-inf-immune" style="flex:1;max-width:220px"
-                      title="SIR = 회복하면 면역이 생겨 다시 걸리지 않음 / SEIRS = 회복해도 다시 걸릴 수 있음">
-                <option value="sir">면역 획득 (SIR)</option>
-                <option value="sis">재감염 가능 (SEIRS)</option>
+                      title="영구 면역 = 회복하면 다시 걸리지 않음 / 재감염 가능 = 회복해도 다시 걸릴 수 있음">
+                <option value="sir" title="회복하면 다시 걸리지 않음">영구 면역</option>
+                <option value="sis" title="회복해도 다시 걸릴 수 있음">재감염 가능</option>
               </select>
             </div>
             <div class="sim-option-row sim-inf-stages-head">
-              <label style="font-weight:600">증상 단계</label>
-              <button id="sim-inf-add-stage-btn" class="sim-settings-add-btn">+ 단계 추가</button>
+              <label style="font-weight:600">증상 문구</label>
+              <button id="sim-inf-add-stage-btn" class="sim-settings-add-btn">+ 문구 추가</button>
             </div>
             <div id="sim-inf-stages"></div>
             <div class="sim-fields-hint">
-              감염된 뒤 <b>경과한 시뮬레이션 시간</b>이 범위에 들어가면 그 단계의 증상 서사가 주입됩니다
-              (양끝 포함 · 조건에 맞는 첫 단계가 이깁니다). 마지막 단계를 넘기면 그 단계가 계속 유지되고,
-              첫 단계가 0에서 시작하지 않으면 그 전까지는 아무 증상도 전달되지 않습니다.
+              문구는 <b>지금 실제 상태(E/P/I)</b>로만 골라집니다. 한 상태에 문구를 여러 개 두면 위에서 아래 순서대로
+              그 상태의 진행 구간을 나눠 씁니다(2개면 앞 절반/뒤 절반 — 상태 길이는 사람마다 다르게 뽑혀도 비율로 맞춰집니다).
+              어떤 상태에 문구가 없으면 그 상태 동안에는 몸 상태가 전달되지 않습니다.
             </div>
           </div>
         </div>

@@ -32,7 +32,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin,
 | `_LocationMixin` | `location.py` | `_compute_zone_awareness`, `_build_situation_context`, `_get_or_assign_stranger_id` | 위치·zone·낯선 이·씬 메시지. features |
 | `_MeetingMixin` | `meeting.py` | `_apply_move_intents`, `_update_meeting_paths` | `move_to` 해석(장소/사람/머무름) + 만남 lock. features |
 | `_JourneyMixin` | `journey.py` | `_journey_plan`, `_journey_on_via_arrival`, `_route_guide_lines`, `_record_move_resolution` | 여정(먼 목적지로 가는 길) · 경유지 멈춤/통과 · 가는 길 안내 · move_to 로깅. features §1 |
-| `_InfectionMixin` | `infection.py` | `_apply_infection_wave`, `_build_symptom_context` | 결정론적 SEIR/SEIRS. features |
+| `_InfectionMixin` | `infection.py` | `_apply_infection_wave`, `_build_symptom_context` | 결정론적 SEPIR/SEPIRS. features |
 | `_EventsMixin` | `events.py` | `_execute_event` | 시나리오 이벤트. features |
 | `_SystemMixin` | `system.py` | `_run_system_agent` | 디렉터. features |
 

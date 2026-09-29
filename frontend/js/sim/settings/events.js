@@ -3,6 +3,9 @@
 
 import { sim, esc } from '../state.js';
 import { updateSectionBadges } from './sections.js';
+// 순환 import(infection-config.js도 이 파일을 import)지만 함수는 호출 시점에만
+// 참조하므로 ES 모듈 live binding으로 안전하다.
+import { renderPatientZeroPicker } from './infection-config.js';
 
 const EVENT_LABELS = {
   system_message: '📢 시스템 메시지',
@@ -13,6 +16,14 @@ const EVENT_LABELS = {
 
 // 에이전트 선택 드롭다운이 필요한 타입 (agent 필드를 쓴다).
 const AGENT_EVENT_TYPES = ['agent_enter', 'agent_exit', 'infect_agent'];
+
+// infect_agent 의 시작 상태 (백엔드 ScenarioEvent.start_status). P/I 는 건너뛴 앞 구간만큼
+// 노출 시점이 과거로 앵커링된다 — 시작부터 그 단계의 증상 서사가 나온다.
+export const INFECT_START_STATUS = [
+  ['E', '⏳ 잠복기(E)부터'],
+  ['P', '😶 무증상 전염기(P)부터'],
+  ['I', '🦠 감염기(I)부터'],
+];
 
 // at_time 이벤트의 반복 요일 (at_days). 비었으면 매일.
 const WEEKDAYS = [['mon', '월'], ['tue', '화'], ['wed', '수'], ['thu', '목'],
@@ -116,6 +127,15 @@ export function renderScenarioEvents() {
         <label>에이전트</label>
         <select data-idx="${idx}" data-field="agent">${agentOptions}</select>
       </div>` : ''}
+      ${isInfectEvent ? `
+      <div class="sim-event-field">
+        <label>시작 상태</label>
+        <select data-idx="${idx}" data-field="start_status">
+          ${INFECT_START_STATUS.map(([v, l]) =>
+            `<option value="${v}" ${(ev.start_status || 'E') === v ? 'selected' : ''}>${l}</option>`
+          ).join('')}
+        </select>
+      </div>` : ''}
       ${isSysMsgEvent ? `
       <div class="sim-event-targets-row">
         <span class="sim-event-targets-label">대상</span>
@@ -218,6 +238,10 @@ function syncEventField(el) {
     sim.events[idx].type = el.value;
     _syncAgentSelection(idx);
     renderScenarioEvents();
+  } else if (field === 'start_status') {
+    sim.events[idx].start_status = el.value;
+    // 상단 감염 섹션의 "시작 상태" select(혼합 표시 포함)를 이 편집과 맞춘다.
+    renderPatientZeroPicker();
   } else {
     sim.events[idx][field] = el.value;
   }

@@ -100,12 +100,13 @@ body
 | `normalizeTemperature` / `normalizeAgentTemperature` | `[0, 2]` 클램프. 에이전트는 빈 값 → `null`(= 시뮬레이션 기본값) |
 | `normalizeTargetDuration` | 빈 값/0 이하 → `null`(= 미사용). 그 외 1 이상 정수(분) |
 | `normalizeProbability` | `[0, 1]` 클램프 + 반올림(부동소수 잡음 제거) |
-| `normalizeSymptomStages` | `max < min`이면 min을 낮춤. id 유일화 |
-| `buildInfectionModel` | 임의 입력 → `InfectionModelConfig` 모양. 필드 없으면(구버전) "꺼진 모델 + 기본 증상 3단계" |
+| `normalizeSymptomStages` | status가 E/P/I가 아닌 항목(구버전 min/max) 제거, E→P→I 안정 정렬 |
+| `applyModelType` / `visibleDurationKeys` | model_type(sir/seir/sepir)별 편집기 노출·숨긴 구간 0일 강제 |
+| `buildInfectionModel` | 임의 입력 → `InfectionModelConfig` 모양. 필드 없으면(구버전) "꺼진 모델 + 기본 증상 문구(E1·P1·I2)". 항상 `applyModelType` 적용 |
 | `durationPartsToMinutes` / `minutesToDurationParts` | (숫자+단위) ↔ 분 왕복. "딱 떨어지는 가장 큰 단위" 선택 |
 
 > **이중 구현 주의**: 이 파일의 순수 헬퍼 일부(`normalizeWeekday`, `buildInfectionModel`,
-> `formatDayHour`, `infectionBadge`, `meetingNarration`, `detectGender`, `getAgentIcon`,
+> `normalizeDurationSpec`, `normalizeSymptomStages`, `infectionBadge`, `meetingNarration`, `detectGender`, `getAgentIcon`,
 > `agentLabel`, `simTimeLabel` …)는 `ABM/export/labels.py`에 **파이썬으로도** 구현돼 있다
 > (마크다운 내보내기가 브라우저·CLI 양쪽에서 돌기 때문). 한쪽 문구/규칙을 바꾸면
 > 다른 쪽도 고쳐야 하고, `tests/fixtures/*.md` 골든 테스트가 어긋난 쪽을 잡는다.
