@@ -172,13 +172,16 @@ class _JourneyMixin:
         busy(기본 라벨 "자리를 비우고 하는 개인적인 일")는 같은 방이어도 멈출
         이유로 치지 않는다. 그래도 통과하는 턴에 [이 자리의 사람들]로 보이므로
         말을 걸거나 `move_to`에 지금 위치를 넣어 머물 수 있다. 외부 공간은 서로
-        볼 수 없으니 항상 False.
+        볼 수 없으니 항상 False. 내가 데려가는 동행(`_escort_of`)은 함께 도착한
+        사람이라 제외한다(안 그러면 동행 때문에 매 경유지에서 멈춘다).
         """
         if not loc or loc in self._exterior_locations:
             return False
         for other in sorted(self.active_agents):
             if other == key or self._agent_location.get(other, "") != loc:
                 continue
+            if self._escort_of.get(other) == key:
+                continue  # 내가 데려가는 동행(bring_along) — 함께 온 사람은 멈출 이유가 아니다
             if self._agent_unavailable(other, now_elapsed):
                 continue
             return True

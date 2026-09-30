@@ -116,14 +116,31 @@ def parse_json_response(
     return clean_content, meta_values, targets, data
 
 
+def _normalize_bring_along(raw) -> list[str] | None:
+    """`bring_along` 값 → 비지 않은 문자열 목록(순서 유지·중복 제거), 없으면 None.
+
+    배열이 정석이지만 LLM이 한 명을 문자열로 주거나("신짱구") 쉼표로 이어 쓰는 경우도
+    흡수한다. 숫자·객체 등 문자열이 아닌 항목은 버린다.
+    """
+    if raw is None:
+        return None
+    items = raw.split(",") if isinstance(raw, str) else raw if isinstance(raw, list) else []
+    out: list[str] = []
+    for it in items:
+        if isinstance(it, str) and it.strip() and it.strip() not in out:
+            out.append(it.strip())
+    return out or None
+
+
 def parse_json_extras(content: str) -> dict:
-    """Extract move_to/update_appearance/enter_state from the LLM response
+    """Extract move_to/bring_along/update_appearance/enter_state from the LLM response
     without breaking existing API."""
     data = _extract_first_json_object(content)
     if data is None:
         return {}
     return {
         "move_to":           (data.get("move_to") or "").strip() or None,
+        "bring_along":       _normalize_bring_along(data.get("bring_along")),
         "update_appearance": (data.get("update_appearance") or "").strip() or None,
         "enter_state":       (data.get("enter_state") or "").strip() or None,
     }

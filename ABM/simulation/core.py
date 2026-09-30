@@ -407,6 +407,13 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
         # 풀린다. 상세는 journey.py. 재개 스냅샷(`journey`)에 실린다.
         self._journey: dict[str, dict] = {}
 
+        # 동행(bring_along): {동행 대상 key: 데려가는 사람(리더) key}. 리더가 같은 자리의
+        # 사람을 데리고 이동할 때 세워지고, 리더의 경로가 끝나거나(도착) 리더가 동행 없이
+        # 새 이동을 고르면 풀린다. 동행 대상은 자기 경로를 갖지 않고 이동 루프에서 리더의
+        # hop 을 같은 wave·같은 이동 시간으로 그대로 밟는다(meeting._apply_bring_along,
+        # runner._move_one_hop). 남은 경로와 함께 재개 스냅샷에 저장한다.
+        self._escort_of: dict[str, str] = {}
+
         # {agent_key: {"status": "S"|"E"|"P"|"I"|"R",
         #              "infected_at_minutes":   int|None,  # 노출(E 진입) 시점의 경과분 앵커
         #              "presymptomatic_at_minutes": int|None,  # 노출→P 진입까지의 델타(=E 지속)
@@ -688,6 +695,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
                 # 시작 시드로 되돌아가, 이미 본 옷차림을 "달라져 있다"고 다시 알린다.
                 "seen_visual":  dict(self._seen_visual.get(key, {})),
                 "path":         list(self._agent_path.get(key, [])),
+                "escort_leader": self._escort_of.get(key),
                 # 만남 lock. 빼먹으면 resume 직후 "누굴 만나러 가던 중"이라는 사실만
                 # 사라지고 경로는 남아, 상대가 움직여도 더 이상 따라가지 않는다.
                 "meeting_target": self._meeting_intent.get(key),
@@ -862,6 +870,27 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
                 restored  = {k: v for k, v in agent_status.items() if k != "remaining_minutes"}
                 restored["until_elapsed"] = base + remaining
                 self._agent_status[key] = restored
+        # 전원의 위치·경로·여정 복원이 끝난 뒤 동행 관계를 검증한다.
+        # 옛 스냅샷에는 필드가 없으므로 동행 없이 복원된다.
+        escorts = {
+            key: st.get("escort_leader")
+            for key, st in states.items()
+            if key in self.agents and isinstance(st, dict)
+            and isinstance(st.get("escort_leader"), str)
+        }
+        self._escort_of = {}
+        for comp, lead in escorts.items():
+            if (lead not in self.active_agents or comp not in self.active_agents
+                    or lead == comp or lead in escorts
+                    or lead in self._role_type_agents or comp in self._role_type_agents
+                    or self._agent_location.get(comp) != self._agent_location.get(lead)):
+                continue
+            paused = (self._journey.get(lead) or {}).get("status") == "paused"
+            if self._agent_path.get(lead) or paused:
+                self._escort_of[comp] = lead
+                self._agent_path.pop(comp, None)
+                self._meeting_intent.pop(comp, None)
+                self._journey.pop(comp, None)
         if reseed_seen:
             self._seed_seen_visual(reseed_seen)
 

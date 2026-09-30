@@ -470,6 +470,7 @@ class _StepMixin:
             self._rollback_incoming(active_agent, incoming_msgs)
             return {"success": False, "agent_key": agent_key}
         result["move_to"]            = extras.get("move_to")
+        result["bring_along"]        = extras.get("bring_along")
         result["update_appearance"]  = extras.get("update_appearance")
         result["enter_state"]        = extras.get("enter_state")
         result["time_str"]           = time_str

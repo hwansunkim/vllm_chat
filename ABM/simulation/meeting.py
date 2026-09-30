@@ -182,7 +182,7 @@ class _MeetingMixin:
             if not result.get("success"):
                 continue
             if speaker_key in self._role_type_agents:
-                continue  # 역할형 — move_to를 해석하지 않는다. 절대 이동하지 않고 늘 같은 자리
+                continue  # 역할형 — move_to를 해석하지 않는다(bring_along 도 자연히 무효과)
             raw = result.get("move_to")
             if not raw or not isinstance(raw, str):
                 continue
@@ -474,3 +474,135 @@ class _MeetingMixin:
             "status":          status,
             "reason":          reason,
         })
+
+    # ── 동행 (bring_along) ────────────────────────────────────────────────────
+    #
+    # "지금 나와 같은 자리에 있는 사람을 데리고 함께 이동." move_to 추격(만남 lock)은
+    # 두 사람이 각자 수렴하길 기대하는 구조라, 빠른 쪽이 이미 도착해도 느린 쪽이 못
+    # 따라잡으면 서사가 어긋난다(실측: 엄마가 병원 진료를 마치고 돌아올 때까지 아이는
+    # 집에 있었는데 의사가 아이에게 말을 걸었다). 동행은 대상에게 따로 경로를 주지
+    # 않고, 이동 루프가 리더의 hop 을 **같은 wave·같은 이동 시간**으로 대상에게도
+    # 적용한다(runner._move_one_hop) — 그래서 도착 시점이 어긋날 수 없다.
+
+    def _companions_of(self, leader_key: str) -> list[str]:
+        """리더가 지금 데려가는 사람들(key 사전순)."""
+        return sorted(k for k, lead in self._escort_of.items() if lead == leader_key)
+
+    def _escort_release(self, leader_key: str, reason: str) -> list[str]:
+        """리더의 동행을 모두 푼다. 풀린 대상 목록 반환."""
+        released = self._companions_of(leader_key)
+        for k in released:
+            self._escort_of.pop(k, None)
+        if released:
+            logger.info(f"[동행 해제] {leader_key} → {released} ({reason})")
+        return released
+
+    def _escort_prune(self) -> None:
+        """더 이상 유효하지 않은 동행을 정리 — 리더나 대상이 비활성이 됐거나, 리더가
+        더는 가던 길이 없다(경로 없음 + 여정 멈춤도 아님)."""
+        for comp, lead in list(self._escort_of.items()):
+            if comp not in self.active_agents or lead not in self.active_agents:
+                self._escort_of.pop(comp, None)
+                continue
+            paused = (self._journey.get(lead) or {}).get("status") == "paused"
+            if not self._agent_path.get(lead) and not paused:
+                self._escort_of.pop(comp, None)
+
+    def _resolve_bring_target(self, speaker_key: str, raw) -> str | None:
+        """`bring_along` 항목 하나 → 데려갈 수 있는 에이전트 key. 안 되면 None(조용히 무시).
+
+        - 지목 규칙은 `_resolve_meet_target`과 같다(낯선 이는 `stranger_N`으로만).
+        - **지금(이동 전 스냅샷) 발화자와 같은 장소**여야 한다 — 원격으로 데려올 수 없다.
+        - 잠금(수면·개인 용무 등) 중이어도 된다(안고/이끌고 간다). 단 이미 이동 중
+          (traveling)인 사람은 같은 자리에 있는 게 아니라 안 된다.
+        - 역할형은 늘 고정 자리라 데려갈 수 없다.
+        """
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        name = raw.strip()
+        if name.startswith("stranger_"):
+            target = self._stranger_map.get(speaker_key, {}).get(name)
+        else:
+            target = self._normalize_target(name)
+            if target not in self.agents or self._is_anonymous_to(speaker_key, target):
+                return None
+        if not target or target == speaker_key or target not in self.active_agents:
+            return None
+        if target in self._role_type_agents:
+            return None
+        my_loc = self._agent_location.get(speaker_key, "")
+        if not my_loc or self._agent_location.get(target, "") != my_loc:
+            return None
+        now = self._current_elapsed_minutes(self.completed_waves)
+        if self._agent_traveling(target, now):
+            return None
+        return target
+
+    def _apply_bring_along(self, results: dict, wave_num: int,
+                           journey_dest_before: dict[str, str] | None = None) -> None:
+        """이번 wave 의 `bring_along`을 반영. `_apply_move_intents` + `_update_meeting_paths`
+        **뒤**, 이동 루프 **앞**에서 부른다(리더의 이번 경로가 확정된 뒤, 위치는 아직 이동 전).
+
+        규칙:
+        - `move_to`가 없으면(제자리) 무효과 — 기존 동행은 그대로 이어진다(가던 길 계속).
+        - `move_to`를 냈는데 경로가 안 생겼으면(지금 위치·도달 불가 등) 무효과이고
+          기존 동행도 풀린다.
+        - `move_to` + `bring_along` → 동행을 그 목록으로 교체. 단 이번 wave에 직접
+          `move_to`를 지정한 대상은 제외한다. 나머지의 기존 경로·만남·여정만 덮어쓴다.
+        - `move_to`만(동행 목록 없음) → 새 이동이므로 기존 동행을 푼다. 단 멈춘 여정의
+          같은 목적지를 다시 고른 "재출발"이면 이어간다.
+        - 역할형 발화자는 `_apply_move_intents`에서 이미 이동이 무시되므로 여기서도 무효과.
+        - 동행 대상이 스스로 `move_to`를 내면(깨어서 다른 데로 가겠다) 그 동행은 풀린다.
+        """
+        before = journey_dest_before or {}
+        # 이번 wave의 직접 이동 선택은 동행보다 우선한다. 경로를 삭제하기 전에
+        # 전원 의도를 수집해야 리더/대상의 처리 순서가 결과에 영향을 주지 않는다.
+        independent = {
+            k for k, r in results.items()
+            if r.get("success") and isinstance(r.get("move_to"), str)
+            and r["move_to"].strip() and k not in self._role_type_agents
+        }
+        for key in independent:
+            lead = self._escort_of.pop(key, None)
+            if lead is not None:
+                logger.info(f"[동행 해제] {lead} → [{key}] (본인이 move_to)")
+        for speaker_key, result in results.items():
+            if not result.get("success"):
+                continue
+            raw_move = result.get("move_to")
+            if speaker_key in self._role_type_agents or not raw_move:
+                continue
+            wanted = result.get("bring_along") or []
+            if isinstance(wanted, str):
+                wanted = [wanted]
+            if not self._agent_path.get(speaker_key):
+                self._escort_release(speaker_key, "no_path")
+                continue
+            if not wanted:
+                dest = raw_move.strip() if isinstance(raw_move, str) else ""
+                j = self._journey.get(speaker_key) or {}
+                if not (dest and before.get(speaker_key) == dest and j.get("destination") == dest):
+                    self._escort_release(speaker_key, "new_move")
+                continue
+            targets: list[str] = []
+            for raw in wanted:
+                t = self._resolve_bring_target(speaker_key, raw)
+                if t in independent:
+                    continue  # 직접 고른 경로/제자리 선택을 동행이 덮어쓰지 않는다
+                if t and t not in targets:
+                    targets.append(t)
+                elif not t:
+                    logger.info(f"[동행 무시] {speaker_key} → {raw!r} (같은 자리가 아니거나 데려갈 수 없음)")
+            for old in self._companions_of(speaker_key):
+                if old not in targets:
+                    self._escort_of.pop(old, None)
+            for t in targets:
+                # 대상의 가던 길·만남 의도·여정은 동행이 덮어쓴다. 대상이 누군가를 데려가던
+                # 중이었으면 그것도 끝난다(동행은 한 단계만).
+                self._agent_path.pop(t, None)
+                self._meeting_intent.pop(t, None)
+                self._journey_cancel(t, wave_num, "escorted")
+                self._escort_release(t, "escorted")
+                self._escort_of[t] = speaker_key
+            if targets:
+                logger.info(f"[동행] {speaker_key} → {targets} (경로 {self._agent_path.get(speaker_key)})")

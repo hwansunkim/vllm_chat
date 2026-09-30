@@ -39,7 +39,8 @@ from __future__ import annotations
 # `<...>` 자리표시자는 `build_output_contract()`가 채운다:
 #   <FIELD_LINES>    extra_fields의 JSON 라인
 #   <FIELD_HINTS>    extra_fields의 설명 라인
-#   <MOVE_TO_HINT>   move_to 의미 (위치 그래프/zone 유무에 따라 조건부)
+#   <MOVE_TO_HINT>   move_to 의미 (위치 그래프/zone 유무에 따라 조건부) + bring_along 설명
+#   <BRING_ALONG_LINE> JSON 의 "bring_along": null 줄 (위치 그래프 있고 고정 자리가 아닐 때만)
 #   <STATE_HINT>     enter_state 의미 (state_categories 설정 시에만 — §상태)
 #   <TARGETS>        지목 가능한 시스템 ID 목록
 #   <TARGETS_FOOTER> all/self 단축 표기
@@ -58,7 +59,7 @@ DEFAULT_OUTPUT_FORMAT_TEMPLATE = """
     "action_note": "행동이나 생각, 상황 묘사. 텍스트로 서술. 예: '한숨을 쉰다', '눈을 흘김'",
 <FIELD_LINES>
     "target": ["id1", "id2"] 또는 "all" 또는 "self",
-    "move_to": null,
+    "move_to": null,<BRING_ALONG_LINE>
     "update_appearance": null,
     "enter_state": null
 }
@@ -127,6 +128,24 @@ def build_fixed_place_contract(*, has_location_graph: bool = False) -> str:
     return _FIXED_PLACE_CONTRACT if has_location_graph else ""
 
 
+# 동행(bring_along) — 같은 자리의 사람을 데리고 함께 이동(meeting._apply_bring_along).
+# 위치 그래프가 있고 고정 자리(역할형)가 아닐 때만 광고한다 — 동작하지 않는 필드를
+# 광고하지 않는다(그래프가 없으면 경로 자체가 없다).
+_BRING_ALONG_SCHEMA_LINE = '\n    "bring_along": null,'
+_BRING_ALONG_HINT = (
+    '\n- bring_along: 지금 나와 **같은 자리**에 있는 사람을 데리고 함께 이동할 때, 그 사람들의 '
+    'ID를 배열로 적으세요(예: ["id1"]). 잠들어 있거나 다른 일을 하는 중이어도 데려갈 수 '
+    '있고, 나와 같은 길로 같은 때에 함께 도착합니다. 지금 나와 다른 곳에 있는 사람은 적을 '
+    '수 없습니다(적어도 무시됩니다). move_to 없이(이동하지 않으면) 아무 효과가 없습니다. '
+    '데려가지 않으면 생략하거나 null'
+)
+
+
+def bring_along_enabled(*, has_location_graph: bool = False, fixed_place: bool = False) -> bool:
+    """이 에이전트의 출력 계약에 bring_along 을 싣는가."""
+    return bool(has_location_graph) and not fixed_place
+
+
 def build_move_to_hint(*, has_location_graph: bool = False, has_zone: bool = False,
                        fixed_place: bool = False) -> str:
     """`move_to` 필드의 의미 설명 한 덩어리.
@@ -143,7 +162,7 @@ def build_move_to_hint(*, has_location_graph: bool = False, has_zone: bool = Fal
     hint = _MOVE_TO_GRAPH
     if has_zone:
         hint += _MOVE_TO_ZONE_SUFFIX
-    return hint
+    return hint + _BRING_ALONG_HINT
 
 
 # ── enter_state 의미 (조건부, state_categories 설정 시에만) ────────────────────
@@ -506,8 +525,15 @@ def build_output_contract(
     )
     state_hint = build_state_hint(state_categories)
 
+    bring_line = (
+        _BRING_ALONG_SCHEMA_LINE
+        if bring_along_enabled(has_location_graph=has_location_graph, fixed_place=fixed_place)
+        else ""
+    )
+
     return (
         tmpl
+        .replace("<BRING_ALONG_LINE>", bring_line)
         .replace("<FIELD_LINES>", field_lines)
         .replace("<FIELD_HINTS>", field_hints)
         .replace("<MOVE_TO_HINT>", move_to_hint)
@@ -613,6 +639,11 @@ def verify_contract(
     include_output_schema: bool = True,
 ) -> list[str]:
     """활성 feature마다 필요한 지시어가 조립된 프롬프트에 실제로 들어 있는지 확인.
+
+    `bring_along`은 의도적으로 검사하지 않는다 — 없어도 move_to 이동·추격은 그대로
+    동작하는 **선택적 보강**이고, 옛 프리즈 템플릿 오버라이드(`<BRING_ALONG_LINE>` 자리
+    표시자가 없음)는 경고 없이 통과해야 한다는 불변식이 있다
+    (`test_legacy_frozen_override_passes_verification`).
 
     문제를 발견하면 사람이 읽을 수 있는 경고 문자열 목록을 돌려준다(예외를 던지지
     않는다 — 시뮬레이션은 계속 돌아야 한다). 사용자가 옛 프리즈 템플릿을

@@ -219,9 +219,12 @@ class _RunnerMixin:
                         te["hhmm"], te["days"], now_elapsed,
                         self._sim_start_minutes, self._sim_start_weekday_idx,
                     )
+            event_invited: set[str] = set()
             for event in wave_events:
                 ev_result = self._execute_event(event)
                 entrant   = ev_result.get("entrant")
+                if entrant:
+                    event_invited.add(entrant)
                 if entrant and entrant not in current_wave:
                     current_wave[entrant] = []
                 # system_message로 알림을 받은 사람은 이번 wave에 발화 후보로
@@ -230,6 +233,7 @@ class _RunnerMixin:
                 # 확정됨)에 없어서, 자연히 다시 초대될 때까지 반응이 미뤄진다.
                 # 이미 라우팅으로 받은 incoming이 있으면 그대로 유지(setdefault).
                 for notified_key in ev_result.get("notified", []):
+                    event_invited.add(notified_key)
                     current_wave.setdefault(notified_key, [])
 
             # 퇴장(agent_exit)이 이번 wave 참가자를 비활성으로 만들었으면 이번 wave
@@ -274,6 +278,21 @@ class _RunnerMixin:
                     "action":       "clear",
                     "state":        st.get("state"),
                 })
+                resumed = st.get("resumed_status")
+                if resumed:
+                    # 동행으로 잠금 중에 옮겨진 사람 — 도착과 함께 원래 잠금으로 돌아갔다.
+                    self._emit("agent_status_change", {
+                        "wave":         disp_wave,
+                        "agent":        key,
+                        "display_name": self._key_to_alias.get(key, key),
+                        "action":       "enter",
+                        "state":        resumed.get("state"),
+                        "label":        self._status_display_label(resumed),
+                        "minutes":      max(0, resumed.get("until_elapsed", 0) - now_elapsed),
+                        "until_time_str": self._format_time_str(
+                            self._sim_start_minutes + resumed.get("until_elapsed", now_elapsed)
+                        ),
+                    })
             # 여정(journey.py) — traveling 해제 = 도착. 경유지면 멈춤/통과를, 목적지면
             # 여정 해제를 여기서 정한다. 아래 본인 해제 알림이 그 결과("동네로 가는
             # 길에 들름, 잠시 멈춤")를 읽으므로 반드시 알림 조립 **앞**이다. 멈춤이면
@@ -292,6 +311,12 @@ class _RunnerMixin:
             for key, st in expired_statuses.items():
                 if key not in self.active_agents:
                     continue
+                if st.get("resumed_status"):
+                    # 전원 잠금 스케줄러가 예약한 빈 wake_key는 이동 종료만으로
+                    # 수면을 깨우면 안 된다. 직접 수신·예약 이벤트 호출은 유지한다.
+                    if not current_wave.get(key) and key not in event_invited:
+                        current_wave.pop(key, None)
+                    continue  # 아직 잠금 중(잠든 채 도착) — 해제 알림·턴 없음
                 notice = {"speaker": "씬", "action_note": "",
                           "content": self._status_release_notice(key, st)}
                 current_wave[key] = [notice, *held_released.get(key, []),
@@ -641,9 +666,14 @@ class _RunnerMixin:
             # _update_meeting_paths 직전에 뜨면 그 변화들이 이미 스냅샷에 녹아
             # meeting_update가 영영 안 나간다. diff 기준은 "지난 wave 종료 시점"이다.
             meeting_before = dict(self._meeting_intent)
+            journey_dest_before = {k: j.get("destination") for k, j in self._journey.items()}
             self._apply_move_intents(results, disp_wave)
             self._update_meeting_paths(scene_injections)
+            # 3) 동행(bring_along) — 리더의 이번 경로가 확정된 뒤에 대상을 리더에 묶는다.
+            #    대상은 자기 경로 없이 아래 이동 루프에서 리더의 hop 을 그대로 밟는다.
+            self._apply_bring_along(results, disp_wave, journey_dest_before)
             self._emit_meeting_updates(disp_wave, meeting_before)
+            self._escort_prune()
 
             # 이동 시간 없이(zone_travel_max_minutes == 0) 경유지에 들어선 여정 중인
             # 사람 — 멈춤/통과는 루프가 **끝난 뒤** 이번 wave 최종 위치로 판정한다
@@ -651,6 +681,8 @@ class _RunnerMixin:
             # wave 에 떠나는 사람이 아직 있는 것으로 보이기도, 없기도 한다.
             instant_via_arrivals: list[str] = []
             for agent_key in list(self.active_agents):
+                if agent_key in self._escort_of:
+                    continue  # 동행 대상 — 리더의 hop 과 함께 움직인다(아래 companions)
                 path = self._agent_path.get(agent_key)
                 if not path:
                     continue
@@ -676,100 +708,25 @@ class _RunnerMixin:
                 old_loc = self._agent_location.get(agent_key, "")
                 if old_loc == next_loc:
                     continue
-                self._agent_location[agent_key] = next_loc
-                display          = self._key_to_alias.get(agent_key, agent_key)
-                to_exterior      = next_loc in self._exterior_locations
-                from_exterior    = old_loc  in self._exterior_locations
-                # zone 경계를 건너는 hop인가 — 어느 방에서 출발했든 구역을 나가는
-                # 쪽은 무조건 1홉이라(location.py::_expand_zone_edges "구역 안
-                # 어디서든 1홉 탈출") raw 위치가 이 hop 하나로 바로 바뀐다. 지리적
-                # 사실이라 에이전트가 아니라 엔진이 판단한다(0이면 기능 꺼짐).
-                # 외부 노드는 zone이 없어(zone='') 내부 zone과 자연히 구분된다.
-                crossing_zone = (
-                    self._zone_travel_max_minutes > 0
-                    and self._location_zone.get(old_loc, "") != self._location_zone.get(next_loc, "")
+                # 동행(bring_along): 이 사람이 데려가는 사람들 — 같은 hop 을 같은 wave 에,
+                # zone 경계면 **같은 이동 시간**으로 밟는다(meeting._apply_bring_along).
+                companions = self._companions_of(agent_key)
+                group = frozenset((agent_key, *companions))
+                crossing_zone, travel_minutes = self._move_one_hop(
+                    agent_key, old_loc, next_loc, disp_wave, now_elapsed, scene_injections,
+                    group=group,
                 )
-                if crossing_zone:
-                    lo, hi = self._zone_travel_min_minutes, self._zone_travel_max_minutes
-                    travel_minutes = random.randint(lo, hi) if lo < hi else lo
-                    self._enter_state(
-                        agent_key, now_elapsed, minutes=travel_minutes, state="traveling",
-                        arrival_location=next_loc, pending_arrival_announcement=True,
+                for comp in companions:
+                    self._move_one_hop(
+                        comp, self._agent_location.get(comp, ""), next_loc, disp_wave,
+                        now_elapsed, scene_injections, group=group,
+                        travel_minutes=travel_minutes if crossing_zone else 0, escorted_by=agent_key,
                     )
-                    self._emit("agent_status_change", {
-                        "wave":         disp_wave,
-                        "agent":        agent_key,
-                        "display_name": display,
-                        "action":       "enter",
-                        "state":        "traveling",
-                        # 방금 건 상태 dict 그대로 — 컨텍스트 배너와 같은 문구 정본.
-                        "label":        self._status_display_label(self._agent_status.get(agent_key)),
-                        "minutes":      travel_minutes,
-                        "until_time_str": self._format_time_str(
-                            self._sim_start_minutes + now_elapsed + travel_minutes
-                        ),
-                    })
-                self._emit("agent_move", {
-                    "wave": disp_wave, "agent": agent_key,
-                    "display_name": display,
-                    "from": old_loc, "to": next_loc,
-                    "to_exterior": to_exterior,
-                })
+                if not path:
+                    self._escort_release(agent_key, "arrived")
                 if (not crossing_zone and path and agent_key in self._journey
                         and self._is_zone_boundary(old_loc, next_loc)):
                     instant_via_arrivals.append(agent_key)
-                mover_visual = self._agent_visual.get(agent_key, "") or display
-                for other_key in self.active_agents:
-                    if other_key == agent_key:
-                        continue
-                    other_loc = self._agent_location.get(other_key, "")
-                    if other_loc in self._exterior_locations:
-                        continue  # 외부 공간의 에이전트에게는 씬 메시지 전달 안 함
-                    if to_exterior:
-                        # 내부에서 외부로 나갔을 때 — 출발지 사람들에게만 알림
-                        if other_loc == old_loc and not from_exterior:
-                            if agent_key in self._agent_knowledge.get(other_key, set()):
-                                scene_msg = f"[씬] {display}이(가) 자리를 떠났다."
-                            else:
-                                scene_msg = "[씬] 낯선 이가 자리를 떠났다."
-                            scene_injections.setdefault(other_key, []).append({
-                                "speaker": "씬", "content": scene_msg, "action_note": ""
-                            })
-                    else:
-                        # 일반 이동 (내부 → 내부, 외부 → 내부) — 도착지 사람들에게 알림
-                        if other_loc == next_loc:
-                            if crossing_zone:
-                                # zone 경계를 건넜다 — 실제 도착 알림은 이동 시간이
-                                # 다 찬 뒤에야 낸다(status.py
-                                # _deferred_arrival_scene_injections). 여기서 바로
-                                # 내면 raw 위치만 바뀐 시점에 "도착했다"가 나가버려
-                                # 아직 이동 중인데 말을 걸 수 있는 것처럼 보인다.
-                                continue
-                            if agent_key in self._agent_knowledge.get(other_key, set()):
-                                scene_msg = f"[씬] {display}이(가) 이곳에 도착했다."
-                            else:
-                                scene_msg = (
-                                    f"[씬] 낯선 이가 나타났다: {mover_visual}"
-                                    if mover_visual else "[씬] 낯선 이가 나타났다."
-                                )
-                                # 외모가 알림에 실렸다 = 인지함(재회 알림 기준).
-                                self._mark_seen(
-                                    other_key, agent_key, self._agent_visual.get(agent_key, "")
-                                )
-                            scene_injections.setdefault(other_key, []).append({
-                                "speaker": "씬", "content": scene_msg, "action_note": ""
-                            })
-                        elif other_loc == old_loc and old_loc:
-                            # 출발지에 남은 사람들에게도 이탈을 알린다. 이게 없으면
-                            # 남은 쪽 memory의 마지막 대화가 여전히 "진행 중"이라
-                            # 떠난 상대에게 계속 말을 거는 무성 발화가 반복된다.
-                            if agent_key in self._agent_knowledge.get(other_key, set()):
-                                scene_msg = f"[씬] {display}이(가) 자리를 떠났다."
-                            else:
-                                scene_msg = "[씬] 낯선 이가 자리를 떠났다."
-                            scene_injections.setdefault(other_key, []).append({
-                                "speaker": "씬", "content": scene_msg, "action_note": ""
-                            })
 
             # ── 여정 정리 (이동 후 위치 기준) ──────────────────────────────────
             # 이동 시간 없는 경계 hop 의 경유지 판정 + 구역 안 hop 으로 목적지에 들어선
@@ -1250,6 +1207,135 @@ class _RunnerMixin:
             sorted(locked_keys),
             key=lambda k: self._agent_active_status(k, now_elapsed)["until_elapsed"],
         )
+
+    def _move_one_hop(
+        self, agent_key: str, old_loc: str, next_loc: str, disp_wave: int,
+        now_elapsed: int, scene_injections: dict, *,
+        group: frozenset = frozenset(), travel_minutes: int | None = None,
+        escorted_by: str | None = None,
+    ) -> tuple[bool, int | None]:
+        """한 사람을 경로의 다음 노드로 한 칸 옮긴다 — raw 위치, zone 경계면 traveling
+        상태(이동 시간), `agent_move` 이벤트, 출발지/도착지 씬 알림까지.
+
+        반환 `(crossing_zone, travel_minutes)` — 동행(bring_along) 대상에게 **같은
+        이동 시간**을 넘기려고 쓴다(`travel_minutes`를 주면 새로 뽑지 않는다). `group`은
+        함께 움직이는 사람 전체(리더 + 동행)로, 서로에게는 알림을 내지 않는다.
+        `escorted_by`가 있으면 동행으로 끌려가는 쪽이다 — 잠금 상태면 그 잠금을
+        `resume_status`로 보관해 도착 후 복원한다.
+        """
+        if old_loc == next_loc:
+            return False, None
+        self._agent_location[agent_key] = next_loc
+        display          = self._key_to_alias.get(agent_key, agent_key)
+        to_exterior      = next_loc in self._exterior_locations
+        from_exterior    = old_loc  in self._exterior_locations
+        # zone 경계를 건너는 hop인가 — 어느 방에서 출발했든 구역을 나가는
+        # 쪽은 무조건 1홉이라(location.py::_expand_zone_edges "구역 안
+        # 어디서든 1홉 탈출") raw 위치가 이 hop 하나로 바로 바뀐다. 지리적
+        # 사실이라 에이전트가 아니라 엔진이 판단한다(0이면 기능 꺼짐).
+        # 외부 노드는 zone이 없어(zone='') 내부 zone과 자연히 구분된다.
+        crossing_zone = (
+            self._zone_travel_max_minutes > 0
+            and self._location_zone.get(old_loc, "") != self._location_zone.get(next_loc, "")
+        )
+        if crossing_zone:
+            if not travel_minutes:
+                lo, hi = self._zone_travel_min_minutes, self._zone_travel_max_minutes
+                travel_minutes = random.randint(lo, hi) if lo < hi else lo
+            extra: dict = {}
+            if len(group) > 1:
+                # 동행 그룹 — 서로에게는 도착/이탈 알림을 내지 않는다(함께 움직였다).
+                extra["travel_group"] = sorted(group)
+            if escorted_by is not None:
+                extra["escorted_by"] = escorted_by
+                # 잠금(수면·개인 용무 등) 중에 안겨/이끌려 가는 사람 — 잠금 자체는
+                # 풀리지 않는다. 이동하는 동안만 traveling 으로 두고(같은 시간 = 같은 wave
+                # 도착), 원래 잠금 dict 를 그대로 보관했다가 도착 시 복원한다
+                # (status._expire_agent_states — until_elapsed 원래 값 유지).
+                prev = self._agent_active_status(agent_key, now_elapsed)
+                if prev is not None and prev.get("state") != "traveling":
+                    extra["resume_status"] = {
+                        k: v for k, v in prev.items() if k != "held_incoming"
+                    }
+            self._enter_state(
+                agent_key, now_elapsed, minutes=travel_minutes, state="traveling",
+                arrival_location=next_loc, pending_arrival_announcement=True, **extra,
+            )
+            self._emit("agent_status_change", {
+                "wave":         disp_wave,
+                "agent":        agent_key,
+                "display_name": display,
+                "action":       "enter",
+                "state":        "traveling",
+                # 방금 건 상태 dict 그대로 — 컨텍스트 배너와 같은 문구 정본.
+                "label":        self._status_display_label(self._agent_status.get(agent_key)),
+                "minutes":      travel_minutes,
+                "until_time_str": self._format_time_str(
+                    self._sim_start_minutes + now_elapsed + travel_minutes
+                ),
+            })
+        move_ev = {
+            "wave": disp_wave, "agent": agent_key,
+            "display_name": display,
+            "from": old_loc, "to": next_loc,
+            "to_exterior": to_exterior,
+        }
+        if escorted_by is not None:
+            move_ev["escorted_by"] = escorted_by   # bring_along 동행(관전용 부가 정보)
+        self._emit("agent_move", move_ev)
+        mover_visual = self._agent_visual.get(agent_key, "") or display
+        for other_key in self.active_agents:
+            if other_key == agent_key or other_key in group:
+                continue  # 자신·함께 움직인 동행에게는 도착/이탈 알림을 내지 않는다
+            other_loc = self._agent_location.get(other_key, "")
+            if other_loc in self._exterior_locations:
+                continue  # 외부 공간의 에이전트에게는 씬 메시지 전달 안 함
+            if to_exterior:
+                # 내부에서 외부로 나갔을 때 — 출발지 사람들에게만 알림
+                if other_loc == old_loc and not from_exterior:
+                    if agent_key in self._agent_knowledge.get(other_key, set()):
+                        scene_msg = f"[씬] {display}이(가) 자리를 떠났다."
+                    else:
+                        scene_msg = "[씬] 낯선 이가 자리를 떠났다."
+                    scene_injections.setdefault(other_key, []).append({
+                        "speaker": "씬", "content": scene_msg, "action_note": ""
+                    })
+            else:
+                # 일반 이동 (내부 → 내부, 외부 → 내부) — 도착지 사람들에게 알림
+                if other_loc == next_loc:
+                    if crossing_zone:
+                        # zone 경계를 건넜다 — 실제 도착 알림은 이동 시간이
+                        # 다 찬 뒤에야 낸다(status.py
+                        # _deferred_arrival_scene_injections). 여기서 바로
+                        # 내면 raw 위치만 바뀐 시점에 "도착했다"가 나가버려
+                        # 아직 이동 중인데 말을 걸 수 있는 것처럼 보인다.
+                        continue
+                    if agent_key in self._agent_knowledge.get(other_key, set()):
+                        scene_msg = f"[씬] {display}이(가) 이곳에 도착했다."
+                    else:
+                        scene_msg = (
+                            f"[씬] 낯선 이가 나타났다: {mover_visual}"
+                            if mover_visual else "[씬] 낯선 이가 나타났다."
+                        )
+                        # 외모가 알림에 실렸다 = 인지함(재회 알림 기준).
+                        self._mark_seen(
+                            other_key, agent_key, self._agent_visual.get(agent_key, "")
+                        )
+                    scene_injections.setdefault(other_key, []).append({
+                        "speaker": "씬", "content": scene_msg, "action_note": ""
+                    })
+                elif other_loc == old_loc and old_loc:
+                    # 출발지에 남은 사람들에게도 이탈을 알린다. 이게 없으면
+                    # 남은 쪽 memory의 마지막 대화가 여전히 "진행 중"이라
+                    # 떠난 상대에게 계속 말을 거는 무성 발화가 반복된다.
+                    if agent_key in self._agent_knowledge.get(other_key, set()):
+                        scene_msg = f"[씬] {display}이(가) 자리를 떠났다."
+                    else:
+                        scene_msg = "[씬] 낯선 이가 자리를 떠났다."
+                    scene_injections.setdefault(other_key, []).append({
+                        "speaker": "씬", "content": scene_msg, "action_note": ""
+                    })
+        return crossing_zone, (travel_minutes if crossing_zone else None)
 
     def _forced_call_pool(self) -> set[str]:
         """"가용 전원"을 강제로 부르는 경로(빈 wave 안전장치, 전원 침묵 1회째 재투입,
@@ -1749,4 +1835,3 @@ class _RunnerMixin:
         if raw_jump > cap_minutes:
             return cap_minutes, f"{cap_reason} {raw_jump}→{cap_minutes}분"
         return raw_jump, None
-

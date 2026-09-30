@@ -383,6 +383,21 @@ class _StatusMixin:
             if now_elapsed >= st.get("until_elapsed", 0):
                 expired[key] = st
                 del self._agent_status[key]
+                # 동행(bring_along)으로 잠금 중에 옮겨진 사람 — 이동(traveling)이 끝나면
+                # 보관해 둔 원래 잠금을 **원래 until_elapsed 그대로** 복원한다(잠금은 이동
+                # 때문에 풀리거나 연장되지 않는다). 이동 중에 이미 끝났을 시각이면 복원하지
+                # 않고 평소처럼 해제(도착 알림 + 턴) — 도착과 함께 깬 것이다. 복원된 경우
+                # 이동 중 보류된 메시지도 잠금 쪽으로 넘기고, 호출부가 해제 알림·턴을 주지
+                # 않도록 `resumed_status`로 표시한다(도착 씬 알림은 그대로 나간다).
+                resume = st.get("resume_status")
+                if (st.get("state") == "traveling" and isinstance(resume, dict)
+                        and now_elapsed < resume.get("until_elapsed", 0)):
+                    restored = dict(resume)
+                    held = st.pop("held_incoming", None)
+                    if held:
+                        restored["held_incoming"] = list(held)
+                    self._agent_status[key] = restored
+                    st["resumed_status"] = restored
         return expired
 
     def _earliest_status_clear(self, keys, now_elapsed: int) -> int | None:
@@ -417,8 +432,9 @@ class _StatusMixin:
                 continue
             display      = self._key_to_alias.get(agent_key, agent_key)
             mover_visual = self._agent_visual.get(agent_key, "") or display
+            group        = set(st.get("travel_group") or ())   # 함께 움직인 동행끼리는 알리지 않음
             for other_key in self.active_agents:
-                if other_key == agent_key:
+                if other_key == agent_key or other_key in group:
                     continue
                 if self._agent_location.get(other_key, "") != next_loc:
                     continue

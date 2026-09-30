@@ -1263,7 +1263,7 @@ class TimedEventTests(unittest.TestCase):
 class _ScriptedLLM:
     """에이전트별·호출순서별 응답을 미리 정해두는 스텁 LLM.
 
-    script = {"a": [{"content":..., "target":..., "move_to":...,
+    script = {"a": [{"content":..., "target":..., "move_to":..., "bring_along":[...],
                      "update_appearance":..., "action_note":...}, ...], ...}
     시스템 프롬프트의 "너는 {key}다." 로 화자를 식별한다. 스크립트가 소진되면
     마지막 항목을 반복한다. 생략된 필드는 None(=미사용).
@@ -1287,6 +1287,7 @@ class _ScriptedLLM:
             "action_note":       turn.get("action_note", ""),
             "target":            turn.get("target", "self"),
             "move_to":           turn.get("move_to"),
+            "bring_along":       turn.get("bring_along"),
             "update_appearance": turn.get("update_appearance"),
             "enter_state":       turn.get("enter_state"),
         }), "", {}
@@ -4018,6 +4019,301 @@ class RoleTypeAgentTests(unittest.TestCase):
                       (root / "scenarios.js").read_text(encoding="utf-8"))
         # buildSimConfig 는 에이전트 객체를 스프레드한다 — role_type 이 그대로 실린다.
         self.assertIn("(s.agents || []).map(a => ({ ...a,", (root / "config.js").read_text(encoding="utf-8"))
+
+
+class BringAlongTests(unittest.TestCase):
+    """동행(bring_along) — 같은 자리의 사람을 데리고 함께 이동 (meeting._apply_bring_along,
+    runner._move_one_hop, status._expire_agent_states).
+
+    실측 버그: 엄마가 아픈 아이를 병원에 데려가려 했지만 아이는 move_to 추격으로 따라가다
+    엄마가 진료를 마치고 돌아올 때까지 못 따라잡았는데, 서사는 아이가 병원에 있는 것처럼
+    흘렀다. 동행은 대상에게 따로 경로를 주지 않고 리더의 hop 을 같은 wave·같은 이동
+    시간으로 그대로 밟게 한다.
+    """
+
+    # 집(거실·안방) ↔ 병원(대기실·진료실). 거실→대기실이 zone 경계(이동 시간).
+    GRAPH = [
+        {"name": "거실",   "connects_to": ["안방", "대기실"], "zone": "집"},
+        {"name": "안방",   "connects_to": ["거실"],           "zone": "집"},
+        {"name": "대기실", "connects_to": ["거실", "진료실"], "zone": "병원"},
+        {"name": "진료실", "connects_to": ["대기실"],         "zone": "병원"},
+    ]
+    SLEEP = [{"id": "sleep", "label": "수면", "min_minutes": 600, "max_minutes": 600}]
+
+    def _sim(self, tmp, script, locations, *, role=(), travel=(20, 40)):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in script}
+        llm = _ScriptedLLM(script)
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp, llm=llm,
+            agent_locations=locations, location_graph=self.GRAPH,
+            time_mode="variable",
+            time_categories=[{"id": "normal_scene", "label": "t", "min_minutes": 5, "max_minutes": 5}],
+            state_categories=self.SLEEP,
+            zone_travel_min_minutes=travel[0], zone_travel_max_minutes=travel[1],
+            role_type_agents=set(role),
+        )
+        ev = []
+        sim._emit = lambda t, d: ev.append((t, d))
+        return sim, llm, ev
+
+    @staticmethod
+    def _moves(ev, key):
+        return [(d["wave"], d["from"], d["to"]) for t, d in ev if t == "agent_move" and d["agent"] == key]
+
+    MOM = {"content": "병원 가자.", "target": "self", "move_to": "진료실", "bring_along": ["z"]}
+    IDLE = {"content": "...", "target": "self"}
+
+    def test_independent_move_wins_regardless_of_agent_order(self):
+        for leader, child in [("a", "z"), ("z", "a")]:
+            for already_escorted in (False, True):
+                with self.subTest(leader=leader, existing=already_escorted), tempfile.TemporaryDirectory() as tmp:
+                    sim, _, ev = self._sim(
+                        tmp, {leader: [dict(self.MOM, bring_along=[child]), self.IDLE],
+                              child: [dict(self.IDLE, move_to="안방"), self.IDLE]},
+                        {leader: "거실", child: "거실"}, travel=(0, 0),
+                    )
+                    if already_escorted:
+                        sim._escort_of[child] = leader
+                    sim.run(leader, max_waves=2, step_delay=0,
+                            resume_wave={leader: [], child: []}, starvation_waves=99)
+                    self.assertEqual(sim._agent_location[child], "안방")
+                    self.assertEqual(sim._agent_location[leader], "진료실")
+                    self.assertEqual(self._moves(ev, child), [(0, "거실", "안방")])
+                    self.assertEqual(sim._escort_of, {})
+
+    def test_sleeping_companion_is_not_auto_called_on_arrival(self):
+        for child in ("a", "z"):
+            with self.subTest(child=child), tempfile.TemporaryDirectory() as tmp:
+                sim, llm, _ = self._sim(
+                    tmp, {"m": [dict(self.MOM, bring_along=[child]), self.IDLE], child: [self.IDLE]},
+                    {"m": "거실", child: "거실"}, travel=(20, 20),
+                )
+                sim._enter_state(child, 0, minutes=600, state="sleep")
+                sim.run("m", max_waves=3, step_delay=0, resume_wave={"m": []}, starvation_waves=99)
+                self.assertNotIn(child, llm.calls)
+                self.assertEqual(sim._agent_status[child]["until_elapsed"], 600)
+                self.assertEqual(sim._agent_status[child]["state"], "sleep")
+                self.assertEqual(sim._agent_location[child], "진료실")
+
+    def test_arrival_sleep_restoration_preserves_explicit_calls(self):
+        for event in (False, True):
+            with self.subTest(event=event), tempfile.TemporaryDirectory() as tmp:
+                sim, llm, _ = self._sim(
+                    tmp, {"m": [self.IDLE], "a": [self.IDLE]},
+                    {"m": "대기실", "a": "대기실"}, travel=(20, 20),
+                )
+                sim._enter_state("a", 0, minutes=20, state="traveling",
+                                 resume_status={"state": "sleep", "until_elapsed": 600})
+                sim._elapsed_minutes = 20
+                incoming = [] if event else [{"speaker": "m", "content": "일어나.", "action_note": ""}]
+                events = [{"wave": 0, "type": "system_message", "targets": ["a"], "content": "알람"}] if event else []
+                sim.run("m", max_waves=1, step_delay=0, resume_wave={"a": incoming}, events=events)
+                self.assertEqual(llm.calls.get("a"), 1)
+
+    def test_snapshot_resume_keeps_companion_on_remaining_route(self):
+        for paused in (False, True):
+            with self.subTest(paused=paused), tempfile.TemporaryDirectory() as tmp:
+                sim, _, _ = self._sim(tmp, {"m": [self.MOM, self.IDLE], "z": [self.IDLE]},
+                                      {"m": "거실", "z": "거실"}, travel=(20, 20))
+                sim._enter_state("z", 0, minutes=600, state="sleep")
+                sim.run("m", max_waves=1, step_delay=0, resume_wave={"m": []}, starvation_waves=99)
+                if paused:
+                    sim._agent_path.pop("m", None)
+                    sim._journey["m"].update(status="paused", paused_at="대기실")
+                snapshot = json.loads(json.dumps(sim.export_agent_state()))
+                elapsed = sim._current_elapsed_minutes(sim.completed_waves)
+                resumed, llm, ev = self._sim(
+                    tmp, {"m": [dict(self.IDLE, move_to="진료실") if paused else self.IDLE, self.IDLE],
+                          "z": [self.IDLE]}, {"m": "거실", "z": "거실"}, travel=(20, 20),
+                )
+                resumed._elapsed_minutes = elapsed
+                resumed.restore_agent_state(snapshot)
+                self.assertEqual(resumed._escort_of, {"z": "m"})
+                resumed.run("m", max_waves=3, step_delay=0, resume_wave={"m": []}, starvation_waves=99)
+                self.assertEqual(resumed._agent_location, {"m": "진료실", "z": "진료실"})
+                self.assertEqual(self._moves(ev, "m"), self._moves(ev, "z"))
+                self.assertNotIn("z", llm.calls)
+                self.assertEqual(resumed._agent_status["z"]["until_elapsed"], 600)
+
+    def test_snapshot_rejects_invalid_escort_relationships(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _, _ = self._sim(tmp, {k: [self.IDLE] for k in ("m", "z", "d")},
+                                  {"m": "거실", "z": "거실", "d": "거실"}, role=("d",))
+            for leader in (None, "missing", "z", "d"):
+                snapshot = sim.export_agent_state()
+                snapshot["z"]["escort_leader"] = leader
+                sim.restore_agent_state(snapshot)
+                self.assertEqual(sim._escort_of, {})
+            snapshot = sim.export_agent_state()
+            snapshot["m"]["escort_leader"] = "z"
+            snapshot["z"]["escort_leader"] = "m"
+            sim.restore_agent_state(snapshot)
+            self.assertEqual(sim._escort_of, {})
+
+    # ── 1. zone 경계를 넘어 같은 wave 에 함께 도착 + 잠금 유지 + 씬 알림 ─────────────
+
+    def test_escort_crosses_zone_with_sleeping_child_and_arrives_same_wave(self):
+        import random
+        random.seed(7)
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, llm, ev = self._sim(
+                tmp,
+                {"m": [self.MOM, self.IDLE], "z": [self.IDLE], "p": [self.IDLE], "q": [self.IDLE]},
+                {"m": "거실", "z": "거실", "p": "거실", "q": "진료실"},
+            )
+            sim._enter_state("z", 0, minutes=600, state="sleep")   # 아이는 자는 중
+            sim.run("m", max_waves=8, step_delay=0, resume_wave={"m": []}, starvation_waves=99)
+
+        self.assertEqual(self._moves(ev, "z"), self._moves(ev, "m"),
+                         "동행은 리더와 같은 hop 을 같은 wave 에 밟는다")
+        self.assertEqual([(a, b) for _, a, b in self._moves(ev, "m")],
+                         [("거실", "대기실"), ("대기실", "진료실")])
+        self.assertEqual(sim._agent_location["z"], "진료실")
+        # zone 경계 이동 시간이 같다(각자 뽑으면 20~40분 중 달라질 수 있다).
+        trav = {d["agent"]: d["minutes"] for t, d in ev
+                if t == "agent_status_change" and d["action"] == "enter" and d["state"] == "traveling"}
+        self.assertEqual(trav["z"], trav["m"])
+        # 잠금은 풀리지도 연장되지도 않는다 — 원래 until_elapsed(600) 그대로 복원.
+        st = sim._agent_status.get("z")
+        self.assertEqual((st["state"], st["until_elapsed"]), ("sleep", 600))
+        self.assertNotIn("z", llm.calls, "잠든 채 옮겨졌으니 턴을 받지 않는다")
+        # 씬 알림: 출발지 사람(p)은 둘의 이탈을, 도착지(진료실) 사람(q)은 둘의 도착을 받는다.
+        p_mem = " ".join(m["content"] for m in sim.agents["p"].memory)
+        q_mem = " ".join(m["content"] for m in sim.agents["q"].memory)
+        self.assertEqual(p_mem.count("자리를 떠났다"), 2)
+        self.assertEqual(q_mem.count("나타났다") + q_mem.count("도착했다"), 2)
+        self.assertEqual([d.get("escorted_by") for t, d in ev
+                          if t == "agent_move" and d["agent"] == "z"], ["m", "m"])
+
+    # ── 2. 같은 장소가 아니면 조용히 무시 ─────────────────────────────────────────
+
+    def test_target_in_another_room_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _, ev = self._sim(
+                tmp,
+                {"m": [dict(self.MOM, bring_along=["p"]), self.IDLE], "p": [self.IDLE]},
+                {"m": "거실", "p": "안방"},
+            )
+            sim.run("m", max_waves=6, step_delay=0, resume_wave={"m": []}, starvation_waves=99)
+        self.assertEqual(sim._agent_location["p"], "안방")
+        self.assertEqual(self._moves(ev, "p"), [])
+        self.assertEqual(sim._agent_location["m"], "진료실")
+        self.assertEqual(sim._escort_of, {})
+
+    # ── 3. 여러 명 ────────────────────────────────────────────────────────────
+
+    def test_multiple_companions_all_move_together(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _, ev = self._sim(
+                tmp,
+                {"m": [dict(self.MOM, bring_along=["z", "y", "z"]), self.IDLE],
+                 "z": [self.IDLE], "y": [self.IDLE]},
+                {"m": "거실", "z": "거실", "y": "거실"},
+            )
+            sim.run("m", max_waves=6, step_delay=0, resume_wave={"m": []}, starvation_waves=99)
+        for k in ("z", "y"):
+            self.assertEqual(self._moves(ev, k), self._moves(ev, "m"), k)
+            self.assertEqual(sim._agent_location[k], "진료실")
+
+    # ── 4. move_to 없으면 무효과 / 기존 move_to 회귀 ─────────────────────────────
+
+    def test_bring_along_without_move_to_does_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _, ev = self._sim(
+                tmp,
+                {"m": [{"content": "가자.", "target": "self", "bring_along": ["z"]}, self.IDLE],
+                 "z": [self.IDLE]},
+                {"m": "거실", "z": "거실"},
+            )
+            sim.run("m", max_waves=3, step_delay=0, resume_wave={"m": []}, starvation_waves=99)
+        self.assertEqual((sim._agent_location["m"], sim._agent_location["z"]), ("거실", "거실"))
+        self.assertEqual([t for t, _ in ev if t == "agent_move"], [])
+        self.assertEqual(sim._escort_of, {})
+
+    def test_plain_move_to_is_unchanged(self):
+        import random
+        with tempfile.TemporaryDirectory() as tmp:
+            random.seed(3)
+            sim, _, ev = self._sim(
+                tmp, {"m": [dict(self.MOM, bring_along=None), self.IDLE], "z": [self.IDLE]},
+                {"m": "거실", "z": "거실"},
+            )
+            sim.run("m", max_waves=6, step_delay=0, resume_wave={"m": []}, starvation_waves=99)
+        self.assertEqual(sim._agent_location["z"], "거실")
+        self.assertEqual(self._moves(ev, "z"), [])
+        self.assertEqual([(a, b) for _, a, b in self._moves(ev, "m")],
+                         [("거실", "대기실"), ("대기실", "진료실")])
+
+    # ── 5. 역할형 ─────────────────────────────────────────────────────────────
+
+    def test_role_type_can_neither_be_brought_nor_bring(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _, ev = self._sim(
+                tmp,
+                {"m": [dict(self.MOM, bring_along=["d"]), self.IDLE],
+                 "d": [dict(self.MOM, bring_along=["z"])], "z": [self.IDLE]},
+                {"m": "거실", "d": "거실", "z": "거실"},
+                role=("d",),
+            )
+            sim.run("m", max_waves=6, step_delay=0, resume_wave={"m": [], "d": []},
+                    starvation_waves=99)
+        self.assertEqual(sim._agent_location["d"], "거실")     # 역할형은 데려갈 수 없다
+        self.assertEqual(sim._agent_location["z"], "거실")     # 역할형이 데려가려 해도 무효과
+        self.assertEqual(self._moves(ev, "d") + self._moves(ev, "z"), [])
+        self.assertEqual(sim._agent_location["m"], "진료실")
+
+    # ── 6. 해석 단위 ──────────────────────────────────────────────────────────
+
+    def test_resolution_rules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _, _ = self._sim(
+                tmp, {"m": [self.IDLE], "z": [self.IDLE], "p": [self.IDLE], "d": [self.IDLE]},
+                {"m": "거실", "z": "거실", "p": "안방", "d": "거실"}, role=("d",),
+            )
+            self.assertEqual(sim._resolve_bring_target("m", "z"), "z")
+            self.assertEqual(sim._resolve_bring_target("m", " z "), "z")
+            self.assertIsNone(sim._resolve_bring_target("m", "p"))        # 다른 방
+            self.assertIsNone(sim._resolve_bring_target("m", "d"))        # 역할형
+            self.assertIsNone(sim._resolve_bring_target("m", "m"))        # 자기 자신
+            self.assertIsNone(sim._resolve_bring_target("m", "없는사람"))
+            self.assertIsNone(sim._resolve_bring_target("m", 3))
+            sim._enter_state("z", 0, minutes=30, state="busy")           # 잠금이어도 된다
+            self.assertEqual(sim._resolve_bring_target("m", "z"), "z")
+            sim._enter_state("z", 0, minutes=30, state="traveling")      # 이동 중이면 안 된다
+            self.assertIsNone(sim._resolve_bring_target("m", "z"))
+
+    def test_parser_normalizes_bring_along(self):
+        from ABM.parser import parse_json_extras
+        f = lambda v: parse_json_extras(json.dumps({"content": "x", "bring_along": v}))["bring_along"]
+        self.assertEqual(f(["z", " y ", "z", "", 3]), ["z", "y"])
+        self.assertEqual(f("z, y"), ["z", "y"])
+        self.assertIsNone(f(None))
+        self.assertIsNone(f([]))
+        self.assertIsNone(parse_json_extras('{"content": "x"}')["bring_along"])
+
+    # ── 7. 출력 계약 ──────────────────────────────────────────────────────────
+
+    def test_output_contract_advertises_bring_along_only_where_it_works(self):
+        from ABM.prompt_contract import build_engine_contract, build_output_contract
+        with_graph = build_output_contract(["z"], [], has_location_graph=True)
+        self.assertIn('"bring_along": null,', with_graph)
+        self.assertIn("- bring_along: 지금 나와 **같은 자리**에 있는 사람을", with_graph)
+        no_graph = build_output_contract(["z"], [], has_location_graph=False)
+        self.assertNotIn("bring_along", no_graph)
+        fixed = build_output_contract(["z"], [], has_location_graph=True, fixed_place=True)
+        self.assertNotIn("bring_along", fixed)
+        self.assertNotIn("<BRING_ALONG_LINE>", with_graph + no_graph + fixed)
+        # 계약 미리보기(POST /contract-preview)가 쓰는 단일 진입점에도 그대로 실린다.
+        preview = build_engine_contract(extra_fields=[], available_targets=["z"],
+                                        location_graph={"거실": ["안방"], "안방": ["거실"]})
+        self.assertIn('"bring_along"', preview)
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _, _ = self._sim(tmp, {"m": [self.IDLE], "d": [self.IDLE]},
+                                  {"m": "거실", "d": "거실"}, role=("d",))
+            self.assertIn('"bring_along"', sim.agents["m"].get_system_message(["d"])["content"])
+            self.assertNotIn("bring_along", sim.agents["d"].get_system_message(["m"])["content"])
 
 
 class FixedClockContinuityTests(unittest.TestCase):
@@ -12302,7 +12598,8 @@ class MalformedJsonResponseTests(unittest.TestCase):
         from ABM.parser import parse_json_extras
         # 첫 객체의 move_to 는 null → None. 두 번째의 "창고" 를 주워오면 안 된다.
         self.assertEqual(parse_json_extras(self._MULTI),
-                         {"move_to": None, "update_appearance": None, "enter_state": None})
+                         {"move_to": None, "bring_along": None,
+                          "update_appearance": None, "enter_state": None})
 
     def test_plain_and_fenced_single_objects_still_parse(self):
         from ABM.parser import parse_json_response
