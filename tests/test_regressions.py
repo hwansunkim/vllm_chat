@@ -3691,6 +3691,335 @@ class InfectionModelTypeFrontendTests(unittest.TestCase):
         self.assertEqual(self._run()["stages"], normalize_symptom_stages(raw))
 
 
+class RoleTypeAgentTests(unittest.TestCase):
+    """역할형 에이전트(AgentConfig.role_type) — 관찰 대상(주역)이 아니라 역할만 수행.
+
+    소외 재투입·가용 전원 강제 호출·디렉터 감지에서 빠지고 move_to가 무시된다. 직접 지목·
+    예약 이벤트로 턴을 받는 것은 일반 에이전트와 같다. 기본값 False면 기존 동작 그대로.
+    """
+
+    GRAPH = [{"name": "대기실", "connects_to": ["진료실"]},
+             {"name": "진료실", "connects_to": ["대기실"]}]
+
+    def _sim(self, tmp, *, keys=("a", "b", "d"), role=("d",), script=None, locations=None,
+             graph=None, initial=None, system_agent=None):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in keys}
+        llm = _ScriptedLLM(script or {k: [{"content": "...", "target": "self"}] for k in keys})
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=llm, time_per_wave=10, initial_agents=initial,
+            agent_locations=locations, location_graph=graph,
+            role_type_agents=set(role), system_agent=system_agent,
+        )
+        emitted = []
+        sim._emit = lambda t, d: emitted.append((t, d))
+        return sim, llm, emitted
+
+    # ── 1. 소외 재투입 ─────────────────────────────────────────────────────────
+
+    def test_role_type_is_never_starved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _, _ = self._sim(tmp)
+            starved, since = sim._starved_agents(50, 0, 0, 3)
+            self.assertEqual(starved, ["a", "b"])
+            self.assertNotIn("d", since)
+            plain, _, _ = self._sim(tmp, role=())
+            self.assertEqual(plain._starved_agents(50, 0, 0, 3)[0], ["a", "b", "d"])  # 회귀
+
+    # ── 2. 가용 전원 강제 호출 ─────────────────────────────────────────────────
+
+    def test_empty_wave_fallback_skips_role_type_unless_everyone_is(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _, _ = self._sim(tmp)
+            self.assertEqual(sim._empty_wave_fallback(3, 0), {"a": [], "b": []})
+            only, _, _ = self._sim(tmp, keys=("d", "e"), role=("d", "e"))
+            self.assertEqual(only._empty_wave_fallback(3, 0), {"d": [], "e": []})   # 폴백
+            plain, _, _ = self._sim(tmp, role=())
+            self.assertEqual(plain._empty_wave_fallback(3, 0), {"a": [], "b": [], "d": []})
+
+    def test_first_all_silent_reinject_skips_role_type(self):
+        # 전원 침묵 1회째 "가용 전원 재투입"(run 루프)도 같은 후보 규칙을 쓴다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, llm, _ = self._sim(tmp, initial=["a", "b", "d"])
+            sim.run("a", max_waves=2, step_delay=0)     # W0: a 독백 → 전원 침묵 #1 → W1
+            self.assertEqual(llm.calls.get("b"), 1)
+            self.assertNotIn("d", llm.calls)
+
+    # ── 3. 디렉터 ─────────────────────────────────────────────────────────────
+
+    def test_director_never_sees_or_targets_role_type(self):
+        from unittest import mock
+        captured = {}
+
+        def fake(**kw):
+            captured.update(kw)
+            return {"interventions": [{"targets": ["all"], "message": "종이 울린다"},
+                                      {"targets": ["d"], "message": "의사 선생님?"}],
+                    "director_memo": "", "reason": "t"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _, emitted = self._sim(
+                tmp, graph=self.GRAPH,
+                locations={"a": "대기실", "b": "진료실", "d": "진료실"},
+                system_agent={"enabled": True, "intervention_interval": 1,
+                              "silence_threshold": 1, "display_name": "내레이터"})
+            sim._last_spoke_wave = {}
+            sim.shared_log = [{"speaker": "d", "content": "다음 분", "action_note": ""}] * 5
+            with mock.patch("ABM.system_agent.run_system_agent", side_effect=fake):
+                wave = sim._run_system_agent(10, {})
+        self.assertEqual(set(captured["active_agents"]), {"a", "b"})
+        self.assertEqual(sorted(captured["silent_agents"]), ["a", "b"])
+        # b는 역할형 d와 같은 방이라 고립이 아니다 — 고립 판정에서 역할형도 "대화 상대"로
+        # 인정된다(목록에서 빠지는 건 역할형 자신뿐). a만 혼자라 고립.
+        self.assertEqual(captured["isolated_agents"], ["a"])
+        self.assertNotIn("d", captured["repetition_info"])
+        self.assertNotIn("d", wave)
+        ivs = [d for t, d in emitted if t == "system_intervention"]
+        self.assertEqual([iv["targets"] for iv in ivs], [["a", "b"]])   # "d" 지목 개입은 버려짐
+        self.assertEqual(ivs[0]["target_label"], "전체")
+
+    # ── 4. 이동 무시 ──────────────────────────────────────────────────────────
+
+    def test_role_type_move_to_is_always_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for move in ("대기실", "a", "진료실", "없는 곳", "  대기실  "):
+                with self.subTest(move=move):
+                    sim, _, _ = self._sim(tmp, graph=self.GRAPH,
+                                          locations={"a": "대기실", "b": "대기실", "d": "진료실"})
+                    sim._apply_move_intents({"d": {"success": True, "move_to": move}}, 1)
+                    sim._update_meeting_paths({})
+                    self.assertEqual(sim._agent_location["d"], "진료실")
+                    self.assertNotIn("d", sim._meeting_intent)
+                    self.assertFalse(sim._agent_path.get("d"))
+                    self.assertNotIn("d", sim._journey)
+            # 회귀: 일반 에이전트는 그대로 이동 의도가 해석된다.
+            plain, _, _ = self._sim(tmp, role=(), graph=self.GRAPH,
+                                    locations={"a": "대기실", "b": "대기실", "d": "진료실"})
+            plain._apply_move_intents({"d": {"success": True, "move_to": "대기실"}}, 1)
+            self.assertTrue(plain._agent_path.get("d"))
+
+    def test_role_type_prompt_says_fixed_place_instead_of_move_instructions(self):
+        from ABM.prompt_contract import verify_contract
+        with tempfile.TemporaryDirectory() as tmp:
+            for graph in (self.GRAPH, None):
+                with self.subTest(graph=bool(graph)):
+                    locs = {"a": "대기실", "b": "대기실", "d": "진료실"} if graph else None
+                    sim, _, _ = self._sim(tmp, graph=graph, locations=locs)
+                    doc = sim.agents["d"].get_system_message(["a"])["content"]
+                    pat = sim.agents["a"].get_system_message(["d"])["content"]
+                    self.assertIn("항상 null로 두세요. 당신은 지금 있는 장소에 고정되어", doc)
+                    self.assertNotIn("만나러 갈 사람의 ID", doc)
+                    self.assertNotIn("이동할 위치 이름", doc)
+                    self.assertIn('"move_to"', doc)           # 스키마 키는 유지(파서 호환)
+                    self.assertNotIn("고정되어", pat)          # 일반 에이전트는 그대로
+                    if graph:
+                        self.assertIn("[고정된 자리]", doc)
+                        self.assertNotIn("[고정된 자리]", pat)
+                        self.assertIn("만나러 갈 사람의 ID", pat)
+                        self.assertEqual(verify_contract(doc, has_location_graph=True), [])
+                    else:
+                        self.assertNotIn("[고정된 자리]", doc)
+
+    # ── 5. 직접 지목·예약 이벤트는 정상 ────────────────────────────────────────
+
+    DOCTOR_SCRIPT = {
+        # a와 b가 계속 서로 이야기하고, a의 6번째 턴에서야 의사(d)를 부른다.
+        "a": [{"content": "b야", "target": "b"}] * 5 + [{"content": "선생님!", "target": "d"}]
+             + [{"content": "b야", "target": "b"}],
+        "b": [{"content": "응 a야", "target": "a"}],
+        "d": [{"content": "어디가 불편하세요?", "target": "a", "move_to": "대기실"}],
+    }
+
+    def test_role_type_stays_quiet_until_directly_targeted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, llm, emitted = self._sim(tmp, script=self.DOCTOR_SCRIPT)
+            sim.run("a", max_waves=14, step_delay=0, starvation_waves=2)
+            reinjected = [x for t, d in emitted if t == "starvation_reinject" for x in d["agents"]]
+            self.assertNotIn("d", reinjected)
+            self.assertEqual(llm.calls.get("d"), 1, "지목받은 한 번만 턴을 받는다")
+            d_lines = [e for e in sim.shared_log if e.get("speaker") == "d"]
+            self.assertEqual([e["content"] for e in d_lines], ["어디가 불편하세요?"])
+            a_target_wave = next(e["wave"] for e in sim.shared_log
+                                 if e.get("speaker") == "a" and e.get("content") == "선생님!")
+            self.assertEqual(d_lines[0]["wave"], a_target_wave + 1)
+
+    def test_same_scenario_without_role_type_starves_d_back_in(self):
+        # 회귀 기준선: 역할형이 아니면 d도 소외 재투입으로 억지로 불려 나온다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, llm, emitted = self._sim(tmp, role=(), script=self.DOCTOR_SCRIPT)
+            sim.run("a", max_waves=14, step_delay=0, starvation_waves=2)
+            reinjected = [x for t, d in emitted if t == "starvation_reinject" for x in d["agents"]]
+            self.assertIn("d", reinjected)
+            self.assertGreater(llm.calls.get("d", 0), 1)
+
+    def test_role_type_enters_via_scheduled_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, llm, _ = self._sim(tmp, initial=["a", "b"], script=self.DOCTOR_SCRIPT)
+            sim.run("a", max_waves=4, step_delay=0, starvation_waves=99, events=[
+                {"wave": 2, "type": "agent_enter", "agent": "d", "message": "의사가 출근했다."}])
+            self.assertIn("d", sim.active_agents)
+            self.assertGreaterEqual(llm.calls.get("d", 0), 1)
+
+    # ── 7. 전원 잠금 판정은 역할형을 뺀 주역 기준 (QA 회귀: cfd0dc9 무력화) ─────────
+
+    def _sleep_run(self, tmp, role):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        keys = ("a", "b", "d") if role else ("a", "b")
+        script = {"a": [{"content": "잔다.", "target": "self", "enter_state": "sleep"},
+                        {"content": "음냐...", "target": "self", "enter_state": "sleep"}],
+                  "b": [{"content": "나도 잔다.", "target": "self", "enter_state": "sleep"},
+                        {"content": "쿨쿨...", "target": "self", "enter_state": "sleep"}],
+                  "d": [{"content": "(차트를 본다)", "target": "self"}]}
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in keys}
+        llm = _ScriptedLLM({k: script[k] for k in keys})
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp, llm=llm,
+            time_mode="variable",
+            time_categories=[{"id": "normal_scene", "label": "t", "min_minutes": 10, "max_minutes": 10}],
+            state_categories=[{"id": "sleep", "label": "수면", "min_minutes": 400, "max_minutes": 400}],
+            role_type_agents={"d"} if role else set(),
+        )
+        jumps = []
+        sim._emit = lambda t, d: (jumps.append(d) if t == "time_jump" and d.get("mode") == "idle" else None)
+        sim.run("a", max_waves=4, step_delay=0.0, resume_wave={"a": [], "b": []})
+        return sim, llm, jumps
+
+    def test_all_protagonists_asleep_jumps_to_clear_time_even_with_role_type(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_sim, base_llm, base_jumps = self._sleep_run(tmp, role=False)
+            sim, llm, jumps = self._sleep_run(tmp, role=True)
+        self.assertTrue(base_jumps)
+        self.assertEqual(base_jumps[0]["reason"], "전원 상태(수면·이동 등) 해제 대기")
+        # 늘 깨어 있는 역할형 d가 있어도 주역(a·b) 전원 수면이면 똑같이 해제 시각으로 한 번에.
+        self.assertEqual([(j["reason"], j["minutes"]) for j in jumps],
+                         [(j["reason"], j["minutes"]) for j in base_jumps])
+        # 60/120/180분 조각으로 흐르며 같은 주역이 매 wave 깨어나 잠꼬대하지 않는다.
+        self.assertEqual(llm.calls, base_llm.calls)
+        self.assertNotIn("d", llm.calls)
+
+    # ── 8. 공유 배경은 역할형에게 가지 않는다 (step._background_for) ───────────────
+
+    BG = "[배경] 테스트"
+
+    def test_role_type_turn_messages_have_no_shared_background(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, llm, _ = self._sim(tmp, script={
+                "a": [{"content": "선생님!", "target": "d"}, {"content": "...", "target": "self"}],
+                "b": [{"content": "...", "target": "self"}],
+                "d": [{"content": "어디가 불편하세요?", "target": "a"}],
+            })
+            seen: dict[str, list] = {}
+            real = sim._llm
+
+            def spy(messages, **kw):
+                sys_text = messages[0]["content"]
+                who = next(k for k in ("a", "b", "d") if f"너는 {k}다." in sys_text)
+                seen.setdefault(who, []).append(messages)
+                return real(messages, **kw)
+
+            sim._llm = spy
+            sim._agent_llm = {}
+            sim.run("a", max_waves=3, step_delay=0, starvation_waves=99)
+        self.assertIn("d", seen)
+        for msgs in seen["d"]:
+            self.assertFalse(any(self.BG in (m.get("content") or "") for m in msgs), msgs)
+        for msgs in seen["a"]:                         # 회귀 — 일반 에이전트는 그대로
+            self.assertEqual(msgs[1]["content"], self.BG)
+
+    def test_background_helper_feeds_compression_and_language_fix_paths(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _, _ = self._sim(tmp)
+            self.assertEqual(sim._background_for("d"), [])
+            self.assertEqual(sim._background_for("a"), sim.background_log)
+
+            # 기억 압축 판정(_maybe_compress)의 토큰 추정에 넘어가는 배경
+            sim._db, sim._sim_id = object(), "run-x"
+            got = {}
+            for key in ("a", "d"):
+                agent = sim.agents[key]
+                agent.memory = [{"role": "user", "content": "x"}] * 5
+                with mock.patch.object(agent, "estimate_context_tokens",
+                                       side_effect=lambda bg, *a, **k: got.__setitem__(key, bg) or 0):
+                    sim._maybe_compress(agent, key, 0, 0, [])
+            self.assertEqual(got["d"], [])
+            self.assertEqual(got["a"], sim.background_log)
+
+            # 언어 교정 재시도(_retry_language_fix)가 다시 조립하는 메시지의 배경
+            sim._llm = lambda msgs, **kw: (json.dumps({"content": "괜찮아요", "target": "self"}), "", {})
+            sim._agent_llm = {}
+            for key in ("a", "d"):
+                agent = sim.agents[key]
+                real_build = agent.build_messages
+                with mock.patch.object(agent, "build_messages",
+                                       side_effect=lambda bg, *a, **k: (got.__setitem__(f"fix-{key}", bg),
+                                                                        real_build(bg, *a, **k))[1]):
+                    sim._retry_language_fix(agent, key, [], None, "漢字")
+            self.assertEqual(got["fix-d"], [])
+            self.assertEqual(got["fix-a"], sim.background_log)
+
+    def test_interview_also_omits_background_for_role_type(self):
+        from backend.api.simulation.interview import build_interview_messages
+        from backend.api.simulation.schemas import SimStartConfig
+        cfg = SimStartConfig(
+            agents=[{"name": "a", "system_prompt": "너는 a다."},
+                    {"name": "d", "system_prompt": "너는 d다.", "role_type": True}],
+            background="이 집은 3층이다.", start_agent="a",
+        )
+
+        class _DB:
+            def get_full_memory(self, run_id, key): return {}
+            def get_agent_snapshots(self, run_id): return {}
+
+        for key, expect in (("a", True), ("d", False)):
+            msgs = build_interview_messages("run-x", key, "요즘 어때요?", "memory_only", cfg, _DB())
+            has_bg = any("이 집은 3층이다." in (m.get("content") or "") for m in msgs)
+            self.assertEqual(has_bg, expect, key)
+
+    # ── 6. 배선·스키마·프론트 계약 ──────────────────────────────────────────────
+
+    def test_schema_default_and_all_three_assembly_paths_pass_role_type(self):
+        from backend.api.simulation.schemas import AgentConfig
+        self.assertFalse(AgentConfig(name="a", system_prompt="x").role_type)
+        self.assertTrue(AgentConfig(name="a", system_prompt="x", role_type=True).role_type)
+        root = Path(__file__).resolve().parent.parent
+        for rel in ("ABM/simulation/headless.py", "backend/api/simulation/runtime/load.py",
+                    "backend/api/simulation/runtime/resume.py"):
+            with self.subTest(path=rel):
+                src = (root / rel).read_text(encoding="utf-8")
+                self.assertIn("role_type_agents={a.name for a in cfg.agents if a.role_type}", src)
+
+    def test_headless_run_honours_role_type(self):
+        from ABM.simulation.headless import run_config
+        from backend.api.simulation.schemas import SimStartConfig
+        cfg = SimStartConfig(
+            agents=[{"name": "a", "system_prompt": "너는 a다."},
+                    {"name": "b", "system_prompt": "너는 b다."},
+                    {"name": "d", "system_prompt": "너는 d다.", "role_type": True}],
+            background="테스트", start_agent="a", max_waves=3, step_delay=0, time_per_wave=10,
+        )
+        holder = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            run_config(cfg, llm=_ScriptedLLM({k: [{"content": "...", "target": "self"}]
+                                              for k in ("a", "b", "d")}),
+                       log_dir=tmp, on_sim_ready=lambda s: holder.setdefault("sim", s))
+        self.assertEqual(holder["sim"]._role_type_agents, {"d"})
+
+    def test_frontend_editor_and_loader_carry_role_type(self):
+        root = Path(__file__).resolve().parent.parent / "frontend" / "js" / "sim"
+        agents_js = (root / "settings" / "agents.js").read_text(encoding="utf-8")
+        self.assertIn("sim-acrd-role-cb", agents_js)
+        self.assertIn("sim.agents[idx].role_type = e.target.checked", agents_js)
+        self.assertIn("소외 재투입·전원 침묵 호출·디렉터 감지 대상에서 빠지며 이동도 하지 않습니다", agents_js)
+        self.assertIn("role_type:          a.role_type === true",
+                      (root / "scenarios.js").read_text(encoding="utf-8"))
+        # buildSimConfig 는 에이전트 객체를 스프레드한다 — role_type 이 그대로 실린다.
+        self.assertIn("(s.agents || []).map(a => ({ ...a,", (root / "config.js").read_text(encoding="utf-8"))
+
+
 class FixedClockContinuityTests(unittest.TestCase):
     """fixed 시간 모드의 시계가 run 경계를 넘어 연속되는지 (m4).
 

@@ -45,6 +45,7 @@ export function renderAgentListInConfig() {
       <div class="sim-acrd-names">
         <span class="sim-acrd-id">${esc(agent.name)}</span>
         ${agent.display_name ? `<span class="sim-acrd-display">${esc(agent.display_name)}</span>` : ''}
+        ${agent.role_type ? `<span class="sim-acrd-role-badge" title="역할형 에이전트">역할형</span>` : ''}
       </div>
       <label class="sim-active-toggle" title="처음부터 등장">
         <input type="checkbox" class="acrd-active-cb" data-idx="${idx}" ${isActive ? 'checked' : ''}/>
@@ -113,6 +114,13 @@ export function renderAgentListInConfig() {
                  title="비워두면 시뮬레이션 기본 temperature를 사용합니다"/>
         </div>
       </div>
+      <div class="sim-acrd-field-row">
+        <label class="sim-acrd-role-toggle"
+               title="관찰 대상이 아니라 특정 역할만 수행하는 에이전트입니다 — 직접 지목되거나 이벤트로 불릴 때만 반응하고, 소외 재투입·전원 침묵 호출·디렉터 감지 대상에서 빠지며 이동도 하지 않습니다.">
+          <input type="checkbox" class="sim-acrd-role-cb" data-idx="${idx}" ${agent.role_type ? 'checked' : ''}/>
+          역할형 <span class="sim-acrd-label-hint">(주역이 아닌 역할 전용 — 불릴 때만 반응, 이동 안 함)</span>
+        </label>
+      </div>
       <div class="sim-acrd-prompt-row">
         <label>외모 묘사 <span class="sim-acrd-label-hint">(모르는 사람에게 보이는 외모)</span></label>
         <textarea class="sim-acrd-prompt" data-idx="${idx}" data-field="visual_description" data-autogrow
@@ -160,6 +168,23 @@ export function renderAgentListInConfig() {
       lbl.textContent = e.target.checked ? '초기' : '대기';
       lbl.classList.toggle('active', e.target.checked);
       renderScenarioEvents();
+    });
+
+    // 역할형 토글 — 불리언이라 범용 data-field 처리(문자열 값)를 타지 않게 따로 받는다.
+    // 저장/전송은 buildSimConfig()가 에이전트 객체를 스프레드하므로 role_type이 그대로 실린다.
+    body.querySelector('.sim-acrd-role-cb').addEventListener('change', e => {
+      sim.agents[idx].role_type = e.target.checked;
+      const names = header.querySelector('.sim-acrd-names');
+      let badge = names.querySelector('.sim-acrd-role-badge');
+      if (e.target.checked && !badge) {
+        badge = document.createElement('span');
+        badge.className = 'sim-acrd-role-badge';
+        badge.title = '역할형 에이전트';
+        badge.textContent = '역할형';
+        names.appendChild(badge);
+      } else if (!e.target.checked && badge) {
+        badge.remove();
+      }
     });
 
     // Delete

@@ -59,6 +59,7 @@ class Agent:
         self.engine_contract: str = ""
         self._has_location_graph: bool = False
         self._has_zone: bool = False
+        self._fixed_place: bool = False   # 역할형 에이전트 — move_to 대신 "고정된 자리" 안내
         # 상태(수면·이동 등) 카테고리 — enter_state 힌트를 조건부로 노출하는 데 쓴다.
         # 시뮬레이션 전체가 공유하는 정적 설정이라 계약과 함께 한 번만 걸어둔다.
         self._state_categories: list[dict] | None = None
@@ -119,6 +120,7 @@ class Agent:
         has_zone: bool = False,
         relationships: dict[str, str] | None = None,
         state_categories: list[dict] | None = None,
+        fixed_place: bool = False,
     ) -> None:
         """시뮬레이션이 소유한 정적 계약 블록(지도/시간/감염/관계)을 이 에이전트에 건다.
 
@@ -138,6 +140,8 @@ class Agent:
         self._has_zone = bool(has_zone)
         self.relationships = dict(relationships or {})
         self._state_categories = list(state_categories) if state_categories else None
+        # 역할형 에이전트 — 출력 계약의 move_to 설명을 "고정된 자리" 안내로 바꾼다.
+        self._fixed_place = bool(fixed_place)
 
     def get_system_message(
         self,
@@ -165,6 +169,7 @@ class Agent:
                 has_zone=self._has_zone,
                 speaker_relationships=self.relationships or None,
                 state_categories=self._state_categories,
+                fixed_place=getattr(self, "_fixed_place", False),
             ),
         }
 

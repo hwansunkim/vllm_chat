@@ -2277,3 +2277,10 @@
 .sim-itv-question:disabled { background: #f1f5f9; color: #94a3b8; }
 .sim-itv-send-btn { flex-shrink: 0; height: 38px; }
 .sim-itv-send-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* 역할형 에이전트 — 카드 헤더 뱃지 + 설정 토글 */
+.sim-acrd-role-badge {
+  font-size: 10px; font-weight: 600; color: #6d28d9; background: rgba(139,92,246,0.12);
+  border-radius: 4px; padding: 1px 5px; margin-left: 4px; white-space: nowrap;
+}
+.sim-acrd-role-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #334155; cursor: pointer; }

@@ -120,6 +120,19 @@ class _StepMixin:
             agent.add_to_memory(msg, elapsed_minutes=elapsed_minutes)
         return incoming_msgs
 
+    def _background_for(self, agent_key: str) -> list:
+        """이 에이전트에게 줄 공유 배경(background_log).
+
+        역할형 에이전트(`_role_type_agents`)는 공유 배경을 받지 않는다 — 공유 배경은
+        "이 집 사람들" 시점(집 구조·가족 일정 등)으로 쓰여 있어 병원 의사 같은 역할형
+        에게는 관련 없는 정보라 혼란만 준다. 필요한 공유 사실은 시나리오 작성자가 그
+        에이전트의 system_prompt에 직접 적는다. 토글 없이 role_type=True면 항상 빈 목록.
+        턴 호출·토큰 추정/트림·기억 압축·언어 교정 재시도가 모두 이 한 곳을 거친다.
+        """
+        if agent_key in self._role_type_agents:
+            return []
+        return self.background_log
+
     def _maybe_compress(
         self,
         agent:             Agent,
@@ -140,7 +153,7 @@ class _StepMixin:
         ):
             return
         est = agent.estimate_context_tokens(
-            self.background_log, other_agents, self._key_to_alias, target_sections,
+            self._background_for(agent_key), other_agents, self._key_to_alias, target_sections,
             situation_targets=situation_targets, ephemeral_msgs=ephemeral_msgs,
             memory_block=memory_block,
         )
@@ -192,7 +205,7 @@ class _StepMixin:
         reasoning, usage = "", {}
         for attempt in range(1, max_retries + 1):
             fix_msgs = agent.build_messages(
-                self.background_log, visible_agents, alias, target_sections,
+                self._background_for(agent_key), visible_agents, alias, target_sections,
                 location_name, situation_targets, ephemeral_msgs, memory_block,
             )
             fix_msgs.append({"role": "assistant", "content": current_bad})
@@ -392,11 +405,11 @@ class _StepMixin:
         mem_block = self._fresh_memory_block(agent_key, now_elapsed)
 
         active_agent.trim_to_token_limit(
-            self.background_log, visible_agents, extended_alias, target_sections,
+            self._background_for(agent_key), visible_agents, extended_alias, target_sections,
             my_loc, sit_targets, ephemeral_msgs, mem_block,
         )
         est_tokens = active_agent.estimate_context_tokens(
-            self.background_log, visible_agents, extended_alias, target_sections,
+            self._background_for(agent_key), visible_agents, extended_alias, target_sections,
             my_loc, sit_targets, ephemeral_msgs, mem_block,
         )
 
@@ -410,7 +423,7 @@ class _StepMixin:
         })
 
         call_messages = active_agent.build_messages(
-            self.background_log, visible_agents, extended_alias, target_sections,
+            self._background_for(agent_key), visible_agents, extended_alias, target_sections,
             my_loc, sit_targets, ephemeral_msgs, mem_block,
         )
 

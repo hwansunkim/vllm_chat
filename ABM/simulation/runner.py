@@ -367,7 +367,7 @@ class _RunnerMixin:
                 # 이미 지났으므로 여기서 한 번 더). 이동 중인 사람에게 턴을 주면
                 # 아직 도착 안 한 곳에서 활동하는 서사가 나온다(W82 재현).
                 available = sorted(
-                    k for k in self.active_agents
+                    k for k in self._forced_call_pool()
                     if not self._agent_unavailable(k, now_elapsed)
                 )
                 if available:
@@ -891,11 +891,13 @@ class _RunnerMixin:
                 # 재투입 대상이 비어도(2회째+ 소외 해당자 없음) 가용자가 있으면
                 # idle 점프 규칙은 그대로다.
                 silence_count += 1
+                # 역할형은 "가용 전원"에서 뺀다(전원 역할형이면 전체) — _forced_call_pool.
+                pool = self._forced_call_pool()
                 state_locked = {
-                    k for k in self.active_agents
+                    k for k in pool
                     if self._agent_unavailable(k, now_elapsed)
                 }
-                available = sorted(self.active_agents - state_locked)
+                available = sorted(pool - state_locked)
                 reinject: list[str] = []
                 if available:
                     idle_jump = silence_count >= 2
@@ -1015,13 +1017,21 @@ class _RunnerMixin:
                     # 그대로 둔다 — 다음 "전원 침묵" 사이클에 다시 판단하면 되므로
                     # 막히지 않는다. 단 그 조각도 누군가의 해제 시점은 넘지 않는다
                     # (아래 상태 해제 클램프).
+                    # "전원"은 강제 호출 후보(`_forced_call_pool` — 역할형 제외)
+                    # 기준이다. 늘 깨어 있는 역할형(의사 등)이 하나만 있어도 원본
+                    # active_agents 기준이면 전원 잠금이 영원히 성립하지 않아, 주역
+                    # 전원이 자는데도 60/120/180분 조각으로 흐르며 같은 주역이 매 wave
+                    # 깨어나 잠꼬대를 반복했다(QA 재현). 아래 클램프용
+                    # `_earliest_status_clear(self.active_agents, …)`는 역할형 자신의
+                    # 상태 해제도 반영해야 하므로 원본 집합 그대로 둔다.
+                    pool = self._forced_call_pool()
                     all_locked = all(
                         self._agent_active_status(k, self._elapsed_minutes) is not None
-                        for k in self.active_agents
+                        for k in pool
                     )
                     if all_locked:
                         state_wake_at = self._earliest_status_clear(
-                            self.active_agents, self._elapsed_minutes,
+                            pool, self._elapsed_minutes,
                         )
                         if state_wake_at is not None:
                             raw_jump    = max(1, state_wake_at - self._elapsed_minutes)
@@ -1221,6 +1231,8 @@ class _RunnerMixin:
         for k in sorted(self.active_agents):
             if k in exclude or self._agent_unavailable(k, now_elapsed):
                 continue
+            if k in self._role_type_agents:
+                continue  # 역할형 — 아무도 안 부르면 영원히 조용해도 된다
             gap = disp_wave - self._last_turn_wave.get(k, starve_baseline)
             if gap >= starvation_waves:
                 starved.append(k)
@@ -1239,21 +1251,34 @@ class _RunnerMixin:
             key=lambda k: self._agent_active_status(k, now_elapsed)["until_elapsed"],
         )
 
+    def _forced_call_pool(self) -> set[str]:
+        """"가용 전원"을 강제로 부르는 경로(빈 wave 안전장치, 전원 침묵 1회째 재투입,
+        참가자 전원 이동 중 대체)의 후보 집합 — 활성 에이전트에서 역할형을 뺀 것.
+
+        역할형(`_role_type_agents`)은 누가 부르거나 사건이 걸릴 때만 반응하면 되는
+        에이전트라 억지로 불러내지 않는다. 단 활성 에이전트가 **전부** 역할형이면 원래
+        전체 집합으로 폴백한다 — 아무도 못 불러 시뮬레이션이 멈추는 것보단 역할형이라도
+        한 번 불리는 게 낫다.
+        """
+        return (self.active_agents - self._role_type_agents) or set(self.active_agents)
+
     def _empty_wave_fallback(self, disp_wave: int, now_elapsed: int) -> dict[str, list]:
         """빈 wave 안전장치 — wave 시작(자연 만료·예정 이벤트 편입 뒤)에 이번 wave
         참가자가 아무도 없을 때의 대체 명단. 활성 에이전트가 있을 때만 불린다.
 
-        - 가용(상태 미잠금) 활성 에이전트가 있으면 **전원**을 빈 incoming 으로.
+        - 후보는 역할형(`_role_type_agents`)을 뺀 활성 에이전트(전원 역할형이면 전체).
+        - 가용(상태 미잠금) 후보가 있으면 **전원**을 빈 incoming 으로.
           정상 흐름에서 여기 오는 건 연속 전원 침묵 2회째+ 에 소외 해당자가 없었고
           그 뒤 idle 점프가 클램프 없이 크게(60/120/180분…) 흘러 해제·일정 알림
           대상도 없는 경우다 — 오랜 시간이 지났으니 전원이 움직이는 게 자연스럽다.
         - 가용자가 없고 전원 상태 잠금이면 가장 먼저 풀리는 한 명(침묵 처리의
           wake_key 규칙과 동일). 시간 점프는 하지 않는다(이미 wave 시작 시각).
         """
+        pool = self._forced_call_pool()
         state_locked = {
-            k for k in self.active_agents if self._agent_unavailable(k, now_elapsed)
+            k for k in pool if self._agent_unavailable(k, now_elapsed)
         }
-        available = sorted(self.active_agents - state_locked)
+        available = sorted(pool - state_locked)
         if available:
             logger.info(
                 f"[W{disp_wave}] 빈 wave 안전장치 — 이번 wave 에 턴을 받을 사람이 "

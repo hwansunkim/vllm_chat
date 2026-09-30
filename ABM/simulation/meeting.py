@@ -181,6 +181,8 @@ class _MeetingMixin:
         for speaker_key, result in results.items():
             if not result.get("success"):
                 continue
+            if speaker_key in self._role_type_agents:
+                continue  # 역할형 — move_to를 해석하지 않는다. 절대 이동하지 않고 늘 같은 자리
             raw = result.get("move_to")
             if not raw or not isinstance(raw, str):
                 continue

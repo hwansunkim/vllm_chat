@@ -398,7 +398,11 @@ def build_interview_messages(
         "role": "user",
         "content": f"[인터뷰어의 질문]\n{question}\n\n({display_name}로서 한국어 산문으로 답하십시오.)",
     }
-    background_log = [{"role": "user", "content": f"[배경] {cfg.background}"}]
+    # 역할형 에이전트는 실행 중과 마찬가지로 공유 배경을 받지 않는다(step._background_for).
+    background_log = (
+        [] if getattr(agent_cfg, "role_type", False)
+        else [{"role": "user", "content": f"[배경] {cfg.background}"}]
+    )
 
     # 기억 요약을 넣기 전(system+배경+질문)의 고정 비용부터 잰다. 남는 자리 안에서만
     # 기억 요약을 싣고, full_log 는 그 뒤에 남은 자리를 대화록에 준다.

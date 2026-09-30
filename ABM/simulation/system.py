@@ -47,12 +47,21 @@ class _SystemMixin:
         """
         from ..system_agent import run_system_agent
 
+        # 역할형 에이전트(`_role_type_agents`)는 관찰 대상이 아니다 — 디렉터의 침묵/반복/고립
+        # **감지 대상**과 active_agents 목록, 그리고 개입 대상 해석(아래 target_keys, "all"
+        # 포함)에서 뺀다. 존재 자체를 숨기지는 않는다: [에이전트 위치] 요약
+        # (`_director_placement_summary`)과 대화 다이제스트에는 계속 나타난다 — 실제로 그
+        # 자리에 있고 말한 기록도 있는 월드 사실이라, 숨기면 디렉터가 지각 불가능한 자극이나
+        # 없는 사람을 지어낼 수 있다. 고립 판정(`_has_reachable_partner`)에서도 역할형은
+        # 여전히 "같은 방의 대화 상대"로 인정된다(주역 b가 의사 d와 같은 방이면 b는 고립 아님).
+        observable = [k for k in self.active_agents if k not in self._role_type_agents]
+
         # 디렉터는 wave_num **시작** 시점에 돈다 → `_last_spoke_wave`는 wave_num-1까지만
         # 반영돼 있다(turn.py가 발화 후에 갱신). "지금까지 몇 wave 연속 침묵인가"는
         # (wave_num - 1) 기준으로 세야, 디렉터가 wave 끝에서 돌던 이전 배치와 임계값
         # 의미가 같다. wave_num을 그대로 쓰면 실효 임계값이 1 줄어든다.
         silent = [
-            key for key in self.active_agents
+            key for key in observable
             if (wave_num - 1) - self._last_spoke_wave.get(key, -1) >= self._sys_threshold
         ]
 
@@ -60,7 +69,7 @@ class _SystemMixin:
         # 묘사) 기준이다. content="..."(말 안 함)만 뽑아 비교하면 과묵한 캐릭터가
         # 매 interval 반복으로 오탐돼 디렉터가 그 한 명만 계속 붙잡는다.
         repetition_info: dict[str, float] = {}
-        for key in self.active_agents:
+        for key in observable:
             agent_name = self.agents[key].name
             recent_entries = [
                 e for e in self.shared_log[-30:]
@@ -97,7 +106,7 @@ class _SystemMixin:
         # 발화시키지 말 것" 규칙을 적용할 대상. 위치 미사용 시나리오는 항상 빈
         # 목록이라 규칙이 조용히 비활성된다.
         isolated = [
-            key for key in self.active_agents
+            key for key in observable
             if not self._has_reachable_partner(key)
         ]
 
@@ -108,7 +117,7 @@ class _SystemMixin:
             current_time_str     = current_time_str,
             recent_activity      = recent_activity,
             placement_summary    = self._director_placement_summary(),
-            active_agents        = {k: self._key_to_alias.get(k, k) for k in self.active_agents},
+            active_agents        = {k: self._key_to_alias.get(k, k) for k in observable},
             silent_agents        = silent,
             isolated_agents      = isolated,
             silence_threshold    = self._sys_threshold,
@@ -152,7 +161,7 @@ class _SystemMixin:
                 lines = lines[-(_MEMO_MAX_LINES - 1):]
             self._director_memo = "\n".join(lines + [entry])
 
-        active_set = set(self.active_agents)
+        active_set = set(observable)
         for iv in (result_d.get("interventions") or []):
             message = (iv.get("message") or "").strip()
             if not message:
@@ -164,7 +173,10 @@ class _SystemMixin:
             if not raw:
                 legacy = iv.get("agent")
                 raw = [legacy] if legacy else []
-            target_keys = sorted(set(self._resolve_event_targets([str(t) for t in raw])))
+            # "all"이나 대화 기록에서 본 이름으로 역할형을 지목해도 개입하지 않는다.
+            target_keys = sorted(
+                set(self._resolve_event_targets([str(t) for t in raw])) - self._role_type_agents
+            )
             if not target_keys:
                 continue
             for key in target_keys:

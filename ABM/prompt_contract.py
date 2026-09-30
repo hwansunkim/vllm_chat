@@ -104,7 +104,31 @@ _MOVE_TO_ZONE_SUFFIX = (
 )
 
 
-def build_move_to_hint(*, has_location_graph: bool = False, has_zone: bool = False) -> str:
+# 역할형 에이전트(AgentConfig.role_type) — 엔진이 move_to를 해석하지 않는다
+# (meeting._apply_move_intents). 이동 안내를 그대로 주면 "대기실로 갑니다"라고
+# 말해 놓고 다음 턴에도 제자리인 서사 어긋남이 생기므로 고정 안내로 바꾼다. JSON
+# 스키마의 "move_to" 키 자체는 남긴다(파서·verify_contract 토큰 호환).
+_MOVE_TO_FIXED = (
+    '- move_to: 항상 null로 두세요. 당신은 지금 있는 장소에 고정되어 있어 이동할 수 '
+    '없습니다 — 누군가 당신이 필요하면 그 사람이 당신에게 옵니다.'
+)
+
+_FIXED_PLACE_CONTRACT = (
+    "\n\n[고정된 자리]\n"
+    "당신은 이 장소에 고정된 역할이라 이동할 수 없습니다. 위 [위치 그래프]의 이동 규칙"
+    "(move_to로 장소·사람 지목)은 당신에게 적용되지 않습니다. 다른 곳으로 가겠다고 말하거나 "
+    "행동하지 말고, 지금 자리에서 찾아온 사람을 상대하세요."
+)
+
+
+def build_fixed_place_contract(*, has_location_graph: bool = False) -> str:
+    """역할형 에이전트 전용 [고정된 자리] 블록. 위치 그래프가 없으면 빈 문자열
+    (지도 규칙 자체가 없으니 덮어쓸 것도 없다 — move_to 설명만 고정 안내로 바뀐다)."""
+    return _FIXED_PLACE_CONTRACT if has_location_graph else ""
+
+
+def build_move_to_hint(*, has_location_graph: bool = False, has_zone: bool = False,
+                       fixed_place: bool = False) -> str:
     """`move_to` 필드의 의미 설명 한 덩어리.
 
     - 그래프 없음 → 레거시("이동할 위치 이름")
@@ -112,6 +136,8 @@ def build_move_to_hint(*, has_location_graph: bool = False, has_zone: bool = Fal
     - zone 있음   → 위 + "다른 장소의 사람은 장소명이 아니라 그 사람 ID로 지목"
                     + 여정(경유지에서 멈춤 → 같은 목적지로 재출발)
     """
+    if fixed_place:
+        return _MOVE_TO_FIXED
     if not has_location_graph:
         return _MOVE_TO_LEGACY
     hint = _MOVE_TO_GRAPH
@@ -450,8 +476,12 @@ def build_output_contract(
     has_zone:           bool = False,
     speaker_relationships: dict[str, str] | None = None,
     state_categories: list[dict] | None = None,
+    fixed_place: bool = False,
 ) -> str:
     """출력 JSON 스키마 + move_to 의미 + target ID 규칙을 담은 계약 블록.
+
+    `fixed_place=True`(역할형 에이전트)면 move_to 설명이 "항상 null — 고정된 자리"
+    안내로 바뀐다.
 
     `template`이 **명시적으로** 주어졌을 때만 사용자 오버라이드로 취급하고, 그렇지
     않으면 항상 엔진 기본 템플릿을 쓴다(= 엔진 업그레이드가 자동 반영된다).
@@ -472,7 +502,7 @@ def build_output_contract(
     field_lines = "\n".join(_field_line(f) for f in active_fields)
     field_hints = "\n".join(_field_hint(f) for f in active_fields)
     move_to_hint = build_move_to_hint(
-        has_location_graph=has_location_graph, has_zone=has_zone,
+        has_location_graph=has_location_graph, has_zone=has_zone, fixed_place=fixed_place,
     )
     state_hint = build_state_hint(state_categories)
 
@@ -505,6 +535,7 @@ def build_engine_contract(
     output_format_override: str | None                     = None,
     relationships:      dict[str, str] | None              = None,
     state_categories:   list[dict] | None                  = None,
+    fixed_place:        bool                               = False,
 ) -> str:
     """계약 층 전체(세계 계약 + 관계 지도 + 출력 계약)를 한 번에 만든다.
 
@@ -528,7 +559,8 @@ def build_engine_contract(
         time_enabled       = time_enabled,
         infection_enabled  = infection_enabled,
         disease_name       = disease_name,
-    ) + build_relationship_contract(relationships or {}, key_to_alias)
+    ) + (build_fixed_place_contract(has_location_graph=bool(location_graph)) if fixed_place else "") \
+      + build_relationship_contract(relationships or {}, key_to_alias)
     if not include_output_schema:
         return world
     return world + build_output_contract(
@@ -542,6 +574,7 @@ def build_engine_contract(
         has_zone           = bool(location_zone),
         speaker_relationships = relationships or None,
         state_categories   = state_categories,
+        fixed_place        = fixed_place,
     )
 
 

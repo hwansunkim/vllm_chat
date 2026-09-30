@@ -25,6 +25,15 @@ class AgentConfig(BaseModel):
     server_id:          str | None = None  # 이 에이전트만 사용할 LLM 서버. None/빈값 = 시뮬레이션 기본 서버(SimStartConfig.server_id)
     # 이 에이전트만 사용할 샘플링 온도. None = 시뮬레이션 기본값(SimStartConfig.temperature)
     temperature:        float | None = Field(default=None, ge=0.0, le=2.0)
+    # "역할형" — 관찰 대상(주역)이 아니라 특정 역할만 수행하는 에이전트(예: 병원 의사).
+    # 기본값 False(기존 동작 그대로, 하위호환). True면:
+    #   - 소외 재투입(_starved_agents) 대상에서 제외
+    #   - 전원 침묵 강제 호출(_empty_wave_fallback)의 "가용 전원"에서 제외
+    #     (단 후보가 역할형뿐이면 그들이라도 부른다)
+    #   - 디렉터(시스템 에이전트)의 침묵/고립 감지·active_agents 표시 대상에서 제외
+    #   - move_to가 항상 무시됨 — 절대 이동하지 않고 늘 같은 자리
+    # 그 외(직접 지목·예약 이벤트로 턴을 받는 것, 같은 방 라우팅 등)는 일반 에이전트와 동일.
+    role_type:          bool      = False
     # ── 채팅 에이전트(backend/db agents 테이블)와 공유되는 필드 ────────────────
     # ABM 엔진과 프롬프트 조립은 이 값들을 전혀 해석하지 않는다. 채팅 -> 시뮬레이션
     # 가져오기 시 값이 유실되지 않도록 시나리오 JSON에 보존만 하며, 다시 채팅으로

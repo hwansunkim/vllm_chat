@@ -175,6 +175,8 @@ export function applyScenario(s) {
     // 구버전 시나리오에는 필드가 없다. 편집기가 undefined 를 만지지 않도록 빈 객체로 채운다
     // (빈 객체 = 관계 기능 미사용 = 프롬프트가 관계 도입 전과 동일).
     relationships:      normalizeRelationships(a.relationships),
+    // 역할형 에이전트 — 구버전 시나리오에는 필드가 없다(= 일반 에이전트).
+    role_type:          a.role_type === true,
   }));
   sim.background   = cfg.background   || '';
   sim.start_agent  = cfg.start_agent  || (cfg.agents?.[0]?.name ?? '');

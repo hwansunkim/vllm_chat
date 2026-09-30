@@ -100,6 +100,8 @@ def load_simulation(run_id: str):
             name_aliases=alias_map,
             db=SimDB(os.path.join(LOG_DIR, "simulation.db")),
             agent_relationships=agent_relationships,
+            # 역할형 에이전트 — 새 시작/불러오기/이어하기 세 경로 모두 같은 줄로 전달해야 한다.
+            role_type_agents={a.name for a in cfg.agents if a.role_type},
             system_agent=cfg.system_agent.model_dump(),
             agent_locations=agent_locations,
             agent_visuals=agent_visuals,

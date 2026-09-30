@@ -8,6 +8,7 @@ from ..agent import Agent
 from ..config import LOG_DIR
 from ..llm import LLMCall
 from ..prompt_contract import (
+    build_fixed_place_contract,
     build_relationship_contract,
     build_world_contract,
     verify_contract,
@@ -92,6 +93,10 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
         # 시점**이다(김봉남→채민경="아내", 채민경→김봉남="남편"). 비었거나 생략되면
         # 관계 계약 블록이 아예 붙지 않는다 = 기능 미사용.
         agent_relationships: dict[str, dict[str, str]] | None = None,
+        # 역할형 에이전트 key 집합(AgentConfig.role_type). 관찰 대상(주역)이 아니라 특정
+        # 역할만 수행 — 소외 재투입·전원 침묵 강제 호출·디렉터 감지에서 빠지고 이동하지
+        # 않는다. None/빈 집합 = 기존 동작 그대로.
+        role_type_agents: set[str] | None             = None,
         system_agent:     dict | None                 = None,
         agent_locations:  dict[str, str] | None       = None,
         agent_visuals:    dict[str, str] | None       = None,
@@ -188,6 +193,13 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
         self._agent_relationships: dict[str, dict[str, str]] = self._sanitize_relationships(
             agent_relationships
         )
+
+        # 역할형 에이전트 — 실존하는 key만 남긴다. 소비 지점: runner._starved_agents /
+        # runner._empty_wave_fallback / system._run_system_agent / meeting._apply_move_intents.
+        # 직접 지목·예약 이벤트로 턴을 받는 것, 같은 방 라우팅 등은 일반 에이전트와 동일하다.
+        self._role_type_agents: set[str] = {
+            k for k in (role_type_agents or ()) if k in agents
+        }
 
         sa = system_agent or {}
         self._sys_enabled:   bool = bool(sa.get("enabled", False))
@@ -568,13 +580,21 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
         world = self.build_engine_world_contract()
         flags = self.contract_flags()
         for key, agent in self.agents.items():
-            rels = self._agent_relationships.get(key, {})
+            rels  = self._agent_relationships.get(key, {})
+            # 역할형은 move_to가 무시되므로(meeting._apply_move_intents) 이동 안내 대신
+            # "고정된 자리" 안내를 받는다 — 말로만 이동하고 제자리인 서사 어긋남 방지.
+            fixed = key in self._role_type_agents
+            fixed_block = (
+                build_fixed_place_contract(has_location_graph=flags["has_location_graph"])
+                if fixed else ""
+            )
             agent.set_engine_contract(
-                world + build_relationship_contract(rels, self._key_to_alias),
+                world + fixed_block + build_relationship_contract(rels, self._key_to_alias),
                 has_location_graph = flags["has_location_graph"],
                 has_zone           = flags["has_zone"],
                 relationships      = rels,
                 state_categories   = self._state_categories,
+                fixed_place        = fixed,
             )
 
     def _verify_engine_contract(self) -> list[str]:
