@@ -283,6 +283,10 @@ startSimulation() (run/control.js)
   이중 emit(해제=대사 전, 진입=대사 후) 규칙이 있어 두 구현의 `_stream_phase`가
   `action` 필드로 갈라 처리한다([simulation-features.md §7](simulation-features.md)).
 - **위치 이력 CSV** (`sim/export/csv.js`) — wave별 에이전트 위치. 감염병 접촉 분석용.
+  컬럼 정의는 [simulation-features.md §14](simulation-features.md). `GET /api/simulation/events?
+  types=time_jump,infection_update`를 함께 받아 종료 시각·경과분과 `new_exposure`를 채우고,
+  타입 필터는 `buildLocationCsv` 안에서도 다시 한다. 파이썬 쌍둥이 `ABM/export/csv.py`와
+  바이트 단위로 같은 출력을 낸다(테스트가 node로 직접 비교).
 
 ---
 

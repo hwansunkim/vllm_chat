@@ -229,9 +229,10 @@ LLM으로 델타 압축해 아래 테이블을 upsert하고 raw는 `messages`에
 
 `get_facts()`는 표시용(confidence 내림차순, id 없음) — 1차 압축의 재진술과
 `build_memory_block()`의 렌더링이 쓴다. `get_all_facts()`는 2차 정리
-(`consolidate_facts`, [`simulation-engine.md` §6](simulation-engine.md#2차-기억-정리consolidation--반복되면-깊어지고-한-번뿐이면-옅어진다))
+(`consolidate_facts`, [`simulation-engine.md` §6](simulation-engine.md#2차-기억-정리consolidation--한-번뿐이면-옅어진다-강화는-임시-제거))
 전용 — id 포함, 상한 없이 전체. `update_fact_confidence(id, confidence)`가
-2차 정리의 유일한 쓰기 경로 — 행은 지우지 않고 confidence만 재평가한다.
+2차 정리의 유일한 쓰기 경로 — 행은 지우지 않고 confidence만 재평가한다(현재는
+낮추기만 — 중복 강화 임시 제거).
 
 ### `relationship_memory` (현재 인물 관계)
 

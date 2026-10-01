@@ -504,7 +504,7 @@ relationships/self_state는 "계속 참인 것"이라 recency 라벨을 안 붙�
 `relationship_history`, `agent_self_state`, `compression_log`) → [`database.md`](database.md).
 `GET /agents/{name}/memory`가 `db.get_full_memory(sim_id, agent_key)`로 4개를 묶어 반환.
 
-### 2차 기억 정리(consolidation) — "반복되면 깊어지고, 한 번뿐이면 옅어진다"
+### 2차 기억 정리(consolidation) — 한 번뿐이면 옅어진다 (강화는 임시 제거)
 
 1차 압축은 새 대화 조각 하나만 보고 매번 독립적으로 판단해서 "이 사실이 전체
 기억에서 몇 번째 반복인지" 알 방법이 없다 — 표현만 바뀐 같은 이야기가 별개
@@ -522,11 +522,10 @@ consolidate_facts() (ABM/memory_compressor.py):
     len < _CONSOLIDATION_MIN_FACTS(4)면 스킵(정리할 게 없음)
     id를 매긴 전체 목록 → LLM (system: "기억 정리 도우미")
       → { adjustments: [{id, new_confidence, reason}] }
-      - 서로 다른 표현이지만 반복/뒷받침되는 사실 → 확신 상향(강화)
       - 한 번만 언급되고 안 뒷받침된 사소한 사실 → 확신 하향(쇠퇴)
       - 사실 문장 자체는 안 바꾼다 — 이번엔 확신도만 재평가
     유효한 id만(존재하지 않는 id는 무시) db.update_fact_confidence(id, conf)
-      — conf는 [0,1]로 클램프
+      — conf는 [0,1]로 클램프. 현재 값보다 큰 conf(상향)는 반영하지 않는다
 ```
 
 **행을 지우거나 병합하지 않는다** — 점수(confidence)만 바꾸고, 이미 있는 표시
@@ -534,7 +533,24 @@ consolidate_facts() (ABM/memory_compressor.py):
 걸러내게 둔다. 그래서 되돌릴 수 있고(다음 정리 때 다시 오를 수 있음), LLM이
 실수로 판단을 잘못해도 원문(raw messages 아카이브)이나 다른 사실을 잃어버릴
 위험이 없다 — 사람의 기억 응고(consolidation)가 세부를 지우는 게 아니라
-중요한 것의 흔적을 강화하고 그렇지 않은 것을 옅어지게만 하는 것과 같은 원칙.
+덜 중요한 것을 옅어지게만 하는 것과 같은 원칙.
+
+**중복 강화 제거 (2026-10-01, 1단계 — 임시 조치).** 예전엔 "서로 다른 표현이지만
+반복/뒷받침되는 사실은 확신 상향(강화)"도 했다. 그런데 `db.upsert_facts`
+(`ABM/db/semantic.py`)는 문자열이 **완전히 같을 때만** 병합하므로, 표현만 바뀐 같은
+이야기("괴물"→"블랙홀"→"은하계")가 별개 행으로 쌓이고, 2차 정리는 그 중복 행들을
+"서로 뒷받침하는 독립 증거"로 오인해 전부 끌어올렸다 — 반복된 주제가 기억에서 점점
+"중요한 사실"로 격상되는 자기강화 루프(실측: case1 v11에서 "햄버거"가 전체 wave의
+48%). 그래서 `_CONSOLIDATION_PROMPT`에서 강화 규칙을 지우고, 모델이 습관적으로 상향
+조정을 내도 `consolidate_facts`가 반영하지 않게 했다(쇠퇴는 그대로). 같은 단계에서
+1차 압축 프롬프트(`_COMPRESSION_PROMPT`)에 **결과 중심 요약** 지시를 추가했다 —
+사건 문장에 요구·행동·반응·변화·미해결(지키지 않은 약속 포함)을 우선 담고, "앞으로
+포기한다" 같은 행동 방침은 지어내지 않는다. 이건 반복 행동의 원인이 입증됐다는 뜻이
+아니며, 실제 영향은 비교 실험으로 검증해야 한다. 강화를 영구히 포기한 것도 아니다 —
+설계가 더 필요한 **2~4단계는 보류 중**이다: (2) 기억 ID·원문 근거 연결 + 제한된 후보
+검색, (3) 원본을 보존하는 대표 기억 통합, (4) 실제 사건을 구분할 수 있을 때 반복
+횟수·발생 시각 집계. 중복과 실제 반복을 구분할 수 있게 되면 "진짜 반복" 강화를 다시
+넣는다. 설계 문서: `_workspace/2026-10-01_memory_mechanism_proposal*.md`.
 
 `consolidation_start`/`consolidation_done` 이벤트가 emit된다(`compression_start`/
 `compression_done`과 같은 성격 — 관전용 로그, 피드·마크다운 내보내기엔 안 나감).

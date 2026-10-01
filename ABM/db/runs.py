@@ -121,18 +121,22 @@ class RunsMixin:
         time_str: str | None = None,
         location: str | None = None,
         is_exterior: bool | None = None,
+        infection_status: str | None = None,
+        elapsed_minutes: int | None = None,
     ):
         """`location`/`is_exterior` 는 그 턴 시점(=해당 wave 이동 적용 전)의 발화자 위치.
+        `infection_status`(S/E/P/I/R)·`elapsed_minutes`(wave 시작 경과분)도 같은 스냅샷 —
+        위치 이력 CSV 의 접촉 분석 컬럼용.
 
-        둘 다 기본값 None 이라 이 인자를 넘기지 않는 기존 호출부는 그대로 동작하고,
+        전부 기본값 None 이라 이 인자를 넘기지 않는 기존 호출부는 그대로 동작하고,
         그 행은 NULL 로 저장된다.
         """
         conn = self._conn()
         conn.execute(
             "INSERT INTO simulation_log "
             "(run_id, wave, turn, speaker, content, action_note, meta_json, targets_json, timestamp, "
-            " time_str, location, is_exterior) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            " time_str, location, is_exterior, infection_status, elapsed_minutes) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 run_id, wave, turn, speaker, content, action_note,
                 json.dumps(meta, ensure_ascii=False),
@@ -141,6 +145,8 @@ class RunsMixin:
                 time_str,
                 location,
                 None if is_exterior is None else int(bool(is_exterior)),
+                infection_status,
+                None if elapsed_minutes is None else int(elapsed_minutes),
             ),
         )
         conn.commit()
@@ -148,7 +154,7 @@ class RunsMixin:
     def get_run_log(self, run_id: str) -> list[dict]:
         rows = self._conn().execute(
             "SELECT wave, turn, speaker, content, action_note, meta_json, targets_json, timestamp, "
-            "       time_str, location, is_exterior "
+            "       time_str, location, is_exterior, infection_status, elapsed_minutes "
             "FROM simulation_log WHERE run_id=? ORDER BY id",
             (run_id,),
         ).fetchall()

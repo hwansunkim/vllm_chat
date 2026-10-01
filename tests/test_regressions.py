@@ -11921,6 +11921,289 @@ def _csv_rows(text):
     return list(_stdlib_csv.reader(text.split("\r\n")[:-1]))
 
 
+class LocationCsvContactColumnsTests(unittest.TestCase):
+    """위치 이력 CSV 의 접촉 분석 컬럼(infection_status · is_infectious ·
+    elapsed_minutes_start/end · co_located_with · new_exposure) — 감염 모델을 켠 실제 실행으로.
+
+    시나리오(가변 시간, wave 당 정확히 720분 = 12시간):
+      a(환자 0번, I 로 시작) · b · c · e 가 거실, d 는 안방. a→[b,c], b→a, c→a 로 매 wave
+      대화하고 d·e 는 혼잣말이라 wave 0 에만 발화한다(그 뒤엔 아무도 안 부른다).
+      E 1일 · P 0일 · I 1일 고정, β 매우 큼.
+      - W0: a 는 wave 시작의 infect_agent(start I)로 I. 첫 판정이라 전파 없음(t_d=0).
+      - W1 끝: a 가 거실의 S(b·c·e)를 감염시킨다(new_exposure — 발화한 b·c 행에만).
+      - W2 끝: a 회복(R, I 1일). W3 끝: b·c E→I(진행 — new_exposure 아님).
+    """
+
+    DAY = 1440
+
+    def _run(self, tmp, *, infection=True):
+        from ABM.agent import Agent
+        from ABM.db import SimDB
+        from ABM.simulation import Simulation
+        fx = lambda d: {"kind": "uniform", "min_days": d, "max_days": d}
+        script = {
+            "a": [{"content": "얘들아", "target": ["b", "c"]}],
+            "b": [{"content": "응", "target": "a"}],
+            "c": [{"content": "왜", "target": "a"}],
+            "d": [{"content": "혼자다", "target": "self"}],
+            "e": [{"content": "...", "target": "self"}],
+        }
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in script}
+        db = SimDB(os.path.join(tmp, "sim.db"))
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=_ScriptedLLM(script), db=db, sim_id="run-csv",
+            agent_locations={"a": "거실", "b": "거실", "c": "거실", "e": "거실", "d": "안방"},
+            location_graph=[{"name": "거실", "connects_to": ["안방"]},
+                            {"name": "안방", "connects_to": ["거실"]}],
+            time_mode="variable",
+            time_categories=[{"id": "normal_scene", "label": "t",
+                              "min_minutes": 720, "max_minutes": 720}],
+            max_scene_jump_minutes=0, max_daytime_jump_minutes=0,
+            infection_model={
+                "enabled": infection, "disease_name": "감기", "beta": 1000.0,
+                "symptom_stages": [],
+                "exposed_duration": fx(1), "presymptomatic_duration": fx(0),
+                "infectious_duration": fx(1),
+            },
+        )
+        events = []
+        real_emit = sim._emit
+        sim._emit = lambda t, d: (events.append({"event_type": t, "wave": d.get("wave", 0), "data": d}),
+                                  real_emit(t, d))
+        sim.run("a", max_waves=5, step_delay=0, starvation_waves=99,
+                resume_wave={k: [] for k in script},
+                events=[{"wave": 0, "type": "infect_agent", "agent": "a", "start_status": "I"}])
+        return sim, db, events
+
+    @staticmethod
+    def _by(rows):
+        hdr = rows[0]
+        return {(r[0], r[3]): dict(zip(hdr, r)) for r in rows[1:]}
+
+    def test_engine_logs_status_and_elapsed_and_time_jump_end_elapsed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, db, events = self._run(tmp)
+            log = [e for e in sim.shared_log if "speaker" in e]
+            db_log = db.get_run_log("run-csv")
+        got = {(e["wave"], e["speaker"]): (e["infection_status"], e["elapsed_minutes"]) for e in log}
+        self.assertEqual(got[(0, "a")], ("I", 0))
+        self.assertEqual(got[(0, "b")], ("S", 0))
+        self.assertEqual(got[(1, "b")], ("S", 720))   # 노출은 wave 1 의 모든 턴 뒤
+        self.assertEqual(got[(2, "b")], ("E", 1440))
+        self.assertEqual(got[(3, "a")], ("R", 2160))
+        self.assertEqual(got[(4, "b")], ("I", 2880))
+        # DB 에도 같은 값(같은 스냅샷).
+        self.assertEqual({(r["wave"], r["speaker"]): (r["infection_status"], r["elapsed_minutes"])
+                          for r in db_log}, got)
+        # time_jump.end_elapsed_minutes 는 end_time_str 과 같은 시점이고 다음 wave 의 시작이다.
+        jumps = [e["data"] for e in events if e["event_type"] == "time_jump"]
+        self.assertTrue(jumps)
+        start = {w: el for (w, _), (_, el) in got.items()}
+        for j in jumps:
+            self.assertEqual(sim._format_time_str(sim._sim_start_minutes + j["end_elapsed_minutes"]),
+                             j["end_time_str"])
+            if j["wave"] + 1 in start:
+                self.assertEqual(j["end_elapsed_minutes"], start[j["wave"] + 1])
+
+    def test_csv_contact_columns_from_a_real_infection_run(self):
+        from ABM.export.csv import render_location_csv
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _, events = self._run(tmp)
+            rows = _csv_rows(render_location_csv(sim.shared_log, events))
+        by = self._by(rows)
+        pick = lambda w, a, *cols: tuple(by[(str(w), a)][c] for c in cols)
+        cols = ("infection_status", "is_infectious", "elapsed_minutes_start",
+                "elapsed_minutes_end", "co_located_with", "new_exposure")
+        # W0 — a 시드(I, 이벤트 감염), 거실 동석자는 그 wave 에 발화한 b·c·e, d 는 혼자.
+        self.assertEqual(pick(0, "a", *cols), ("I", "true", "0", "720", "b|c|e", "true"))
+        self.assertEqual(pick(0, "b", *cols), ("S", "false", "0", "720", "a|c|e", "false"))
+        self.assertEqual(pick(0, "d", *cols), ("S", "false", "0", "720", "", "false"))
+        # W1 — b·c 는 이 wave 끝에 접촉 전파로 새 노출(턴 시점엔 아직 S). e 도 노출됐지만
+        # 발화하지 않아 행이 없다 — 그래서 동석자 목록에도 없다(한계).
+        self.assertEqual(pick(1, "b", *cols), ("S", "false", "720", "1440", "a|c", "true"))
+        self.assertEqual(pick(1, "a", "co_located_with", "new_exposure"), ("b|c", "false"))
+        self.assertNotIn(("1", "e"), by)
+        self.assertEqual(sim._agent_infection["e"]["status"] in ("E", "I", "R"), True)
+        self.assertNotIn("e", by[("1", "a")]["co_located_with"])
+        # W2 — b 는 E(비전염), 새 노출 아님.
+        self.assertEqual(pick(2, "b", "infection_status", "is_infectious", "new_exposure"),
+                         ("E", "false", "false"))
+        # W3 끝 E→I(진행), a 는 W2 끝 회복 — 둘 다 new_exposure 가 아니다.
+        self.assertEqual(pick(3, "a", "infection_status", "is_infectious", "new_exposure"),
+                         ("R", "false", "false"))
+        self.assertEqual(pick(4, "b", "infection_status", "is_infectious", "new_exposure"),
+                         ("I", "true", "false"))
+        prog = [e for e in events if e["event_type"] == "infection_update"
+                and e["data"]["cause"] in ("progression", "recovery")]
+        self.assertTrue(prog)
+        for e in prog:
+            row = by.get((str(e["wave"]), e["data"]["agent"]))
+            if row:
+                self.assertEqual(row["new_exposure"], "false")
+        # 기존 6개 컬럼(회귀) — 시작/종료 시각이 경과분과 같은 시점.
+        self.assertEqual(pick(1, "a", "wave_start_time", "wave_end_time", "location", "is_exterior"),
+                         (sim._format_time_str(sim._sim_start_minutes + 720),
+                          sim._format_time_str(sim._sim_start_minutes + 1440), "거실", "false"))
+
+    def test_infection_model_disabled_gives_all_s_and_no_exposure(self):
+        from ABM.export.csv import render_location_csv
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _, events = self._run(tmp, infection=False)
+            rows = _csv_rows(render_location_csv(sim.shared_log, events))
+        body = [dict(zip(rows[0], r)) for r in rows[1:]]
+        self.assertTrue(body)
+        self.assertEqual({r["infection_status"] for r in body}, {"S"})
+        self.assertEqual({r["is_infectious"] for r in body}, {"false"})
+        self.assertEqual({r["new_exposure"] for r in body}, {"false"})
+
+    def test_is_infectious_per_status(self):
+        from ABM.export.csv import render_location_csv
+        log = [{"speaker": k, "wave": 0, "infection_status": st}
+               for k, st in zip("abcdef", ("S", "E", "P", "I", "R", ""))]
+        rows = _csv_rows(render_location_csv(log, []))
+        self.assertEqual([(r[3], r[6], r[7]) for r in rows[1:]],
+                         [("a", "S", "false"), ("b", "E", "false"), ("c", "P", "true"),
+                          ("d", "I", "true"), ("e", "R", "false"), ("f", "", "")])
+
+    def test_co_located_skips_exterior_and_missing_location_and_dedupes(self):
+        from ABM.export.csv import render_location_csv
+        log = [
+            {"speaker": "a", "wave": 0, "location": "거실", "is_exterior": False},
+            {"speaker": "b", "wave": 0, "location": "거실", "is_exterior": False},
+            {"speaker": "a", "wave": 0, "location": "거실", "is_exterior": False},   # 같은 wave 두 턴
+            {"speaker": "c", "wave": 1, "location": "거실", "is_exterior": False},   # 다른 wave
+            {"speaker": "x", "wave": 0, "location": "길",   "is_exterior": True},
+            {"speaker": "y", "wave": 0, "location": "길",   "is_exterior": True},
+            {"speaker": "z", "wave": 0},                                             # 구버전 행
+        ]
+        rows = _csv_rows(render_location_csv(log, []))
+        got = [(r[0], r[3], r[10]) for r in rows[1:]]
+        self.assertEqual(got, [("0", "a", "b"), ("0", "b", "a"), ("0", "a", "b"),
+                               ("0", "x", ""), ("0", "y", ""), ("0", "z", ""), ("1", "c", "")])
+
+    def test_new_exposure_only_for_event_or_transmission_cause(self):
+        from ABM.export.csv import render_location_csv
+        log = [{"speaker": k, "wave": w} for w in (0, 1) for k in ("a", "b")]
+        ev = lambda w, agent, status, cause: {"event_type": "infection_update", "wave": w,
+                                               "data": {"agent": agent, "status": status, "cause": cause}}
+        events = [ev(0, "a", "E", "event"), ev(1, "b", "I", "transmission"),   # SIR 은 바로 I
+                  ev(1, "a", "I", "progression"), ev(0, "b", "R", "recovery"),
+                  {"event_type": "time_jump", "wave": 1, "data": {"agent": "a", "cause": "event"}}]
+        rows = _csv_rows(render_location_csv(log, events))
+        self.assertEqual({(r[0], r[3]): r[11] for r in rows[1:]},
+                         {("0", "a"): "true", ("0", "b"): "false",
+                          ("1", "a"): "false", ("1", "b"): "true"})
+
+    def test_elapsed_end_falls_back_to_next_wave_start(self):
+        from ABM.export.csv import render_location_csv
+        log = [{"speaker": "a", "wave": 0, "elapsed_minutes": 0},
+               {"speaker": "a", "wave": 1, "elapsed_minutes": 30},
+               {"speaker": "a", "wave": 2, "elapsed_minutes": 75}]
+        events = [{"event_type": "time_jump", "wave": 2, "data": {"end_elapsed_minutes": 90}},
+                  {"event_type": "time_jump", "wave": 0, "data": {"end_elapsed_minutes": True}}]  # bool 무시
+        rows = _csv_rows(render_location_csv(log, events))
+        self.assertEqual([(r[8], r[9]) for r in rows[1:]], [("0", "30"), ("30", "75"), ("75", "90")])
+
+    # ── QA 후속: /load 복원 경로 · None 화자 ─────────────────────────────────────
+
+    def _loaded_shared_log(self, run_log):
+        """`/load`(runtime/load.py)가 DB 로그로 재구성한 shared_log — 엔진·LLM 은 가짜."""
+        from unittest import mock
+        import ABM.agent as abm_agent
+        import ABM.simulation as abm_simulation
+        import ABM.db as abm_db
+        import ABM.memory_compressor as abm_mc
+        from backend.api.simulation.runtime import load as load_mod
+
+        cfg = SimStartConfig(
+            agents=[AgentConfig(name=k, system_prompt=f"너는 {k}다.") for k in "abcde"],
+            background="테스트", start_agent="a",
+        )
+
+        class FakeAgent:
+            def __init__(self, *a, **k):
+                self.memory = []
+                self._memory_block = None
+
+        class FakeSim:
+            def __init__(self, *a, **k):
+                self.agents, self.background_log, self.shared_log = {}, [], []
+                self._pending_wave, self._agent_infection = None, {}
+            def restore_agent_state(self, s): pass
+
+        class FakeDB:
+            def get_run(self, rid):
+                return {"config_json": cfg.model_dump_json(), "start_wave": 0,
+                        "total_waves": 0, "scenario_id": "scn", "scenario_name": "시나리오",
+                        "active_agents_json": None, "pending_wave_json": None,
+                        "elapsed_minutes": 0}
+            def get_agent_snapshots(self, rid): return {}
+            def get_agent_states(self, rid):    return {}
+            def get_run_log(self, rid):         return run_log
+
+        sim_runtime._sim["status"] = "idle"
+        with mock.patch.object(load_mod, "get_sim_db", lambda: FakeDB()), \
+             mock.patch.object(load_mod, "_make_llm", lambda *a, **k: None), \
+             mock.patch.object(load_mod, "_make_agent_llm_map", lambda *a, **k: {}), \
+             mock.patch.object(abm_agent, "Agent", FakeAgent), \
+             mock.patch.object(abm_simulation, "Simulation", FakeSim), \
+             mock.patch.object(abm_db, "SimDB", lambda *a, **k: None), \
+             mock.patch.object(abm_mc, "build_memory_block", lambda *a, **k: None):
+            load_mod.load_simulation("run-csv")
+        return sim_runtime._sim["sim_obj"].shared_log
+
+    def test_loaded_run_exports_the_same_csv(self):
+        # QA: /load 가 infection_status·elapsed_minutes 를 shared_log 로 안 옮겨, 불러온 실행의
+        # CSV(/api/simulation/logs → sim_obj.shared_log) 에서 그 칸들이 전부 빈 값이었다.
+        from ABM.export.csv import render_location_csv
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, db, events = self._run(tmp)
+            original = render_location_csv(sim.shared_log, events)
+            loaded = self._loaded_shared_log(db.get_run_log("run-csv"))
+        self.assertEqual(render_location_csv(loaded, events), original)
+        body = [dict(zip(_csv_rows(original)[0], r)) for r in _csv_rows(original)[1:]]
+        self.assertIn("I", {r["infection_status"] for r in body})          # 비교가 빈 값끼리가 아님
+        self.assertNotIn("", {r["elapsed_minutes_start"] for r in body})
+
+    def test_none_speaker_does_not_crash(self):
+        # QA: 키는 있고 값이 None 인 화자 — e.get("speaker", "") 기본값이 안 쓰여 None 이
+        # 동석 조인에 들어가 TypeError. JS 는 `?? ''` 라 원래 안전했다.
+        from ABM.export.csv import render_location_csv
+        log = [{"speaker": None, "wave": 0, "location": "거실", "is_exterior": False},
+               {"speaker": "a",  "wave": 0, "location": "거실", "is_exterior": False},
+               {"speaker": "b",  "wave": 0, "location": "거실", "is_exterior": False}]
+        rows = _csv_rows(render_location_csv(log, []))
+        self.assertEqual([(r[3], r[10]) for r in rows[1:]], [("", "a|b"), ("a", "|b"), ("b", "|a")])
+
+    @unittest.skipUnless(__import__("shutil").which("node"), "node 필요")
+    def test_python_and_js_render_identical_csv(self):
+        import subprocess
+        from ABM.export.csv import render_location_csv
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _, events = self._run(tmp)
+            log = [e for e in sim.shared_log if "speaker" in e]
+            log_json = json.dumps(log, ensure_ascii=False, default=str)
+            # JS 는 서버가 time_jump·infection_update 만 걸러 보내지만, 다른 타입이 섞여도
+            # 같은 결과여야 한다(JS 도 이제 타입을 직접 거른다).
+            ev_json = json.dumps(events, ensure_ascii=False, default=str)
+            py = render_location_csv(json.loads(log_json), json.loads(ev_json))
+        root = str(Path(__file__).resolve().parent.parent)
+        script = (
+            f"const m = await import({json.dumps(root + '/frontend/js/sim/export/csv.js')});"
+            "let s=''; process.stdin.on('data', c => s += c); process.stdin.on('end', () => {"
+            " const {log, events} = JSON.parse(s); process.stdout.write(m.buildLocationCsv(log, events)); });"
+        )
+        # text=True 는 CRLF 를 LF 로 바꿔버리므로 바이트로 받아 그대로 비교한다.
+        proc = subprocess.run(["node", "--input-type=module", "-e", script],
+                              input=json.dumps({"log": json.loads(log_json), "events": json.loads(ev_json)},
+                                               ensure_ascii=False).encode("utf-8"),
+                              capture_output=True, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
+        self.assertEqual(proc.stdout.decode("utf-8"), py)
+        self.assertIn("new_exposure", py.splitlines()[0])
+
+
 class LocationCsvTests(unittest.TestCase):
     """`ABM/export/csv.py` — `frontend/js/sim/export/csv.js` 의 파이썬 쌍둥이.
 
@@ -11947,12 +12230,19 @@ class LocationCsvTests(unittest.TestCase):
     def test_header_and_rows(self):
         rows = _csv_rows(self._render())
         self.assertEqual(rows[0], ["wave", "wave_start_time", "wave_end_time",
-                                   "agent", "location", "is_exterior"])
+                                   "agent", "location", "is_exterior",
+                                   "infection_status", "is_infectious",
+                                   "elapsed_minutes_start", "elapsed_minutes_end",
+                                   "co_located_with", "new_exposure"])
         self.assertEqual(len(rows), 4)                      # 헤더 + 발화 3개 (배경 제외)
-        self.assertEqual(rows[1], ["0", "월 09:00", "월 09:30", "a", "안방", "false"])
-        self.assertEqual(rows[2], ["0", "월 09:00", "월 09:30", "b", "부엌", "false"])
+        # 기존 6개 컬럼은 그대로(회귀) — 감염·경과분 필드가 없는 로그라 새 컬럼은 빈 값/false.
+        self.assertEqual(rows[1], ["0", "월 09:00", "월 09:30", "a", "안방", "false",
+                                   "", "", "", "", "", "false"])
+        self.assertEqual(rows[2], ["0", "월 09:00", "월 09:30", "b", "부엌", "false",
+                                   "", "", "", "", "", "false"])
         # 마지막 wave 는 time_jump 가 없으면 종료 시각을 알 수 없다 → 빈칸
-        self.assertEqual(rows[3], ["1", "월 09:30", "", "a", "현관", "true"])
+        self.assertEqual(rows[3], ["1", "월 09:30", "", "a", "현관", "true",
+                                   "", "", "", "", "", "false"])
 
     def test_crlf_line_endings_including_the_last_line(self):
         text = self._render()
@@ -11965,8 +12255,9 @@ class LocationCsvTests(unittest.TestCase):
     def test_is_exterior_is_lowercase_like_js_string_true(self):
         """파이썬 `str(True)` = "True" 를 그대로 쓰면 JS 출력과 갈린다."""
         text = self._render()
-        self.assertIn(",true\r\n", text)
-        self.assertIn(",false\r\n", text)
+        rows = _csv_rows(text)
+        self.assertEqual([r[5] for r in rows[1:]], ["false", "false", "true"])   # is_exterior
+        self.assertEqual({r[11] for r in rows[1:]}, {"false"})                   # new_exposure
         self.assertNotIn("True", text)
         self.assertNotIn("False", text)
 
@@ -12010,8 +12301,8 @@ class LocationCsvTests(unittest.TestCase):
             {"speaker": "b", "wave": 0, "location": None, "is_exterior": None,
              "time_str": None},
         ]))
-        self.assertEqual(rows[1], ["0", "", "", "a", "", ""])
-        self.assertEqual(rows[2], ["0", "", "", "b", "", ""])
+        self.assertEqual(rows[1], ["0", "", "", "a", "", "", "", "", "", "", "", "false"])
+        self.assertEqual(rows[2], ["0", "", "", "b", "", "", "", "", "", "", "", "false"])
 
     def test_missing_wave_defaults_to_zero(self):
         rows = _csv_rows(self._render(log=[{"speaker": "a"}]))
@@ -12046,7 +12337,9 @@ class LocationCsvTests(unittest.TestCase):
 
     def test_empty_and_none_input(self):
         from ABM.export.csv import render_location_csv
-        header = "wave,wave_start_time,wave_end_time,agent,location,is_exterior\r\n"
+        header = ("wave,wave_start_time,wave_end_time,agent,location,is_exterior,"
+                  "infection_status,is_infectious,elapsed_minutes_start,elapsed_minutes_end,"
+                  "co_located_with,new_exposure\r\n")
         self.assertEqual(render_location_csv([], []), header)
         self.assertEqual(render_location_csv(None), header)
 
@@ -13397,50 +13690,80 @@ class MemoryFactCapTests(unittest.TestCase):
 
 
 class MemoryConsolidationTests(unittest.TestCase):
-    """2차 기억 정리(consolidate_facts) — "반복되면 깊어지고, 한 번뿐이면
-    옅어진다". 1차 압축은 새 대화 조각 하나만 보고 판단해 표현만 바뀐 같은
-    사실이 별개 행으로 계속 쌓이는 문제가 있었다 — 2차 정리는 전체 사실을
-    다시 조망해 반복 확인된 건 확신을 올리고(강화), 한 번뿐이고 안 뒷받침된
-    사소한 건 확신을 낮춘다(쇠퇴). 행은 지우지 않고 점수만 바꾼다.
+    """2차 기억 정리(consolidate_facts) — "한 번뿐이면 옅어진다"(쇠퇴만).
+
+    1차 압축은 새 대화 조각 하나만 보고 판단해 표현만 바뀐 같은 사실이 별개
+    행으로 계속 쌓인다. 예전 2차 정리는 그 중복 행들을 "반복 확인된 사실"로
+    보고 확신을 올렸는데(강화), 표현만 다른 중복을 독립 증거로 오인해 반복된
+    주제가 점점 격상되는 자기강화 루프가 됐다(case1 v11 "햄버거" 48%). 1단계
+    조치로 강화를 **임시로** 제거했다 — 프롬프트 규칙 삭제 + 상향 조정 무시.
+    쇠퇴(한 번뿐·안 뒷받침된 사소한 사실의 확신 하향)는 그대로. 행은 지우지
+    않고 점수만 바꾼다.
     """
 
     def _db(self, tmp):
         from ABM.db import SimDB
         return SimDB(os.path.join(tmp, "sim.db"))
 
-    def test_consolidate_facts_applies_reinforcement_and_decay_by_id(self):
+    def test_consolidate_facts_never_raises_confidence_but_still_decays(self):
+        # 모델이 표현만 다른 중복 사실들을 "반복 확인"이라며 끌어올리려 해도(예전 강화
+        # 규칙의 습관) 상향은 반영되지 않는다. 쇠퇴는 그대로 반영된다.
         from ABM.memory_compressor import consolidate_facts
 
         def fake_llm(messages, max_tokens=None, **kw):
             prompt = messages[-1]["content"]
-            # id는 프롬프트에 실제로 찍힌 걸 그대로 재사용 — DB가 배정한 값을
-            # 미리 알 수 없으므로 프롬프트에서 읽어 되돌려준다.
             ids = [int(m) for m in re.findall(r"\[id=(\d+)\]", prompt)]
-            reinforced_id, decayed_id = ids[0], ids[1]
             return json.dumps({
                 "adjustments": [
-                    {"id": reinforced_id, "new_confidence": 0.95, "reason": "반복 확인"},
-                    {"id": decayed_id,    "new_confidence": 0.15, "reason": "한 번뿐"},
+                    {"id": ids[0], "new_confidence": 0.95, "reason": "반복 확인"},
+                    {"id": ids[1], "new_confidence": 0.9,  "reason": "반복 확인"},
+                    {"id": ids[2], "new_confidence": 0.85, "reason": "반복 확인"},
+                    {"id": ids[3], "new_confidence": 0.15, "reason": "한 번뿐"},
                 ],
             }), "", {}
 
         with tempfile.TemporaryDirectory() as tmp:
             db = self._db(tmp)
-            db.upsert_facts("s1", "a", [{"fact": "반복해서 확인된 사실", "confidence": 0.6}],
-                            wave=0)
-            db.upsert_facts("s1", "a", [{"fact": "한 번만 언급된 사소한 사실", "confidence": 0.5}],
-                            wave=0)
-            # _CONSOLIDATION_MIN_FACTS(4) 미만이면 통째로 스킵되므로 채워둔다.
-            db.upsert_facts("s1", "a", [{"fact": "다른 사실 1", "confidence": 0.5}], wave=0)
-            db.upsert_facts("s1", "a", [{"fact": "다른 사실 2", "confidence": 0.5}], wave=0)
+            # 표현만 다른 같은 이야기(괴물→블랙홀→은하계) — 문자열이 달라 별개 행으로 쌓인다.
+            for fact in ("아픈 느낌을 괴물에 빗대어 말한다",
+                         "아픈 느낌을 블랙홀에 빗대어 말한다",
+                         "아픈 느낌을 은하계에 빗대어 말한다",
+                         "한 번만 언급된 사소한 사실"):
+                db.upsert_facts("s1", "a", [{"fact": fact, "confidence": 0.6}], wave=0)
 
             applied = consolidate_facts("a", "a", "s1", db, fake_llm)
-
             facts = {f["fact"]: f["confidence"] for f in db.get_all_facts("s1", "a")}
 
-        self.assertEqual(applied, 2)
-        self.assertAlmostEqual(facts["반복해서 확인된 사실"], 0.95)
+        self.assertEqual(applied, 1)   # 쇠퇴 1건만 반영 — 상향 3건은 무시
+        for word in ("괴물", "블랙홀", "은하계"):
+            self.assertAlmostEqual(facts[f"아픈 느낌을 {word}에 빗대어 말한다"], 0.6)
         self.assertAlmostEqual(facts["한 번만 언급된 사소한 사실"], 0.15)
+
+    def test_consolidation_prompt_drops_only_the_reinforcement_rule(self):
+        from ABM.memory_compressor import _CONSOLIDATION_PROMPT as P
+        self.assertNotIn("반복 확인된 사실", P)
+        self.assertNotIn("확신을 원래보다 높이세요", P)
+        self.assertNotIn("상향", P)
+        # 나머지 규칙(쇠퇴·제외 조건·문장 불변·JSON 형식)은 그대로다.
+        self.assertIn("딱 한 번만 언급되고 다른 어떤 사실로도 뒷받침되지 않는 사소한 사실은", P)
+        self.assertIn("확신을 낮추세요(0.1~0.2 하향, 최소 0.1)", P)
+        self.assertIn("이미 충분히 높거나(0.9 이상) 이미 낮은(0.3 이하) 사실", P)
+        self.assertIn("사실 문장 자체는 바꾸지 마세요", P)
+        self.assertIn('"adjustments"', P)
+        P.format(agent_name="a", facts_text="x")   # 자리표시자·중괄호 이스케이프가 깨지지 않았다
+
+    def test_compression_prompt_asks_for_outcome_centred_episodes(self):
+        from ABM.memory_compressor import _COMPRESSION_PROMPT as P
+        rules = P[P.index("규칙:"):]
+        line = rules[rules.index("- episodes의 사건 문장에는"):]
+        line = line[:line.index("\n- facts:")]
+        for word in ("요구", "행동", "반응", "변화", "미해결", "지키지 않은 약속"):
+            self.assertIn(word, line)
+        self.assertIn("행동 방침까지 추론해서 지어내지는", line)
+        # 기존 episodes 규칙 바로 다음 항목이다.
+        self.assertLess(rules.index("- episodes: 이번 대화에서 새로 경험한 사건만"),
+                        rules.index("- episodes의 사건 문장에는"))
+        P.format(agent_name="a", existing_memory="m", messages_text="t")
 
     def test_consolidate_facts_ignores_unknown_ids_and_clamps_confidence(self):
         from ABM.memory_compressor import consolidate_facts
@@ -13448,8 +13771,8 @@ class MemoryConsolidationTests(unittest.TestCase):
         def fake_llm(messages, max_tokens=None, **kw):
             return json.dumps({
                 "adjustments": [
-                    {"id": 999999, "new_confidence": 0.9},   # 존재하지 않는 id — 무시
-                    {"id": 1,      "new_confidence": 1.7},    # 범위 밖 — 1.0으로 클램프
+                    {"id": 999999, "new_confidence": 0.1},   # 존재하지 않는 id — 무시
+                    {"id": 1,      "new_confidence": -0.7},   # 범위 밖 — 0.0으로 클램프
                 ],
             }), "", {}
 
@@ -13464,7 +13787,7 @@ class MemoryConsolidationTests(unittest.TestCase):
 
         self.assertEqual(applied, 1)   # 존재하는 id 하나만 반영(999999는 무시)
         by_fact = {f["fact"]: f["confidence"] for f in facts}
-        self.assertEqual(by_fact["사실 A"], 1.0)   # id=1(삽입 순서상 "사실 A") → 1.0으로 클램프
+        self.assertEqual(by_fact["사실 A"], 0.0)   # id=1(삽입 순서상 "사실 A") → 0.0으로 클램프
         self.assertEqual(by_fact["사실 B"], 0.5)   # 안 건드린 것들은 그대로
         self.assertEqual(by_fact["사실 C"], 0.5)
         self.assertEqual(by_fact["사실 D"], 0.5)

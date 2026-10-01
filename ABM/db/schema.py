@@ -122,7 +122,10 @@ CREATE TABLE IF NOT EXISTS simulation_log (
     time_str     TEXT,
     -- 그 턴 시점(=해당 wave의 이동 적용 **전**)의 발화자 위치. 접촉 분석용.
     location     TEXT,
-    is_exterior  INTEGER
+    is_exterior  INTEGER,
+    -- 같은 시점의 발화자 감염 상태(S/E/P/I/R)와 wave 시작 경과분. 위치 이력 CSV 접촉 분석용.
+    infection_status TEXT,
+    elapsed_minutes  INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_simlog_run ON simulation_log(run_id, id);
 
@@ -189,6 +192,12 @@ def migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE simulation_log ADD COLUMN location TEXT")
     if "is_exterior" not in simlog_cols:
         conn.execute("ALTER TABLE simulation_log ADD COLUMN is_exterior INTEGER")
+    # infection_status/elapsed_minutes 컬럼이 없는 기존 DB를 위한 마이그레이션.
+    # 기존 행은 NULL 로 남는다(옛 로그의 감염 상태·경과분은 재구성하지 않는다).
+    if "infection_status" not in simlog_cols:
+        conn.execute("ALTER TABLE simulation_log ADD COLUMN infection_status TEXT")
+    if "elapsed_minutes" not in simlog_cols:
+        conn.execute("ALTER TABLE simulation_log ADD COLUMN elapsed_minutes INTEGER")
 
     # agent_snapshots 테이블의 state_json 컬럼이 없는 기존 DB를 위한 마이그레이션.
     # 기존 행은 state_json=NULL 로 남고, 복원 시 시나리오 초기값으로 폴백된다.

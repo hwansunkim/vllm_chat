@@ -67,6 +67,10 @@ class _TurnMixin:
         # 아래 shared_log / turn_complete / DB 세 곳이 같은 스냅샷을 공유한다.
         agent_loc   = self._agent_location.get(agent_key, "")
         is_exterior = agent_loc in self._exterior_locations
+        # 같은 스냅샷 시점의 감염 상태(S/E/P/I/R)와 wave 시작 경과분 — 위치 이력 CSV의
+        # 접촉 분석 컬럼(infection_status / elapsed_minutes_start)용. 감염 모델이 꺼져
+        # 있으면 전원 "S"로 초기화돼 있어 그대로 "S"가 실린다.
+        infection_status = (self._agent_infection.get(agent_key) or {}).get("status", "S")
 
         self.shared_log.append({
             "speaker":     agent.name,
@@ -79,6 +83,8 @@ class _TurnMixin:
             "time_str":    time_str,
             "location":    agent_loc,
             "is_exterior": is_exterior,
+            "infection_status": infection_status,
+            "elapsed_minutes":  elapsed_minutes,
         })
         self._save_shared_log()
 
@@ -123,6 +129,8 @@ class _TurnMixin:
                 time_str=time_str,
                 location=agent_loc,
                 is_exterior=is_exterior,
+                infection_status=infection_status,
+                elapsed_minutes=elapsed_minutes,
             )
 
         return {

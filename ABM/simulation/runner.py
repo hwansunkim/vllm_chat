@@ -1044,6 +1044,9 @@ class _RunnerMixin:
                         "end_time_str":   self._format_time_str(
                             self._sim_start_minutes + self._elapsed_minutes + jump
                         ),
+                        # 같은 종료 시점의 절대 경과분(숫자) — 위치 이력 CSV 의
+                        # elapsed_minutes_end. end_time_str 과 같은 식(시작 시각 제외).
+                        "end_elapsed_minutes": self._elapsed_minutes + jump,
                     })
                     self._elapsed_minutes += jump
                 elif organically_filled or has_content:
@@ -1113,6 +1116,7 @@ class _RunnerMixin:
                         "minutes":        jump,
                         "clamp_reason":   clamp_reason,
                         "end_time_str":   end_time_str,
+                        "end_elapsed_minutes": self._elapsed_minutes + jump,
                     })
                     self._elapsed_minutes += jump
                 # else: 이번 wave에 성공한 발화가 전혀 없음 — 시간 미누적

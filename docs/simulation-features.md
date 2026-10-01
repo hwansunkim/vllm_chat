@@ -1142,3 +1142,38 @@ wave 에** 대상에게도 적용한다. 그래서 도착 시점이 어긋날 �
   이어간다. 동행 관계는 `escort_leader`로 재개 스냅샷에 저장한다. 전원의 위치·경로·여정을
   복원한 뒤 유효한 동행만 복원한다(활성 인물, 동일 위치, 리더의 남은 경로 또는 멈춘 여정,
   역할형·자기 자신·연쇄/순환 동행 제외). 옛 스냅샷에 필드가 없으면 동행 없이 복원한다.
+
+---
+
+## 14. 위치 이력 CSV (감염병 접촉 분석)
+
+**목적** — 누가 언제 어느 장소에 있었고, 그때 감염 상태가 어땠으며, 누구와 함께 있었는지를
+CSV 하나로 분석한다(예전엔 마크다운의 감염 이벤트와 따로 대조해야 했다). 구현은 두 벌이고
+출력이 바이트 단위로 같다: 파이썬 `ABM/export/csv.py::render_location_csv`(`python -m ABM.cli
+… --format csv`) / JS `frontend/js/sim/export/csv.js::buildLocationCsv`(브라우저 다운로드).
+컬럼 정의·한계의 정본은 `csv.py` 모듈 docstring.
+
+**행** — 로그 항목 하나 = "그 에이전트가 그 wave에 턴을 받았다(발화했다)". 위치·감염 상태·경과분은
+그 턴 시점의 엔진 스냅샷이다(`ABM/simulation/turn.py::_apply_turn_result` — 그 wave의 이동이
+적용되기 **전**, 즉 그 wave 동안 실제로 있던 장소).
+
+| 컬럼 | 의미 |
+|---|---|
+| `wave` · `wave_start_time` · `wave_end_time` | 표시 wave와 시작·종료 시각(종료는 `time_jump.end_time_str` → 다음 wave 시작 폴백) |
+| `agent` · `location` · `is_exterior` | 발화자와 그 wave의 장소, 외부 공간 여부 |
+| `infection_status` | 턴 시점 S/E/P/I/R (shared_log·DB `simulation_log.infection_status`). 감염 모델이 꺼져 있으면 전부 `S` |
+| `is_infectious` | `infection_status` ∈ {P, I}(전파원) |
+| `elapsed_minutes_start` | wave 시작 절대 경과분 (shared_log·DB `elapsed_minutes`) |
+| `elapsed_minutes_end` | wave 종료 절대 경과분 — `time_jump.end_elapsed_minutes`(end_time_str과 같은 시점) → 다음 wave 시작 폴백 |
+| `co_located_with` | 같은 wave·같은 장소의 **다른 발화자**(`\|` 구분, 이름 오름차순). 장소가 없거나 외부 공간이면 빈 값 — 엔진 접촉 판정과 같은 규칙 |
+| `new_exposure` | 이 wave에 이 에이전트가 새로 감염됐는가 — `infection_update`의 `cause` ∈ {event, transmission}. 자연 진행(progression)·회복은 아니다. 상태로 거르지 않는 이유: 길이 0 구간 건너뛰기(SIR 등)로 새 감염이 P/I로 시작할 수 있다 |
+
+**한계** — 행은 **발화한 에이전트뿐**이다. 같은 방에 있었지만 그 wave에 발화하지 않은 사람은 행이
+없어 `co_located_with`에 안 잡히고(완전한 동석 기록이 아니라 발화한 사람들끼리의 동석), 새로
+감염됐어도 발화하지 않았으면 `new_exposure`를 표시할 행이 없다. 또 접촉 전파 판정은 wave의 모든
+턴 뒤에 일어나므로 그 wave의 행은 `infection_status=S`이면서 `new_exposure=true`일 수 있다.
+
+**하위 호환** — 컬럼 추가 이전 로그는 행을 버리지 않고 해당 칸을 빈 값으로 남긴다
+(`infection_status`·`is_infectious`·`elapsed_minutes_*`·위치 없는 행의 `co_located_with`).
+DB는 `simulation_log`에 `infection_status TEXT`·`elapsed_minutes INTEGER` 컬럼을
+마이그레이션으로 추가하며 기존 행은 NULL(백필하지 않음).

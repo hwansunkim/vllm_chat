@@ -164,7 +164,11 @@ def load_simulation(run_id: str):
                 "wave":        e.get("wave", 0),
                 "time_str":    e.get("time_str"),
                 "location":    e.get("location"),
-                "is_exterior": e.get("is_exterior"),
+                "is_exterior":      e.get("is_exterior"),
+                # 위치 이력 CSV 접촉 분석 컬럼(infection_status / elapsed_minutes_start)의
+                # 원천 — 빠뜨리면 불러온 실행의 CSV 에서 이 칸들이 전부 빈 값이 된다.
+                "infection_status": e.get("infection_status"),
+                "elapsed_minutes":  e.get("elapsed_minutes"),
             }
             for e in log_entries
         ]
