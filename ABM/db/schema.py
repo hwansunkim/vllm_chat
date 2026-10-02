@@ -32,6 +32,33 @@ CREATE TABLE IF NOT EXISTS episodic_memory (
     created_at   REAL    NOT NULL
 );
 
+-- 사실의 과거 버전(기억 ID 매칭 리뷰 수정, 2026-10-02). "변경"이 행을 갱신하기 직전의 버전과,
+-- "변경 후 같은 문장이 된 다른 행"을 대표 행으로 통합할 때 사라지는 행을 그대로 보존한다 —
+-- prev_fact/prev_confidence 한 쌍만으로는 A→B→C 뒤 A 를 잃는다. semantic_memory.id 와는
+-- 외래키로 묶지 않는다(통합으로 원래 행이 지워져도 이력은 남아야 한다).
+--   fact_id      이 버전이 속했던 semantic_memory.id
+--   updated_at   그 버전이 마지막으로 갱신된 시각(원래 행의 updated_at 그대로)
+--   superseded_at 이 버전이 대체된 시각
+--   reason       'changed'(변경으로 대체) | 'merged'(다른 행으로 통합돼 행 삭제)
+--   merged_into  reason='merged' 일 때 통합 대상(대표) 행 id
+CREATE TABLE IF NOT EXISTS semantic_memory_history (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    fact_id            INTEGER NOT NULL,
+    sim_id             TEXT    NOT NULL,
+    agent_key          TEXT    NOT NULL,
+    fact               TEXT    NOT NULL,
+    confidence         REAL    NOT NULL,
+    source_message_ids TEXT,
+    source_wave        INTEGER,
+    elapsed_minutes    INTEGER,
+    updated_at         REAL,
+    superseded_at      REAL    NOT NULL,
+    reason             TEXT    NOT NULL,
+    merged_into        INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_semhist_fact ON semantic_memory_history(sim_id, agent_key, fact_id, id);
+CREATE INDEX IF NOT EXISTS idx_semhist_merged ON semantic_memory_history(merged_into);
+
 CREATE TABLE IF NOT EXISTS semantic_memory (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     sim_id          TEXT    NOT NULL,
@@ -45,7 +72,11 @@ CREATE TABLE IF NOT EXISTS semantic_memory (
     elapsed_minutes INTEGER,
     prev_fact       TEXT,
     prev_confidence REAL,
-    updated_at      REAL    NOT NULL
+    updated_at      REAL    NOT NULL,
+    -- 이 사실의 원문 근거 — messages.id 의 JSON 배열(예: "[12,13,14]"). 같은 의미로
+    -- 재진술되면(압축 LLM 의 judgment=동일_의미) 새 행 대신 여기에 근거만 누적된다.
+    -- 이 컬럼 도입 전 행은 NULL(근거를 알 수 없음 — 임의로 채우지 않는다).
+    source_message_ids TEXT
 );
 
 CREATE TABLE IF NOT EXISTS relationship_memory (
@@ -230,6 +261,10 @@ def migrate(conn: sqlite3.Connection) -> None:
     sem_cols = {r[1] for r in conn.execute("PRAGMA table_info(semantic_memory)").fetchall()}
     if "elapsed_minutes" not in sem_cols:
         conn.execute("ALTER TABLE semantic_memory ADD COLUMN elapsed_minutes INTEGER")
+    # source_message_ids(원문 근거) 컬럼이 없는 기존 DB용 마이그레이션 — 기존 행은 NULL
+    # 그대로 둔다(근거를 알 수 없는 옛 사실에 임의의 id 를 채우지 않는다).
+    if "source_message_ids" not in sem_cols:
+        conn.execute("ALTER TABLE semantic_memory ADD COLUMN source_message_ids TEXT")
 
     # interview_log 테이블이 없는 기존 DB를 위한 마이그레이션
     if "interview_log" not in tables:

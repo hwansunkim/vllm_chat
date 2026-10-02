@@ -16,6 +16,7 @@ _MEMORY_TABLES = (
     "messages",
     "episodic_memory",
     "semantic_memory",
+    "semantic_memory_history",
     "relationship_memory",
     "relationship_history",
     "agent_self_state",

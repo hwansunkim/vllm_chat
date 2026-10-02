@@ -12161,7 +12161,11 @@ class LocationCsvContactColumnsTests(unittest.TestCase):
             sim, db, events = self._run(tmp)
             original = render_location_csv(sim.shared_log, events)
             loaded = self._loaded_shared_log(db.get_run_log("run-csv"))
-        self.assertEqual(render_location_csv(loaded, events), original)
+        # 한 wave 안의 턴은 병렬 스레드라 메모리 shared_log 와 DB 행의 순서가 다를 수 있다
+        # (각 스레드가 append 와 log_turn 을 따로 한다). CSV 는 "wave 안에서는 원래 턴
+        # 순서"를 지키므로, wave 안 순서와 무관하게 행 집합이 같은지 본다.
+        canon = lambda text: (_csv_rows(text)[0], sorted(map(tuple, _csv_rows(text)[1:])))
+        self.assertEqual(canon(render_location_csv(loaded, events)), canon(original))
         body = [dict(zip(_csv_rows(original)[0], r)) for r in _csv_rows(original)[1:]]
         self.assertIn("I", {r["infection_status"] for r in body})          # 비교가 빈 값끼리가 아님
         self.assertNotIn("", {r["elapsed_minutes_start"] for r in body})
@@ -13661,9 +13665,10 @@ class MemoryFactCapTests(unittest.TestCase):
     def test_compression_recap_also_caps_facts_shown_to_the_llm(self):
         # _format_existing() — 압축 LLM에게 "기존 기억"으로 보여주는 입력도
         # 상한이 있어야 한다. 안 그러면 압축 프롬프트 자체가 시뮬레이션이
-        # 길어질수록 끝없이 커진다.
+        # 길어질수록 끝없이 커진다. (2~3단계부터 이 상한은 후보 검색의
+        # `_CANDIDATE_FACT_LIMIT` — 관련 사실이 없으면 확신 높은 순으로 채운다.)
         from ABM.db import SimDB
-        from ABM.memory_compressor import compress, _FACT_SHOW_MAX
+        from ABM.memory_compressor import compress, _CANDIDATE_FACT_LIMIT as _FACT_SHOW_MAX
 
         captured = {}
 
@@ -13686,7 +13691,728 @@ class MemoryFactCapTests(unittest.TestCase):
 
         self.assertIn("사실 0", captured["prompt"])
         self.assertNotIn(f"사실 {_FACT_SHOW_MAX + 2}", captured["prompt"])
-        self.assertIn("3건은 생략", captured["prompt"])
+        self.assertIn("다른 사실 3건은 생략", captured["prompt"])
+
+
+class FactIdMatchingTests(unittest.TestCase):
+    """기억 메커니즘 2~3단계 — 사실(facts)의 후보 검색 · ID 판정 · 원문 근거.
+
+    실측(일주일 실행): 날짜만 다른 같은 사실("6일차 …까지 맛과 냄새를 느끼지 못한다" /
+    "7일차 …")이 문자열이 달라 6개 이상 쌓였고 전부 확신 100%였다. 1단계(2차 정리의
+    상향 제거)는 이미 생긴 중복엔 효과가 없다 — 생성 자체를 막는다:
+      코드가 후보를 추림 → LLM 이 후보 id 로 동일_의미/변경 판정 → DB 가 소속 검증.
+    """
+
+    def _db(self, tmp, name="sim.db"):
+        from ABM.db import SimDB
+        return SimDB(os.path.join(tmp, name))
+
+    @staticmethod
+    def _rows(db, sim="s1", agent="a"):
+        return [dict(r) for r in db._conn().execute(
+            "SELECT id, fact, confidence, prev_fact, prev_confidence, updated_at, "
+            "elapsed_minutes, source_message_ids FROM semantic_memory "
+            "WHERE sim_id=? AND agent_key=? ORDER BY id", (sim, agent)).fetchall()]
+
+    @staticmethod
+    def _msgs(n, tag="m"):
+        return [{"role": "user", "content": f"{tag}{i} 맛과 냄새가 안 난다", "elapsed_minutes": 0}
+                for i in range(n)]
+
+    # ── 후보 검색 ─────────────────────────────────────────────────────────────
+
+    def test_candidates_rank_by_bigram_overlap_cap_and_fill_by_confidence(self):
+        from ABM.memory_compressor import _select_candidate_facts
+        facts = [
+            {"id": 1, "fact": "치즈 햄버거를 좋아한다", "confidence": 1.0},
+            {"id": 2, "fact": "코로나19로 맛과 냄새를 느끼지 못한다", "confidence": 0.6},
+            {"id": 3, "fact": "6일차까지 맛과 냄새를 느끼지 못하고 있다", "confidence": 0.9},
+            {"id": 4, "fact": "수학 학원에 다닌다", "confidence": 0.8},
+            {"id": 5, "fact": "축구를 싫어한다", "confidence": 0.95},
+        ]
+        text = "[수신] 짱구야 아직도 맛과 냄새가 안 느껴져?\n[나] 응 냄새를 못 맡겠어"
+        got = [f["id"] for f in _select_candidate_facts(facts, text, limit=3)]
+        self.assertEqual(got[:2], [3, 2] if got[0] == 3 else [2, 3])   # 관련 둘이 먼저
+        self.assertEqual(set(got[:2]), {2, 3})
+        self.assertEqual(len(got), 3)
+        # 관련 없는 사실은 점수 0 → 남는 자리는 확신 높은 순(1: 1.0 > 5: 0.95)으로 채운다.
+        self.assertEqual(got[2], 1)
+        self.assertEqual([f["id"] for f in _select_candidate_facts(facts, text, limit=4)][3], 5)
+        self.assertEqual(_select_candidate_facts(facts, text, limit=0), [])
+        self.assertEqual(_select_candidate_facts([], text), [])
+        # 점수 순서 검증: 원문 바이그램을 더 많이 포함하는 쪽이 먼저.
+        from ABM.memory_compressor import _char_bigrams
+        sc = lambda f: len(_char_bigrams(f["fact"]) & _char_bigrams(text)) / len(_char_bigrams(f["fact"]))
+        self.assertGreaterEqual(sc(facts[got[0] - 1]), sc(facts[got[1] - 1]))
+
+    def test_compression_prompt_shows_candidates_with_ids(self):
+        from ABM.memory_compressor import compress
+        captured = {}
+
+        def llm(messages, max_tokens=None, **kw):
+            captured["prompt"] = messages[-1]["content"]
+            return json.dumps({"facts": [], "self_state": "x"}), "", {}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            db.upsert_facts("s1", "a", [{"fact": "코로나19로 맛과 냄새를 느끼지 못한다", "confidence": 1.0}], wave=0)
+            fid = self._rows(db)[0]["id"]
+            compress("a", "a", "s1", self._msgs(2), 1, db, llm)
+        self.assertIn(f"[id={fid}] 코로나19로 맛과 냄새를 느끼지 못한다 (확신 100%)", captured["prompt"])
+        self.assertIn('"judgment"', captured["prompt"])
+        self.assertIn("동일_의미", captured["prompt"])
+
+    # 자연스러운 한국어 일상 사실 — 어미("는다"·"한다"·"있다")·이름("짱구"·"엄마")을 많이
+    # 공유한다. 예전 테스트의 "무관한 취미 N번"(원문과 겹침 0)은 이 문제를 못 잡았다(QA).
+    EVERYDAY_FACTS = [
+        "짱구는 초코비를 좋아하고 매일 먹고 싶어 한다", "아빠는 회사에서 늦게 들어온다",
+        "엄마는 짱구가 숙제를 안 하면 화를 낸다", "짱구는 액션가면을 좋아하고 매주 챙겨 본다",
+        "흰둥이는 짱구가 기르는 강아지다", "짱구는 유치원에 다니고 있다",
+        "짱아는 짱구의 여동생이고 아직 아기다", "짱구는 피망을 싫어해서 잘 안 먹는다",
+        "철수는 짱구의 친구이고 공부를 잘한다", "짱구는 예쁜 누나를 보면 말을 건다",
+        "엄마는 짱구에게 자주 잔소리를 한다", "아빠는 주말에는 집에서 쉬고 있다",
+        "짱구는 엉덩이춤을 추는 것을 좋아한다", "할머니는 가끔 집에 놀러 온다",
+        "짱구는 밤에 무서운 꿈을 꾸면 엄마를 찾는다", "유리는 짱구의 친구이고 소꿉놀이를 좋아한다",
+        "짱구는 목욕하는 것을 귀찮아한다", "엄마는 장보러 마트에 자주 간다",
+    ]
+    COVID_FACT = "코로나19로 맛과 냄새를 느끼지 못한다"
+    TASTE_TALK = [
+        {"role": "user", "content": "짱구야 밥 먹어야지. 엄마가 계란말이 해 줬어.", "elapsed_minutes": 0},
+        {"role": "assistant", "content": '{"content": "엄마, 아무 맛도 안 나. 냄새도 하나도 안 느껴져.", "target": "엄마"}', "elapsed_minutes": 0},
+        {"role": "user", "content": "아직도 그러니? 열은 좀 내렸는데 걱정이다.", "elapsed_minutes": 0},
+        {"role": "assistant", "content": '{"content": "초코비도 맛이 없을 것 같아. 나 계속 이러면 어떡해?", "target": "엄마"}', "elapsed_minutes": 0},
+    ]
+
+    def test_compress_surfaces_a_relevant_fact_beyond_the_cap(self):
+        # 사실이 상한보다 많을 때 — 관련 사실(코로나로 맛·냄새 상실)이 확신 낮고 가장 나중
+        # id 여도 후보에 들어가야 LLM 이 id 로 지칭할 수 있다. 무관한 일상 사실들이 흔한 어미·
+        # 이름 바이그램을 대화와 많이 공유해도 IDF 가중치가 그 신호를 지운다.
+        from ABM.memory_compressor import compress, _CANDIDATE_FACT_LIMIT
+        captured = {}
+
+        def llm(messages, max_tokens=None, **kw):
+            captured["prompt"] = messages[-1]["content"]
+            return json.dumps({"facts": [], "self_state": "x"}), "", {}
+
+        self.assertGreater(len(self.EVERYDAY_FACTS) + 1, _CANDIDATE_FACT_LIMIT)
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            for fact in self.EVERYDAY_FACTS:
+                db.upsert_facts("s1", "a", [{"fact": fact, "confidence": 0.9}], wave=0)
+            db.upsert_facts("s1", "a", [{"fact": self.COVID_FACT, "confidence": 0.3}], wave=0)
+            fid = self._rows(db)[-1]["id"]
+            compress("짱구", "a", "s1", self.TASTE_TALK, 1, db, llm)
+        self.assertIn(f"[id={fid}] {self.COVID_FACT}", captured["prompt"])
+        self.assertEqual(captured["prompt"].count("[id="), _CANDIDATE_FACT_LIMIT)
+
+    def test_idf_ranks_the_relevant_fact_near_the_top(self):
+        from ABM.memory_compressor import _select_candidate_facts, _format_messages
+        facts = [{"id": i + 1, "fact": t, "confidence": 0.9} for i, t in enumerate(self.EVERYDAY_FACTS)]
+        facts.append({"id": 99, "fact": self.COVID_FACT, "confidence": 0.3})
+        text = _format_messages(self.TASTE_TALK, 0, 0)
+        ranked = [f["id"] for f in _select_candidate_facts(facts, text, limit=len(facts))]
+        self.assertLessEqual(ranked.index(99), 4)          # 상위 5 안 (IDF 없이는 14위였다)
+        # 모든 사실에 나오는 바이그램만 공유하는 사실은 점수 0 → 관련 순위에 못 낀다.
+        same = [{"id": 1, "fact": "가나다", "confidence": 1.0}, {"id": 2, "fact": "가나라", "confidence": 1.0}]
+        self.assertEqual([f["id"] for f in _select_candidate_facts(same, "가나", limit=1)], [2])  # 확신 동점 → 최근 id
+
+    # ── upsert 라우팅 ─────────────────────────────────────────────────────────
+
+    def test_same_meaning_merges_sources_without_new_row_or_confidence_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            db.upsert_facts("s1", "a", [{"fact": "6일차까지 맛과 냄새를 못 느낀다", "confidence": 0.7}],
+                            wave=0, elapsed_minutes=100, source_message_ids=[1, 2])
+            before = self._rows(db)[0]
+            db.upsert_facts("s1", "a", [{"fact": "7일차까지 맛과 냄새를 못 느낀다", "confidence": 1.0,
+                                         "judgment": "동일_의미", "matches_id": before["id"]}],
+                            wave=5, elapsed_minutes=900, source_message_ids=[2, 3, 4],
+                            candidate_ids=[before["id"]])
+            rows = self._rows(db)
+        self.assertEqual(len(rows), 1)
+        after = rows[0]
+        self.assertEqual(after["fact"], before["fact"])
+        self.assertEqual(after["confidence"], 0.7)                       # 확신도 불변
+        self.assertEqual(after["updated_at"], before["updated_at"])       # 재진술은 새 발생 아님
+        self.assertEqual(after["elapsed_minutes"], 100)
+        self.assertEqual(json.loads(after["source_message_ids"]), [1, 2, 3, 4])   # 순서 유지·중복 제거
+
+    def test_changed_updates_row_and_keeps_previous_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            db.upsert_facts("s1", "a", [{"fact": "엄마는 햄버거를 주겠다고 약속했다", "confidence": 0.8}],
+                            wave=0, source_message_ids=[1])
+            fid = self._rows(db)[0]["id"]
+            db.upsert_facts("s1", "a", [{"fact": "엄마는 햄버거 약속을 취소했다", "confidence": 0.9,
+                                         "judgment": "변경", "matches_id": fid,
+                                         "prev_fact": "LLM이 지어낸 엉뚱한 이전 문장"}],
+                            wave=3, elapsed_minutes=500, source_message_ids=[7], candidate_ids=[fid])
+            rows = self._rows(db)
+        self.assertEqual(len(rows), 1)
+        r = rows[0]
+        self.assertEqual((r["fact"], r["confidence"]), ("엄마는 햄버거 약속을 취소했다", 0.9))
+        # 이전 값은 LLM 이 적은 prev_fact 가 아니라 실제 행에서 가져온다.
+        self.assertEqual((r["prev_fact"], r["prev_confidence"]), ("엄마는 햄버거를 주겠다고 약속했다", 0.8))
+        # 현재 근거는 이번 배치로 리셋 — 이전 문장을 지지했던 [1] 은 이력 쪽에 있다(리뷰 2번).
+        self.assertEqual(json.loads(r["source_message_ids"]), [7])
+        self.assertEqual(r["elapsed_minutes"], 500)
+
+    def test_new_unsure_and_missing_fields_insert_like_before(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            db.upsert_facts("s1", "a", [{"fact": "기존 사실", "confidence": 0.8}], wave=0)
+            fid = self._rows(db)[0]["id"]
+            db.upsert_facts("s1", "a", [
+                {"fact": "새 사실 1", "confidence": 0.5, "judgment": "신규"},
+                {"fact": "새 사실 2", "confidence": 0.5, "judgment": "보류", "matches_id": fid},
+                {"fact": "새 사실 3", "confidence": 0.5},                                # 필드 없음
+                {"fact": "새 사실 4", "confidence": 0.5, "judgment": "동일_의미"},       # id 없음
+                {"fact": "기존 사실", "confidence": 0.8, "judgment": "신규"},           # 문자열 일치 경로
+            ], wave=1, source_message_ids=[9])
+            rows = self._rows(db)
+        self.assertEqual([r["fact"] for r in rows], ["기존 사실", "새 사실 1", "새 사실 2", "새 사실 3", "새 사실 4"])
+        self.assertEqual(rows[0]["confidence"], 0.8)
+        self.assertEqual({json.loads(r["source_message_ids"])[-1] for r in rows}, {9})
+
+    def test_matches_id_from_another_agent_or_run_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            db.upsert_facts("s1", "b", [{"fact": "b의 사실", "confidence": 0.7}], wave=0)
+            db.upsert_facts("s2", "a", [{"fact": "다른 실행의 a 사실", "confidence": 0.7}], wave=0)
+            b_id  = self._rows(db, "s1", "b")[0]["id"]
+            s2_id = self._rows(db, "s2", "a")[0]["id"]
+            db.upsert_facts("s1", "a", [
+                {"fact": "a의 새 사실 1", "confidence": 0.9, "judgment": "변경",      "matches_id": b_id},
+                {"fact": "a의 새 사실 2", "confidence": 0.9, "judgment": "동일_의미", "matches_id": s2_id},
+                {"fact": "a의 새 사실 3", "confidence": 0.9, "judgment": "동일_의미", "matches_id": 99999},
+            ], wave=1, source_message_ids=[5], candidate_ids=[b_id, s2_id, 99999])   # 후보로 줘도 소속 검증에서 거부
+            a_rows, b_rows, s2_rows = self._rows(db), self._rows(db, "s1", "b"), self._rows(db, "s2", "a")
+        self.assertEqual([r["fact"] for r in a_rows], ["a의 새 사실 1", "a의 새 사실 2", "a의 새 사실 3"])
+        self.assertEqual((b_rows[0]["fact"], b_rows[0]["prev_fact"], b_rows[0]["source_message_ids"]),
+                         ("b의 사실", None, None))                  # 남의 기억은 그대로
+        self.assertEqual((s2_rows[0]["fact"], s2_rows[0]["source_message_ids"]), ("다른 실행의 a 사실", None))
+
+    def test_judgment_parse_falls_back_to_new(self):
+        from ABM.memory_compressor import _parse_compression_result
+        data = _parse_compression_result(json.dumps({"facts": [
+            {"fact": "a", "judgment": "동일_의미", "matches_id": "12"},
+            {"fact": "b", "judgment": "몰라", "matches_id": 3},
+            {"fact": "c", "judgment": "변경", "matches_id": True},
+            {"fact": "d", "judgment": "보류", "matches_id": 4},
+            {"fact": "e"},
+            {"fact": ""}, "쓰레기",
+        ]}))
+        self.assertEqual([(f["fact"], f["judgment"], f["matches_id"]) for f in data["facts"]],
+                         [("a", "동일_의미", 12), ("b", "신규", None), ("c", "신규", None),
+                          ("d", "보류", None), ("e", "신규", None)])
+
+    # ── 원문 근거 id · 저장 순서 ───────────────────────────────────────────────
+
+    def test_compress_saves_messages_before_llm_and_links_their_ids(self):
+        from ABM.memory_compressor import compress
+        seen = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            self.assertEqual(db.save_messages("x", "y", self._msgs(2), 0), [1, 2])   # id 반환
+
+            def llm(messages, max_tokens=None, **kw):
+                seen["during"] = [r[0] for r in db._conn().execute(
+                    "SELECT id FROM messages WHERE sim_id='s1' ORDER BY id").fetchall()]
+                return json.dumps({"facts": [{"fact": "맛과 냄새를 못 느낀다", "confidence": 0.9}],
+                                   "self_state": "x"}), "", {}
+
+            compress("a", "a", "s1", self._msgs(3), 1, db, llm)
+            rows = self._rows(db)
+        self.assertEqual(seen["during"], [3, 4, 5])                    # LLM 호출 전에 이미 저장
+        self.assertEqual(json.loads(rows[0]["source_message_ids"]), [3, 4, 5])
+
+    def test_llm_failure_still_archives_nothing(self):
+        from ABM.memory_compressor import compress
+        for bad in (lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+                    lambda *a, **k: ("이건 JSON 이 아니다", "", {})):
+            with self.subTest():
+                with tempfile.TemporaryDirectory() as tmp:
+                    db = self._db(tmp)
+                    self.assertIsNone(compress("a", "a", "s1", self._msgs(3), 1, db, bad))
+                    n = db._conn().execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+                    self.assertEqual(n, 0)
+                    self.assertEqual(self._rows(db), [])
+
+    def test_old_schema_db_migrates_without_touching_rows(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "old.db")
+            conn = sqlite3.connect(path)
+            conn.executescript("""
+                CREATE TABLE semantic_memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, sim_id TEXT NOT NULL,
+                    agent_key TEXT NOT NULL, fact TEXT NOT NULL,
+                    confidence REAL NOT NULL DEFAULT 1.0, source_wave INTEGER,
+                    elapsed_minutes INTEGER, prev_fact TEXT, prev_confidence REAL,
+                    updated_at REAL NOT NULL);
+                INSERT INTO semantic_memory (sim_id, agent_key, fact, confidence, source_wave,
+                    elapsed_minutes, updated_at) VALUES ('s1','a','옛 사실',0.8,3,120,1.5);
+            """)
+            conn.commit(); conn.close()
+            db = self._db(tmp, "old.db")
+            cols = {r[1] for r in db._conn().execute("PRAGMA table_info(semantic_memory)")}
+            rows = self._rows(db)
+            # 옛 행에 동일_의미 병합을 해도 근거를 모르는 앞부분을 지어내지 않는다.
+            db.upsert_facts("s1", "a", [{"fact": "옛 사실 재진술", "confidence": 1.0,
+                                         "judgment": "동일_의미", "matches_id": rows[0]["id"]}],
+                            wave=4, source_message_ids=[11], candidate_ids=[rows[0]["id"]])
+            merged = self._rows(db)
+        self.assertIn("source_message_ids", cols)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["fact"], rows[0]["confidence"], rows[0]["elapsed_minutes"],
+                          rows[0]["updated_at"], rows[0]["source_message_ids"]),
+                         ("옛 사실", 0.8, 120, 1.5, None))
+        self.assertEqual(json.loads(merged[0]["source_message_ids"]), [11])
+
+    # ── QA 후속 ───────────────────────────────────────────────────────────────
+
+    def test_save_messages_failure_rolls_back_and_releases_the_lock(self):
+        import sqlite3, threading
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            bad = [{"role": "user", "content": "멀쩡함"}, {"role": "user", "content": None}]
+            with self.assertRaises(Exception):
+                db.save_messages("s1", "a", bad, 0)
+            self.assertFalse(db._conn().in_transaction)          # 열린 트랜잭션이 없다
+            self.assertEqual(db._conn().execute("SELECT COUNT(*) FROM messages").fetchone()[0], 0)
+            # 다른 스레드(다른 커넥션)의 쓰기가 잠금에 막히지 않는다.
+            err = []
+
+            def other():
+                try:
+                    c = sqlite3.connect(os.path.join(tmp, "sim.db"), timeout=0.5)
+                    c.execute("INSERT INTO messages (sim_id, agent_key, role, content, created_at) "
+                              "VALUES ('s2','b','user','x',0)")
+                    c.commit(); c.close()
+                except Exception as e:      # noqa: BLE001
+                    err.append(e)
+            t = threading.Thread(target=other); t.start(); t.join(5)
+            self.assertEqual(err, [])
+
+    def test_two_changes_to_the_same_text_in_one_batch_keep_prev_fact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            db.upsert_facts("s1", "a", [{"fact": "X는 0.5", "confidence": 0.5}], wave=0)
+            fid = self._rows(db)[0]["id"]
+            db.upsert_facts("s1", "a", [
+                {"fact": "X는 0.9", "confidence": 0.9, "judgment": "변경", "matches_id": fid},
+                {"fact": "X는 0.9", "confidence": 0.9},          # 같은 결과를 다시(문자열 경로)
+            ], wave=1, candidate_ids=[fid])
+            rows = self._rows(db)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["fact"], rows[0]["confidence"], rows[0]["prev_fact"],
+                          rows[0]["prev_confidence"]), ("X는 0.9", 0.9, "X는 0.5", 0.5))
+
+    def test_consolidation_prompt_shows_supporting_batch_count(self):
+        # 6번 재진술돼 1행으로 병합된 사실이 2차 정리에서 "한 번만 언급됨"으로 보이면 쇠퇴
+        # 대상이 된다 — 근거 **배치** 수(메시지 수 아님)를 함께 보여준다.
+        from ABM.memory_compressor import compress, consolidate_facts
+        captured = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            llm = self._smell_llm(with_judgment=True)
+            for day in range(3):                              # 3배치 × 3메시지 → 1행
+                compress("짱구", "a", "s1", self._msgs(3, tag=f"d{day}-"), day, db, llm)
+            db.upsert_facts("s1", "a", [{"fact": "한 배치에서 한 번 나온 사실", "confidence": 0.6}],
+                            wave=4, source_message_ids=db.save_messages("s1", "a", self._msgs(5, "z"), 4))
+            db.upsert_facts("s1", "a", [{"fact": "근거 모르는 옛 사실", "confidence": 0.6}], wave=0)
+            db.upsert_facts("s1", "a", [{"fact": "또 다른 옛 사실", "confidence": 0.6}], wave=0)
+
+            def fake(messages, max_tokens=None, **kw):
+                captured["p"] = messages[-1]["content"]
+                return json.dumps({"adjustments": []}), "", {}
+            consolidate_facts("짱구", "a", "s1", db, fake)
+        lines = {l.split("] ", 1)[1].split(" (")[0]: l for l in captured["p"].splitlines() if l.startswith("[id=")}
+        self.assertIn("3번의 대화에서 확인", lines["1일차까지 코로나19로 지속적으로 맛과 냄새를 느끼지 못하고 있다"])
+        self.assertIn("(확신 60%, 1번의 대화에서 확인)", lines["한 배치에서 한 번 나온 사실"])
+        self.assertTrue(lines["근거 모르는 옛 사실"].endswith("(확신 60%)"))
+
+    def test_non_object_llm_response_is_a_failure_and_archives_nothing(self):
+        from ABM.memory_compressor import compress, _parse_compression_result
+        with self.assertRaises(ValueError):
+            _parse_compression_result('[{"fact": "x"}]')
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            out = compress("a", "a", "s1", self._msgs(3), 1, db,
+                           lambda *a, **k: ('[{"fact": "배열 응답"}]', "", {}))
+            n = db._conn().execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        self.assertIsNone(out)
+        self.assertEqual(n, 0)
+
+    # ── 코드 리뷰(to_master/2026-10-02_memory_id_matching_code_review.md) 재현 4건 ──────
+
+    def test_review1_id_outside_this_calls_candidates_is_rejected(self):
+        # 13개 중 후보 12개만 보여줬는데 LLM 이 후보 밖 id 로 "변경"을 지정 → 거부(신규 폴백).
+        from ABM.memory_compressor import compress, _CANDIDATE_FACT_LIMIT
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            for i in range(_CANDIDATE_FACT_LIMIT + 1):
+                db.upsert_facts("s1", "a", [{"fact": f"서로 다른 취향 {i}", "confidence": 0.9}], wave=0)
+            all_ids = [r["id"] for r in self._rows(db)]
+            seen = {}
+
+            def llm(messages, max_tokens=None, **kw):
+                shown = {int(m) for m in re.findall(r"\[id=(\d+)\]", messages[-1]["content"])}
+                seen["shown"] = shown
+                outside = next(i for i in all_ids if i not in shown)
+                inside = sorted(shown)[0]
+                seen["outside"], seen["inside"] = outside, inside
+                return json.dumps({"facts": [
+                    {"fact": "다른 내용으로 덮음", "confidence": 0.9, "judgment": "변경", "matches_id": outside},
+                    {"fact": "후보 재진술", "confidence": 0.9, "judgment": "동일_의미", "matches_id": inside},
+                ], "self_state": "x"}), "", {}
+
+            compress("a", "a", "s1", self._msgs(2), 1, db, llm)
+            rows = {r["id"]: r for r in self._rows(db)}
+        self.assertEqual(len(seen["shown"]), _CANDIDATE_FACT_LIMIT)
+        out = rows[seen["outside"]]
+        self.assertTrue(out["fact"].startswith("서로 다른 취향"))      # 후보 밖 기억은 그대로
+        self.assertIsNone(out["prev_fact"])
+        self.assertIn("다른 내용으로 덮음", {r["fact"] for r in rows.values()})   # 신규로 폴백
+        # 정상 후보의 병합은 유지(새 행 없이 근거만 붙음).
+        self.assertNotIn("후보 재진술", {r["fact"] for r in rows.values()})
+        self.assertIsNotNone(rows[seen["inside"]]["source_message_ids"])
+
+    def test_review1_direct_call_without_candidates_disables_id_matching(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            db.upsert_facts("s1", "a", [{"fact": "원래 사실", "confidence": 0.8}], wave=0)
+            fid = self._rows(db)[0]["id"]
+            db.upsert_facts("s1", "a", [{"fact": "바뀐 사실", "confidence": 0.9,
+                                         "judgment": "변경", "matches_id": fid}], wave=1)
+            rows = self._rows(db)
+        self.assertEqual([r["fact"] for r in rows], ["원래 사실", "바뀐 사실"])
+
+    def _football_llm(self):
+        """배치 1~3: "축구를 좋아한다"(1은 신규, 2·3은 동일_의미), 배치 4: "축구를 싫어한다"(변경)."""
+        state = {"n": 0}
+
+        def llm(messages, max_tokens=None, **kw):
+            state["n"] += 1
+            m = re.search(r"\[id=(\d+)\] 축구를", messages[-1]["content"])
+            if state["n"] == 1:
+                f = {"fact": "축구를 좋아한다", "confidence": 0.9, "judgment": "신규"}
+            elif state["n"] <= 3:
+                f = {"fact": "축구를 정말 좋아한다", "confidence": 0.9, "judgment": "동일_의미",
+                     "matches_id": int(m.group(1))}
+            else:
+                f = {"fact": "축구를 싫어한다", "confidence": 0.9, "judgment": "변경",
+                     "matches_id": int(m.group(1))}
+            return json.dumps({"facts": [f], "self_state": "x"}), "", {}
+        return llm
+
+    def test_review2_changed_fact_counts_only_its_own_supporting_batches(self):
+        from ABM.memory_compressor import compress, consolidate_facts
+        captured = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            llm = self._football_llm()
+            for i in range(4):
+                compress("a", "a", "s1", [{"role": "user", "content": f"축구 얘기 {i}", "elapsed_minutes": 0}],
+                         i, db, llm)
+            for k in range(3):        # 2차 정리 최소 개수(4) 채우기
+                db.upsert_facts("s1", "a", [{"fact": f"다른 사실 {k}", "confidence": 0.6}], wave=0)
+            fid = [r for r in self._rows(db) if r["fact"] == "축구를 싫어한다"][0]["id"]
+
+            def fake(messages, max_tokens=None, **kw):
+                captured["p"] = messages[-1]["content"]
+                return json.dumps({"adjustments": []}), "", {}
+            consolidate_facts("a", "a", "s1", db, fake)
+            hist = db.get_fact_history("s1", "a", fid)
+            prev_batches = db.count_source_batches(hist[0]["source_message_ids"])
+        line = next(l for l in captured["p"].splitlines() if "축구를 싫어한다" in l)
+        self.assertIn("(확신 90%, 1번의 대화에서 확인)", line)           # 예전엔 "4번"
+        self.assertEqual((hist[0]["fact"], hist[0]["reason"]), ("축구를 좋아한다", "changed"))
+        self.assertEqual(prev_batches, 3)                                # 이전 3배치는 과거 버전 근거로 보존
+
+    def test_review3_every_previous_version_survives_a_b_c(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            db.upsert_facts("s1", "a", [{"fact": "축구를 좋아한다", "confidence": 0.9}],
+                            wave=0, source_message_ids=[1, 2])
+            fid = self._rows(db)[0]["id"]
+            db.upsert_facts("s1", "a", [{"fact": "축구를 싫어한다", "confidence": 0.8,
+                                         "judgment": "변경", "matches_id": fid}],
+                            wave=1, source_message_ids=[3], candidate_ids=[fid])
+            db.upsert_facts("s1", "a", [{"fact": "축구에 관심 없다", "confidence": 0.7,
+                                         "judgment": "변경", "matches_id": fid}],
+                            wave=2, source_message_ids=[4], candidate_ids=[fid])
+            hist = db.get_fact_history("s1", "a", fid)
+        self.assertEqual([(h["fact"], h["confidence"], h["source_message_ids"], h["reason"]) for h in hist],
+                         [("축구를 좋아한다", 0.9, "[1, 2]", "changed"),
+                          ("축구를 싫어한다", 0.8, "[3]", "changed"),
+                          ("축구에 관심 없다", 0.7, "[4]", "current")])
+        self.assertTrue(all(h["updated_at"] for h in hist))
+
+    def test_review3_legacy_row_without_sources_keeps_its_first_text(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            db._conn().execute(
+                "INSERT INTO semantic_memory (sim_id, agent_key, fact, confidence, source_wave, "
+                "elapsed_minutes, updated_at) VALUES ('s1','a','옛 최초 문장',0.8,3,120,1.5)")
+            db._conn().commit()
+            fid = self._rows(db)[0]["id"]
+            for i, text in enumerate(("두 번째 문장", "세 번째 문장")):
+                db.upsert_facts("s1", "a", [{"fact": text, "confidence": 0.9, "judgment": "변경",
+                                             "matches_id": fid}], wave=4 + i,
+                                source_message_ids=[10 + i], candidate_ids=[fid])
+            hist = db.get_fact_history("s1", "a", fid)
+        self.assertEqual([h["fact"] for h in hist], ["옛 최초 문장", "두 번째 문장", "세 번째 문장"])
+        self.assertEqual((hist[0]["confidence"], hist[0]["source_message_ids"],
+                          hist[0]["elapsed_minutes"], hist[0]["updated_at"]), (0.8, None, 120, 1.5))
+
+    def test_review4_change_into_an_existing_text_merges_into_one_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            db.upsert_facts("s1", "a", [{"fact": "6일차까지 증상이 있다", "confidence": 0.7}],
+                            wave=0, source_message_ids=[1])
+            db.upsert_facts("s1", "a", [{"fact": "7일차까지 증상이 있다", "confidence": 0.95}],
+                            wave=1, source_message_ids=[2, 3])
+            id1, id2 = [r["id"] for r in self._rows(db)]
+            db.upsert_facts("s1", "a", [
+                {"fact": "7일차까지 증상이 있다", "confidence": 0.9, "judgment": "변경", "matches_id": id1},
+                # 같은 배치 안에서 지워진 id2 를 다시 지칭 → 대표(id1)로 이어진다.
+                {"fact": "7일차까지 증상이 계속된다", "confidence": 0.9, "judgment": "동일_의미",
+                 "matches_id": id2},
+            ], wave=2, source_message_ids=[4], candidate_ids=[id1, id2])
+            rows = self._rows(db)
+            hist = db.get_fact_history("s1", "a", id1)
+        self.assertEqual(len(rows), 1)                                    # 표시되는 대표 기억은 하나
+        r = rows[0]
+        self.assertEqual((r["id"], r["fact"], r["confidence"]), (id1, "7일차까지 증상이 있다", 0.95))  # max
+        self.assertEqual(sorted(json.loads(r["source_message_ids"])), [2, 3, 4])   # 현재 문장 지지 근거
+        by = {(h["fact_id"], h["reason"]): h for h in hist}
+        self.assertEqual(by[(id1, "changed")]["fact"], "6일차까지 증상이 있다")      # 양쪽 이력 보존
+        self.assertEqual(by[(id1, "changed")]["source_message_ids"], "[1]")
+        self.assertEqual((by[(id2, "merged")]["fact"], by[(id2, "merged")]["merged_into"],
+                          by[(id2, "merged")]["source_message_ids"]),
+                         ("7일차까지 증상이 있다", id1, "[2, 3]"))
+
+    # ── QA 후속(리뷰 반영 라운드) ─────────────────────────────────────────────
+
+    def test_upsert_failure_rolls_back_everything_and_releases_the_lock(self):
+        import sqlite3, threading
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            db.upsert_facts("s1", "a", [{"fact": "X", "confidence": 0.5}], wave=0)
+            x = self._rows(db)[0]["id"]
+            with self.assertRaises(TypeError):
+                db.upsert_facts("s1", "a", [
+                    {"fact": "Y", "confidence": 0.9, "judgment": "변경", "matches_id": x},
+                    {"fact": "Z", "confidence": None},
+                ], wave=1, candidate_ids=[x])
+            self.assertFalse(db._conn().in_transaction)
+            rows = self._rows(db)
+            hist = db._conn().execute("SELECT COUNT(*) FROM semantic_memory_history").fetchone()[0]
+            # 이후 같은 스레드의 무관한 commit 이 반쯤 적용된 변경을 확정하지 않는다.
+            db.log_compression("s1", "a", 1, 2)
+            rows_after = self._rows(db)
+            err = []
+
+            def other():
+                try:
+                    c = sqlite3.connect(os.path.join(tmp, "sim.db"), timeout=0.5)
+                    c.execute("INSERT INTO messages (sim_id, agent_key, role, content, created_at) "
+                              "VALUES ('s2','b','user','x',0)")
+                    c.commit(); c.close()
+                except Exception as e:      # noqa: BLE001
+                    err.append(e)
+            t = threading.Thread(target=other); t.start(); t.join(5)
+        self.assertEqual([(r["fact"], r["confidence"]) for r in rows], [("X", 0.5)])
+        self.assertEqual(hist, 0)
+        self.assertEqual([(r["fact"], r["confidence"]) for r in rows_after], [("X", 0.5)])
+        self.assertEqual(err, [])
+
+    def test_judgment_normalization_sanitizes_confidence(self):
+        from ABM.memory_compressor import _parse_compression_result
+        data = _parse_compression_result(json.dumps({"facts": [
+            {"fact": "a", "confidence": None}, {"fact": "b", "confidence": "높음"},
+            {"fact": "c"}, {"fact": "d", "confidence": 1.7}, {"fact": "e", "confidence": -0.2},
+            {"fact": "f", "confidence": "0.4"},
+        ]}).replace('"c"}', '"c"}'))
+        self.assertEqual([f["confidence"] for f in data["facts"]], [1.0, 1.0, 1.0, 1.0, 0.0, 0.4])
+        nan = _parse_compression_result('{"facts": [{"fact": "g", "confidence": NaN}]}')
+        self.assertEqual(nan["facts"][0]["confidence"], 1.0)
+
+    def test_compress_write_failure_deletes_the_archived_messages(self):
+        from unittest import mock
+        from ABM.memory_compressor import compress
+        llm = lambda *a, **k: (json.dumps({"facts": [{"fact": "f", "confidence": 0.9}],
+                                           "episodes": [{"event": "e", "participants": [], "importance": 3}],
+                                           "self_state": "x"}), "", {})
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            with mock.patch.object(db, "upsert_facts", side_effect=RuntimeError("boom")):
+                with self.assertRaises(RuntimeError):
+                    compress("a", "a", "s1", self._msgs(3), 1, db, llm)
+            n_msgs = db._conn().execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            n_comp = db.count_compressions("s1", "a")
+            n_eps  = len(db.get_episodes("s1", "a"))
+        self.assertEqual((n_msgs, n_comp, n_eps), (0, 0, 0))   # 사실이 맨 앞이라 아무것도 안 남음
+
+    def test_compress_failure_after_facts_keeps_the_referenced_messages(self):
+        # 사실이 커밋된 뒤 관계 반영이 중간에 실패 — 사실의 근거 원문은 남아야 하고,
+        # 반쯤 쓴 관계(첫 행)는 delete_messages 등의 commit 에 섞여 저장되면 안 된다.
+        from ABM.memory_compressor import compress
+        llm = lambda *a, **k: (json.dumps({
+            "facts": [{"fact": "f", "confidence": 0.9}],
+            "relationships": [{"target": "b", "trust": 0.5}, {"trust": 0.1}],   # 둘째 행 target 없음
+        }), "", {})
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            with self.assertRaises(Exception):
+                compress("a", "a", "s1", self._msgs(3), 1, db, llm)
+            conn = db._conn()
+            self.assertFalse(conn.in_transaction)
+            src = json.loads(self._rows(db)[0]["source_message_ids"])
+            alive = {r[0] for r in conn.execute("SELECT id FROM messages")}
+            n_rel = conn.execute("SELECT COUNT(*) FROM relationship_memory").fetchone()[0]
+        self.assertTrue(src and set(src) <= alive)     # 근거가 허공을 가리키지 않는다
+        self.assertEqual(n_rel, 0)                     # 반쪽 관계 쓰기는 롤백됨
+
+    def test_same_text_change_is_treated_exactly_like_same_meaning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            db.upsert_facts("s1", "a", [{"fact": "축구를 좋아한다", "confidence": 0.95}],
+                            wave=0, elapsed_minutes=10, source_message_ids=[1])
+            before = self._rows(db)[0]
+            db.upsert_facts("s1", "a", [{"fact": "축구를 좋아한다", "confidence": 0.2,
+                                         "judgment": "변경", "matches_id": before["id"]}],
+                            wave=5, elapsed_minutes=900, source_message_ids=[2],
+                            candidate_ids=[before["id"]])
+            after = self._rows(db)[0]
+            hist = db._conn().execute("SELECT COUNT(*) FROM semantic_memory_history").fetchone()[0]
+        self.assertEqual((after["confidence"], after["updated_at"], after["elapsed_minutes"], after["prev_fact"]),
+                         (0.95, before["updated_at"], 10, None))       # 0.95 가 0.2 로 바뀌지 않는다
+        self.assertEqual(json.loads(after["source_message_ids"]), [1, 2])
+        self.assertEqual(hist, 0)
+
+    def test_delete_run_removes_fact_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            db.upsert_facts("run-x", "a", [{"fact": "A", "confidence": 0.9}], wave=0)
+            fid = self._rows(db, "run-x")[0]["id"]
+            db.upsert_facts("run-x", "a", [{"fact": "B", "confidence": 0.9, "judgment": "변경",
+                                            "matches_id": fid}], wave=1, candidate_ids=[fid])
+            self.assertEqual(db._conn().execute(
+                "SELECT COUNT(*) FROM semantic_memory_history WHERE sim_id='run-x'").fetchone()[0], 1)
+            db.delete_run("run-x")
+            left = db._conn().execute(
+                "SELECT COUNT(*) FROM semantic_memory_history WHERE sim_id='run-x'").fetchone()[0]
+        self.assertEqual(left, 0)
+
+    def test_history_redirect_requires_the_representative_to_be_a_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            db.upsert_facts("s1", "a", [{"fact": "6일차까지 증상", "confidence": 0.7}], wave=0)
+            db.upsert_facts("s1", "a", [{"fact": "7일차까지 증상", "confidence": 0.9}], wave=0)
+            id1, id2 = [r["id"] for r in self._rows(db)]
+            db.upsert_facts("s1", "a", [{"fact": "7일차까지 증상", "confidence": 0.9, "judgment": "변경",
+                                         "matches_id": id1}], wave=1, candidate_ids=[id1])   # id2 통합·삭제
+            # 다음 호출: 지워진 id2 만 후보로 보였고 대표 id1 은 안 보임 → 리다이렉트 거부(신규).
+            db.upsert_facts("s1", "a", [{"fact": "8일차까지 증상", "confidence": 0.9, "judgment": "변경",
+                                         "matches_id": id2}], wave=2, candidate_ids=[id2])
+            rows = {r["fact"]: r for r in self._rows(db)}
+            # 대표가 후보에 있으면 리다이렉트 허용.
+            db.upsert_facts("s1", "a", [{"fact": "9일차까지 증상", "confidence": 0.9, "judgment": "변경",
+                                         "matches_id": id2}], wave=3, candidate_ids=[id2, id1])
+            final = {r["id"]: r["fact"] for r in self._rows(db)}
+        self.assertEqual(rows["7일차까지 증상"]["id"], id1)                # 대표는 그대로
+        self.assertIn("8일차까지 증상", rows)                              # 신규로 폴백
+        self.assertEqual(final[id1], "9일차까지 증상")
+
+    def test_change_keeps_lookup_for_a_duplicate_sharing_the_old_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            for _ in range(2):        # 기존 중복(이 기능 이전 실행) — 같은 문장 두 행
+                db._conn().execute("INSERT INTO semantic_memory (sim_id, agent_key, fact, confidence, "
+                                   "updated_at) VALUES ('s1','a','옛 문장',0.8,1.0)")
+            db._conn().commit()
+            a1, a2 = [r["id"] for r in self._rows(db)]
+            db.upsert_facts("s1", "a", [
+                {"fact": "새 문장", "confidence": 0.9, "judgment": "변경", "matches_id": a1},
+                {"fact": "옛 문장", "confidence": 0.8},          # 같은 배치 — 살아 있는 a2 로 잡혀야
+            ], wave=1, source_message_ids=[5], candidate_ids=[a1])
+            rows = self._rows(db)
+        self.assertEqual([(r["id"], r["fact"]) for r in rows], [(a1, "새 문장"), (a2, "옛 문장")])
+        self.assertEqual(json.loads(rows[1]["source_message_ids"]), [5])
+
+    # ── 핵심 성공 기준: 일주일 실행의 "날짜만 다른 같은 사실 6개" ───────────────────
+
+    def _smell_llm(self, *, with_judgment: bool, judgment: str = "동일_의미"):
+        """N번째 압축마다 "N일차까지 … 맛과 냄새를 느끼지 못한다"를 쓰는 스크립트 LLM.
+        with_judgment 면 프롬프트의 후보 목록에서 그 사실의 id 를 찾아 `judgment`로 지칭한다."""
+        state = {"day": 0}
+
+        def llm(messages, max_tokens=None, **kw):
+            state["day"] += 1
+            fact = {"fact": f"{state['day']}일차까지 코로나19로 지속적으로 맛과 냄새를 느끼지 못하고 있다",
+                    "confidence": 1.0}
+            if with_judgment:
+                m = re.search(r"\[id=(\d+)\] [^\n]*맛과 냄새", messages[-1]["content"])
+                if m:
+                    fact.update(judgment=judgment, matches_id=int(m.group(1)))
+                else:
+                    fact.update(judgment="신규")
+            return json.dumps({"facts": [fact], "self_state": "아프다"}), "", {}
+        return llm
+
+    def test_week_of_restatements_stays_one_row(self):
+        from ABM.memory_compressor import compress
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            llm = self._smell_llm(with_judgment=True)
+            batch_ids = []
+            for day in range(6):
+                before = db._conn().execute("SELECT COALESCE(MAX(id),0) FROM messages").fetchone()[0]
+                compress("짱구", "a", "s1", self._msgs(3, tag=f"d{day}-"), day, db, llm,
+                         now_elapsed=day * 1440)
+                batch_ids += list(range(before + 1, before + 4))
+            rows = self._rows(db)
+        self.assertEqual(len(rows), 1, [r["fact"] for r in rows])
+        self.assertEqual(rows[0]["fact"], "1일차까지 코로나19로 지속적으로 맛과 냄새를 느끼지 못하고 있다")
+        self.assertEqual(json.loads(rows[0]["source_message_ids"]), batch_ids)   # 6배치 근거 누적
+        self.assertEqual(rows[0]["confidence"], 1.0)
+
+    def test_week_of_date_updates_judged_changed_keeps_one_row_with_latest_date(self):
+        # 프롬프트 규칙상 "N일차까지 계속"의 날짜 갱신은 변경이다 — 그래도 1개 행이고,
+        # 문장은 최신 날짜로, 직전 문장은 prev_fact 로 남는다.
+        from ABM.memory_compressor import compress, _COMPRESSION_PROMPT
+        self.assertIn('"6일차까지 …" → "7일차까지 …"', _COMPRESSION_PROMPT)
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            llm = self._smell_llm(with_judgment=True, judgment="변경")
+            for day in range(6):
+                compress("짱구", "a", "s1", self._msgs(3, tag=f"d{day}-"), day, db, llm,
+                         now_elapsed=day * 1440)
+            rows = self._rows(db)
+            hist = db.get_fact_history("s1", "a", rows[0]["id"])
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["fact"].startswith("6일차까지"))
+        self.assertTrue(rows[0]["prev_fact"].startswith("5일차까지"))
+        # 현재 근거는 현재 문장을 지지한 마지막 배치(3메시지)뿐, 앞의 5개 버전은 이력에 근거와 함께.
+        self.assertEqual(len(json.loads(rows[0]["source_message_ids"])), 3)
+        self.assertEqual([h["fact"][:5] for h in hist],
+                         ["1일차까지", "2일차까지", "3일차까지", "4일차까지", "5일차까지", "6일차까지"])
+        self.assertEqual(sum(len(json.loads(h["source_message_ids"])) for h in hist), 18)
+
+    def test_without_judgment_the_same_scenario_still_accumulates(self):
+        # 대조군(회귀 기준선) — 판정 필드를 안 주는 응답(구버전과 같은 형태)은 예전처럼
+        # 날짜만 다른 행이 6개 쌓인다. 판정 필드가 실제로 일을 하고 있다는 근거.
+        from ABM.memory_compressor import compress
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            llm = self._smell_llm(with_judgment=False)
+            for day in range(6):
+                compress("짱구", "a", "s1", self._msgs(3, tag=f"d{day}-"), day, db, llm,
+                         now_elapsed=day * 1440)
+            self.assertEqual(len(self._rows(db)), 6)
 
 
 class MemoryConsolidationTests(unittest.TestCase):

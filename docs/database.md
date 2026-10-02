@@ -209,7 +209,9 @@ LLM으로 델타 압축해 아래 테이블을 upsert하고 raw는 `messages`에
 ### `messages` (raw 아카이브)
 
 `id` PK · `sim_id` · `agent_key` · `role` · `content` · `wave` · `token_est` · `created_at`.
-인덱스 `idx_msg_sim_agent`.
+인덱스 `idx_msg_sim_agent`. `save_messages()`는 **삽입된 id 목록**을 돌려준다 — 그 배치에서
+나온 사실의 원문 근거(`semantic_memory.source_message_ids`). 압축은 이 저장을 LLM 호출
+**전**에 하고, 호출이 실패하면 `delete_messages(ids)`로 그 행만 지운다(실패 배치는 보관 안 함).
 
 ### `episodic_memory`
 
@@ -225,12 +227,40 @@ LLM으로 델타 압축해 아래 테이블을 upsert하고 raw는 `messages`에
 `elapsed_minutes`(episodic_memory와 같은 값 — 지금은 렌더링에 안 쓴다. 사실은
 "지속되는 참"이라 recency 라벨을 안 붙이므로. 나중에 필요해지면 마이그레이션
 없이 바로 쓸 수 있게 스키마만 맞춰둠) · `prev_fact` · `prev_confidence`
-(믿음 변경 이력) · `updated_at`. 인덱스 `idx_sem_sim_agent`.
+(믿음 변경 이력) · `updated_at` · `source_message_ids`(원문 근거 — `messages.id` JSON 배열.
+같은 의미로 재진술되면 새 행 대신 여기에 근거만 누적된다. 이 컬럼 도입 전 행은 NULL —
+마이그레이션은 컬럼만 추가하고 임의로 채우지 않는다). 인덱스 `idx_sem_sim_agent`.
 
-`get_facts()`는 표시용(confidence 내림차순, id 없음) — 1차 압축의 재진술과
-`build_memory_block()`의 렌더링이 쓴다. `get_all_facts()`는 2차 정리
+`upsert_facts(…, source_message_ids=, candidate_ids=)`는 압축 LLM의 `judgment`/`matches_id`로
+라우팅한다. `matches_id`는 같은 sim_id·agent_key 의 행이면서 `candidate_ids`(이번 호출에서 보여준
+후보)에 있어야 하고, `candidate_ids=None`이면 ID 매칭이 꺼진다. 동일_의미 → 근거만 누적(확신도·시각
+불변), 변경 → 이전 버전을 `semantic_memory_history`에 남기고 갱신 + 현재 근거를 이번 배치로 리셋
+(+ 같은 문장의 다른 행은 통합), 신규·보류·검증 실패 → 예전 문자열 매칭 경로. 상세는
+[`simulation-engine.md` §6 "사실 중복 차단"](simulation-engine.md). 사실만 대상이고
+`episodic_memory`는 4단계로 보류.
+
+### `semantic_memory_history` (사실의 과거 버전)
+
+`id` PK · `fact_id`(그 버전이 속했던 `semantic_memory.id` — 외래키 아님: 통합으로 원래 행이
+지워져도 이력은 남는다) · `sim_id` · `agent_key` · `fact` · `confidence` · `source_message_ids`
+(그 버전을 지지했던 근거) · `source_wave` · `elapsed_minutes` · `updated_at`(그 버전의 마지막 갱신
+시각, 원래 행 값 그대로) · `superseded_at`(대체된 시각) · `reason`(`changed` = 변경으로 대체 /
+`merged` = 같은 문장의 다른 행으로 통합돼 삭제) · `merged_into`(merged 일 때 대표 행 id).
+인덱스 `idx_semhist_fact(sim_id, agent_key, fact_id, id)`, `idx_semhist_merged(merged_into)`.
+`SCHEMA`의 `CREATE TABLE IF NOT EXISTS`라 기존 DB 를 열면 빈 테이블로 생긴다(기존 사실은 손대지
+않음 — 이 테이블 도입 전의 변경 이력은 복원할 수 없다). `delete_run()`은 다른 기억 테이블과 함께
+이 테이블의 해당 `sim_id` 행도 지운다(`_MEMORY_TABLES`). `upsert_facts()`는 한 호출을 하나의
+트랜잭션으로 반영하고 실패하면 전부 롤백한다.
+
+`get_fact_history(sim_id, agent_key, fact_id)` — 그 사실의 과거 버전들(대체 시각 순) + 마지막에
+현재 행(`reason='current'`). 이 행으로 통합된 행들(`merged_into`)과 그 행들의 이전 버전도 재귀적으로
+포함하며, 각 항목의 `fact_id`로 어느 행의 버전인지 구분한다.
+
+`get_facts()`는 표시용(confidence 내림차순, id 없음) — `build_memory_block()`의 렌더링이
+쓴다(1차 압축의 "기존 기억" 재진술은 2~3단계부터 후보 검색 + id 표시라 `get_all_facts()`). `get_all_facts()`(id·`source_message_ids` 포함)는
+1차 압축의 후보 검색(`_select_candidate_facts`)과 2차 정리
 (`consolidate_facts`, [`simulation-engine.md` §6](simulation-engine.md#2차-기억-정리consolidation--한-번뿐이면-옅어진다-강화는-임시-제거))
-전용 — id 포함, 상한 없이 전체. `update_fact_confidence(id, confidence)`가
+가 쓴다 — 상한 없이 전체. `update_fact_confidence(id, confidence)`가
 2차 정리의 유일한 쓰기 경로 — 행은 지우지 않고 confidence만 재평가한다(현재는
 낮추기만 — 중복 강화 임시 제거).
 
