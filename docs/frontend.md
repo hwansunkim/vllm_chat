@@ -45,10 +45,27 @@ body
 
 | 함수 (`sim/views.js`) | 하는 일 |
 |---|---|
-| `showSimView()` | `#main`·설정 뷰 숨김 → 실행 뷰. 에이전트 카드·D3 그래프·지도 초기화, 시나리오 목록 로드 |
+| `showSimView()` | `#main`·설정 뷰 숨김 → 실행 뷰. 에이전트 카드 재렌더(실행 상태 유지·재적용), 그래프는 없을 때만 생성(`ensureD3Graph`), 지도는 구성 변경 시만 재구성(`ensureLocationMap`), 시나리오 목록 로드 |
 | `hideSimView()` | 실행 뷰 숨김 → `#main` |
 | `showSettingsView()` | 실행 뷰 숨김 → 설정 뷰. `renderSettingsPage()` |
-| `hideSettingsView()` | 설정 뷰 숨김 → 실행 뷰. 지도 재측정 |
+| `hideSettingsView()` | 설정 뷰 숨김 → 실행 뷰. 에이전트 카드 재렌더(실행 상태 유지·재적용, 삭제·개명·교체된 에이전트 상태는 버림 — 아래 "에이전트 동일성"), 지도 재측정/구성 변경 시 재구성 |
+
+**실행 상태 초기화 ≠ 화면 렌더링.** 뷰 전환은 실행 상태를 비우지 않는다. 실행 상태 초기화는
+`run/cards.js::resetRunState()`(감정·감염·활동 상태·위치·만남·카드 스냅샷)로 분리되어
+새 실행(`control.js::startSimulation`)과 실행 교체(`runs/replay.js`의 /resume·/load)에서만
+호출된다. `renderAgentCards()`는 카드 DOM만 다시 만들고, DOM 밖에 저장된 상태
+(`sim.agentInfection`, `sim.agentStatus`, 카드 모듈의 위치·만남·메타/토큰/발언·등퇴장
+스냅샷)를 SSE 핸들러와 같은 그리기 함수로 다시 칠한다. 이어서 실행(/continue)은 같은
+실행의 연장이라 어느 쪽도 초기화하지 않는다. 그래프(`initD3Graph`)·지도(`initLocationMap`)의
+완전 초기화도 새 실행·실행 교체 경로(/start, /load, /resume 모두)에서만 한다. 화면 복귀의
+`ensureD3Graph()`는 그래프가 없을 때만 만들고, 있으면 패널 실측 크기로 중심만 맞춘다.
+
+**에이전트 동일성.** 상태 맵은 이름으로 키를 잡지만 이름이 가리키는 에이전트가 바뀌었는지는
+객체 동일성으로 판정한다(`cards.js::syncAgentRoster()`, 지도는 `mapSignature()`에 객체 id 포함).
+같은 이름의 객체가 직전과 다르면 — 삭제, 개명, 삭제 후 같은 이름으로 재추가, 이름 맞바꾸기,
+설정에서 다른 시나리오 적용(`applyScenario`는 새 객체를 만든다) — 그 이름의 상태(위치 포함)를
+버리고 초기값으로 시작한다. 그 이름을 대상으로 한 만남 뱃지·추격선도 함께 버린다. 개명은 상태를
+새 이름으로 옮기지 않는다(/continue는 에이전트 목록을 다시 보내지 않아 서버는 옛 이름을 유지).
 
 채팅↔시뮬레이션 전환의 진입점은 사이드바 🎭 버튼(`#sim-btn`)과 실행 헤더 "← 채팅".
 
@@ -86,7 +103,7 @@ body
 | 에이전트 상태 | `state_categories[]`(수면·개인 용무, []=off), `zone_travel_min_minutes`, `zone_travel_max_minutes`(zone 경계 이동 소요 시간) |
 | LLM | `server_id`, `temperature`, `token_limit`, `llm_max_tokens`, `lang_fix_*` |
 | 하위 모델 | `system_agent{}`, `infection_model{}` |
-| 런타임 | `eventSource`, `scenarios[]`, `agentEmotions{}`, `agentInfection{}`, `errorLog[]` |
+| 런타임 | `eventSource`, `scenarios[]`, `agentEmotions{}`, `agentInfection{}`, `agentStatus{}`(현재 활성 활동 상태 = 마지막 `agent_status_change` payload, 해제 시 삭제), `errorLog[]` |
 
 ### 정규화 헬퍼 계층 — 프론트가 지키는 백엔드 계약
 
@@ -239,7 +256,7 @@ startSimulation() (run/control.js)
 | `meeting_update` | 만남 카드 🤝 (문구는 `state.js:meetingNarration`) | 카드 "→ 목표" 뱃지, 지도 점선 |
 | `infection_update` | 감염 카드 🦠 | 카드 뱃지, 그래프 노드 색, 지도 아바타 |
 | `appearance_update` | 외모 카드 🪞 | — |
-| `agent_status_change` | 상태 카드 (💤 진입 / 🚶 이동 / 🌅 해제) | 카드 상태 뱃지(`cards.js::updateAgentStatus`), 컨텍스트 탭 자동 새로고침 |
+| `agent_status_change` | 상태 카드 (💤 진입 / 🚶 이동 / 🌅 해제) | `sim.agentStatus` + 카드 상태 뱃지(`cards.js::updateAgentStatus`), 컨텍스트 탭 자동 새로고침 |
 | `time_jump` | 시간 판정 한 줄 (⏱ 카테고리/AI/클램프) | — |
 | `simulation_end` | "완료 \| 총 N턴 \| 사유" | 진행 바 100%, 연결 종료 |
 | `error` | — | 연결 오류 누적, 상태 `error` |

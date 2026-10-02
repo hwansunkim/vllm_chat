@@ -110,6 +110,27 @@ function graphSignature() {
   ]));
 }
 
+/**
+ * 지도 재구성 판정용 지문 — 장소 구조 + 에이전트 구성(이름·설정 위치).
+ * 에이전트가 추가·삭제·개명되면 아바타 목록이 바뀌어야 하므로 함께 본다.
+ * 같으면 ensureLocationMap()은 다시 그리지 않는다(화면 복귀 시 지도 상태 보존).
+ */
+// 에이전트 객체 → 일련번호. 같은 이름이 다른 에이전트를 가리키게 된 경우(삭제 후 재추가,
+// 이름 맞바꾸기, 다른 시나리오 적용)도 지문이 달라지도록 객체 동일성을 지문에 넣는다.
+const _agentObjIds = new WeakMap();
+let _nextAgentObjId = 1;
+function agentObjId(a) {
+  if (!a || typeof a !== 'object') return 0;
+  if (!_agentObjIds.has(a)) _agentObjIds.set(a, _nextAgentObjId++);
+  return _agentObjIds.get(a);
+}
+let _builtAgents = new Map();   // 마지막 initLocationMap() 때의 name -> 에이전트 객체
+
+function mapSignature() {
+  const agents = (sim.agents || []).map(a => [a?.name ?? '', a?.location ?? '', agentObjId(a)]);
+  return `${graphSignature()}|${JSON.stringify(agents)}`;
+}
+
 // ── 박스 크기 산정 ───────────────────────────────────────────────────────────
 /**
  * 박스 크기는 init 시점에 한 번만 정한다(이후 고정).
@@ -507,7 +528,8 @@ function zoneClusterForce(strength, repelStrength) {
  */
 export function initLocationMap(overrideLocations = null) {
   const graph = Array.isArray(sim.location_graph) ? sim.location_graph : [];
-  _signature = graphSignature();
+  _signature = mapSignature();
+  _builtAgents = new Map((sim.agents || []).map(a => [a.name, a]));
   _mapData   = buildData(graph);
 
   // 초기 위치는 에이전트 설정의 location(override가 있으면 그쪽 우선).
@@ -902,9 +924,36 @@ function fitToView() {
  * 탭 진입 시 호출. 설정 화면에서 장소 구성이 바뀌었으면 통째로 다시 그리고,
  * 아니면 (숨겨져 있는 동안 잴 수 없었던) 실제 패널 크기만 반영한다.
  */
-/** @param {Object|null} overrideLocations - initLocationMap()과 같은 의미. */
+/**
+ * 화면 복귀·탭 진입·설정 복귀용. 새 실행 초기화가 아니므로 다시 그려야 할 때도
+ * 실행 상태를 잃지 않는다 — override가 없으면 지도가 알고 있던 실제 위치(_agentLoc)를
+ * 넘기고, 진행 중이던 만남(추격선)은 남아 있는 에이전트끼리의 것만 되살린다.
+ * 새 실행/이력 불러오기는 initLocationMap()을 직접 불러 전부 초기화한다.
+ *
+ * @param {Object|null} overrideLocations - initLocationMap()과 같은 의미.
+ */
 export function ensureLocationMap(overrideLocations = null) {
-  if (graphSignature() !== _signature) { initLocationMap(overrideLocations); return; }
+  if (mapSignature() !== _signature) {
+    // 직전 지도와 **같은 에이전트 객체**인 이름만 상태를 이어받는다(이름 재사용·맞바꾸기·
+    // 다른 시나리오의 동명 에이전트는 초기값). 카드의 syncAgentRoster()와 같은 기준.
+    const prevBuilt = _builtAgents;
+    const same = name => {
+      const obj = (sim.agents || []).find(a => a.name === name);
+      return !!obj && prevBuilt.get(name) === obj;
+    };
+    const prevMeetings = _meetingIntent;
+    let locs = overrideLocations;
+    if (!locs) {
+      locs = {};
+      for (const [name, loc] of Object.entries(_agentLoc)) if (same(name)) locs[name] = loc;
+    }
+    initLocationMap(locs);
+    for (const [chaser, info] of Object.entries(prevMeetings)) {
+      if (same(chaser) && same(info.target)) _meetingIntent[chaser] = info;
+    }
+    renderChaseLines(false);
+    return;
+  }
   refreshMapSize();
 }
 

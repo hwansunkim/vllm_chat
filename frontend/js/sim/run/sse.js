@@ -10,7 +10,8 @@ import {
   addInfectionCard, addMeetingCard, addTimeJumpCard, addStatusCard, flushPendingWaveCards,
 } from './feed.js';
 import { updateAgentCard, updateAgentLocation, updateAgentInfection,
-         updateAgentMeetingBadge, updateAgentStatus, getCardEl } from './cards.js';
+         updateAgentMeetingBadge, updateAgentStatus, updateAgentPresence,
+         getCardEl } from './cards.js';
 import { addD3Edge, refreshInfectionStyles } from '../graph/d3.js';
 import { moveAgentOnMap, updateAgentInfectionOnMap, setMeetingIntentOnMap } from '../map/d3.js';
 import { setStatus } from './control.js';
@@ -92,11 +93,10 @@ export function connectSSE() {
   es.addEventListener('scene_event', e => {
     const d = JSON.parse(e.data);
     addSceneEventToFeed(d);
-    if (d.event_type === 'agent_enter') {
-      getCardEl(d.agent)?.classList.remove('inactive');
-    } else if (d.event_type === 'agent_exit') {
-      const card = getCardEl(d.agent);
-      if (card) { card.classList.remove('speaking'); card.classList.add('exited'); }
+    // 등퇴장은 cards.js가 DOM 밖에도 기록해 둔다 — 카드를 다시 그려도 표시가 유지된다.
+    if (d.event_type === 'agent_enter' || d.event_type === 'agent_exit') {
+      updateAgentPresence(d.agent, d.event_type);
+      if (d.event_type === 'agent_exit') getCardEl(d.agent)?.classList.remove('speaking');
     }
   });
 
@@ -180,7 +180,7 @@ export function connectSSE() {
   // 패널이 열려 있으면 그 자리에서도 즉시 갱신한다(turn_complete와 같은 패턴).
   es.addEventListener('agent_status_change', e => {
     const d = JSON.parse(e.data);
-    updateAgentStatus(d);
+    updateAgentStatus(d);   // sim.agentStatus 갱신(카드가 없어도) + 카드 뱃지
     addStatusCard(d);
     if (sim.selectedAgent === d.agent &&
         !document.getElementById('sim-tab-context').classList.contains('sim-hidden')) {

@@ -5,7 +5,7 @@ import { sim, esc, emotionClass, agentLabel } from '../state.js';
 import { fmtTime, statusIcon } from '../utils/time.js';
 import { applyScenario } from '../scenarios.js';
 import { setStatus } from '../run/control.js';
-import { renderAgentCards, updateAgentInfection, updateAgentMeetingBadge } from '../run/cards.js';
+import { renderAgentCards, resetRunState, updateAgentInfection, updateAgentMeetingBadge } from '../run/cards.js';
 import { renderHistoricalFeed, resetWaveCardBuffer } from '../run/feed.js';
 import { initD3Graph, refreshInfectionStyles } from '../graph/d3.js';
 import { initLocationMap, updateAgentInfectionOnMap, setMeetingIntentOnMap } from '../map/d3.js';
@@ -214,7 +214,12 @@ export async function openRunReplay(runId, runNum) {
       }
       // 설정 반영 (에이전트 카드 등 UI 동기화)
       applyScenario({ id: run.scenario_id, name: run.scenario_name || '', config: parsedConfig });
+      // 실행 교체 — 화면에 남아 있던 다른 실행의 상태를 비운 뒤 카드를 그린다.
+      resetRunState();
       renderAgentCards();
+      // 이전 실행의 상호작용 그래프도 비운다 — 화면 복귀는 ensureD3Graph()라 그래프를
+      // 지우지 않으므로, 여기서 비우지 않으면 다른 실행의 엣지가 계속 남는다.
+      initD3Graph();
       // 재개 시나리오의 location_graph로 지도를 다시 세운다 (아바타는 설정상의 초기 위치에서
       // 시작하고, 이후 agent_move 이벤트로 실제 위치를 따라간다 — 에이전트 카드와 동일한 기준).
       initLocationMap();
@@ -262,6 +267,8 @@ export async function openRunReplay(runId, runNum) {
       // 아니라 이 run이 저장한 실제 위치로 세운다(data.agent_locations). 안 그러면
       // "불러왔더니 위치가 리셋된 것처럼 보이는" 문제가 생긴다 — /load는 스레드
       // 없이 이 응답 안에서 이미 복원이 끝나 있으므로 곧바로 쓸 수 있다.
+      // 실행 교체이므로 이전 실행 상태를 먼저 비운다(감염·만남은 아래에서 이 run 기준으로 복원).
+      resetRunState();
       renderAgentCards(data.agent_locations);
       initD3Graph();
       initLocationMap(data.agent_locations);

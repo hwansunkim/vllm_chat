@@ -449,6 +449,10 @@ export const sim = {
   // { agent_name: { status, cause, wave, disease_name } } — infection_update SSE로 갱신.
   // 감염 뱃지·그래프/지도 노드 강조가 모두 이 맵 하나를 본다.
   agentInfection: {},
+  // { agent_name: 마지막 agent_status_change payload } — 지금 활성인 상태(수면·개인 용무·
+  // 이동)만 둔다. 해제(action='clear') 이벤트를 받으면 항목을 지운다. 카드 DOM이 다시
+  // 만들어져도 상태 뱃지를 다시 칠할 수 있도록 DOM 밖에 보관한다(run/cards.js).
+  agentStatus:    {},
 };
 
 // 오류 로그 보관 상한. 시나리오가 막힐 때는 같은 오류가 매 턴 반복되므로

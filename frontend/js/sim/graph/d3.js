@@ -95,6 +95,23 @@ export function initD3Graph() {
   svg.datum({ g, layers, W, H });
 }
 
+/**
+ * 화면 복귀용 — 그래프가 아직 없을 때만 새로 만든다. 그래프 데이터는 실행에서 쌓인
+ * 상호작용 이력(addD3Edge)이고 에이전트 설정과 무관하게 노드가 생기므로, 다른 화면을
+ * 다녀왔다고 지우지 않는다. 초기화는 새 실행/이력 불러오기 경로가 initD3Graph()로 직접 한다.
+ */
+export function ensureD3Graph() {
+  if (!_d3Sim) { initD3Graph(); return; }
+  // 숨겨진 동안 만들어졌으면 폴백 크기(280x400) 기준이다 — 보이는 지금 실측 크기로 중심을 맞춘다.
+  const svgEl = document.getElementById('sim-graph-svg');
+  const meta  = svgEl && d3.select(svgEl).datum();
+  const W = svgEl?.clientWidth, H = svgEl?.clientHeight;
+  if (!meta || !W || !H || (W === meta.W && H === meta.H)) return;
+  meta.W = W; meta.H = H;
+  _d3Sim.force('center', d3.forceCenter(W / 2, H / 2));
+  _d3Sim.alpha(0.3).restart();
+}
+
 /** 엣지의 중심선(spine) — 폴리곤 오프셋의 기준이 되는 호. */
 function linkPath(d) {
   const dx = d.target.x - d.source.x;

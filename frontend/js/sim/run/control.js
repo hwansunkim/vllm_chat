@@ -4,7 +4,7 @@
 import { sim, normalizeTargetDuration } from '../state.js';
 import { buildSimConfig } from '../config.js';
 import { readConfigFromUI } from '../settings/page.js';
-import { renderAgentCards } from './cards.js';
+import { renderAgentCards, resetRunState } from './cards.js';
 import { removeTypingIndicator, resetWaveCardBuffer, flushPendingWaveCards } from './feed.js';
 import { initD3Graph } from '../graph/d3.js';
 import { initLocationMap } from '../map/d3.js';
@@ -51,6 +51,9 @@ export async function startSimulation() {
   resetWaveCardBuffer();
   document.getElementById('sim-turn-text').textContent = '대기 중';
   document.getElementById('sim-progress-fill').style.width = '0%';
+  // 새 실행 — 이전 실행의 감염·상태·감정·위치·만남 등 실행 상태를 비운 뒤 카드를 그린다.
+  // (화면 복귀 경로인 views.js는 resetRunState()를 부르지 않는다.)
+  resetRunState();
   renderAgentCards();
   initD3Graph();
   initLocationMap();

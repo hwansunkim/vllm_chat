@@ -701,7 +701,8 @@ idle 스케줄(60/120/180분)이 그 사람의 해제 시점을 그냥 지나쳤
 until_time_str}`, label/minutes/until_time_str는 enter에만)를 emit하고, 이걸
 네 곳에서 소비한다:
 - **에이전트 카드 뱃지** (`cards.js::updateAgentStatus`) — 💤/🚶 아이콘 + 라벨을
-  카드에 바로 표시, 해제되면 사라짐.
+  카드에 바로 표시, 해제되면 사라짐. 현재 상태는 `sim.agentStatus`에도 보관되어
+  화면 복귀로 카드가 다시 그려져도 뱃지가 유지된다.
 - **피드 카드** (`feed.js::addStatusCard`) — enter/clear 각각 별도 카드로 실행
   이력에 영구 기록.
 - **컨텍스트 패널 배너** (`context.js`) — `GET /agents/{name}/context`가 함께
