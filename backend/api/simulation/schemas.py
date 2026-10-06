@@ -272,8 +272,8 @@ class InfectionModelConfig(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
     enabled:                  bool  = False
     disease_name:             str   = ""
-    # 전염 확률의 β(λ=β×t_d, P=1-exp(-λ)). t_d는 직전 판정 이후 실제로 경과한
-    # 시간(일 단위)이다 — infection.py::_apply_infection_wave 참고.
+    # 전염 확률의 β(λ=β×t_d, P=1-exp(-λ)). t_d는 그 wave에 걸린 시간(일 단위) — wave
+    # 시작 위치의 접촉 × 그 wave 경과다. infection.py::_apply_infection_wave 참고.
     beta:                     float = Field(default=0.04, ge=0.0)
     symptom_stages:           list[SymptomStage] = []
     # 설정 화면의 모델 선택(UI 전용). 엔진은 읽지 않는다 — S→E→P→I→R 하나의 구조에서

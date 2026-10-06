@@ -1,6 +1,9 @@
 import ast
 import asyncio
+import contextlib
+import csv
 import json
+import math
 import os
 import re
 import sqlite3
@@ -8,6 +11,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import httpx
 from pydantic import ValidationError
@@ -2629,11 +2633,14 @@ class InfectionTimeModelTests(unittest.TestCase):
                 6:  "온몸이 불덩이다.",        # 360분 I 50% → 두 번째 문구
                 9:  "온몸이 불덩이다.",        # 540분 I 87.5%
             }
+            # 진행 판정은 wave **끝**(= 다음 wave 시작) 시각 — wave w-1 의 판정이 wave w
+            # 시작 시각(w*60분)의 상태를 만든다(2026-10 wave 타이밍 정정).
             for w in range(0, 10):
-                sim._apply_infection_wave(w)
+                if w > 0:
+                    sim._apply_infection_wave(w - 1)
                 if w in expected:
                     self.assertEqual(self._symptom(sim, "a", w), expected[w], f"wave {w}")
-            sim._apply_infection_wave(10)   # 600분 — 회복(문구 대신 회복 안내)
+            sim._apply_infection_wave(9)    # wave 9 끝 = 600분 — 회복(문구 대신 회복 안내)
             self.assertIn("씻은 듯이", sim._build_symptom_context("a", 10))
 
     def test_same_wave_count_gives_different_stage_when_wave_is_longer(self):
@@ -2645,8 +2652,8 @@ class InfectionTimeModelTests(unittest.TestCase):
             for sim in (short, long):
                 sim._set_infected("a", 0, "event")
                 self._pin(sim, "a")
-                sim._apply_infection_wave(1)
-                sim._apply_infection_wave(2)
+                sim._apply_infection_wave(0)   # wave 0 끝 = 1 wave 경과
+                sim._apply_infection_wave(1)   # wave 1 끝 = 2 wave 경과
 
             self.assertEqual(self._symptom(short, "a", 2), "아직 아무렇지도 않다.")  #  20분 E
             self.assertEqual(self._symptom(long,  "a", 2), "온몸이 불덩이다.")       # 480분 I 75%
@@ -2695,11 +2702,11 @@ class InfectionTimeModelTests(unittest.TestCase):
             sim._agent_infection["a"]["infectious_at_minutes"] = 0
             sim._agent_infection["a"]["recover_at_minutes"] = 180
 
-            sim._apply_infection_wave(1)   #  60분 — E→I 전이(스냅샷 순서상 이번 wave엔 I→R 미적용)
+            sim._apply_infection_wave(0)   # wave 0 끝  60분 — E→I 전이(시작 스냅샷 기준이라 이번 wave엔 I→R 미적용)
             self.assertEqual(sim._agent_infection["a"]["status"], "I")
-            sim._apply_infection_wave(2)   # 120분 — 아직 회복 전
+            sim._apply_infection_wave(1)   # wave 1 끝 120분 — 아직 회복 전
             self.assertEqual(sim._agent_infection["a"]["status"], "I")
-            sim._apply_infection_wave(3)   # 180분 — 도달
+            sim._apply_infection_wave(2)   # wave 2 끝 180분 — 도달
             self.assertEqual(sim._agent_infection["a"]["status"], "R")
 
     def test_incubation_and_recover_deltas_stay_within_research_spec_range(self):
@@ -2729,9 +2736,9 @@ class InfectionTimeModelTests(unittest.TestCase):
                     # 결정론적 진행: 즉시 감염성(0분), 회복까지 총 60분.
                     sim._agent_infection["a"]["infectious_at_minutes"] = 0
                     sim._agent_infection["a"]["recover_at_minutes"] = 60
-                    sim._apply_infection_wave(1)   # 60분 — E→I 전이
+                    sim._apply_infection_wave(0)   # wave 0 끝 60분 — E→I 전이
                     self.assertEqual(sim._agent_infection["a"]["status"], "I")
-                    sim._apply_infection_wave(2)   # 120분 — I→R/S 판정
+                    sim._apply_infection_wave(1)   # wave 1 끝 120분 — I→R/S 판정
                     self.assertEqual(sim._agent_infection["a"]["status"], expected)
                     # 회복 안내는 상태와 무관하게 한 번 뜬다(raw 값 노출 없이).
                     self.assertIn("씻은 듯이", sim._build_symptom_context("a", 2))
@@ -2745,9 +2752,9 @@ class InfectionTimeModelTests(unittest.TestCase):
             sim._set_infected("a", 0, "event")
             sim._agent_infection["a"]["infectious_at_minutes"] = 0
             sim._agent_infection["a"]["recover_at_minutes"] = 60
-            sim._apply_infection_wave(1)   # 60분 — E→I 전이
+            sim._apply_infection_wave(0)   # wave 0 끝 60분 — E→I 전이
             self.assertEqual(sim._agent_infection["a"]["status"], "I")
-            sim._apply_infection_wave(2)   # 120분 — I→S(SEIRS)
+            sim._apply_infection_wave(1)   # wave 1 끝 120분 — I→S(SEIRS)
             self.assertEqual(sim._agent_infection["a"]["status"], "S")
 
             # 재감염 — 앵커가 재감염 시점으로 옮겨져 다시 잠복기(E)부터 시작해야 한다.
@@ -2766,7 +2773,7 @@ class InfectionTimeModelTests(unittest.TestCase):
             sim = self._sim(tmp, infection=self._model(), time_per_wave=60)
             sim._set_infected("a", 0, "event")
             self._pin(sim, "a")
-            for w in range(1, 7):
+            for w in range(0, 6):            # wave 0~5 끝 = 60~360분
                 sim._apply_infection_wave(w)
             sim.completed_waves = 6                       # 경과 360분 = I 진행률 50%
             self.assertEqual(self._symptom(sim, "a", 6), "온몸이 불덩이다.")
@@ -2801,7 +2808,7 @@ class InfectionTimeModelTests(unittest.TestCase):
             # 결정론적 진행을 위해 델타를 직접 고정한다(잠복기는 감마분포 난수라
             # 테스트에서 직접 제어) — 100분에 I 진입, 노출로부터 총 500분 뒤 회복.
             self._pin(sim, "a", e=100, i=400)
-            sim._apply_infection_wave(5)   # 300분 경과 → E→I 전이 적용(I 진행률 50%)
+            sim._apply_infection_wave(4)   # wave 4 끝 = 300분 경과 → E→I 전이 적용(I 진행률 50%)
             sim.completed_waves = 5        # export가 읽는 '지금' 기준
             self.assertEqual(sim._agent_infection["a"]["status"], "I")
 
@@ -2818,10 +2825,11 @@ class InfectionTimeModelTests(unittest.TestCase):
             self.assertEqual(fresh._agent_infection["a"]["infected_at_minutes"], -300)
             self.assertEqual(fresh._agent_infection["a"]["recover_at_minutes"], 500)
             self.assertEqual(self._symptom(fresh, "a", 0), "온몸이 불덩이다.")
-            # 남은 200분이 지나야 회복한다(wave 4 = 540분) — 복원으로 시계가 리셋되지 않는다.
-            fresh._apply_infection_wave(3)
+            # 남은 200분이 지나야 회복한다(재개 후 wave 3 끝 = 540분) — 복원으로 시계가
+            # 리셋되지 않는다.
+            fresh._apply_infection_wave(2)   # 480분
             self.assertEqual(fresh._agent_infection["a"]["status"], "I")
-            fresh._apply_infection_wave(4)
+            fresh._apply_infection_wave(3)   # 540분
             self.assertEqual(fresh._agent_infection["a"]["status"], "R")
 
     def test_restore_preserves_elapsed_minutes_in_variable_mode(self):
@@ -2876,21 +2884,29 @@ class InfectionTimeModelTests(unittest.TestCase):
             self.assertEqual(sim._agent_infection["b"]["status"], "S")
 
     def test_transmission_occurs_once_real_time_elapses(self):
-        # 첫 판정은 "직전 판정 시각"이 없어 t_d=0(전염 없음)으로 시작하지만,
-        # 실제 시간이 지난 뒤의 판정은 t_d>0이라 전염이 걸린다.
+        # t_d 는 wave 자신의 경과 시간 — wave 시작에 E 였던 a 는 그 wave 의 전파원이
+        # 아니고(끝에 I 로 진행), 다음 wave 시작엔 I 라 그 wave 60분 동안 b 를 감염시킨다.
+        # 2026-10 이전의 "첫 판정 t_d=0" 규칙은 없어졌다 — wave 0 이라도 시작에 I 면 전염.
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(tmp, time_per_wave=60,
                             infection=self._model(beta=1000.0),  # 사실상 확실히 전염
                             locations={"a": "매장", "b": "매장"})
             sim._set_infected("a", 0, "event")
-            # a가 즉시 감염성(I)을 갖도록 고정 — 그래야 b에게 옮길 수 있다(잠복기
-            # 중인 E는 아직 전염 안 됨). 첫 호출에서 E→I 전이가 바로 적용된다.
             sim._agent_infection["a"]["infectious_at_minutes"] = 0
-            sim._apply_infection_wave(0)   # 첫 판정 — t_d 기준점 확립, 아직 무감염
+            sim._agent_infection["a"]["presymptomatic_at_minutes"] = 0
+            sim._apply_infection_wave(0)   # 시작에 E → 전파원 아님, 끝에 E→I
             self.assertEqual(sim._agent_infection["a"]["status"], "I")
             self.assertEqual(sim._agent_infection["b"]["status"], "S")
-            sim._apply_infection_wave(1)   # 60분 경과 → t_d>0, 이번엔 판정된다
+            sim._apply_infection_wave(1)   # 시작에 I, 60분 → b 감염(시각 = wave 1 끝 120분)
             self.assertEqual(sim._agent_infection["b"]["status"], "E")
+            self.assertEqual(sim._agent_infection["b"]["infected_at_minutes"], 120)
+
+            fresh = self._sim(tmp, time_per_wave=60,
+                              infection=self._model(beta=1000.0),
+                              locations={"a": "매장", "b": "매장"})
+            fresh._set_infected("a", 0, "event", start_status="I")
+            fresh._apply_infection_wave(0)  # 첫 wave 라도 시작에 I 면 그 wave 60분으로 판정
+            self.assertEqual(fresh._agent_infection["b"]["status"], "E")
 
     # ── LLM 계약: raw 값은 절대 프롬프트에 안 들어간다 ───────────────────────────
 
@@ -3091,16 +3107,17 @@ class SepirModelTests(unittest.TestCase):
                 self.assertEqual(entry["recover_at_minutes"], expected_e + 8 * self.DAY)
 
                 # 전이 시점: E→I는 경과 ≥ 잠복기인 첫 wave, I→R은 그다음 이후 ≥ 총 델타.
+                # wave w 의 판정 시각은 wave 끝 = (w+1)일 — 그래서 경과 d일의 판정은 wave d-1.
                 e_days = expected_e // self.DAY
                 for w in range(1, e_days):
-                    sim._apply_infection_wave(w)
+                    sim._apply_infection_wave(w - 1)
                     self.assertEqual(entry["status"], "E")
-                sim._apply_infection_wave(e_days)
+                sim._apply_infection_wave(e_days - 1)
                 self.assertEqual(entry["status"], "I", "P 지속 0이면 P를 건너뛰고 같은 wave에 I")
                 for w in range(e_days + 1, e_days + 8):
-                    sim._apply_infection_wave(w)
+                    sim._apply_infection_wave(w - 1)
                     self.assertEqual(entry["status"], "I")
-                sim._apply_infection_wave(e_days + 8)
+                sim._apply_infection_wave(e_days + 7)
                 self.assertEqual(entry["status"], "R")
                 self.assertEqual(self._statuses(sim), ["E", "I", "R"], "P 이벤트는 없어야 한다")
 
@@ -3117,9 +3134,9 @@ class SepirModelTests(unittest.TestCase):
                               entry["recover_at_minutes"]), (1440, 4320, 8640))
             expected = {1: "E", 2: "P", 3: "P", 5: "P", 6: "I", 11: "I", 12: "R"}
             for w in range(1, 13):
-                sim._apply_infection_wave(w)
+                sim._apply_infection_wave(w - 1)   # wave w-1 끝 = w*720분
                 if w in expected:
-                    self.assertEqual(entry["status"], expected[w], f"wave {w} ({w * 720}분)")
+                    self.assertEqual(entry["status"], expected[w], f"{w * 720}분")
             self.assertEqual(self._statuses(sim), ["E", "P", "I", "R"])
             p_to_i = [d for t, d in sim._emitted if t == "infection_update" and d["status"] == "I"][0]
             self.assertEqual(p_to_i["from_status"], "P")
@@ -3131,7 +3148,7 @@ class SepirModelTests(unittest.TestCase):
                 exposed_duration=self._fixed(1), presymptomatic_duration=self._fixed(1),
                 infectious_duration=self._fixed(1)))
             sim._set_infected("a", 0, "event")
-            for w, st in ((1, "P"), (2, "I"), (3, "R")):
+            for w, st in ((0, "P"), (1, "I"), (2, "R")):   # wave w 끝 = (w+1)*30일
                 sim._apply_infection_wave(w)
                 self.assertEqual(sim._agent_infection["a"]["status"], st)
 
@@ -3145,9 +3162,7 @@ class SepirModelTests(unittest.TestCase):
                                 infectious_duration=self._fixed(3)))
             sim._set_infected("a", 0, "event", start_status="P")
             self.assertEqual(sim._agent_infection["a"]["status"], "P")
-            sim._apply_infection_wave(0)   # 첫 판정 — t_d 기준점만 세운다
-            self.assertEqual(sim._agent_infection["b"]["status"], "S")
-            sim._apply_infection_wave(1)   # 60분 경과 — P가 같은 방의 S를 감염시킨다
+            sim._apply_infection_wave(0)   # wave 0(60분) 시작에 P — 같은 방의 S를 감염시킨다
             self.assertEqual(sim._agent_infection["a"]["status"], "P")
             self.assertEqual(sim._agent_infection["b"]["status"], "E")
 
@@ -3178,11 +3193,11 @@ class SepirModelTests(unittest.TestCase):
             self.assertEqual(ctx.split("\n", 1)[1], "열이 오르고 기침이 난다.")
             ev = [d for t, d in sim._emitted if t == "infection_update"][0]
             self.assertEqual((ev["status"], ev["cause"]), ("I", "event"))
-            # 감염기 8일이 온전히 남아 있다 — 시작 wave(3) + 8일 = wave 11에 회복.
-            for w in range(4, 11):
+            # 감염기 8일이 온전히 남아 있다 — 시작(3일) + 8일 = 11일(wave 10 끝)에 회복.
+            for w in range(3, 10):
                 sim._apply_infection_wave(w)
                 self.assertEqual(entry["status"], "I")
-            sim._apply_infection_wave(11)
+            sim._apply_infection_wave(10)
             self.assertEqual(entry["status"], "R")
 
     def test_start_in_presymptomatic_backdates_by_exposed_only(self):
@@ -3194,7 +3209,7 @@ class SepirModelTests(unittest.TestCase):
             self.assertEqual(entry["status"], "P")
             self.assertEqual(entry["infected_at_minutes"], -2 * self.DAY)
             self.assertEqual(sim._build_symptom_context("a", 0).split("\n", 1)[1], "특별한 증상은 없다.")
-            sim._apply_infection_wave(1)   # P 1일 경과 → I
+            sim._apply_infection_wave(0)   # wave 0 끝 — P 1일 경과 → I
             self.assertEqual(entry["status"], "I")
             self.assertEqual(sim._build_symptom_context("a", 1).split("\n", 1)[1], "열이 오르고 기침이 난다.")
 
@@ -3215,13 +3230,13 @@ class SepirModelTests(unittest.TestCase):
     }
 
     def test_legacy_live_dict_transitions_at_same_waves_as_before(self):
-        # 옛 코드: wave 3(180분)에 E→I, wave 5(300분)에 I→R.
+        # 옛 코드: 180분에 E→I, 300분에 I→R. (판정 시각 = wave 끝 → wave w-1 이 w*60분)
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(tmp, time_per_wave=60, infection=self._model())
             sim._agent_infection["a"] = dict(self.OLD_ENTRY)
             timeline = []
             for w in range(1, 8):
-                sim._apply_infection_wave(w)
+                sim._apply_infection_wave(w - 1)
                 timeline.append(sim._agent_infection["a"]["status"])
             self.assertEqual(timeline, ["E", "E", "I", "I", "R", "R", "R"])
             self.assertEqual(self._statuses(sim), ["I", "R"], "P를 거치지 않아야 한다")
@@ -3237,9 +3252,9 @@ class SepirModelTests(unittest.TestCase):
             self.assertEqual(entry["infectious_at_minutes"], 180)
             timeline = []
             for w in range(1, 6):
-                fresh._apply_infection_wave(w)
+                fresh._apply_infection_wave(w - 1)   # 재개 후 w*60분
                 timeline.append(entry["status"])
-            # 저장 시점 경과 60분 → 120분 더(wave 2)에 I, 240분 더(wave 4)에 R — 옛 코드와 동일.
+            # 저장 시점 경과 60분 → 120분 더에 I, 240분 더에 R — 옛 코드와 동일.
             self.assertEqual(timeline, ["E", "I", "I", "R", "R"])
 
     def test_legacy_snapshot_in_infectious_state_restores_and_recovers(self):
@@ -3248,9 +3263,9 @@ class SepirModelTests(unittest.TestCase):
                                         "elapsed_minutes_since_infection": 200}}}
             fresh = self._sim(tmp, time_per_wave=60, infection=self._model())
             fresh.restore_agent_state(snap)
-            fresh._apply_infection_wave(1)
+            fresh._apply_infection_wave(0)
             self.assertEqual(fresh._agent_infection["a"]["status"], "I")   # 260분
-            fresh._apply_infection_wave(2)
+            fresh._apply_infection_wave(1)
             self.assertEqual(fresh._agent_infection["a"]["status"], "R")   # 320분 ≥ 300
 
     def test_presymptomatic_state_round_trips_through_export_restore(self):
@@ -3267,7 +3282,7 @@ class SepirModelTests(unittest.TestCase):
             fresh = self._sim(tmp, time_per_wave=self.DAY, infection=model)
             fresh.restore_agent_state(state)
             self.assertEqual(fresh._agent_infection["a"]["status"], "P")
-            fresh._apply_infection_wave(1)
+            fresh._apply_infection_wave(0)   # wave 0 끝 = 1일
             self.assertEqual(fresh._agent_infection["a"]["status"], "I")
 
     # ── 6. 스키마·표시 계약 ──────────────────────────────────────────────────
@@ -3435,10 +3450,12 @@ class SymptomStageByStatusTests(unittest.TestCase):
         return None if ctx is None else ctx.split("\n", 1)[1]
 
     def _walk(self, sim, waves):
-        """wave마다 진행 판정 후 (wave, 상태, 문구)."""
+        """wave w 시작 시점의 (wave, 상태, 문구). 진행 판정은 wave 끝이라 wave w 시작의
+        상태는 wave w-1 판정이 만든다."""
         out = []
         for w in range(waves):
-            sim._apply_infection_wave(w)
+            if w > 0:
+                sim._apply_infection_wave(w - 1)
             out.append((w, sim._agent_infection["a"]["status"], self._text(sim, w)))
         return out
 
@@ -4465,7 +4482,7 @@ class FixedClockContinuityTests(unittest.TestCase):
             sim._set_infected("a", 0, "event")
             # 60분에 I 진입, I 480분 → 300분 지점이 I 진행률 50%(두 번째 문구).
             InfectionTimeModelTests._pin(sim, "a", e=60, i=480)
-            sim._apply_infection_wave(1)
+            sim._apply_infection_wave(0)                  # wave 0 끝 = 60분 — E→I
             sim.completed_waves = 5                       # 300분 = I 후반
             anchor_before = sim._agent_infection["a"]["infected_at_minutes"]
 
@@ -4488,7 +4505,7 @@ class FixedClockContinuityTests(unittest.TestCase):
             sim._set_infected("a", 0, "event")
             # 60분에 I 진입, I 480분 → 300분 지점이 I 진행률 50%(두 번째 문구).
             InfectionTimeModelTests._pin(sim, "a", e=60, i=480)
-            sim._apply_infection_wave(1)
+            sim._apply_infection_wave(0)                  # wave 0 끝 = 60분 — E→I
             sim.completed_waves = 5
 
             before = sim._current_elapsed_minutes(sim.completed_waves)
@@ -4508,7 +4525,7 @@ class FixedClockContinuityTests(unittest.TestCase):
             sim._set_infected("a", 0, "event")
             # 60분에 I 진입, I 480분 → 300분 지점이 I 진행률 50%(두 번째 문구).
             InfectionTimeModelTests._pin(sim, "a", e=60, i=480)
-            sim._apply_infection_wave(1)
+            sim._apply_infection_wave(0)                  # wave 0 끝 = 60분 — E→I
             sim.completed_waves = 5                       # 300분 = I 후반
 
             state     = sim.export_agent_state()
@@ -4703,11 +4720,11 @@ class CumulativeWaveTests(unittest.TestCase):
                             locations={"a": "매장", "b": "매장"})
             sim._set_infected("a", 0, "event")
             sim._agent_infection["a"]["infectious_at_minutes"] = 0  # 즉시 감염성(I) 고정
-            sim._apply_infection_wave(0)   # 첫 판정 — t_d 기준점 확립(전염 없음) + a E→I
+            sim._apply_infection_wave(0)   # wave 0 시작에 E(비전파) — 끝에 a E→I
             sim._emitted.clear()
 
-            # run_wave=2 (경과 120분), disp_wave=42 (표시 라벨)
-            sim._apply_infection_wave(2, 42)
+            # run_wave=1 (wave 끝 = 경과 120분), disp_wave=42 (표시 라벨)
+            sim._apply_infection_wave(1, 42)
 
             updates = [d for t, d in sim._emitted if t == "infection_update"]
             b_update = next(d for d in updates if d["agent"] == "b")
@@ -4723,7 +4740,7 @@ class CumulativeWaveTests(unittest.TestCase):
                             locations={"a": "매장", "b": "매장"})
             sim._set_infected("a", 0, "event")
             sim._agent_infection["a"]["infectious_at_minutes"] = 0  # 즉시 감염성(I) 고정
-            sim._apply_infection_wave(0)   # 첫 판정 — t_d 기준점 확립(전염 없음) + a E→I
+            sim._apply_infection_wave(0)   # wave 0 시작에 E(비전파) — 끝에 a E→I
             sim._emitted.clear()
             sim._apply_infection_wave(3)
             b_update = next(d for t, d in sim._emitted
@@ -11929,9 +11946,10 @@ class LocationCsvContactColumnsTests(unittest.TestCase):
       a(환자 0번, I 로 시작) · b · c · e 가 거실, d 는 안방. a→[b,c], b→a, c→a 로 매 wave
       대화하고 d·e 는 혼잣말이라 wave 0 에만 발화한다(그 뒤엔 아무도 안 부른다).
       E 1일 · P 0일 · I 1일 고정, β 매우 큼.
-      - W0: a 는 wave 시작의 infect_agent(start I)로 I. 첫 판정이라 전파 없음(t_d=0).
-      - W1 끝: a 가 거실의 S(b·c·e)를 감염시킨다(new_exposure — 발화한 b·c 행에만).
-      - W2 끝: a 회복(R, I 1일). W3 끝: b·c E→I(진행 — new_exposure 아님).
+      - W0: a 는 wave 시작의 infect_agent(start I)로 I. wave 시작 스냅샷에 I 라 W0 의
+        720분 동안 거실의 S(b·c·e)를 감염시킨다(W0 끝 = 720분 노출 — 2026-10 wave 타이밍
+        정정 전엔 "첫 판정 t_d=0"이라 W1 끝에야 감염됐다).
+      - W1 끝(1440): a 회복(R, I 1일). W2 끝(2160): b·c E→I(진행 — new_exposure 아님).
     """
 
     DAY = 1440
@@ -11989,7 +12007,7 @@ class LocationCsvContactColumnsTests(unittest.TestCase):
         got = {(e["wave"], e["speaker"]): (e["infection_status"], e["elapsed_minutes"]) for e in log}
         self.assertEqual(got[(0, "a")], ("I", 0))
         self.assertEqual(got[(0, "b")], ("S", 0))
-        self.assertEqual(got[(1, "b")], ("S", 720))   # 노출은 wave 1 의 모든 턴 뒤
+        self.assertEqual(got[(1, "b")], ("E", 720))   # W0 끝(720분)에 노출 — W1 턴부터 E
         self.assertEqual(got[(2, "b")], ("E", 1440))
         self.assertEqual(got[(3, "a")], ("R", 2160))
         self.assertEqual(got[(4, "b")], ("I", 2880))
@@ -12017,11 +12035,12 @@ class LocationCsvContactColumnsTests(unittest.TestCase):
                 "elapsed_minutes_end", "co_located_with", "new_exposure")
         # W0 — a 시드(I, 이벤트 감염), 거실 동석자는 그 wave 에 발화한 b·c·e, d 는 혼자.
         self.assertEqual(pick(0, "a", *cols), ("I", "true", "0", "720", "b|c|e", "true"))
-        self.assertEqual(pick(0, "b", *cols), ("S", "false", "0", "720", "a|c|e", "false"))
+        # b·c·e 는 W0 끝에 접촉 전파로 새 노출(턴 시점엔 아직 S) — new_exposure 는 W0 행.
+        self.assertEqual(pick(0, "b", *cols), ("S", "false", "0", "720", "a|c|e", "true"))
+        self.assertEqual(pick(0, "e", "new_exposure"), ("true",))
         self.assertEqual(pick(0, "d", *cols), ("S", "false", "0", "720", "", "false"))
-        # W1 — b·c 는 이 wave 끝에 접촉 전파로 새 노출(턴 시점엔 아직 S). e 도 노출됐지만
-        # 발화하지 않아 행이 없다 — 그래서 동석자 목록에도 없다(한계).
-        self.assertEqual(pick(1, "b", *cols), ("S", "false", "720", "1440", "a|c", "true"))
+        # W1 — b 는 E. e 는 W1 에 발화하지 않아 행이 없다 — 그래서 동석자 목록에도 없다(한계).
+        self.assertEqual(pick(1, "b", *cols), ("E", "false", "720", "1440", "a|c", "false"))
         self.assertEqual(pick(1, "a", "co_located_with", "new_exposure"), ("b|c", "false"))
         self.assertNotIn(("1", "e"), by)
         self.assertEqual(sim._agent_infection["e"]["status"] in ("E", "I", "R"), True)
@@ -12029,7 +12048,7 @@ class LocationCsvContactColumnsTests(unittest.TestCase):
         # W2 — b 는 E(비전염), 새 노출 아님.
         self.assertEqual(pick(2, "b", "infection_status", "is_infectious", "new_exposure"),
                          ("E", "false", "false"))
-        # W3 끝 E→I(진행), a 는 W2 끝 회복 — 둘 다 new_exposure 가 아니다.
+        # W2 끝 E→I(진행), a 는 W1 끝 회복 — 둘 다 new_exposure 가 아니다.
         self.assertEqual(pick(3, "a", "infection_status", "is_infectious", "new_exposure"),
                          ("R", "false", "false"))
         self.assertEqual(pick(4, "b", "infection_status", "is_infectious", "new_exposure"),
@@ -12206,6 +12225,628 @@ class LocationCsvContactColumnsTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
         self.assertEqual(proc.stdout.decode("utf-8"), py)
         self.assertIn("new_exposure", py.splitlines()[0])
+
+
+class RebetaToolTests(unittest.TestCase):
+    """`ABM/tools/rebeta.py` — 위치 이력 CSV 로 다른 β 의 전염 확산을 재계산(LLM 재실행 없음).
+
+    핵심: 감염 판정은 엔진 `_InfectionMixin`(`_infection_wave_start` → `_apply_infection_wave`)을 shim
+    위에서 그대로 돈다. 엔진과 같이 wave w 판정 = wave w 명단(CSV `location` = wave 시작 위치, gap 은 다음
+    행 값) × wave w 경과(`elapsed_minutes_end - elapsed_minutes_start`).
+    """
+
+    HEADER = ["wave", "wave_start_time", "wave_end_time", "agent", "location", "is_exterior",
+              "infection_status", "is_infectious", "elapsed_minutes_start", "elapsed_minutes_end",
+              "co_located_with", "new_exposure"]
+    MODEL = {"beta": 0.04, "immune_after_recovery": True,
+             "exposed_duration": {"kind": "uniform", "min_days": 1, "max_days": 1},
+             "presymptomatic_duration": {"kind": "uniform", "min_days": 0, "max_days": 0},
+             "infectious_duration": {"kind": "uniform", "min_days": 2, "max_days": 2}}
+
+    def _csv(self, tmp, rows, step=60, name="t_locations.csv", times=None):
+        """rows: [(wave, agent, location, is_exterior, status)] — 경과분은 wave*step.
+        `times={wave: (start, end)}` 로 wave 별 시작·끝 경과분을 직접 줄 수 있다(end=None 이면 빈칸)."""
+        path = os.path.join(tmp, name)
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(self.HEADER)
+            for row in rows:
+                wave, agent, loc, ext, st = row[:5]
+                new_exposure = row[5] if len(row) > 5 else False   # 6번째 칸(선택) = new_exposure
+                t0, t1 = (times or {}).get(wave, (wave * step, (wave + 1) * step))
+                w.writerow([wave, f"t{wave}", f"t{wave + 1}", agent, loc, str(ext).lower(), st,
+                            str(st in ("P", "I")).lower(), t0, "" if t1 is None else t1, "",
+                            str(new_exposure).lower()])
+        return path
+
+    def _load(self, tmp, rows, step=60, backfill=False, times=None):
+        from ABM.tools import rebeta
+        obs = rebeta.load_location_csv(self._csv(tmp, rows, step, times=times))
+        return rebeta, obs, rebeta.build_roster(obs, backfill=backfill)
+
+    def test_forward_fill_and_absence_before_first_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rb, obs, ro = self._load(tmp, [(0, "a", "X", False, "S"), (0, "b", "Y", False, "S"),
+                                           (1, "a", "Z", False, "S"), (2, "b", "X", False, "S"),
+                                           (2, "c", "Q", False, "S")])
+            back = rb.build_roster(obs, backfill=True)
+        # 두 행 사이는 **다음 행**의 위치(= 앞 행 wave 의 이동 후 위치 = gap wave 의 시작 위치) — QA: 이동 전
+        # 위치를 이어 쓰면 move_to 로 떠난 사람이 gap 내내 출발지에 남는다.
+        self.assertEqual(ro[1]["b"], ("X", False, True))
+        self.assertEqual(ro[2]["a"], ("Z", False, True))              # 마지막 행 이후는 마지막 위치
+        self.assertEqual(ro[2]["c"], ("Q", False, False))
+        self.assertNotIn("c", ro[0])                                  # 첫 행 이전엔 부재(기본)
+        self.assertEqual(back[0]["c"], ("Q", False, True))            # --backfill
+        self.assertEqual(obs.agents, ["a", "b", "c"])
+
+    def test_exterior_is_not_a_contact_and_floater_joins_every_group(self):
+        rows = []
+        for w in range(3):
+            rows += [(w, "a", "거실", False, "I"), (w, "b", "거실", False, "S"),
+                     (w, "c", "길", True, "S"), (w, "d", "", False, "S"), (w, "e", "안방", False, "S")]
+        with tempfile.TemporaryDirectory() as tmp:
+            rb, obs, ro = self._load(tmp, rows)
+            res = rb.simulate_once(obs, ro, self.MODEL, 1000.0, 1)
+        self.assertEqual(res.infected, {"a", "b", "d"})               # c 외부 공간, e 다른 방
+        self.assertEqual(obs.exterior, {"길"})
+
+    def test_contact_time_is_each_waves_own_duration(self):
+        # 사용자 예시 w10~w13 — 함께 5분 / 따로 7시간 / 함께 30분 / 따로. 합산 확률 = 1-exp(-β·35분).
+        rows = [(10, "a", "거실", False, "I"), (10, "b", "거실", False, "S"),
+                (11, "a", "짱구방", False, "I"), (11, "b", "거실", False, "S"),
+                (12, "a", "거실", False, "I"), (12, "b", "거실", False, "S"),
+                (13, "a", "짱구방", False, "I"), (13, "b", "거실", False, "S")]
+        times = {10: (0, 5), 11: (5, 425), 12: (425, 455), 13: (455, None)}
+        with tempfile.TemporaryDirectory() as tmp:
+            rb, obs, ro = self._load(tmp, rows, times=times)
+            res = rb.simulate_once(obs, ro, self.MODEL, 1.0, 1, record=True)
+            one = rb.simulate_once(*self._load(tmp, rows[:2], times={10: (0, 60)})[1:], self.MODEL, 1e6, 1)
+        p = {r["wave"]: r["sim_p_infect"] for r in res.waves if r["agent"] == "b"}
+        td = {r["wave"]: r["sim_t_d_minutes"] for r in res.waves if r["agent"] == "b"}
+        self.assertEqual(td, {10: 5, 11: 420, 12: 30, 13: 0})          # 마지막 wave 종료 경과분 없음 → 0
+        self.assertAlmostEqual(p[10], 1 - math.exp(-5 / 1440))
+        self.assertEqual(p[11], 0.0)                                    # 7시간 따로 — 접촉 아님
+        self.assertAlmostEqual(p[12], 1 - math.exp(-30 / 1440))
+        self.assertEqual(p[13], 0.0)
+        # 첫 wave 라도 시작에 I 면 그 wave 경과로 판정한다(예전의 "첫 판정 t_d=0" 규칙 없음).
+        self.assertEqual(one.infection_minutes.get("b"), 60)
+
+    def test_beta_zero_means_no_new_infections_and_huge_beta_infects(self):
+        rows = [(w, k, "X", False, "I" if k == "a" else "S") for w in range(4) for k in "abc"]
+        with tempfile.TemporaryDirectory() as tmp:
+            rb, obs, ro = self._load(tmp, rows)
+            zero = rb.run_beta(obs, ro, self.MODEL, 0.0, 30, 7)
+            huge = rb.run_beta(obs, ro, self.MODEL, 1e6, 30, 7)
+        self.assertEqual(set(zero.counts), {1})
+        self.assertEqual(set(huge.counts), {3})
+
+    def test_seed_reproducibility(self):
+        rows = [(w, k, "X", False, "I" if k == "a" else "S") for w in range(6) for k in "abcd"]
+        with tempfile.TemporaryDirectory() as tmp:
+            rb, obs, ro = self._load(tmp, rows, step=30)
+            r1 = rb.run_beta(obs, ro, self.MODEL, 2.0, 50, 42)
+            r2 = rb.run_beta(obs, ro, self.MODEL, 2.0, 50, 42)
+            r3 = rb.run_beta(obs, ro, self.MODEL, 2.0, 50, 43)
+        self.assertEqual(r1.counts, r2.counts)
+        self.assertEqual(r1.representative_run, r2.representative_run)
+        self.assertNotEqual(r1.counts, r3.counts)
+        self.assertGreater(len(set(r1.counts)), 1)                     # 실제로 확률적인 경우
+
+    def test_replay_mode_follows_the_observed_course_of_the_initially_infected(self):
+        rows = [(0, "a", "X", False, "I"), (0, "b", "Y", False, "S"),
+                (1, "a", "X", False, "I"), (2, "a", "X", False, "R"), (3, "b", "Y", False, "S")]
+        with tempfile.TemporaryDirectory() as tmp:
+            rb, obs, ro = self._load(tmp, rows)
+            res = rb.simulate_once(obs, ro, self.MODEL, 0.0, 1, record=True)
+        st = {(r["wave"], r["agent"]): r["sim_status"] for r in res.waves}
+        self.assertEqual([st[(w, "a")] for w in range(4)], ["I", "I", "R", "R"])   # 관찰 그대로(R 이후 유지)
+        self.assertEqual(obs.observed_final_infected, 1)
+
+    def test_engine_parity_with_real_simulation_step(self):
+        # 같은 시드·같은 동선으로 실제 Simulation 의 감염 단계와 도구가 같은 결과를 내야 한다.
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        import random as _random
+        locs = [  # wave 별 시작 위치 — 엔진은 wave w 판정에 wave w 시작 위치를 쓴다
+            {"a": "X", "b": "X", "c": "Y", "d": "X"}, {"a": "X", "b": "Y", "c": "Y", "d": "X"},
+            {"a": "Y", "b": "Y", "c": "X", "d": "X"}, {"a": "Y", "b": "X", "c": "X", "d": "Y"},
+            {"a": "X", "b": "X", "c": "Y", "d": "Y"}, {"a": "X", "b": "Y", "c": "X", "d": "X"},
+            {"a": "Y", "b": "Y", "c": "X", "d": "X"}, {"a": "X", "b": "X", "c": "X", "d": "X"},
+        ] * 3
+        step, beta, seed = 720, 1.5, 12345
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096) for k in "abcd"}
+            sim = Simulation(agents, [{"role": "user", "content": "x"}], tmp,
+                             llm=_ScriptedLLM({k: [{"content": "."}] for k in "abcd"}),
+                             time_mode="fixed", time_per_wave=step,
+                             agent_locations=dict(locs[0]),
+                             infection_model={**self.MODEL, "enabled": True, "beta": beta,
+                                              "symptom_stages": []})
+            sim._emit = lambda *a, **k: None
+            _random.seed(seed)
+            sim._set_infected("a", 0, "event", at_minutes=0, start_status="I")
+            engine_status = []
+            for w in range(len(locs)):
+                engine_status.append({k: sim._agent_infection[k]["status"] for k in "abcd"})
+                sim._agent_location.update(locs[w])
+                start = sim._infection_wave_start(w)
+                sim._apply_infection_wave(w, w, start)
+            engine_final = {k: dict(sim._agent_infection[k]) for k in "abcd"}
+
+            rows = [(w, k, locs[w][k], False, "I" if (k == "a" and w == 0) else "S")
+                    for w in range(len(locs)) for k in "abcd"]
+            rb, obs, ro = self._load(tmp, rows, step=step)
+            res = rb.simulate_once(obs, ro, self.MODEL | {"beta": beta}, beta, seed,
+                                   initial_mode="sample", record=True)
+        tool_status = [{r["agent"]: r["sim_status"] for r in res.waves if r["wave"] == w}
+                       for w in range(len(locs))]
+        self.assertEqual(tool_status, engine_status)
+        keys = ("status", "infected_at_minutes", "presymptomatic_at_minutes",
+                "infectious_at_minutes", "recover_at_minutes")
+        self.assertEqual({k: {f: res.entries[k][f] for f in keys} for k in "abcd"},
+                         {k: {f: engine_final[k][f] for f in keys} for k in "abcd"})
+        self.assertGreater(len(res.infected), 1)                        # 실제로 전파가 있었던 경우
+
+    # ── QA 후속 ───────────────────────────────────────────────────────────────
+
+    E2E_GRAPH = [{"name": "매장", "connects_to": ["창고"]}, {"name": "창고", "connects_to": ["매장"]}]
+
+    def _e2e(self, tmp, script, locs, waves=8):
+        """실제 Simulation.run → render_location_csv → 도구. β=1e6 이라 전파가 결정적이다."""
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        from ABM.export.csv import render_location_csv
+        from ABM.tools import rebeta
+        import random as _random
+        model = {**self.MODEL, "enabled": True, "beta": 1e6, "symptom_stages": [],
+                 "infectious_duration": {"kind": "uniform", "min_days": 5, "max_days": 5}}
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096) for k in locs}
+        sim = Simulation(agents, [{"role": "user", "content": "x"}], tmp, llm=_ScriptedLLM(script),
+                         time_mode="fixed", time_per_wave=60, agent_locations=dict(locs),
+                         location_graph=self.E2E_GRAPH, infection_model=model)
+        ev = []
+        sim._emit = lambda t, d: ev.append({"event_type": t, "wave": d.get("wave") if isinstance(d, dict) else None,
+                                            "data": d})
+        _random.seed(1)
+        sim._set_infected("a", 0, "event", at_minutes=0, start_status="I")
+        sim.run("a", max_waves=waves, step_delay=0.0, starvation_waves=99, resume_wave={k: [] for k in locs})
+        path = os.path.join(tmp, "e_locations.csv")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(render_location_csv(sim.shared_log, ev))
+        engine = {d["data"]["agent"]: d["data"]["elapsed_minutes"] for d in ev
+                  if d["event_type"] == "infection_update" and d["data"].get("cause") == "transmission"}
+        obs = rebeta.load_location_csv(path)
+        obs.time_mode, obs.time_per_wave = "fixed", 60                 # 시나리오 config 와 같게(CLI 는 JSON 에서)
+        res = rebeta.simulate_once(obs, rebeta.build_roster(obs), model, 1e6, 1, record=True)
+        tool = {k: v for k, v in res.infection_minutes.items() if k != "a"}
+        return engine, tool, res
+
+    def test_e2e_real_runner_mover_who_speaks_again_matches_engine(self):
+        # b(창고)가 wave 0 에 move_to 매장 으로 전파원 a 에게 가고 한동안 침묵, wave 3 에 a 가 b 를 불러
+        # 다시 발화한다 → gap(1~2)을 다음 행(매장)으로 채워 엔진과 같은 시각(wave 1 끝)에 감염된다.
+        script = {"a": [{"target": ["c"]}, {"target": ["c"]}, {"target": ["b"]}, {"target": ["c"]}],
+                  "b": [{"target": "self", "move_to": "매장"}, {"target": "self"}],
+                  "c": [{"target": ["a"]}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, tool, res = self._e2e(tmp, script, {"a": "매장", "b": "창고", "c": "매장"}, waves=6)
+        self.assertIn("b", engine)
+        self.assertEqual(tool, engine)
+        b_rows = {r["wave"]: r for r in res.waves if r["agent"] == "b"}
+        self.assertEqual((b_rows[1]["location"], b_rows[1]["is_imputed"]), ("매장", True))
+
+    def test_e2e_real_runner_everyone_speaking_matches_engine(self):
+        # QA e2e.py 케이스 — 전원이 매 wave 발화하며 b 가 창고에 갔다 돌아오는 경우 / b 가 창고로 간 뒤
+        # 침묵하고 a 가 나중에 창고로 가는 경우.
+        everyone = lambda k: [x for x in "abc" if x != k]
+        case1 = {"a": [{"target": everyone("a")}],
+                 "b": [{"target": everyone("b")}, {"target": everyone("b"), "move_to": "창고"},
+                       {"target": everyone("b")}, {"target": everyone("b")},
+                       {"target": everyone("b"), "move_to": "매장"}, {"target": everyone("b")}],
+                 "c": [{"target": everyone("c"), "move_to": "창고"}, {"target": everyone("c")}]}
+        case2 = {"a": [{"target": ["c"]}, {"target": ["c"]}, {"target": ["c"]},
+                       {"target": ["c"], "move_to": "창고"}, {"target": ["c"]}],
+                 "b": [{"target": "self"}, {"target": "self", "move_to": "창고"}, {"target": "self"}],
+                 "c": [{"target": ["a"]}]}
+        for script in (case1, case2):
+            with self.subTest(case=script is case1 and 1 or 2):
+                with tempfile.TemporaryDirectory() as tmp:
+                    engine, tool, _ = self._e2e(tmp, script, {"a": "매장", "b": "매장", "c": "매장"})
+                self.assertTrue(engine)
+                self.assertEqual(tool, engine)
+
+    def test_e2e_known_limitation_move_after_last_row_is_invisible(self):
+        # QA e2e2.py — b 가 wave 0 에 move_to 로 a 에게 가고 **다시는 발화하지 않는다**. 목적지는 CSV 어디에도
+        # 없어(다음 행이 없음) b 는 출발지(창고)에 남는다 — 문서화된 한계(task B). 엔진은 b 를 wave 1(매장에
+        # 도착한 뒤 첫 wave) 끝에 감염시킨다.
+        script = {"a": [{"target": ["c"]}], "b": [{"target": "self", "move_to": "매장"}, {"target": "self"}],
+                  "c": [{"target": ["a"]}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, tool, res = self._e2e(tmp, script, {"a": "매장", "b": "창고", "c": "매장"}, waves=6)
+        self.assertEqual(engine, {"b": 120, "c": 60})
+        self.assertEqual(tool, {"c": 60})                               # b 는 놓친다(한계)
+        self.assertEqual({r["location"] for r in res.waves if r["agent"] == "b"}, {"창고"})
+
+    def test_e2e_fixed_mode_contact_in_the_last_wave_is_counted(self):
+        # QA e2e_rebeta_last2 — fixed 모드는 time_jump 를 내지 않아 CSV 마지막 행의 elapsed_minutes_end 가
+        # 빈칸이다. 엔진은 그 wave 에도 time_per_wave 를 썼으므로 도구도 tpw 를 써야 한다(예전: t_d=0 → d 누락).
+        script = {"a": [{"target": ["b"]}] * 4 + [{"target": ["b"], "move_to": "창고"}, {"target": ["d"]}],
+                  "b": [{"target": ["a"]}], "d": [{"target": ["a"]}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            engine, tool, res = self._e2e(tmp, script, {"a": "매장", "b": "매장", "d": "창고"}, waves=6)
+        self.assertEqual(engine, {"b": 60, "d": 360})
+        self.assertEqual(tool, engine)
+        self.assertEqual({r["sim_t_d_minutes"] for r in res.waves if r["wave"] == 5}, {60})
+
+    def test_fixed_mode_uses_time_per_wave_not_the_csv_end_or_next_row(self):
+        from ABM.tools import rebeta
+        rows = [(0, "a", "X", False, "I"), (0, "b", "Y", False, "S"),
+                (2, "a", "X", False, "I"), (2, "b", "Y", False, "S")]          # wave 1 행 없음(전원 실패)
+        with tempfile.TemporaryDirectory() as tmp:
+            obs = rebeta.load_location_csv(self._csv(tmp, rows, times={0: (0, None), 2: (120, None)}))
+            variable = rebeta.wave_ends(obs)
+            obs.time_mode, obs.time_per_wave = "fixed", 60
+            fixed = rebeta.wave_ends(obs)
+            sc = os.path.join(tmp, "s.json")
+            with open(sc, "w", encoding="utf-8") as fh:
+                json.dump({"config": {"time_mode": "fixed", "time_per_wave": 60,
+                                      "infection_model": self.MODEL}}, fh)
+            cfg = rebeta.load_time_config(sc)
+        self.assertEqual(variable, {0: 120, 2: 120})                    # 다음 행 추정 2×tpw, 마지막 0
+        self.assertEqual(fixed, {0: 60, 2: 180})
+        self.assertEqual(cfg, ("fixed", 60))
+
+    def test_observed_final_counts_new_exposure_rows(self):
+        # QA loc_var_last_clean — 마지막 wave 끝에 전파로 감염된 d 는 그 행 상태가 S(턴 시점)라 상태로는 안 보인다.
+        from ABM.tools import rebeta
+        rows = [(0, "a", "X", False, "I"), (0, "b", "X", False, "S", True), (0, "d", "Y", False, "S"),
+                (1, "a", "Y", False, "I"), (1, "b", "X", False, "E"), (1, "d", "Y", False, "S", True)]
+        with tempfile.TemporaryDirectory() as tmp:
+            obs = rebeta.load_location_csv(self._csv(tmp, rows))
+        self.assertEqual(obs.observed_final_infected, 3)
+
+    def test_agent_absent_before_first_row_is_not_in_the_previous_check(self):
+        rows = [(0, "a", "X", False, "I"), (1, "a", "X", False, "I"), (2, "a", "X", False, "I"),
+                (2, "b", "X", False, "S")]
+        with tempfile.TemporaryDirectory() as tmp:
+            rb, obs, ro = self._load(tmp, rows)
+            res = rb.simulate_once(obs, ro, self.MODEL, 1e6, 1, record=True)
+            back = rb.simulate_once(obs, rb.build_roster(obs, backfill=True), self.MODEL, 1e6, 1,
+                                    obs_status=rb.build_observed_status(obs, backfill=True))
+        # 첫 행이 wave 2 → wave 0·1 엔 부재. wave 2 판정(끝 = 180분)에서만 접촉.
+        self.assertEqual(res.infection_minutes.get("b"), 180)
+        self.assertEqual(back.infection_minutes.get("b"), 60)           # --backfill 이면 처음부터 있음
+
+    def _scenario(self, tmp, events=None, model=None):
+        d = {"config": {"infection_model": model or self.MODEL}}
+        if events is not None:
+            d["config"]["events"] = events
+        path = os.path.join(tmp, "sc.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(d, fh)
+        return path
+
+    def test_seeds_come_from_infect_agent_events(self):
+        from ABM.tools import rebeta
+        rows = [(0, "a", "X", False, "S"), (0, "b", "X", False, "S"),
+                (1, "a", "X", False, "S"), (2, "a", "X", False, "I"), (3, "c", "Y", False, "E")]
+        with tempfile.TemporaryDirectory() as tmp:
+            obs = rebeta.load_location_csv(self._csv(tmp, rows))
+            sc = self._scenario(tmp, [{"type": "infect_agent", "agent": "a", "wave": 2, "start_status": "I"},
+                                      {"type": "infect_agent", "agent": "ghost", "wave": 0}])
+            seeds, warns, src = rebeta.resolve_seeds(obs, rebeta.load_seed_events(sc))
+            res = rebeta.simulate_once(obs, rebeta.build_roster(obs), self.MODEL, 0.0, 1, seeds=seeds, record=True)
+            fb_seeds, _, _ = rebeta.resolve_seeds(obs, None)
+        self.assertEqual([(s.agent, s.wave, s.start_status) for s in seeds], [("a", 2, "I")])
+        self.assertTrue(any("ghost" in w for w in warns))
+        self.assertTrue(any(w.startswith("c 는 첫 관찰") for w in warns))   # 시드 아닌 첫 감염 관찰 → S 로
+        st = {(r["wave"], r["agent"]): r["sim_status"] for r in res.waves}
+        self.assertEqual([st[(w, "a")] for w in range(4)], ["S", "S", "I", "I"])   # 이벤트 wave 에서 시드
+        self.assertEqual(st[(3, "c")], "S")
+        self.assertEqual(res.infected, {"a"})
+        # 이벤트 정보가 없으면 대체 규칙: 앞선 감염자가 없을 때 감염으로 처음 관찰된 사람만 시드.
+        self.assertEqual([s.agent for s in fb_seeds], [])                  # a 는 처음엔 S 로 관찰
+
+    def test_replay_gap_status_comes_from_the_next_row(self):
+        rows = [(0, "a", "X", False, "I"), (3, "a", "X", False, "R")] + [(w, "z", "Q", False, "S") for w in range(5)]
+        with tempfile.TemporaryDirectory() as tmp:
+            rb, obs, ro = self._load(tmp, rows)
+            res = rb.simulate_once(obs, ro, self.MODEL, 0.0, 1, record=True)
+        st = {(r["wave"], r["agent"]): r["sim_status"] for r in res.waves}
+        # 관찰된 회복은 gap 의 첫 wave 부터 — 회복한 사람이 전파원으로 늦게까지 남지 않는다.
+        self.assertEqual([st[(w, "a")] for w in range(5)], ["I", "R", "R", "R", "R"])
+
+    def test_sim_p_infect_is_the_combined_probability(self):
+        rows = []
+        for w in range(3):
+            rows += [(w, "a", "X", False, "I"), (w, "b", "X", False, "I"), (w, "s", "X", False, "S"),
+                     (w, "c", "Y", False, "I"), (w, "f", "", False, "S")]
+        with tempfile.TemporaryDirectory() as tmp:
+            rb, obs, ro = self._load(tmp, rows)
+            res = rb.simulate_once(obs, ro, self.MODEL, 0.5, 1, record=True)
+        p1 = 1 - math.exp(-0.5 * 60 / 1440)
+        p = {(r["wave"], r["agent"]): r["sim_p_infect"] for r in res.waves}
+        self.assertAlmostEqual(p[(1, "s")], 1 - (1 - p1) ** 2)            # 같은 그룹 전파원 2명
+        self.assertAlmostEqual(p[(1, "f")], 1 - (1 - p1) ** 3)            # floater: X 그룹 2 + Y 그룹 1
+
+    def test_cli_edge_cases(self):
+        import contextlib, io
+        from ABM.tools import rebeta
+        good = [(w, k, "X", False, "I" if k == "a" else "S") for w in range(3) for k in "ab"]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._csv(tmp, good)
+            sc = self._scenario(tmp)
+            header_only = os.path.join(tmp, "h.csv")
+            with open(header_only, "w", encoding="utf-8") as fh:
+                fh.write(",".join(self.HEADER) + "\n")
+            bom = os.path.join(tmp, "bom.json")
+            with open(bom, "w", encoding="utf-8-sig") as fh:
+                json.dump(self.MODEL | {"enabled": False}, fh)
+            blank = self._csv(tmp, [(w, k, "X", False, "" if k == "b" else "I") for w in range(2) for k in "ab"],
+                              name="blank.csv")
+
+            def run(*args):
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    rc = rebeta.main([*args, "--out", os.path.join(tmp, "o")])
+                return rc, out.getvalue() + err.getvalue()
+
+            r_header = run(header_only, sc, "--beta", "0.1", "--runs", "2")
+            r_runs0 = run(path, sc, "--beta", "0.1", "--runs", "0")
+            r_neg = run(path, sc, "--beta", "-0.1", "--runs", "2")
+            r_bom = run(path, bom, "--beta", "0.1", "--runs", "2")
+            r_blank = run(blank, sc, "--beta", "0.1", "--runs", "2")
+            r_ok = run(path, sc, "--beta", "0.1", "--runs", "50")
+            summary = open(os.path.join(tmp, "o", "t_locations_rebeta_summary.csv"), encoding="utf-8").read()
+        self.assertEqual(r_header[0], 2); self.assertIn("헤더만", r_header[1])
+        self.assertEqual(r_runs0[0], 2); self.assertIn("--runs", r_runs0[1])
+        self.assertEqual(r_neg[0], 2); self.assertIn("--beta", r_neg[1])
+        self.assertEqual(r_bom[0], 0); self.assertIn("enabled=false", r_bom[1])
+        self.assertEqual(r_blank[0], 0); self.assertIn("빈 행 2개", r_blank[1])
+        self.assertEqual(r_ok[0], 0)
+        self.assertIn("±", r_ok[1])
+        body = list(csv.DictReader(l for l in summary.splitlines() if not l.startswith("#")))
+        r0 = body[0]
+        p = float(r0["p_infected_b"])
+        self.assertAlmostEqual(float(r0["se_infected_b"]), math.sqrt(p * (1 - p) / 50), places=4)
+        self.assertIn("se_mean_final_infected", r0)
+        self.assertIn("se_reproduce_observed", r0)
+
+    def test_cli_outputs_and_sanity_check(self):
+        import contextlib, io
+        from ABM.tools import rebeta
+        rows = [(w, k, "X", False, "I" if k == "a" else "S") for w in range(5) for k in "ab"]
+        rows += [(w, "c", "Y", False, "S") for w in (0, 3)]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._csv(tmp, rows)
+            for shape, payload in (("nested", {"config": {"infection_model": self.MODEL}}),
+                                   ("top", {"infection_model": self.MODEL}), ("bare", self.MODEL)):
+                sp = os.path.join(tmp, f"{shape}.json")
+                with open(sp, "w", encoding="utf-8") as fh:
+                    json.dump(payload, fh)
+                self.assertEqual(rebeta.load_infection_model(sp)["beta"], 0.04)
+            out = os.path.join(tmp, "out")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rebeta.main([path, sp, "--beta", "0.5", "--runs", "20", "--seed", "1", "--out", out])
+            text = buf.getvalue()
+            files = sorted(os.listdir(out))
+            summary = open(os.path.join(out, "t_locations_rebeta_summary.csv"), encoding="utf-8").read()
+            waves = open(os.path.join(out, "t_locations_rebeta_beta0.5_waves.csv"), encoding="utf-8").read()
+        self.assertEqual(files, ["t_locations_rebeta_beta0.04_waves.csv", "t_locations_rebeta_beta0.5_waves.csv",
+                                 "t_locations_rebeta_summary.csv"])                # 원래 β 자동 추가
+        self.assertIn("고정 행동 가정", text)
+        self.assertIn("관찰 기간", text)
+        self.assertIn("Sanity check: 원래 β=0.04", text)
+        self.assertTrue(summary.startswith("# 고정 행동 가정"))
+        body = list(csv.DictReader(l for l in summary.splitlines() if not l.startswith("#")))
+        self.assertEqual([r["beta"] for r in body], ["0.5", "0.04"])
+        self.assertEqual(body[1]["is_original_beta"], "true")
+        self.assertIn("p_infected_c", body[0])
+        wrows = list(csv.DictReader(l for l in waves.splitlines() if not l.startswith("#")))
+        self.assertIn("sim_contact_location", wrows[0])
+        imputed = [r for r in wrows if r["agent"] == "c" and r["is_imputed"] == "true"]
+        self.assertEqual(sorted(int(r["wave"]) for r in imputed), [1, 2, 4])   # 0·3 은 원래 행
+
+class InfectionWaveTimingTests(unittest.TestCase):
+    """감염 판정 타이밍 — 사용자 wave 모형(2026-10 정정, `ABM/simulation/infection.py`).
+
+    wave w 의 전염 = **wave w 시작 위치의 접촉 그룹 × wave w 자신의 경과 시간**. 예전 엔진은
+    이동 **후** 위치(= w+1 시작 위치)에 직전 wave 의 경과(now − 직전 판정)를 곱해 두 wave 가
+    어긋났다: 짱구·엄마가 거실 5분(w10) → 짱구 자기 방으로(w11 따로, 7시간 취침) → 거실 30분
+    (w12) → 다시 따로(w13) 이면 정답은 함께 35분이고, 옛 엔진은 7시간을 w13 시작 위치에 썼다.
+    """
+
+    MODEL = {"enabled": True, "disease_name": "감기", "beta": 1.0, "symptom_stages": [],
+             "exposed_duration": {"kind": "uniform", "min_days": 1, "max_days": 1},
+             "presymptomatic_duration": {"kind": "uniform", "min_days": 0, "max_days": 0},
+             "infectious_duration": {"kind": "uniform", "min_days": 30, "max_days": 30}}
+    HOME = [{"name": "거실", "connects_to": ["짱구방"]}, {"name": "짱구방", "connects_to": ["거실"]}]
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _spy_lambdas(infect=False):
+        """실제로 (전파원, S) 쌍 추첨에 쓰인 λ(=β·t_d)를 wave 마다 하나씩 기록한다.
+
+        엔진은 wave 마다 p 를 한 번 계산(exp)하고 쌍마다 random() 을 뽑는다 — 추첨이 따라온 exp 만
+        "접촉이 있었던 wave"로 센다. infect=False 면 난수 1.0 — 아무도 감염되지 않는다.
+        """
+        import ABM.simulation.infection as inf
+        lams, real_math, real_random = [], inf.math, inf.random.random
+        pending = []
+
+        class _M:
+            def __getattr__(self, name):
+                return getattr(real_math, name)
+
+            @staticmethod
+            def exp(x):
+                pending[:] = [-x]
+                return real_math.exp(x)
+
+        def _draw():
+            if pending:
+                lams.append(pending.pop())
+            return real_random() if infect else 1.0
+
+        with mock.patch.object(inf, "math", _M()), mock.patch.object(inf.random, "random", _draw):
+            yield lams
+
+    def _sim(self, tmp, script, locations, *, time_mode="variable", tpw=0, graph=None, model=None,
+             elapsed_init=0, **kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in script}
+        llm = _ScriptedLLM(script)
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp, llm=llm,
+            agent_locations=dict(locations), location_graph=graph or self.HOME,
+            time_mode=time_mode, time_per_wave=tpw,
+            time_categories=[{"id": "normal_scene", "label": "t", "min_minutes": 30, "max_minutes": 30}],
+            max_scene_jump_minutes=0, max_daytime_jump_minutes=0,
+            elapsed_minutes_init=elapsed_init,
+            infection_model=model or self.MODEL, **kw,
+        )
+        ev = []
+        sim._emit = lambda t, d: ev.append((t, d))
+        return sim, llm, ev
+
+    @staticmethod
+    def _exposures(ev):
+        return {d["agent"]: (d["wave"], d["elapsed_minutes"]) for t, d in ev
+                if t == "infection_update" and d["cause"] == "transmission"}
+
+    # ── 사용자 예시 w10~w13 ────────────────────────────────────────────────────
+
+    def test_user_example_counts_35_minutes_together_not_the_7h_apart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _, _ = self._sim(tmp, {"a": [{}], "b": [{}]}, {"a": "거실", "b": "거실"})
+            sim._set_infected("a", 10, "event", at_minutes=0, start_status="I")
+            plan = [({"a": "거실", "b": "거실"}, 5),        # w10 함께 5분
+                    ({"a": "짱구방", "b": "거실"}, 420),    # w11 따로, 짱구 7시간 취침
+                    ({"a": "거실", "b": "거실"}, 30),       # w12 함께 30분
+                    ({"a": "짱구방", "b": "거실"}, 60)]     # w13 따로
+            with self._spy_lambdas() as lams:
+                for i, (locs, minutes) in enumerate(plan):
+                    sim._agent_location.update(locs)          # wave 시작 위치
+                    start = sim._infection_wave_start(i)
+                    sim._elapsed_minutes += minutes           # wave 끝 시간 누적
+                    sim._apply_infection_wave(i, 10 + i, start)
+        self.assertEqual(len(lams), 2)
+        self.assertAlmostEqual(lams[0], 5 / 1440)
+        self.assertAlmostEqual(lams[1], 30 / 1440)
+        self.assertAlmostEqual(sum(lams), 35 / 1440)
+
+    def test_user_example_through_the_real_runner(self):
+        # 같은 예시를 실제 run() 으로 — wave 별 경과 5/420/30/60분, a 가 매 wave move_to 로 오간다.
+        script = {"a": [{"target": ["b"], "move_to": "짱구방"}, {"target": ["b"], "move_to": "거실"},
+                        {"target": ["b"], "move_to": "짱구방"}, {"target": ["b"]}],
+                  "b": [{"target": ["a"]}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, llm, ev = self._sim(tmp, script, {"a": "거실", "b": "거실"})
+            minutes = iter([5, 420, 30, 60])
+            sim._random_minutes_for_category = lambda cid: next(minutes)
+            sim._set_infected("a", 0, "event", at_minutes=0, start_status="I")
+            with self._spy_lambdas() as lams:
+                sim.run("a", max_waves=4, step_delay=0, starvation_waves=1,
+                        resume_wave={"a": [], "b": []})
+            jumps = [d["minutes"] for t, d in ev if t == "time_jump"]
+            moves = [(d["wave"], d["to"]) for t, d in ev if t == "agent_move" and d["agent"] == "a"]
+        self.assertEqual(jumps, [5, 420, 30, 60])
+        self.assertEqual(moves, [(0, "짱구방"), (1, "거실"), (2, "짱구방")])
+        self.assertEqual([round(x * 1440) for x in lams], [5, 30])      # 함께였던 wave 0·2 만, 각자 경과
+
+    # ── 이동 직후 / 이동해 들어온 wave ──────────────────────────────────────────
+
+    def test_contact_uses_wave_start_location_in_fixed_mode(self):
+        # b 가 wave 0 에 a(I) 곁을 떠난다 → wave 0 의 60분은 함께였다(감염, 시각 = wave 0 끝).
+        # c 는 wave 1 에 a 곁으로 온다 → wave 1 은 아직 따로, wave 2 시작부터 함께(감염 = wave 2 끝).
+        graph = [{"name": "매장", "connects_to": ["창고"]}, {"name": "창고", "connects_to": ["매장"]}]
+        script = {"a": [{"target": "self"}], "b": [{"target": "self", "move_to": "창고"}, {"target": "self"}],
+                  "c": [{"target": "self"}, {"target": "self", "move_to": "매장"}, {"target": "self"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _, ev = self._sim(tmp, script, {"a": "매장", "b": "매장", "c": "창고"},
+                                   time_mode="fixed", tpw=60, graph=graph,
+                                   model={**self.MODEL, "beta": 1e6})
+            sim._set_infected("a", 0, "event", at_minutes=0, start_status="I")
+            sim.run("a", max_waves=4, step_delay=0, starvation_waves=1,
+                    resume_wave={k: [] for k in script})
+        self.assertEqual(self._exposures(ev), {"b": (0, 60), "c": (2, 180)})
+
+    def test_travelling_agent_is_alone_until_arrival(self):
+        # zone 경계 이동 중엔 raw 위치가 이미 목적지지만 아무와도 접촉하지 않는다.
+        graph = [{"name": "거실", "connects_to": ["교실"], "zone": "집"},
+                 {"name": "교실", "connects_to": ["거실"], "zone": "학교"}]
+        script = {"a": [{"target": "self", "move_to": "교실"}, {"target": "self"}], "c": [{"target": "self"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _, ev = self._sim(tmp, script, {"a": "거실", "c": "교실"}, time_mode="fixed", tpw=60,
+                                   graph=graph, model={**self.MODEL, "beta": 1e6},
+                                   zone_travel_min_minutes=120, zone_travel_max_minutes=120)
+            sim._set_infected("a", 0, "event", at_minutes=0, start_status="I")
+            sim.run("a", max_waves=4, step_delay=0, starvation_waves=1, resume_wave={"a": [], "c": []})
+            travel = [d for t, d in ev if t == "agent_status_change" and d.get("state") == "traveling"]
+        self.assertTrue(travel)                                       # 실제로 120분 이동이 걸렸다
+        # wave 1(60~120분)은 이동 중 — 목적지의 c 와 접촉 없음. wave 2 시작(120분)에 도착 → wave 2 끝.
+        self.assertEqual(self._exposures(ev), {"c": (2, 180)})
+
+    def test_travel_groups_contain_only_companions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _, _ = self._sim(tmp, {k: [{}] for k in "mzcdf"},
+                                  {"m": "교실", "z": "교실", "c": "교실", "d": "교실", "f": "거실"})
+            sim._agent_location["f"] = ""                             # floater
+            sim._enter_state("m", 0, minutes=60, state="traveling", travel_group=["m", "z"])
+            sim._enter_state("z", 0, minutes=60, state="traveling", travel_group=["m", "z"])
+            sim._enter_state("d", 0, minutes=60, state="traveling")
+            groups = sorted(sorted(g) for g in sim._compute_contact_groups(0))
+            arrived = sorted(sorted(g) for g in sim._compute_contact_groups(60))
+        # 동행끼리만 한 그룹, 혼자 이동하는 d 는 아무와도, floater 는 이동 그룹에 끼지 않는다.
+        self.assertEqual(groups, [["c", "f"], ["m", "z"]])
+        self.assertEqual(arrived, [["c", "d", "f", "m", "z"]])
+
+    # ── 시간이 흐르지 않은 wave ──────────────────────────────────────────────────
+
+    def test_wave_without_elapsed_time_has_zero_contact_time(self):
+        # 가변 모드에서 성공한 발화가 하나도 없으면(첫 전원 침묵 wave) 시간이 누적되지 않는다 →
+        # t_d=0, 전염 판정 없음. (연속 침묵 2회째부터의 idle 점프 wave 는 턴이 실패해도 시간이 흐르므로
+        # 그 wave 의 경과가 그대로 t_d 다.)
+        class _Dead:
+            def __call__(self, *a, **k):
+                raise RuntimeError("LLM down")
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _, ev = self._sim(tmp, {"a": [{}], "b": [{}]}, {"a": "거실", "b": "거실"},
+                                   model={**self.MODEL, "beta": 1e6})
+            sim._llm = _Dead()
+            sim._set_infected("a", 0, "event", at_minutes=0, start_status="I")
+            with self._spy_lambdas(infect=True) as lams:
+                sim.run("a", max_waves=1, step_delay=0, resume_wave={"a": [], "b": []})
+        self.assertEqual(sim.completed_waves, 1)
+        self.assertEqual(sim._elapsed_minutes, 0)
+        self.assertEqual(lams, [])
+        self.assertEqual(sim._agent_infection["b"]["status"], "S")
+
+    # ── /resume parity ───────────────────────────────────────────────────────────
+
+    def test_stop_and_resume_gives_the_same_contact_time_as_a_continuous_run(self):
+        # 예전엔 재개 직후 첫 판정이 "직전 판정 시각 없음 → t_d=0"이라 한 구간을 잃었다.
+        script = {"a": [{"target": ["b"]}], "b": [{"target": ["a"]}]}
+        locs = {"a": "거실", "b": "거실"}
+        with tempfile.TemporaryDirectory() as tmp:
+            cont, _, _ = self._sim(tmp, script, locs)
+            cont._set_infected("a", 0, "event", at_minutes=0, start_status="I")
+            with self._spy_lambdas() as l_cont:
+                cont.run("a", max_waves=6, step_delay=0, resume_wave={"a": [], "b": []})
+
+            first, _, _ = self._sim(tmp, script, locs)
+            first._set_infected("a", 0, "event", at_minutes=0, start_status="I")
+            with self._spy_lambdas() as l_resumed:
+                first.run("a", max_waves=3, step_delay=0, resume_wave={"a": [], "b": []})
+                state, pending = first.export_agent_state(), first._pending_wave
+                second, _, _ = self._sim(tmp, script, locs, elapsed_init=first._elapsed_minutes)
+                second.restore_agent_state(state)
+                second.run("a", max_waves=3, step_delay=0, resume_wave=pending)
+        self.assertEqual(cont._elapsed_minutes, 180)
+        self.assertEqual(second._elapsed_minutes, 180)
+        self.assertEqual([round(x * 1440) for x in l_cont], [30] * 6)
+        self.assertEqual([round(x * 1440) for x in l_resumed], [30] * 6)
 
 
 class LocationCsvTests(unittest.TestCase):

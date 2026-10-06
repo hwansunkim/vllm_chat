@@ -115,7 +115,7 @@ async function fetchAll() {
 // 까지만 반영해 독립적으로 추론한다) 순서가 안 맞아도 의미가 달라지지 않는다.
 // 주의 — infection_update는 emit 지점이 둘이라 이벤트 타입만으로는 phase가 안
 // 정해진다: 시나리오 스크립트가 심는 환자 0번(cause="event")은 대사 전, 매 wave
-// 자동 전파/회복(cause="transmission"/"recovery")은 이동 반영 이후(대사 후)다.
+// 자동 전파/회복(cause="transmission"/"recovery")은 wave 끝(시간 누적 뒤 — 대사 후)이다.
 // 그래서 이것만 payload.cause를 본다 — ABM/export/markdown.py와 동일 규칙.
 // appearance_update도 이론적으로 같은 이중 emit 구조지만(스크립트 vs 턴), payload에
 // 구분할 필드가 없고 스크립트로 외모를 바꾸는 경우 자체가 드물어 다수 사례(턴,

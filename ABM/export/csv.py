@@ -44,8 +44,13 @@
 않는다 — 완전한 동석 기록이 아니라 **발화한 사람들끼리의 동석**이다. ``new_exposure``
 도 마찬가지로, 새로 감염된 사람이 그 wave 에 발화하지 않았으면 표시할 행이 없다. 또
 ``infection_status`` 는 턴 시점 값이라 그 wave 끝의 접촉 전파로 감염된 행은
-``infection_status=S`` 이면서 ``new_exposure=true`` 일 수 있다(전파 판정은 wave 의 모든
-턴이 끝난 뒤 일어난다).
+``infection_status=S`` 이면서 ``new_exposure=true`` 일 수 있다(전파 판정은 wave 끝 —
+시간 누적 뒤 — 에 일어난다).
+
+엔진의 전염 판정(2026-10 wave 타이밍 정정)은 **이 CSV 의 ``location`` = wave 시작 위치**의
+접촉 × 그 wave 의 경과(``elapsed_minutes_end - elapsed_minutes_start``)다. 단 zone 경계
+이동 중(traveling)인 사람은 raw 위치가 이미 목적지라 ``location`` 이 목적지로 찍히지만
+엔진은 동행 외 누구와도 접촉시키지 않는다 — 이 CSV 에는 이동 중 표시가 없다(한계).
 """
 from __future__ import annotations
 

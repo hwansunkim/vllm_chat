@@ -482,6 +482,10 @@ class _RunnerMixin:
             # 쓰고(지금 `_agent_location` 과 동일), 이번 wave 끝에서 다음 wave의
             # 1-wave 대화 유예 기준(`_prev_wave_start_location`)으로 넘긴다.
             wave_start_location = dict(self._agent_location)
+            # 감염 모델 — wave **시작** 접촉·상태 스냅샷(턴 결과의 이동이 반영되기 전).
+            # 판정은 이번 wave 의 시간이 누적된 **뒤**(아래 `_finish_infection_wave`)에
+            # 이번 wave 자신의 경과 시간으로 한다(사용자 wave 모형 — infection.py).
+            infection_start = self._infection_wave_start(run_wave)
 
             # ── 발화 라우팅 (이동 적용 *전* 위치 스냅샷 기준) ──────────────────
             # turn.py의 1차 _resolve_targets() 해석(엣지/피드/DB 기록)과 반드시 같은
@@ -749,14 +753,6 @@ class _RunnerMixin:
                 routed, reached_someone, disp_wave, now_elapsed,
             )
 
-            # ── 감염 모델 ────────────────────────────────────────────────────
-            # 이동이 모두 반영된 뒤의 위치를 기준으로 접촉을 계산한다 — "이번 wave가
-            # 끝난 시점에 같은 장소에 함께 있었는가". 모델이 꺼져 있으면 즉시 반환한다.
-            # (외모 변경 처리 자체는 위(124~174행)에서 이동 *전* 스냅샷 기준으로 이미
-            # 끝났다 — 예전엔 여기 이동 이후에 중복으로 처리했었는데, 그 버전은 위치
-            # 스냅샷이 틀리고 이름 노출·외부공간 격리도 안 됐던 구버전이라 제거했다.)
-            self._apply_infection_wave(run_wave, disp_wave)
-
             # 이번 wave 에 실제로 누군가 누군가에게 말이 닿았나 — 아래 시간 추정
             # (장면 보호 캡)이 쓴다. 다들 각자 독백이면 False.
             any_reached = any(reached_someone.values())
@@ -942,6 +938,10 @@ class _RunnerMixin:
                     )
                     end_reason = "no_progress"
                     current_wave = next_wave
+                    # 이 wave 는 완료된 wave 다(completed_waves 반영) — 감염 판정도 마친다.
+                    # 가변 모드는 시간이 흐르지 않아 t_d=0(진행 판정만), fixed 모드는
+                    # 시계가 wave 단위로 흐르므로 time_per_wave 만큼.
+                    self._apply_infection_wave(run_wave, disp_wave, infection_start)
                     break
 
             # ── 시간 누적 (가변 모드) ─────────────────────────────────────────
@@ -1120,6 +1120,13 @@ class _RunnerMixin:
                     })
                     self._elapsed_minutes += jump
                 # else: 이번 wave에 성공한 발화가 전혀 없음 — 시간 미누적
+
+            # ── 감염 모델 — wave 끝 ───────────────────────────────────────────
+            # wave 시작 스냅샷(위 `infection_start`)의 접촉 그룹 × **이번 wave 의 경과
+            # 시간**(위에서 누적된 끝 시각 − 시작 시각)으로 전염을, 끝 시각으로 진행을
+            # 판정한다. 시간이 안 흐른 wave(성공 발화 0)는 t_d=0. 모델이 꺼져 있으면 즉시
+            # 반환한다. 반드시 시간 누적 **뒤**·목표 기간 종료 판정 **앞**이다.
+            self._apply_infection_wave(run_wave, disp_wave, infection_start)
 
             current_wave = next_wave
             logger.info(f"[W{disp_wave}] next_wave: {list(current_wave.keys())}")

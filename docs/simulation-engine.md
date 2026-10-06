@@ -41,9 +41,11 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin,
 ## 2. `run()` 루프 — wave 1회의 처리 순서
 
 **순서가 곧 정확성이다.** 발화 라우팅·외모·이동을 이동 *전* 위치 스냅샷 위에서 하고,
-감염은 이동 *후*에 한다. 이 순서를 바꾸면 "떠나기 전에 한 말을 그 자리 사람이 못 듣는"
-유령 발화, "밤새 앓았는데 증상은 그대로"류 모순이 생긴다 (`runner.py` 주석이 각각의
-과거 버그를 기록).
+감염은 **wave 시작 접촉 스냅샷(10번) × 이번 wave 의 경과 시간**으로 시간 누적 *뒤*(20a)에
+판정한다(사용자 wave 모형 — 위치는 wave 시작에 고정, 이동은 다음 wave 전에 끝남). 이 순서를
+바꾸면 "떠나기 전에 한 말을 그 자리 사람이 못 듣는" 유령 발화, 이동 후 위치에 직전 wave 의
+시간을 곱하는 2-wave 어긋남(2026-10 이전 감염 판정의 버그) 같은 모순이 생긴다 (`runner.py`
+주석이 각각의 과거 버그를 기록).
 
 루프 진입 전 `current_wave = resume_wave if resume_wave is not None else {start_agent: []}`
 — `None`(새 시작)만 start_agent 로 시작한다. 빈 dict `{}`는 "직전 run 의 다음 wave 가
@@ -148,6 +150,8 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
 ── 발화 라우팅 (이동 전 위치 스냅샷) ──
 10. scene_injections = arrival_injections   (씬 메시지 버퍼 — 2b 의 다음-wave 도착 알림으로 시작)
     wave_start_location = dict(_agent_location)   ← 이번 wave 시작 스냅샷
+    infection_start = _infection_wave_start(run_wave)  ← 감염: 시작 접촉 그룹(이동 중이면 동행끼리만)
+                                                         + 활성 명단·상태 스냅샷 (20a 에서 판정)
 11. 각 성공한 speaker:
        resolved = _resolve_targets(result.targets, speaker)   ← 같은 방 + 1-wave 유예
        routed[target] += {speaker, content, action_note}       ← 두 모드 공통
@@ -206,8 +210,7 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
        1차(이동 전) 라우팅은 그대로 — 출발지 사람도 계속 듣는다.
        보강 배달 대상은 first_resolved 에도 합류한다(17번 직접 타깃 집합).
 
-── 감염 (이동 후 위치 기준) ──
-15. _apply_infection_wave(run_wave, disp_wave)   : 같은 wave·같은 장소 접촉 → 확률 전염
+── (15. 감염 — 20a 로 옮김: wave 시작 스냅샷 × 이번 wave 경과, 시간 누적 뒤) ──
 
 ── 도달 여부 집계 ──
 16. any_reached = any(reached_someone.values())  (시간 추정의 장면 보호 캡용)
@@ -248,7 +251,8 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
 
 ── 진행 불가 백스톱 ──
 19. 이번 wave에 성공한 발화 있으면 dead_waves=0, 없으면 dead_waves+1
-    dead_waves >= max(6, starvation_waves×2) → end_reason="no_progress", break
+    dead_waves >= max(6, starvation_waves×2) → end_reason="no_progress",
+       _apply_infection_wave(run_wave, disp_wave, infection_start)(완료된 wave — 20a 와 같은 판정), break
 
 ── 시간 누적 (variable 모드만) ──
 20. idle_jump → idle_minutes_schedule[min(silence_count-1, len)-1] (2회째에 첫 값, 끝에서 포화;
@@ -259,6 +263,14 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
        _emit("time_jump", mode="idle")
     아니면 → _classify_wave_time / _estimate_wave_minutes → _clamp_time_jump
             _emit("time_jump", {...}) → _elapsed_minutes += jump
+    (성공한 발화가 없고 idle 점프도 아니면 시간 미누적)
+
+── 감염 (wave 끝) ──
+20a. _apply_infection_wave(run_wave, disp_wave, infection_start)
+       t_d = (_current_elapsed_minutes(run_wave+1) − 시작 경과분)/1440 = 이번 wave 경과
+       (fixed: time_per_wave, variable: 이번 jump, 시간 안 흐른 wave: 0)
+       시작 스냅샷 그룹의 P/I × S 쌍마다 p=1-exp(-β·t_d) → 새 노출 시각 = wave 끝
+       진행(E→P→I→R)은 wave 끝 시각으로, 시작 스냅샷의 E/P/I 만 한 단계
 
 21. current_wave = next_wave
 

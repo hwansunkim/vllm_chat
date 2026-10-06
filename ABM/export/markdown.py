@@ -120,7 +120,7 @@ def _quote(text: str) -> str:
 # ``infect_agent``, ``_set_infected(..., "event")``)은 스크립트 이벤트와 같은
 # 자리(대사 **전**)에서 emit되고, 매 wave 자동 전파/회복
 # (``infection.py::_apply_infection_wave``, cause "transmission"/"recovery")은
-# 이동 반영 이후(대사 **후**)에 emit된다. 그래서 이 하나만 payload의 ``cause``
+# wave 끝 — 시간 누적 뒤(대사 **후**)에 emit된다. 그래서 이 하나만 payload의 ``cause``
 # 필드를 봐서 갈라야 한다 — 아래 ``_stream_phase``에서 처리.
 #
 # ``appearance_update``도 이론적으로는 같은 이중 emit 구조다(스크립트

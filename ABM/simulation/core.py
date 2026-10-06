@@ -364,10 +364,8 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
         self._exposed_duration_spec:        dict = _dur("exposed_duration",        DEFAULT_EXPOSED_DURATION)
         self._presymptomatic_duration_spec: dict = _dur("presymptomatic_duration", DEFAULT_PRESYMPTOMATIC_DURATION)
         self._infectious_duration_spec:     dict = _dur("infectious_duration",     DEFAULT_INFECTIOUS_DURATION)
-        # 전염 판정용 접촉 시간(t_d) 기준 시각 — "지난 판정 이후 실제로 경과한 시간"을
-        # 매 wave 갱신한다(infection.py::_apply_infection_wave). None이면 "아직 한
-        # 번도 판정 안 함" = 이번이 첫 판정이라 t_d=0(전염 없음)으로 시작한다.
-        self._infection_last_check_minutes: int | None = None
+        # 전염 판정의 접촉 시간 t_d 는 각 wave 자신의 경과 시간(끝 − 시작)이라 저장할
+        # 기준 시각이 없다(infection.py::_apply_infection_wave — 2026-10 wave 타이밍 정정).
         self._infection_stages:       list[dict] = []
         # 증상 문구: {status: "E"|"P"|"I", symptom_text}. 같은 status 항목들은 등록 순서가
         # 곧 그 상태 안의 진행 순서다(infection.py::_find_symptom_stage). status가 없거나

@@ -925,21 +925,40 @@ P=0이면 I에서 시작한다. 설정 화면의 증상 문구 묶음도 같은 
 
 **엔진 동작** (`infection.py`) — **시간 축이 둘**:
 
-- **전염 = wave·접촉 기준 Monte Carlo** — `_apply_infection_wave`가 **이동 반영 후**
-  위치로 `_compute_contact_groups`(같은 장소 2명+, 외부 공간 제외). **P 또는 I** 상태인
-  사람이 전파원이다(E는 아직 비전염). 전파원 × 감염가능(S) 쌍마다
-  `λ = β × t_d`, `P = 1 - exp(-λ)`, `random.random() < P`로 독립 판정(β·판정 방식은
-  SEIR 때와 동일 — 바뀐 건 전파원 집합에 P가 추가된 것뿐). `t_d`(접촉 시간, 일 단위)는
-  **직전 판정 이후 실제로 경과한 시간**을 일로 환산한 값이다 — 가변 시간 모드에서
-  5분짜리 식사 wave와 7시간짜리 취침 wave가 접촉 시간에 다르게 기여해야 하기 때문.
-  최초 판정(직전 기준 시각 없음)은 t_d=0으로 보아 전염을 걸지 않는다. **시간 개념이
-  꺼져 있으면(경과분이 항상 0) t_d도 항상 0이라 β가 아무리 커도 전염이 일어나지
-  않는다** — 회귀가 아니라 모델의 정의상 결과.
+- **wave 타이밍 (사용자 wave 모형 — 2026-10 정정)** — wave 시작에 각자의 위치가 고정되고
+  wave 동안 그 자리에서 행동하며, wave 끝에 그 wave 의 경과 시간이 정해진다. 이동은 다음
+  wave 시작 전에 끝난다(구역 안은 즉시, 구역 경계는 이동 시간 동안 동행 외 혼자). 원칙:
+  **wave w 의 전염 = wave w 시작 위치의 접촉 그룹 × wave w 자신의 경과 시간.**
+  `runner.py`가 턴·이동 **전**에 `_infection_wave_start(run_wave)`로 접촉 그룹·활성 명단·
+  상태를 스냅샷하고, 시간 누적 **뒤**에 `_apply_infection_wave(run_wave, disp_wave, 스냅샷)`로
+  판정한다. 예전엔 이동 **후** 위치(= 다음 wave 시작 위치)에 직전 wave 의 경과(지금 − 직전
+  판정)를 곱해 두 wave 가 어긋났다 — 짱구·엄마가 거실 5분 → 따로 7시간(짱구 취침) → 거실
+  30분 → 따로 이면 정답은 함께 35분인데, 옛 엔진은 7시간을 그다음 wave 의 동석에 썼다.
+- **전염 = wave·접촉 기준 Monte Carlo** — 시작 스냅샷의 `_compute_contact_groups`(같은
+  장소 2명+, 외부 공간 제외, 위치 미설정 floater 는 모든 그룹에 합류, **zone 경계 이동
+  중(traveling)인 사람은 raw 위치가 이미 목적지여도 동행(`travel_group`)끼리만** — 혼자면
+  아무와도 접촉 없음). 시작 시점 **P 또는 I** 인 사람이 전파원이다(E는 아직 비전염).
+  전파원 × 시작 시점 S 쌍마다 `λ = β × t_d`, `P = 1 - exp(-λ)`, `random.random() < P`로
+  독립 판정(감염되면 남은 전파원 판정 생략, 같은 wave 안 연쇄 전파 없음). `t_d`(접촉 시간,
+  일 단위) = **그 wave 의 경과**(끝 − 시작: fixed 는 `time_per_wave`, variable 은 그 wave 의
+  time_jump, 성공한 발화가 없어 시간이 안 흐른 wave 는 0). 저장된 "직전 판정 시각"이 없어
+  첫 wave·`/resume` 직후도 같은 규칙이다(예전의 "첫 판정 t_d=0"과 재개 직후 한 구간 손실이
+  함께 사라짐). **시간 개념이 꺼져 있으면(경과분이 항상 0) t_d도 항상 0이라 β가 아무리
+  커도 전염이 일어나지 않는다** — 회귀가 아니라 모델의 정의상 결과.
+- **새 노출 시각 = wave 끝** (`infected_at_minutes`, `infection_update.elapsed_minutes`) — 접촉은
+  wave 어딘가에서 일어났지만 그 사람의 상태는 다음 wave 프롬프트부터 보이고, 잠복기도 그때부터
+  센다. wave 시작으로 잡으면 긴 wave(7시간 취침)의 노출이 과거로 당겨져 진행이 앞당겨지고,
+  상태가 S 였던 wave 안에서 이미 E 였던 것처럼 된다. 이벤트 라벨(`wave`)은 접촉한 wave(disp_wave).
+  환자 0번(`infect_agent`)은 그대로 wave 시작 시각 — 이벤트가 wave 시작에 실행되므로 P/I 로
+  시작하면 그 wave 부터 전파원이다.
 - **E→P→I→R 진행 = 경과 분 기준** — 노출 시점에 세 델타를 저장한다(모두 노출 시점
   기준): `presymptomatic_at_minutes`(=E), `infectious_at_minutes`(=E+P),
   `recover_at_minutes`(=E+P+I). `now - infected_at_minutes`가 각 델타에 도달하면
-  E→P / P→I / I→R. 모두 같은 wave 시작 시점 명단(snapshot) 기준이라 **한 wave에 한
-  단계만** 넘어간다(E→P와 P→I를 같은 wave에 태우지 않음).
+  E→P / P→I / I→R. 판정 시각은 **wave 끝**(전염 판정 바로 뒤)이고 wave 시작 스냅샷의
+  E/P/I 만 보므로 **한 wave에 한 단계만** 넘어가고(E→P와 P→I를 같은 wave에 태우지 않음),
+  이번 wave 에 갓 노출된 사람은 진행하지 않는다. 전파원이 wave 도중 회복 시각을 지나도 그
+  wave 동안은 전파원이었다(시작 상태 기준). 진행 이벤트도 라벨은 그 wave, 시각은 wave 끝 —
+  다음 wave 프롬프트(증상 문구·회복 안내)가 바뀐 상태를 본다.
   **예외: P 지속이 0이면(`presymptomatic_at == infectious_at`) P는 존재하지 않는 구간이라
   E에서 곧바로 I로 간다**(P 이벤트 emit 없음). 이게 기본 설정·구버전 상태가 SEIR과
   **정확히 같은 wave에** I가 되는 이유다(없으면 한 wave 늦어져 기존 회귀 테스트가 깨진다).
@@ -949,7 +968,8 @@ P=0이면 I에서 시작한다. 설정 화면의 증상 문구 묶음도 같은 
   시점의 노출 후 경과분, E·P·I 모두)을 함께 저장하고 복원 쪽에서 새 원점 기준으로
   재계산. 세 델타는 노출 시점부터의 델타라 앵커와 무관하게 그대로 저장된다.
   `/continue`는 `rebase_infection_anchors(now=before)` (정상 시 no-op, 접기 누락 회귀
-  흡수) — 이때 `t_d` 기준 시각도 함께 초기화된다.
+  흡수). `t_d` 는 wave 자신의 시작·끝 차이라 저장·복원할 기준 시각이 없다(예전
+  `_infection_last_check_minutes` 제거 — 재개 직후 첫 판정이 t_d=0 이던 문제 해소).
 - **⚠ 하위호환 마이그레이션 (SEIR → SEPIR)** — P 도입 전에 저장된 `_agent_infection`
   딕셔너리(이어하기·불러오기 스냅샷)에는 `presymptomatic_at_minutes`가 없고, 그때의
   `infectious_at_minutes`는 **옛 의미(E→I 직행 델타)**였다. 새 코드에서 같은 필드명은
@@ -1171,10 +1191,72 @@ CSV 하나로 분석한다(예전엔 마크다운의 감염 이벤트와 따로 
 
 **한계** — 행은 **발화한 에이전트뿐**이다. 같은 방에 있었지만 그 wave에 발화하지 않은 사람은 행이
 없어 `co_located_with`에 안 잡히고(완전한 동석 기록이 아니라 발화한 사람들끼리의 동석), 새로
-감염됐어도 발화하지 않았으면 `new_exposure`를 표시할 행이 없다. 또 접촉 전파 판정은 wave의 모든
-턴 뒤에 일어나므로 그 wave의 행은 `infection_status=S`이면서 `new_exposure=true`일 수 있다.
+감염됐어도 발화하지 않았으면 `new_exposure`를 표시할 행이 없다. 또 접촉 전파 판정은 wave 끝(시간
+누적 뒤)에 일어나므로 그 wave의 행은 `infection_status=S`이면서 `new_exposure=true`일 수 있다.
+엔진의 전염 판정은 이 CSV 의 `location`(= wave 시작 위치) × 그 wave 의 경과(`elapsed_minutes_end -
+elapsed_minutes_start`)와 같은 기준이다(§감염 "wave 타이밍"). 단 zone 경계 이동 중인 사람은 엔진이
+동행 외 접촉시키지 않지만 CSV 에는 이동 중 표시가 없다.
 
 **하위 호환** — 컬럼 추가 이전 로그는 행을 버리지 않고 해당 칸을 빈 값으로 남긴다
 (`infection_status`·`is_infectious`·`elapsed_minutes_*`·위치 없는 행의 `co_located_with`).
 DB는 `simulation_log`에 `infection_status TEXT`·`elapsed_minutes INTEGER` 컬럼을
 마이그레이션으로 추가하며 기존 행은 NULL(백필하지 않음).
+
+---
+
+## 15. β 재계산 도구 (`python -m ABM.tools.rebeta`)
+
+**목적** — 위치 이력 CSV(§14)와 시나리오의 `infection_model`(+ `infect_agent` 이벤트)만으로, 같은
+동선에서 β만 달랐다면 확산이 어떻게 달라졌을지 Monte Carlo로 다시 계산한다. LLM 시뮬레이션을 다시
+돌리지 않는다. 설계 결정 전체는 `ABM/tools/rebeta.py` 모듈 docstring.
+
+```
+python -m ABM.tools.rebeta <locations.csv> <scenario.json> --beta 0.02 0.04 0.1 --runs 1000 --seed 42 --out <dir>
+                           [--initial-mode replay|sample] [--backfill]
+```
+
+**가정** — 고정 행동: 에이전트의 이동·발화는 원래 실행 그대로이며 가상의 감염에 반응하지 않는다.
+"최종 감염자"는 **관찰 기간 끝까지** 한 번이라도 S를 벗어난 사람(시드 포함)이다(출력에 기간 명시).
+
+**엔진 재사용** — `_InfectionMixin`을 상속한 최소 shim(`_ReplayEngine`) 위에서 엔진의
+`_infection_wave_start`(wave 시작 스냅샷) → `_apply_infection_wave`(wave 끝 판정)를 그대로 호출한다.
+원칙: **CSV 계산 == 엔진 계산**. 테스트가 확인하는 것: (1) 같은 시드·같은 동선을 엔진 메서드(`_set_infected` +
+`_infection_wave_start` + `_apply_infection_wave`)에 직접 넣은 결과와 wave별 상태·최종 E/P/I/R 임계값이 완전히
+일치, (2) **실제 `Simulation.run` → `render_location_csv` → 도구**의 e2e 에서 β=1e6(결정적 전파)으로 엔진과
+같은 사람이 같은 시각에 감염(전원 발화·이동 후 재발화 사례). 난수열은
+도구 안에서만 재현된다 — 원래 실행은 이동 시간·시간 카테고리 등 다른 추첨도 같은 전역 난수로 했으므로
+원래 실행의 난수열과 같지 않다(그래서 β<∞ 에서는 원래 실행을 "재연"하는 게 아니라 분포를 낸다).
+
+**접촉 재구성** — CSV는 발화자 행만 있고 `location`은 그 wave의 **시작(이동 전)** 위치 = 엔진이 그 wave
+판정에 쓰는 위치다. wave w 판정 = wave w 명단 × wave w 경과(`elapsed_minutes_end - elapsed_minutes_start`;
+시간 설정은 시나리오 `config.time_mode`·`time_per_wave` — **fixed 모드는 항상 `time_per_wave`**(fixed 는
+`time_jump` 를 내지 않아 마지막 행 종료 경과분이 비고, 행 없는 wave 가 끼면 다음 행 추정이 2×tpw 가 되므로),
+variable 모드는 CSV 종료 경과분 → 다음 관찰 wave 시작 → 마지막 wave 면 0(경고). 대표 run CSV 의 `sim_t_d_minutes`).
+두 행 사이 gap은 **다음 행의 위치**(= 앞 행 wave의 이동 후 위치 = gap wave 의 시작 위치)로, 마지막 행 이후는
+마지막 위치로 채운다(`is_imputed`). 첫 행 이전은 기본적으로 **부재**(`--backfill`이면 첫 위치). 외부 공간·
+floater 규칙은 엔진 `_compute_contact_groups` 그대로.
+
+**시드** — 시나리오의 `infect_agent` 이벤트가 정본(max(이벤트 wave, 첫 등장)에 걸림). 이벤트 정보가
+없으면 "앞선 감염자가 없을 때 감염으로 처음 관찰된 사람"만 시드. 그 밖에 처음부터 감염으로 관찰된
+사람은 발화 전에 감염된 것으로 보고 첫 등장부터 S로 시뮬레이션하며 경고한다. 시드의 경과는 기본
+`replay`(관찰 상태 재생 — gap 은 다음 행 상태, 관찰된 변화를 gap 첫 wave 부터 적용해 회복이 늦게
+반영되지 않게) 또는 `sample`(엔진 `_set_infected`로 새로 추첨).
+
+**재개 경계** — 엔진 t_d 가 wave 자신의 시작·끝 차이라 `/resume` 경계 보정이 필요 없다(예전 `--reset-at` 제거).
+
+**한계 (CSV 에 정보가 없음 — 후속 과제)** — 마지막 발화 이후 이동의 목적지는 CSV에 없다(한 번 `move_to`로
+떠나고 다시 발화하지 않은 사람은 출발지에 남는다 — e2e 테스트로 고정한 알려진 한계). zone 경계 이동
+중(traveling)은 엔진이 동행 외 접촉시키지 않지만 CSV 에 표시가 없어 gap 이 도착지로 채워진다(과대 추정
+가능). 여러 hop 여정·`bring_along`은 근사. 한 번도 발화하지 않은 사람·퇴장은 보이지 않는다. **행이 하나도 없는 wave**
+(variable 모드에서 전원 턴 실패 + idle 점프로 시간이 흐른 wave 등)는 보이지 않아 그 시간의 접촉이 빠진다.
+관찰 결과(sanity check 의 "관찰된 최종 감염자")는 `infection_status` 가 S 가 아닌 행 **또는 `new_exposure=true`**
+인 행의 에이전트 수다(wave 끝 전파는 그 행 상태가 S 라 마지막 wave 감염자를 놓치지 않게).
+
+**출력** — `<stem>_rebeta_summary.csv`(β별 평균±표준오차·표준편차·최소·최대, 최종 감염자 0..N 확률,
+에이전트별 감염 확률±표준오차, 첫 새 감염 시각 평균, 관찰 결과 재현 확률±표준오차),
+`<stem>_rebeta_beta<β>_waves.csv`(대표 run 하나 — 최종 감염자 수가 하위 중앙값인 run 중 가장 작은 번호 —
+의 전체 명단 + `is_imputed`·`sim_status`·`sim_is_infectious`·`sim_contact_location`·`sim_t_d_minutes`·`sim_new_exposure`·
+`sim_p_infect`(그 판정에서 감염될 **합산 확률** 1-(1-p)^k, k = 속한 각 그룹 전파원 수 합)). 두 CSV 맨 위
+`#` 줄에 가정과 관찰 기간(`pandas.read_csv(..., comment="#")`). 원래 β가 `--beta`에 없으면 sanity check용으로
+자동 추가하고, 재현 확률이 5% 미만이면 경고한다. 입력 오류(헤더만 있는 CSV·`--runs` < 1·음수 β)는
+종료 코드 2.

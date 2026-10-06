@@ -42,26 +42,39 @@ SEIR과 **정확히 같은 wave에** E→I가 일어난다.
 
 ## 전염 확률 — Monte Carlo (연구 스펙)
 
-접촉한(같은 wave·같은 장소) 전파원(P 또는 I) 1명과 비감염(S) 1명 쌍마다 독립적으로 판정한다.
+wave 시작 시점에 같은 장소에 있던 전파원(P 또는 I) 1명과 비감염(S) 1명 쌍마다 독립적으로 판정한다.
 
     λ_ij = β × t_d
     P = 1 - exp(-λ)
     rn < P 면 감염(E로 전이)
 
-`β`는 사용자가 설정하는 옵션(기본 0.04). `t_d`(접촉 시간, **일 단위**)는 "지난 감염
-판정 이후 실제로 경과한 시간"이다 — 이 엔진은 wave마다 실제 경과 시간(분)이 들쭉날쭉
-하므로(가변 시간 모드: 식사 장면 5분 vs 취침 장면 7시간), 그 경과 시간을 일 단위로
-환산해 접촉 시간으로 쓴다(사용자 확정 사항). 최초 판정(직전 판정 시각이 없음)은
-t_d=0으로 보아 전염을 걸지 않는다 — 시작하자마자 감염되는 부자연스러움을 막는다.
+`β`는 사용자가 설정하는 옵션(기본 0.04). `t_d`(접촉 시간, **일 단위**)는 **그 wave
+자신의 경과 시간**(wave 끝 − wave 시작)이다 — 이 엔진은 wave마다 실제 경과 시간(분)이
+들쭉날쭉하므로(가변 시간 모드: 식사 장면 5분 vs 취침 장면 7시간), 그 경과 시간을 일
+단위로 환산해 접촉 시간으로 쓴다.
+
+## wave 타이밍 (사용자 wave 모형 — 2026-10 정정)
+
+wave 시작에 각자의 위치가 고정되고, wave 동안 그 자리에서 행동하며, wave 끝에 그
+wave의 경과 시간이 정해진다. 이동은 다음 wave 시작 전에 끝난다(구역 안은 즉시, 구역
+경계는 이동 시간 동안 동행 외 혼자). 그래서:
+
+- 접촉 그룹·전파원·감염 가능자는 **wave 시작** 스냅샷(`_infection_wave_start` — 턴·이동 전)
+- 판정은 **wave 끝**(시간 누적 뒤, `_apply_infection_wave`) — t_d = 이번 wave 경과
+- 새 노출 시각 = wave 끝, 진행(E→P→I→R)도 wave 끝 시각으로 시작 스냅샷의 E/P/I만 한 단계
+
+예전엔 이동 **후** 위치(= 다음 wave 시작 위치)에 직전 wave 의 경과 시간을 곱해 두
+wave 가 어긋났다(7시간 따로 잔 시간이 다음 wave 의 동석에 적용됨). 저장된 "직전 판정
+시각"이 없으므로 첫 wave·`/resume` 직후에도 같은 규칙이 그대로 적용된다.
 
 시간 축 — **전염만 wave 기준, 병의 진행(E→P→I→R)은 시간 기준.**
-전염은 "이번 wave에 같은 장소에 있었는가"라는 접촉 사건이므로 wave당(정확히는 그
-wave까지의 경과 시간 기준) 확률로 판정한다. 반면 잠복기·감염기 progression은 감염
+전염은 "이번 wave에 같은 장소에 있었는가"라는 접촉 사건이므로 wave당(그 wave의 경과
+시간 기준) 확률로 판정한다. 반면 잠복기·감염기 progression은 감염
 후 경과 분(`_current_elapsed_minutes`)으로 판정한다.
 
 접촉 판정은 `_compute_wave_targets`(내러티브 가시성 — 아는 사람/낯선 사람 구분, 대화 상대
 노출용)를 재사용하지 **않는다**. 감염은 "누구를 알아보는가"와 무관하게 순수한 물리적 공존의
-문제이므로 `_agent_location` 값만으로 그룹핑한다. 다만 외부 공간(`is_exterior`)은
+문제이므로 `_agent_location` 값만으로 그룹핑한다(zone 경계 이동 중인 사람은 동행끼리만). 다만 외부 공간(`is_exterior`)은
 `_compute_wave_targets`가 "아무도 보이지 않음"으로 처리하는 것과 일관되게 접촉 계산에서도
 통째로 제외한다(외부 공간에 함께 있어도 접촉으로 치지 않는다).
 """
@@ -350,8 +363,8 @@ class _InfectionMixin:
 
     # ── 접촉 계산 ────────────────────────────────────────────────────────────
 
-    def _compute_contact_groups(self) -> list[list[str]]:
-        """이번 wave에 같은 장소에 있던 활성 에이전트 그룹 목록.
+    def _compute_contact_groups(self, now: int | None = None) -> list[list[str]]:
+        """같은 장소에 있는 활성 에이전트 그룹 목록(호출 시점의 위치·상태 기준).
 
         `_agent_location` 값으로 그룹핑하고, 외부 공간은 제외한다. 2명 미만인 그룹은
         접촉이 성립하지 않으므로 버린다.
@@ -362,10 +375,26 @@ class _InfectionMixin:
         안 따르면, 위치를 섞어 쓰는 시나리오에서 위치 미설정 에이전트는 누구와도 대화하면서
         절대 감염되지도 감염시키지도 않는 모순이 생긴다(전원 위치 미설정인 순수 레거시
         시나리오는 원래도 단일 버킷이라 이 규칙과 무관하게 정상 동작한다).
+
+        **zone 경계 이동 중(traveling)** 인 사람은 `_agent_location`이 이미 목적지로 바뀌어
+        있지만 아직 도착하지 않았다. 그래서 목적지 그룹에 넣지 않고 **함께 이동하는
+        사람(bring_along 동행 — 상태의 `travel_group`)끼리만** 한 그룹으로 묶는다. 혼자
+        이동 중이면 누구와도 접촉하지 않는다. 위치 미설정 floater 도 이동 그룹에는 끼지
+        않는다(길 위에서는 동행 외에 아무도 없다). `now`(이번 wave 시작 경과분)를 주지
+        않으면 traveling 판정을 하지 않는다(상태 저장소가 없는 shim·단위 테스트 하위 호환).
         """
         buckets:  dict[str, list[str]] = {}
+        travel:   dict[tuple, list[str]] = {}
         floaters: list[str] = []
+        statuses = getattr(self, "_agent_status", None) or {}
         for key in sorted(self.active_agents):
+            if now is not None:
+                st = statuses.get(key)
+                if (st and st.get("state") == "traveling"
+                        and now < st.get("until_elapsed", 0)):
+                    members = st.get("travel_group") or [key]
+                    travel.setdefault(tuple(sorted(members)), []).append(key)
+                    continue
             loc = self._agent_location.get(key, "")
             if loc in self._exterior_locations:
                 continue  # 외부 공간 — 서로 접촉하지 않음
@@ -374,60 +403,76 @@ class _InfectionMixin:
             else:
                 floaters.append(key)
 
-        if not buckets:
+        if buckets:
+            groups = [group + floaters for group in buckets.values()]
+        else:
             # 전원 위치 미설정 — 암묵적 단일 공간(순수 레거시 시나리오).
-            return [floaters] if len(floaters) >= 2 else []
-
-        groups = [group + floaters for group in buckets.values()]
+            groups = [floaters]
+        groups += list(travel.values())
         return [group for group in groups if len(group) >= 2]
 
     # ── 매 wave 모델 적용 ─────────────────────────────────────────────────────
 
-    def _apply_infection_wave(self, run_wave: int, disp_wave: int | None = None) -> None:
-        """이번 wave의 전염 + E→P→I→R 진행 판정. 이동(move_to) 반영 **이후**에 호출할 것.
+    def _infection_wave_start(self, run_wave: int) -> dict | None:
+        """wave **시작** 시점의 접촉·상태 스냅샷. 모델이 꺼져 있으면 None.
 
-        `run_wave` = per-run 카운터 → 경과 시간(`now`) 계산 전용.
+        사용자 wave 모형(정본): wave 시작에 위치가 고정되고, wave 동안 그 자리에서 행동하며,
+        wave 끝에 경과 시간이 정해진다. 이동은 다음 wave 시작 전에 끝난다. 그래서 wave w의
+        전염 = **wave w 시작 위치의 접촉 그룹 × wave w 자신의 경과 시간**이다. 이 스냅샷은
+        턴·이동 **전**(runner: 이벤트·상태 만료 뒤)에 떠서 wave 끝의
+        `_apply_infection_wave(..., start=스냅샷)`에 넘긴다. 활성 명단·상태도 이 시점 것을
+        쓴다(입·퇴장 이벤트는 wave 시작에만 일어난다).
+        """
+        if not self._infection_enabled:
+            return None
+        start = self._current_elapsed_minutes(run_wave)
+        status = {key: self._infection_entry(key)["status"] for key in self.active_agents}
+        return {
+            "start_minutes": start,
+            "groups":        self._compute_contact_groups(start),
+            "status":        status,
+        }
+
+    def _apply_infection_wave(
+        self, run_wave: int, disp_wave: int | None = None, start: dict | None = None,
+    ) -> None:
+        """wave **끝**(시간 누적 뒤)의 전염 + E→P→I→R 진행 판정.
+
+        `run_wave` = per-run 카운터 → 경과 시간 계산 전용. wave 끝 시각은
+        `_current_elapsed_minutes(run_wave + 1)`(variable: 누적 반영 뒤의 `_elapsed_minutes`,
+        fixed: 다음 wave 시작 = 시작 + time_per_wave).
         `disp_wave` = 누적 표시 wave → `infection_update` 이벤트·`recovered_wave` 라벨용.
         생략하면 `run_wave`를 그대로 라벨로 쓴다(단위 테스트 하위 호환).
+        `start` = `_infection_wave_start(run_wave)` 스냅샷. 생략하면 지금 뜬다(단위 테스트
+        편의 — "지금 상태가 곧 이번 wave 시작 상태"; variable 모드에선 시작=끝이라 t_d=0).
 
-        전염·진행 모두 이번 wave 시작 시점의 명단(`infectious_now`/`exposed_now`/
-        `presymptomatic_now`/`symptomatic_now`)을
-        기준으로 판정한다 — 이번 wave에 갓 전이된 사람이 같은 wave 안에서 곧바로
-        2차 전파를 일으키거나 다음 단계로 넘어가는 순서 의존성을 없애기 위함.
+        - **접촉 시간** t_d = (wave 끝 − wave 시작)/1440일 = 이번 wave 자신의 경과 시간.
+          시간이 흐르지 않은 wave(가변 모드에서 성공한 발화가 없음·시간 비활성)는 t_d=0.
+          직전 판정 시각 같은 저장 상태가 없으므로 첫 wave·재개 직후도 같은 규칙이다.
+        - **전염** — 시작 스냅샷의 그룹에서 시작 시점 P/I(전파원) × 시작 시점 S 쌍마다
+          p = 1-exp(-β·t_d), 독립 추첨(감염되면 남은 전파원 판정 생략). 같은 wave 안의 연쇄
+          전파 없음. 새 노출의 시각(`infected_at_minutes`)은 **wave 끝**이다 — 상태가
+          다음 wave 부터 보이고, 잠복기도 그때부터 센다(설계 결정 — docs §감염 모델).
+        - **진행** — wave 끝 시각으로, 시작 스냅샷의 E/P/I 만 한 단계씩 판정한다(이번 wave에
+          갓 노출된 사람은 진행하지 않는다). 전파원이 wave 도중 회복 시점을 지나도 그 wave
+          동안은 전파원이었다(시작 상태 기준).
         """
         if not self._infection_enabled:
             return
 
         if disp_wave is None:
             disp_wave = run_wave
-        now = self._current_elapsed_minutes(run_wave)
+        if start is None:
+            start = self._infection_wave_start(run_wave)
+        end = self._current_elapsed_minutes(run_wave + 1)
+        t_d_days = max(0, end - start["start_minutes"]) / _MINUTES_PER_DAY
+        status0 = start["status"]
 
-        # 접촉 시간(t_d, 일 단위) — 지난 판정 이후 실제로 경과한 시간을 일로 환산한다
-        # (가변 시간 모드에서 식사 5분 vs 취침 7시간처럼 wave마다 실제 경과가 다르므로).
-        # 첫 판정(직전 기준 시각이 없음)은 t_d=0으로 보아 전염을 걸지 않는다 —
-        # 시작하자마자 감염되는 부자연스러움을 막는다. /continue로 원점이 되감기면
-        # rebase_infection_anchors가 이 기준을 초기화해 같은 규칙이 다시 적용된다.
-        last_check = self._infection_last_check_minutes
-        t_d_days = max(0, now - last_check) / _MINUTES_PER_DAY if last_check is not None else 0.0
-        self._infection_last_check_minutes = now
-
-        # 전파원 = P(무증상 전염기) 또는 I(감염기).
-        infectious_now = {
-            key for key in self.active_agents
-            if self._infection_entry(key)["status"] in (_P, _I)
-        }
-        exposed_now = {
-            key for key in self.active_agents
-            if self._infection_entry(key)["status"] == _E
-        }
-        presymptomatic_now = {
-            key for key in self.active_agents
-            if self._infection_entry(key)["status"] == _P
-        }
-        symptomatic_now = {
-            key for key in self.active_agents
-            if self._infection_entry(key)["status"] == _I
-        }
+        # 전파원 = P(무증상 전염기) 또는 I(감염기) — 모두 wave 시작 상태.
+        infectious_now     = {k for k, s in status0.items() if s in (_P, _I)}
+        exposed_now        = {k for k, s in status0.items() if s == _E}
+        presymptomatic_now = {k for k, s in status0.items() if s == _P}
+        symptomatic_now    = {k for k, s in status0.items() if s == _I}
 
         # 1) 전염 — Monte Carlo: λ = β × t_d, P = 1 - exp(-λ). 같은 장소 그룹 안의
         #    (전파원 × 감염가능) 쌍마다 독립 판정한다.
@@ -435,28 +480,30 @@ class _InfectionMixin:
             lam = self._infection_beta * t_d_days
             p = 1.0 - math.exp(-lam)
             newly_exposed: set[str] = set()
-            for group in self._compute_contact_groups():
+            for group in start["groups"]:
                 carriers = [k for k in group if k in infectious_now]
                 if not carriers:
                     continue
                 for key in group:
-                    if key in infectious_now or key in newly_exposed:
-                        continue
-                    if self._infection_entry(key)["status"] != _S:
+                    if key in newly_exposed or status0.get(key) != _S:
                         continue  # E/P/I 는 이미 진행 중, R(면역)은 재감염 안 됨
+                    if self._infection_entry(key)["status"] != _S:
+                        continue
                     for _ in carriers:
                         if random.random() < p:
-                            if self._set_infected(key, disp_wave, "transmission", at_minutes=now):
+                            if self._set_infected(key, disp_wave, "transmission", at_minutes=end):
                                 newly_exposed.add(key)
                             break  # 이미 노출 — 남은 전파원과의 판정은 무의미
 
         # 2) 진행 — E→P, P→I, I→R. 모두 주사위를 굴리지 않는다: 노출 시점에 뽑아둔
-        #    델타에 도달했는지만 본다. 한 wave에 한 단계만 넘어간다(E→P와 P→I를 같은
-        #    wave에 둘 다 태우지 않음). 단, P 지속이 0이면(기본값·P 도입 전 저장 상태)
-        #    P는 존재하지 않는 구간이므로 E에서 곧바로 I로 간다 — 그래야 기존 SEIR과
-        #    정확히 같은 wave에 I가 된다.
+        #    델타에 wave 끝 시각이 도달했는지만 본다. 한 wave에 한 단계만 넘어간다(E→P와
+        #    P→I를 같은 wave에 둘 다 태우지 않음). 단, P 지속이 0이면(기본값·P 도입 전 저장
+        #    상태) P는 존재하지 않는 구간이므로 E에서 곧바로 I로 간다.
+        now = end
         for key in sorted(exposed_now):
             entry = self._infection_entry(key)
+            if entry["status"] != _E:
+                continue
             since = entry.get("infected_at_minutes")
             t_ep, t_pi, _ = _progression_thresholds(entry)
             if isinstance(since, int) and isinstance(t_ep, int) and now - since >= t_ep:
@@ -467,6 +514,8 @@ class _InfectionMixin:
 
         for key in sorted(presymptomatic_now):
             entry = self._infection_entry(key)
+            if entry["status"] != _P:
+                continue
             since = entry.get("infected_at_minutes")
             _, t_pi, _ = _progression_thresholds(entry)
             if isinstance(since, int) and isinstance(t_pi, int) and now - since >= t_pi:
@@ -474,6 +523,8 @@ class _InfectionMixin:
 
         for key in sorted(symptomatic_now):
             entry  = self._infection_entry(key)
+            if entry["status"] != _I:
+                continue
             since  = entry.get("infected_at_minutes")
             target = entry.get("recover_at_minutes")
             if isinstance(since, int) and isinstance(target, int) and now - since >= target:
@@ -503,11 +554,8 @@ class _InfectionMixin:
         `recover_at_minutes`는 노출 시점부터의 **델타**라 앵커와 무관하게 그대로
         둔다(재기준화 불필요).
 
-        `_infection_last_check_minutes`(전염 판정용 접촉 시간 t_d 기준점)도 원점이
-        실제로 밀렸다면 함께 초기화한다 — 옛 원점 기준 절대값을 그대로 두면 다음
-        판정에서 t_d가 실제보다 훨씬 크게(또는 음수로) 계산된다. 초기화하면 다음
-        판정이 t_d=0(전염 없음)부터 다시 시작하므로 안전하다(과대/과소 계산보다
-        한 번의 "판정 건너뜀"이 낫다).
+        전염 판정의 접촉 시간 t_d 는 wave 자신의 시작·끝 시각 차이라 저장된 기준점이
+        없다(2026-10 이전의 `_infection_last_check_minutes` 는 제거됨) — 재기준화 대상 아님.
 
         `/load`·`/resume`은 새 프로세스에서 export/restore를 거치며 같은
         재기준화를 하므로 이 함수와 무관하다.
@@ -521,7 +569,6 @@ class _InfectionMixin:
             since = entry.get("infected_at_minutes")
             if entry.get("status") in (_E, _P, _I) and isinstance(since, int):
                 entry["infected_at_minutes"] = base - max(0, now - since)
-        self._infection_last_check_minutes = None
 
     # ── 증상 서사 ────────────────────────────────────────────────────────────
 

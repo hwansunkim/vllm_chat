@@ -336,7 +336,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin,
 | **로케이션 믹스인** | `location.py` | `_expand_zone_edges`, `_compute_zone_awareness`, 씬 메시지 빌더 | 위치 그래프(BFS 이동), **zone(구역) 인지**, 외부공간 격리, 도착/이탈 씬 메시지 |
 | **미팅 믹스인** | `meeting.py` | `_apply_move_intents`, `_update_meeting_paths` | `move_to` 해석(장소/사람/머무름) + **만남 lock** (`move_to`에 장소가 아닌 **사람**을 지목): 추격·랑데부·집결, `meeting_update` emit |
 | **여정 믹스인** | `journey.py` | `_journey_plan`, `_journey_on_via_arrival`, `_route_guide_lines` | **여정**(먼 목적지로 가는 길): 경유지 멈춤/통과, 재출발, "가는 길"/"가던 길" 안내, `journey_update`·`move_intent` emit |
-| **감염 믹스인** | `infection.py` | `_apply_infection_wave`, `_sample_duration_minutes` | **결정론적 SEPIR/SEPIRS**. 같은 wave·같은 장소 접촉(P·I가 전파) → Monte Carlo(λ=β×t_d) 전염. E→P→I→R 진행은 경과 분 기준. LLM은 상태·확률을 절대 안 봄 |
+| **감염 믹스인** | `infection.py` | `_infection_wave_start`, `_apply_infection_wave`, `_sample_duration_minutes` | **결정론적 SEPIR/SEPIRS**. wave 시작 위치의 접촉(P·I가 전파) × 그 wave 경과(t_d) → Monte Carlo(λ=β×t_d) 전염(판정은 wave 끝). E→P→I→R 진행은 경과 분 기준. LLM은 상태·확률을 절대 안 봄 |
 | **이벤트 믹스인** | `events.py` | `_execute_event` | 시나리오 이벤트: `system_message`, `agent_enter`, `agent_exit` |
 | **시스템 믹스인** | `system.py` | `_run_system_agent` | **디렉터(system 에이전트)** 실행: 침묵·반복·고립 감지, 개입 메시지 주입(1..N 대상), `director_memo` 갱신, `director_call` emit |
 
@@ -488,7 +488,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin,
 | **환자 0번 (patient zero)** | 감염(노출) 시작점. 지정 안 하면 유행이 시작되지 않음 |
 | **발병 시점 (onset wave)** | 환자 0번이 노출(E) 상태로 전환되는 wave |
 | **전염 계수 (beta)** | Monte Carlo 전염 확률의 β. λ=β×t_d, P=1-exp(-λ). 기본 0.04, P(무증상 전염기)·I(감염기)가 전파원 |
-| **접촉 시간 (t_d)** | 직전 전염 판정 이후 실제로 경과한 시간(일 단위) — wave 길이가 들쭉날쭉해도 실제 노출 시간에 비례 |
+| **접촉 시간 (t_d)** | 그 wave에 걸린 시간(일 단위, wave 끝 − 시작) — wave 시작 위치의 접촉에 곱한다. wave 길이가 들쭉날쭉해도 실제 노출 시간에 비례 |
 | **증상 문구 (symptom stage)** | `{status: E\|P\|I, symptom_text}`. 지금 실제 상태와 그 상태에 머문 비율로 고른다 — 같은 상태 문구 n개는 그 상태 진행 구간을 n등분(등록 순서). 문구 없는 상태는 카드 없음. 옛 "노출 후 경과분" 시간창은 제거(상태 불일치 버그의 근본 해법) |
 | **model_type** | `sir`/`seir`/`sepir` — 설정 화면 전용. 숨긴 구간(SIR: E·P, SEIR: P) 지속을 0일로 강제. 엔진은 읽지 않음 |
 | **지속 시간 분포 (DurationSpec)** | E/P/I 공통 설정: `kind`(uniform/gamma/gaussian) + 파라미터(k·θ / μ·σ) + `min_days`~`max_days` 절단 범위(항상 적용, min==max면 고정) |
