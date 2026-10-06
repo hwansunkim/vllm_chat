@@ -286,6 +286,10 @@ startSimulation() (run/control.js)
 
 ---
 
+> **이벤트 편집기 — 활성 일차** (`settings/events.js`): 모든 이벤트에 `from_day`/`until_day` 숫자 칸("활성 일차 N ~ M
+> 일차", 비우면 null = 제한 없음). 시작이 끝보다 크면 바꾼 쪽에 맞춰 다른 쪽을 고친다(서버 스키마가 역순을 거부).
+> 저장·전송은 `sim.events` 그대로라 시나리오 JSON 에 왕복된다.
+
 > **에이전트 카드 — 감염 시작 상태** (`settings/agents.js`): "감염 가능(S) / 면역(R)" 선택(`infection_start_status`,
 > 감염병 모델 사용 시 의미). 저장·전송은 `buildSimConfig()`가 에이전트 객체를 스프레드해 그대로 싣고, 구버전 시나리오는
 > `applyScenario`가 `'S'`로 채운다. 새 실행 시작 시 `run/control.js::seedInitialImmunity`가 면역 에이전트의 감염 뱃지를

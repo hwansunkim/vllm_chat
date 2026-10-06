@@ -97,7 +97,7 @@ export function renderScenarioEvents() {
         <input class="sim-event-time-input" type="time"
                data-idx="${idx}" data-field="at_time" value="${esc(ev.at_time || '16:00')}"/>` : `
         <input class="sim-event-wave-input" type="number" min="0" max="99"
-               data-idx="${idx}" data-field="wave" value="${ev.wave}"/>`}
+               data-idx="${idx}" data-field="wave" value="${esc(ev.wave ?? 0)}"/>`}
         <select class="sim-event-type-select" data-idx="${idx}" data-field="type">
           ${Object.entries(EVENT_LABELS).map(([v, l]) =>
             `<option value="${v}" ${ev.type === v ? 'selected' : ''}>${l}</option>`
@@ -117,6 +117,22 @@ export function renderScenarioEvents() {
         시뮬레이션 시계가 이 시각에 도달한 첫 wave에 발동합니다(요일 지정 시 그 요일마다
         반복). 시간 추론이 이 시각을 넘겨 점프하지 않습니다 — 예: “짱구 태권도 16:30”이
         큰 시간 점프에 스킵되는 것 방지. 시간 모드가 켜져 있어야 의미가 있습니다.
+      </div>` : ''}
+      <div class="sim-event-days-row sim-event-dayrange-row" data-idx="${idx}"
+           title="이 일차 동안만 이 이벤트를 씁니다(양끝 포함, 비우면 제한 없음). 1일차 = 시뮬레이션 시작 날, 자정마다 하루씩 늘어납니다(시작 시각이 05:50이면 그날 자정까지가 1일차). 시각 이벤트는 범위 밖 발동을 건너뛰고, wave 이벤트는 그 wave 가 범위 밖 일차면 발동하지 않습니다.">
+        <span class="sim-event-days-label">활성 일차</span>
+        <input class="sim-event-day-input" type="number" min="1" step="1" style="width:4.5em"
+               data-idx="${idx}" data-field="from_day" value="${esc(ev.from_day ?? '')}" placeholder="처음"/>
+        <span>~</span>
+        <input class="sim-event-day-input" type="number" min="1" step="1" style="width:4.5em"
+               data-idx="${idx}" data-field="until_day" value="${esc(ev.until_day ?? '')}" placeholder="끝"/>
+        <span class="sim-event-days-note">일차${ev.from_day == null && ev.until_day == null ? ' (비우면 제한 없음)' : ''}</span>
+      </div>
+      ${trigger === 'wave' && ev.from_day > 1 ? `
+      <div class="sim-event-warn">
+        ⚠ wave 트리거는 그 wave 가 ${esc(ev.from_day)}일차 이후일 때만 발동합니다${(ev.wave ?? 0) === 0
+          ? ' — wave 0 은 항상 1일차라 이 이벤트는 발동하지 않습니다'
+          : ' — 그 wave 가 더 이른 일차면 발동하지 않고 사라집니다'}. 일차로 정하려면 “시각” 트리거를 쓰세요.
       </div>` : ''}
       ${infectionOff ? `
       <div class="sim-event-warn">
@@ -234,6 +250,16 @@ function syncEventField(el) {
     sim.events[idx].wave = parseInt(el.value) || 0;
   } else if (field === 'at_time') {
     sim.events[idx].at_time = el.value;   // <input type="time"> → "HH:MM" 또는 ""
+  } else if (field === 'from_day' || field === 'until_day') {
+    // 활성 일차 범위 — 비우거나 1 미만이면 제한 없음(null). 시작이 끝보다 크면 다른 쪽을 맞춘다
+    // (서버 스키마가 from_day > until_day 를 거부하므로 저장·실행 전에 정리).
+    const v = parseInt(el.value);
+    const ev = sim.events[idx];
+    ev[field] = Number.isInteger(v) && v >= 1 ? v : null;
+    if (ev.from_day != null && ev.until_day != null && ev.from_day > ev.until_day) {
+      if (field === 'from_day') ev.until_day = ev.from_day; else ev.from_day = ev.until_day;
+    }
+    renderScenarioEvents();
   } else if (field === 'type') {
     sim.events[idx].type = el.value;
     _syncAgentSelection(idx);

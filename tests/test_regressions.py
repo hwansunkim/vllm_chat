@@ -6991,6 +6991,40 @@ class EngineContractAssemblyTests(unittest.TestCase):
         from ABM.agent import Agent
         return {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in ("a", "b")}
 
+    def test_presence_rule_is_in_every_located_prompt(self):
+        # 리뷰 §4.1(W1074) — "보이는 사람 = [이 자리의 사람들]뿐" 규칙. 정적 세계 계약(지도)이라 출력 계약
+        # 오버라이드(옛 프리즈 템플릿)를 써도 붙고, 위치 그래프가 없으면(상황 블록도 없음) 붙지 않는다.
+        # [같은 구역…] 문장은 구역이 있을 때만.
+        from ABM.prompt_contract import presence_rule
+        zoned = presence_rule(has_zone=True)
+        flat = presence_rule(has_zone=False)
+        graph = [{"name": "안방", "connects_to": ["거실"], "zone": "집"},
+                 {"name": "거실", "connects_to": ["안방"], "zone": "집"}]
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = self._agents(tmp)
+            sim = self._sim(tmp, agents, location_graph=graph, agent_locations={"a": "안방", "b": "거실"},
+                            llm=_ScriptedLLM({"a": [{}], "b": [{}]}))
+            ctx = sim._assemble_agent_prompt("a", 0)
+            system = agents["a"].get_system_message(ctx["visible_agents"], ctx["key_to_alias"])["content"]
+            self.assertIn(zoned, system)                                # 실제 턴의 시스템 메시지
+            self.assertIn("이 자리에는 아무도 없다", ctx["situation_text"])   # 규칙이 가리키는 블록
+            from ABM.agent import Agent
+            frozen = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192,
+                               output_format_template="출력: JSON {\"content\": ...}") for k in ("a", "b")}
+            self._sim(tmp, frozen, location_graph=graph)
+            self.assertIn(zoned, frozen["a"].engine_contract)
+            nozone = self._agents(tmp)
+            self._sim(tmp, nozone, location_graph=[{"name": "방", "connects_to": []}])
+            self.assertIn(flat, nozone["a"].engine_contract)
+            self.assertNotIn("같은 구역", flat)
+            plain = self._agents(tmp)
+            self._sim(tmp, plain)
+            self.assertNotIn("[이 자리의 사람들]뿐", plain["a"].engine_contract)
+        for rule in (zoned, flat):
+            self.assertNotIn("최근", rule)                              # "최근 확인한 빈 곳" 줄 없음(사용자 결정)
+            self.assertNotIn("들려온 소리", rule)                       # 방 사이 소리 경로는 없다
+            self.assertIn("상황 안내나 누가 알려준 경우가 아니면", rule)
+
     def test_user_system_prompt_stays_pure(self):
         with tempfile.TemporaryDirectory() as tmp:
             agents = self._agents(tmp)
@@ -13455,6 +13489,114 @@ class MarkdownInitialImmunityColumnTests(unittest.TestCase):
         for needle in ("| 아이콘 | 이름 | ID | 초기 활성 | 감염 시작 |", "' 🛡️ 면역 |'", "' 감염 가능 |'",
                        "|--------|------|----|-----------|-----------|"):
             self.assertIn(needle, js)
+
+
+class EventDayRangeTests(unittest.TestCase):
+    """이벤트 활성 일차 범위(`from_day`/`until_day`, N일차 = 시각 표시의 "N일차", 양끝 포함, 비면 무제한)."""
+
+    def _sim(self, tmp, **kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        agents = {"a": Agent("a", "너는 a다.", tmp, token_limit=4096)}
+        sim = Simulation(agents, [{"role": "user", "content": "x"}], tmp,
+                         llm=_ScriptedLLM({"a": [{"target": "self"}]}),
+                         time_mode="fixed", time_per_wave=720, sim_start_time="09:00", **kw)
+        fired = []
+        real = sim._execute_event
+        sim._execute_event = lambda e: (fired.append((e.get("wave"), e.get("message"))), real(e))[1]
+        sim._emit = lambda *a, **k: None
+        return sim, fired
+
+    def test_occurrence_search_respects_the_day_range(self):
+        from ABM.simulation.runner import _beat_occurrence_after, sim_day_number
+        start = 9 * 60                                                   # 1일차 09:00
+        self.assertEqual(_beat_occurrence_after(480, None, -1, start, 0), 1440 + 480 - start)   # 2일차 08:00
+        self.assertEqual(_beat_occurrence_after(480, None, -1, start, 0, 3, None), 2 * 1440 + 480 - start)
+        self.assertIsNone(_beat_occurrence_after(480, None, 2 * 1440, start, 0, None, 2))
+        far = _beat_occurrence_after(480, None, -1, start, 0, 30, None)  # 16일 창 밖의 시작도 찾는다
+        self.assertEqual(sim_day_number(start + far), 30)
+        self.assertEqual(sim_day_number(start), 1)
+
+    def test_scheduled_event_fires_only_inside_the_range(self):
+        ev = {"type": "system_message", "message": "출근", "at_time": "10:00", "from_day": 2, "until_day": 2}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, fired = self._sim(tmp)
+            sim.run("a", max_waves=6, step_delay=0, starvation_waves=99, events=[ev])
+        # 12시간 wave: w2=2일차 09:00, w3=2일차 21:00(10:00 도래 반영) — 1·3일차는 건너뛴다.
+        self.assertEqual(fired, [(3, "출근")])
+
+    def test_scheduled_event_is_not_fired_late_into_a_day_outside_the_range(self):
+        # QA late.py — fixed 60분 wave, 05:50 시작: 1일차 23:55 도래가 2일차 00:50 wave 에 반영된다. until_day=1 이면
+        # 발동하지 않아야 한다(도래가 아니라 실제 발동 시각의 일차). 같은 날 안에 반영되면 발동한다.
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        def go(tpw, start, at, waves):
+            with tempfile.TemporaryDirectory() as tmp:
+                sim = Simulation({"a": Agent("a", "너는 a다.", tmp, token_limit=4096)},
+                                 [{"role": "user", "content": "x"}], tmp,
+                                 llm=_ScriptedLLM({"a": [{"target": "self"}]}),
+                                 time_mode="fixed", time_per_wave=tpw, sim_start_time=start)
+                fired = []
+                real = sim._execute_event
+                sim._execute_event = lambda e: (fired.append(e.get("at_minutes")), real(e))[1]
+                sim._emit = lambda *a, **k: None
+                sim.run("a", max_waves=waves, step_delay=0, starvation_waves=999,
+                        events=[{"type": "system_message", "message": "m", "at_time": at, "until_day": 1}])
+                return fired
+        self.assertEqual(go(60, "05:50", "23:55", 22), [])
+        self.assertEqual(go(5, "23:30", "23:50", 10), [20])
+
+    def test_wave_event_is_skipped_outside_the_range(self):
+        evs = [{"type": "system_message", "message": "too-early", "wave": 2, "from_day": 3},
+               {"type": "system_message", "message": "too-late", "wave": 4, "until_day": 2},
+               {"type": "system_message", "message": "ok", "wave": 3, "from_day": 2, "until_day": 2},
+               {"type": "system_message", "message": "legacy", "wave": 1}]
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, fired = self._sim(tmp)
+            sim.run("a", max_waves=6, step_delay=0, starvation_waves=99, events=evs)
+        self.assertEqual([m for _, m in fired], ["legacy", "ok"])
+
+    def test_day_numbering_is_absolute_across_continue(self):
+        from backend.api.simulation.runner import fold_elapsed_and_reset_waves
+        ev = {"type": "system_message", "message": "3일차", "at_time": "10:00", "from_day": 3}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, fired = self._sim(tmp)
+            sim.run("a", max_waves=3, step_delay=0, starvation_waves=99, events=[ev])   # 1일차 09:00 ~ 2일차 09:00
+            self.assertEqual(fired, [])
+            fold_elapsed_and_reset_waves(sim)
+            sim.run("a", max_waves=4, step_delay=0, starvation_waves=99, events=[ev],
+                    resume_wave={"a": []})
+        # 이어 돈 run 의 w2(누적 wave 5) = 3일차 21:00 — 3일차 10:00 도래. run 기준 wave 가 아니라 절대 일차.
+        self.assertEqual(fired, [(5, "3일차")])
+
+    def test_schema_validation_and_legacy_default(self):
+        from backend.api.simulation.schemas import ScenarioEvent
+        legacy = ScenarioEvent(type="system_message")
+        self.assertEqual((legacy.from_day, legacy.until_day), (None, None))
+        self.assertEqual(ScenarioEvent(type="system_message", from_day=2, until_day=2).until_day, 2)
+        for bad in ({"from_day": 0}, {"until_day": 0}, {"from_day": 3, "until_day": 2}):
+            with self.subTest(bad=bad), self.assertRaises(ValidationError):
+                ScenarioEvent(type="system_message", **bad)
+        root = Path(__file__).resolve().parent.parent
+        src = (root / "frontend/js/sim/settings/events.js").read_text(encoding="utf-8")
+        for needle in ('data-field="from_day"', 'data-field="until_day"', "field === 'from_day' || field === 'until_day'",
+                       "value=\"${esc(ev.from_day ?? '')}\"", "trigger === 'wave' && ev.from_day > 1"):
+            self.assertIn(needle, src)
+        if __import__("shutil").which("node"):                       # 불러온 시나리오의 잘못된 값 정리(JS)
+            import subprocess
+            js = ("const m = await import(" + json.dumps(str(root / "frontend/js/sim/scenarios.js")) + ");"
+                  "const f = m.normalizeEventDayRange;"
+                  "process.stdout.write(JSON.stringify([f({type:'x'}), f({from_day:0, until_day:'3'}),"
+                  " f({from_day:5, until_day:2}), f({from_day:2.5, until_day:null})]));")
+            out = subprocess.run(["node", "--input-type=module", "-e", js], capture_output=True, timeout=60)
+            if out.returncode == 0:
+                self.assertEqual(json.loads(out.stdout.decode("utf-8")), [
+                    {"type": "x"}, {"from_day": None, "until_day": 3},
+                    {"from_day": 5, "until_day": 5}, {"from_day": None, "until_day": None}])
+            else:                                                     # scenarios.js 가 DOM 의존이면 소스로 확인
+                self.assertIn("sim.events                 = (cfg.events                || []).map(normalizeEventDayRange);",
+                              (root / "frontend/js/sim/scenarios.js").read_text(encoding="utf-8"))
 
 
 class LocationCsvTests(unittest.TestCase):

@@ -33,22 +33,41 @@ def _stamp_event(e, disp_wave: int, at_minutes: int):
     return {**e, "wave": disp_wave, "at_minutes": at_minutes}
 
 
+def sim_day_number(total_wall_minutes: int) -> int:
+    """벽시계 총 분(시작 시각 + 경과분) → 시뮬레이션 N일차(1부터). `format_sim_day_period` 의 "N일차"와 같다."""
+    return total_wall_minutes // 1440 + 1
+
+
+def _in_day_range(day: int, from_day: int | None, until_day: int | None) -> bool:
+    return (from_day is None or day >= from_day) and (until_day is None or day <= until_day)
+
+
 def _beat_occurrence_after(
     hhmm: int, days: set[int] | None, after_elapsed: int,
     sim_start_minutes: int, start_weekday_idx: int,
+    from_day: int | None = None, until_day: int | None = None,
 ) -> int | None:
     """시작 기준 경과분으로 표현한 `at_time` 이벤트의 다음 도래 시점.
 
     `after_elapsed` **보다 큰** 경과분 중 벽시계가 `hhmm`이고(요일 필터 `days`가
     있으면 그 요일인) 가장 이른 값. `days=None` 이면 매일. 14일치 시뮬레이션을
     커버하도록 최대 16일 앞까지 훑고, 못 찾으면 None.
+
+    `from_day`/`until_day`(활성 일차 범위, 양끝 포함)가 있으면 그 일차의 도래만 센다 — 훑기는
+    `from_day` 부터 시작하고(먼 미래 시작도 16일 창에 들어오게), `until_day` 를 넘으면 None.
     """
     base_wall = sim_start_minutes + after_elapsed
     base_day  = base_wall // 1440
+    if from_day is not None:
+        base_day = max(base_day, from_day - 1)
     for day_off in range(0, 17):
         wall = (base_day + day_off) * 1440 + hhmm
         t = wall - sim_start_minutes
         if t <= after_elapsed:
+            continue
+        if until_day is not None and sim_day_number(wall) > until_day:
+            return None
+        if not _in_day_range(sim_day_number(wall), from_day, until_day):
             continue
         wd = (start_weekday_idx + wall // 1440) % 7
         if days is None or wd in days:
@@ -102,12 +121,14 @@ class _RunnerMixin:
                 raw_days = [str(d).lower() for d in (e.get("at_days") or [])]
                 days = {_WEEKDAY_KEYS.index(d) for d in raw_days
                         if d in _WEEKDAY_KEYS} or None
-                te = {"hhmm": hhmm, "days": days, "event": e}
+                te = {"hhmm": hhmm, "days": days, "event": e,
+                      "from_day": e.get("from_day"), "until_day": e.get("until_day")}
                 # run 시작 시점보다 앞선 도래는 "이미 발동함"으로 본다(/continue·
                 # /resume 로 넘겨 이어가는 경우 — 되돌릴 수 없다).
                 te["next_at"] = _beat_occurrence_after(
                     hhmm, days, self._current_elapsed_minutes(0) - 1,
                     self._sim_start_minutes, self._sim_start_weekday_idx,
+                    te["from_day"], te["until_day"],
                 )
                 self._timed_events.append(te)
             else:
@@ -201,23 +222,41 @@ class _RunnerMixin:
 
             # 이벤트에 발동 wave(disp_wave)·경과분(now_elapsed)을 새긴다 — 자세한
             # 이유는 _stamp_event docstring.
-            wave_events = [_stamp_event(e, disp_wave, now_elapsed)
-                           for e in events_by_wave.get(run_wave, [])]
+            # wave 이벤트도 활성 일차 범위(from_day/until_day)를 지킨다 — 발동 시점의 일차가 범위 밖이면
+            # 발동하지 않는다(한 번뿐이라 그 이벤트는 사라진다). 범위가 없으면 예전 그대로.
+            today = sim_day_number(self._sim_start_minutes + now_elapsed)
+            wave_events = []
+            for e in events_by_wave.get(run_wave, []):
+                if isinstance(e, dict) and not _in_day_range(today, e.get("from_day"), e.get("until_day")):
+                    logger.info(f"[W{disp_wave}] wave 이벤트 건너뜀 — {today}일차가 활성 범위 "
+                                f"({e.get('from_day') or '-'}~{e.get('until_day') or '-'}일차) 밖: {e.get('type')}")
+                    continue
+                wave_events.append(_stamp_event(e, disp_wave, now_elapsed))
             # 시계가 예정 시각에 도달한 at_time 이벤트도 이 wave에 발동한다.
             # 여러 도래를 건너뛴 점프는 한 번만(가장 최근 것) 발동하고 다음 도래를
             # 다시 계산한다 — 밀린 이벤트가 몰아치지 않는다.
             for te in self._timed_events:
                 na = te["next_at"]
                 if na is not None and now_elapsed >= na:
-                    wave_events.append(_stamp_event(te["event"], disp_wave, now_elapsed))
-                    logger.info(
-                        f"[W{disp_wave}] at_time 이벤트 발동 "
-                        f"({te['event'].get('at_time')}, 경과 {now_elapsed}분): "
-                        f"{te['event'].get('type')}"
-                    )
+                    # 도래는 범위 안이어도 **실제 발동 시각**이 범위 밖일 수 있다(fixed 모드 — 23:55 도래가
+                    # 다음 날 00:50 wave 에 반영). 발동 시각의 일차로 한 번 더 거르고, 건너뛰어도 다음 도래는 다시 잡는다.
+                    if _in_day_range(today, te.get("from_day"), te.get("until_day")):
+                        wave_events.append(_stamp_event(te["event"], disp_wave, now_elapsed))
+                        logger.info(
+                            f"[W{disp_wave}] at_time 이벤트 발동 "
+                            f"({te['event'].get('at_time')}, 경과 {now_elapsed}분): "
+                            f"{te['event'].get('type')}"
+                        )
+                    else:
+                        logger.info(
+                            f"[W{disp_wave}] at_time 이벤트 건너뜀 — 발동 시각이 {today}일차로 활성 범위 "
+                            f"({te.get('from_day') or '-'}~{te.get('until_day') or '-'}일차) 밖: "
+                            f"{te['event'].get('type')}"
+                        )
                     te["next_at"] = _beat_occurrence_after(
                         te["hhmm"], te["days"], now_elapsed,
                         self._sim_start_minutes, self._sim_start_weekday_idx,
+                        te.get("from_day"), te.get("until_day"),
                     )
             event_invited: set[str] = set()
             for event in wave_events:

@@ -232,6 +232,24 @@ _MAP_RULE_JOURNEY = (
 )
 
 
+# 보이는 사람 = [이 자리의 사람들] 뿐 — 실측(W1074): 동네에 있던 엄마가 안방의 짱아를 "카페 창가에 보인다"고
+# 서술. 매 턴 [현재 상황]이 주는 범주(이 자리 · 같은 구역의 다른 곳(구역이 있을 때만) · 그 밖)를 그대로 묶는다.
+# 다른 방의 소리를 듣는 경로는 없으므로 "들려온 소리"는 쓰지 않고 "전해 들은 말"(원거리 전달·남의 말)만
+# 허용한다 — 지어낸 소리를 부르지 않게. [현재 상황]의 "현재 X는 Y에 있음" 같은 안내도 아는 것으로 친다.
+# verify_contract 필수 토큰은 아니다(옛 프리즈 템플릿과 무관한 정적 세계 계약이라 항상 붙는다).
+_MAP_RULE_PRESENCE_HEAD = "※ 지금 보거나 마주 보고 말할 수 있는 사람은 [현재 상황]의 [이 자리의 사람들]뿐입니다. "
+_MAP_RULE_PRESENCE_ZONE = "[같은 구역(...)의 다른 곳]의 사람은 어디 있는지 알 뿐 보이지 않습니다. "
+_MAP_RULE_PRESENCE_TAIL = (
+    "그 밖의 사람은 상황 안내나 누가 알려준 경우가 아니면 어디 있는지 모릅니다. 전해 들은 말은 들은 것으로만 "
+    "다루고, 목록에 없는 사람을 보인다·눈앞에 있다·이곳에 있다고 서술하지 마십시오."
+)
+
+
+def presence_rule(*, has_zone: bool) -> str:
+    """보이는 사람 규칙 — 구역이 있을 때만 [같은 구역…] 문장을 넣는다(그 블록은 구역이 있어야 나온다)."""
+    return _MAP_RULE_PRESENCE_HEAD + (_MAP_RULE_PRESENCE_ZONE if has_zone else "") + _MAP_RULE_PRESENCE_TAIL
+
+
 def build_map_contract(
     *,
     location_graph:     dict[str, list[str]] | None = None,
@@ -264,6 +282,7 @@ def build_map_contract(
         lines.append(f"  {loc}{exterior_mark}{zone_mark}: {conn_str}")
     lines.append(_MAP_RULE_GRAPH_ONLY)
     lines.append(_MAP_RULE_PERSON)
+    lines.append(presence_rule(has_zone=bool(zones)))
     if exterior:
         lines.append(_MAP_RULE_EXTERIOR)
     if zones:

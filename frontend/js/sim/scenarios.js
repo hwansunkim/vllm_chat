@@ -160,6 +160,24 @@ export function newScenario() {
   renderSettingsPage();
 }
 
+/**
+ * 불러온 이벤트의 활성 일차 범위 정리 — 서버 스키마(정수 ≥1, from_day ≤ until_day)를 어기면 /start 가
+ * 422 로 막히므로 여기서 맞춘다. 정수가 아니거나 1 미만이면 null(제한 없음). 역순이면 until_day 를 from_day 에
+ * 맞춘다(편집기 settings/events.js syncEventField 의 from_day 편집과 같은 방향). 필드가 없던 구버전 이벤트는
+ * 손대지 않는다(그대로 무제한).
+ */
+export function normalizeEventDayRange(ev) {
+  if (!ev || typeof ev !== 'object') return ev;
+  const out = { ...ev };
+  for (const k of ['from_day', 'until_day']) {
+    if (!(k in out)) continue;
+    const v = typeof out[k] === 'string' && out[k].trim() !== '' ? Number(out[k]) : out[k];
+    out[k] = Number.isInteger(v) && v >= 1 ? v : null;
+  }
+  if (out.from_day != null && out.until_day != null && out.from_day > out.until_day) out.until_day = out.from_day;
+  return out;
+}
+
 export function applyScenario(s) {
   const cfg = s.config;
   sim.currentScenarioId   = s.id;
@@ -199,7 +217,7 @@ export function applyScenario(s) {
   if (!sim.extra_fields.some(f => f.name === 'action_note')) {
     sim.extra_fields.push({ name: 'action_note', default: '' });
   }
-  sim.events                 = cfg.events                 || [];
+  sim.events                 = (cfg.events                || []).map(normalizeEventDayRange);
   // zone은 구버전 시나리오에 없다 — undefined가 남지 않도록 ''로 정규화한다.
   sim.location_graph = (cfg.location_graph || []).map(n => ({ ...n, connects_to: [...(n.connects_to || [])], is_exterior: !!n.is_exterior, zone: (n.zone || '').trim(), is_zone_entry: !!n.is_zone_entry }));
   // 구버전 시나리오에는 필드가 없다 — 'targeted'(기존 동작)로 폴백.

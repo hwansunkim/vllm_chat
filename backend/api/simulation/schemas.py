@@ -82,6 +82,20 @@ class ScenarioEvent(BaseModel):
     # 앵커링한다(ABM/simulation/infection.py::_set_infected) — 증상 서사가 시작부터 그
     # 단계의 경과분에 맞게 보인다.
     start_status: Literal["E", "P", "I"] = "E"
+    # 활성 일차 범위(선택) — 1일차 = 시뮬레이션 시작 날, 자정마다 하루씩 늘어난다(시작 시각이 05:50이면 그날
+    # 자정까지가 1일차). (시작 시각 + 경과분) // 1440 + 1 이라 /continue·/resume 을 건너 이어진다. 양끝 포함,
+    # None = 그쪽 제한 없음. at_time 이벤트는 실제 발동 시각의 일차로도 한 번 더 거른다.
+    # at_time 이벤트는 범위 밖 도래를 건너뛰고(다음 도래 계산·시간 점프 클램프도 범위 안만 본다),
+    # wave 이벤트는 발동 시점의 일차가 범위 밖이면 발동하지 않는다(한 번뿐이라 그 이벤트는 사라진다).
+    # 구버전 시나리오(필드 없음) = 무제한 = 기존 동작.
+    from_day:  int | None = Field(default=None, ge=1)
+    until_day: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def _valid_day_range(self):
+        if self.from_day is not None and self.until_day is not None and self.from_day > self.until_day:
+            raise ValueError(f"from_day({self.from_day}) 는 until_day({self.until_day}) 보다 클 수 없습니다")
+        return self
 
     @field_validator("at_time")
     @classmethod
