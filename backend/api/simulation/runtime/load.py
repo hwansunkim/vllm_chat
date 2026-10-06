@@ -6,6 +6,7 @@ import os
 
 from fastapi import APIRouter, HTTPException
 
+from ..runner import infection_badge_snapshot
 from ..schemas import SimStartConfig
 from ..state import _BUSY_STATES, _sim, _sim_lock, get_sim_db
 from .llm_config import _make_agent_llm_map, _make_llm
@@ -196,13 +197,7 @@ def load_simulation(run_id: str):
         # 상태가 안 바뀐 에이전트는 infection_update 이벤트가 0건이라 프론트가 알
         # 방법이 없다(특히 /continue로 만들어진 run은 새 run_id를 쓰므로 이전 run의
         # 전이 이벤트를 안 물려받는다). 서버가 들고 있는 현재 상태를 그대로 실어준다.
-        infection_snapshot = {
-            key: {
-                "status": entry.get("status", "S"),
-                "cause":  "recovery" if entry.get("recovered_wave") is not None else "transmission",
-            }
-            for key, entry in sim_obj._agent_infection.items()
-        }
+        infection_snapshot = infection_badge_snapshot(sim_obj._agent_infection)
 
         # 이 run 을 이어서 실행하면 첫 wave 가 가질 누적 표시 wave 번호.
         # 프론트가 피드 divider 초기화·리플레이 메타 표시에 쓸 수 있다(선택).

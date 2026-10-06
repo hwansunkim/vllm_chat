@@ -118,6 +118,12 @@ class _EventsMixin:
             # start_status(E/P/I): 환자 0번을 어느 단계에서 시작할지. P/I면 건너뛴 앞
             # 구간만큼 노출 시점을 과거로 앵커링한다(_set_infected 참고).
             start_status = event.get("start_status") or "E"
+            if self._agent_infection.get(agent_key, {}).get("status") == "R":
+                # 면역(R)은 감염되지 않는다 — 처음부터 면역이거나 immune_after_recovery=true 로 회복한 사람.
+                # (_set_infected 가 원래 S 만 받으므로 동작은 같고, 시나리오 실수를 알 수 있게 경고만 남긴다.
+                #  immune_after_recovery=false 면 회복은 S 로 돌아가므로 여기 해당하지 않는다.)
+                logger.warning(f"infect_agent 무시 — '{agent_key}' 는 면역(R) 상태입니다 (wave {wave})")
+                return result
             if self._set_infected(agent_key, wave, "event", at_minutes=at_minutes,
                                   start_status=start_status):
                 self._emit("scene_event", {

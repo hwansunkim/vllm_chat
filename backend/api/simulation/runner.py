@@ -167,3 +167,23 @@ def finalize_run(db, run_sim_id: str | None, stop_event: threading.Event,
             eq.put(None)  # sentinel: SSE stream end signal
         except Exception:
             pass
+
+
+def infection_badge_snapshot(entries: dict) -> dict[str, dict]:
+    """에이전트별 감염 상태 dict → 화면 뱃지 복원용 ``{agent: {status, cause}}`` (/load·/resume 응답 공용).
+
+    이벤트 재생만으로는 이 run 안에서 한 번도 상태가 안 바뀐 에이전트(특히 /continue 로 만들어진 run 은 새
+    run_id 라 이전 run 의 전이 이벤트를 안 물려받는다·처음부터 면역은 이벤트가 아예 없다)를 복원할 수 없어서
+    상태 자체를 싣는다. cause: 처음부터 면역(R)은 회복이 아니라 ``initial_immune``(화면 "면역"), 회복 이력이
+    있으면 ``recovery``, 그 밖은 ``transmission``. dict 가 아닌 항목은 건너뛴다.
+    """
+    out: dict[str, dict] = {}
+    for key, entry in (entries or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        out[key] = {
+            "status": entry.get("status", "S"),
+            "cause":  ("initial_immune" if entry.get("initially_immune")
+                       else "recovery" if entry.get("recovered_wave") is not None else "transmission"),
+        }
+    return out

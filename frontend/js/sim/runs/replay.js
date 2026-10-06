@@ -214,6 +214,7 @@ export async function openRunReplay(runId, runNum) {
       }
       // 설정 반영 (에이전트 카드 등 UI 동기화)
       applyScenario({ id: run.scenario_id, name: run.scenario_name || '', config: parsedConfig });
+      const data = await res.json().catch(() => ({}));
       // 실행 교체 — 화면에 남아 있던 다른 실행의 상태를 비운 뒤 카드를 그린다.
       resetRunState();
       renderAgentCards();
@@ -223,6 +224,10 @@ export async function openRunReplay(runId, runNum) {
       // 재개 시나리오의 location_graph로 지도를 다시 세운다 (아바타는 설정상의 초기 위치에서
       // 시작하고, 이후 agent_move 이벤트로 실제 위치를 따라간다 — 에이전트 카드와 동일한 기준).
       initLocationMap();
+      // 감염·면역 뱃지 복원 — /resume 응답의 infection 스냅샷(저장 상태 기준, /load 와 같은 형식·같은 헬퍼).
+      // 카드·그래프·지도를 다 세운 뒤(/load 와 같은 순서). 없으면(구버전 서버) 저장된 infection_update
+      // 재생으로 폴백한다.
+      await restoreInfectionBadges(runId, data.infection);
       // 저장된 만남 lock 복원 — 엔진은 `meeting_target`을 이어받지만 meeting_update는
       // "이전 웨이브 대비 변화"만 보내므로, 재개 직후에는 살아있는 lock이 다시 오지
       // 않을 수 있다. SSE를 붙이기 전에 채워두면 이후 해소 이벤트와도 맞물린다.

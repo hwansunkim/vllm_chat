@@ -314,6 +314,9 @@ export function infectionBadge(status, cause) {
   if (status === 'E') return { icon: '⏳', label: '잠복기',      cls: 'exposed'   };
   if (status === 'P') return { icon: '😶', label: '무증상 전염기', cls: 'presymptomatic' };
   if (status === 'I') return { icon: '🦠', label: '감염',        cls: 'infected'  };
+  // 처음부터 면역(AgentConfig.infection_start_status="R") — 회복이 아니다. cause는 프론트 시작 시드
+  // (run/control.js)와 /load 스냅샷(runtime/load.py)이 'initial_immune'으로 단다. labels.py 미러.
+  if (status === 'R' && cause === 'initial_immune') return { icon: '🛡️', label: '면역', cls: 'recovered' };
   if (status === 'R') return { icon: '💚', label: '회복·면역',    cls: 'recovered' };
   if (status === 'S' && cause === 'recovery') return { icon: '💚', label: '회복', cls: 'recovered' };
   return null;

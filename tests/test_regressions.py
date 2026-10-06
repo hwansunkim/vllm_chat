@@ -4920,6 +4920,26 @@ class ResumeContinueWaveBaseTests(unittest.TestCase):
         self.assertEqual(calls["sim_kwargs"].get("wave_base_init"), 13)
         self.assertEqual(resp.get("start_wave"), 13)
 
+    def test_resume_response_carries_infection_snapshot(self):
+        # /resume 화면도 /load 처럼 감염·면역 뱃지를 즉시 복원한다 — 저장 상태에서 같은 헬퍼로 만든 스냅샷.
+        states = {
+            "a": {"infection": {"status": "R", "initially_immune": True}},
+            "b": {"infection": {"status": "R", "recovered_wave": 3}},
+            "c": {"infection": {"status": "I"}},
+            "d": {"location": "부엌"},                                   # 감염 상태 없는 옛 스냅샷
+        }
+        resp, _ = self._run_resume(self._run_row(self._cfg()), states=states)
+        self.assertEqual(resp["infection"], {
+            "a": {"status": "R", "cause": "initial_immune"},
+            "b": {"status": "R", "cause": "recovery"},
+            "c": {"status": "I", "cause": "transmission"},
+        })
+        root = Path(__file__).resolve().parent.parent
+        replay = (root / "frontend/js/sim/runs/replay.js").read_text(encoding="utf-8")
+        self.assertEqual(replay.count("await restoreInfectionBadges(runId, data.infection);"), 2)   # /load·/resume
+        load_src = (root / "backend/api/simulation/runtime/load.py").read_text(encoding="utf-8")
+        self.assertIn("infection_badge_snapshot(sim_obj._agent_infection)", load_src)
+
     def test_resume_start_wave_defaults_zero_for_legacy_rows(self):
         row = self._run_row(self._cfg(), start_wave=0, total_waves=0)
         row["start_wave"]  = None          # 구버전 row: 컬럼 없음/NULL
@@ -13248,6 +13268,195 @@ class RosterCsvParityTests(unittest.TestCase):
         self.assertEqual(by[("2", "x")]["traveling"], "")               # 명단에 없는 발화자 → 구형식 행
 
 
+class InitialImmunityTests(unittest.TestCase):
+    """에이전트별 감염 시작 상태 — `AgentConfig.infection_start_status` "S"(기본) | "R"(처음부터 면역).
+
+    새 실행에서만 적용(`initially_immune_agents`, headless 만 넘김). 감염 계산은 그대로 — R 은 감염되지 않고
+    (S 만), 전파원이 아니며(P/I 만), 진행 대상도 아니라(E/P/I 만) immune_after_recovery 와 무관하게 끝까지 R.
+    """
+
+    MODEL = {"enabled": True, "disease_name": "감기", "beta": 1e6, "symptom_stages": [],
+             "exposed_duration": {"kind": "uniform", "min_days": 0, "max_days": 0},
+             "presymptomatic_duration": {"kind": "uniform", "min_days": 0, "max_days": 0},
+             "infectious_duration": {"kind": "uniform", "min_days": 0.05, "max_days": 0.05}}
+
+    def _sim(self, tmp, *, immune=("r",), model=None, keys="air", **kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096) for k in keys}
+        sim = Simulation(agents, [{"role": "user", "content": "x"}], tmp,
+                         llm=_ScriptedLLM({k: [{"target": "self"}] for k in keys}),
+                         time_mode="fixed", time_per_wave=720,
+                         agent_locations={k: "거실" for k in keys},
+                         infection_model=self.MODEL if model is None else model,
+                         initially_immune_agents=set(immune), **kw)
+        sim._emitted = []
+        sim._emit = lambda t, d: sim._emitted.append((t, d))
+        return sim
+
+    def test_immune_agent_is_never_infected_never_transmits_never_progresses(self):
+        for immune_after in (True, False):
+            with self.subTest(immune_after_recovery=immune_after), tempfile.TemporaryDirectory() as tmp:
+                sim = self._sim(tmp, model={**self.MODEL, "immune_after_recovery": immune_after})
+                entry = sim._agent_infection["r"]
+                self.assertEqual((entry["status"], entry.get("initially_immune"), entry["infected_at_minutes"],
+                                  entry["notify_recovery"]), ("R", True, None, False))
+                sim._set_infected("a", 0, "event", at_minutes=0, start_status="I")
+                for w in range(10):                      # 720분 wave × 10 — a 는 I 를 지나 회복(SEIRS 면 S)
+                    sim._apply_infection_wave(w)
+                self.assertEqual(sim._agent_infection["r"]["status"], "R")
+                self.assertEqual(sim._agent_infection["i"]["status"] in ("E", "P", "I", "R", "S"), True)
+                self.assertNotIn("r", {d["agent"] for t, d in sim._emitted if t == "infection_update"})
+                self.assertIsNone(sim._build_symptom_context("r"))   # 회복 안내 등 서사 없음
+                self.assertNotIn("r", {k for g in [sim._infection_wave_start(0)["status"]]
+                                       for k, st in g.items() if st in ("P", "I")})
+
+    def test_immune_agent_never_transmits_even_if_forced_into_the_only_contact(self):
+        # 면역자와 S 만 같은 방 — R 은 전파원이 아니므로 아무 일도 없다(β 매우 큼).
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, keys="rs", immune=("r",))
+            for w in range(5):
+                sim._apply_infection_wave(w)
+            self.assertEqual(sim._agent_infection["s"]["status"], "S")
+
+    def test_ignored_when_infection_model_is_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, model={**self.MODEL, "enabled": False})
+        self.assertEqual(sim._agent_infection["r"]["status"], "S")
+        self.assertNotIn("initially_immune", sim._agent_infection["r"])
+
+    def test_infect_agent_event_on_immune_agent_is_ignored_with_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp)
+            with self.assertLogs("ABM.simulation.events", level="WARNING") as cm:
+                sim._execute_event({"type": "infect_agent", "agent": "r", "wave": 0, "at_minutes": 0,
+                                    "start_status": "I"})
+        self.assertEqual(sim._agent_infection["r"]["status"], "R")
+        self.assertTrue(any("면역" in m for m in cm.output))
+        self.assertFalse([d for t, d in sim._emitted if t == "infection_update"])
+
+    def test_start_option_is_not_reapplied_on_load_resume_or_continue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp)
+            state = sim.export_agent_state()
+            self.assertTrue(state["r"]["infection"]["initially_immune"])
+            # /load·/resume — 새 객체(시작 옵션 없이) + 저장 상태 복원 → R + 표식 유지.
+            restored = self._sim(tmp, immune=())
+            restored.restore_agent_state(state)
+            self.assertEqual((restored._agent_infection["r"]["status"],
+                              restored._agent_infection["r"].get("initially_immune")), ("R", True))
+            # 저장 상태가 S 인 실행을 불러오면(옵션 추가 전 실행 등) 지금 설정이 R 이어도 S 그대로.
+            state["r"]["infection"] = {**state["r"]["infection"], "status": "S", "initially_immune": False}
+            again = self._sim(tmp, immune=())
+            again.restore_agent_state(state)
+            self.assertEqual(again._agent_infection["r"]["status"], "S")
+            # /continue — 같은 객체를 이어 쓴다(다시 적용할 지점이 없다). 진행 후에도 R.
+            from backend.api.simulation.runner import fold_elapsed_and_reset_waves
+            sim.completed_waves = 3
+            fold_elapsed_and_reset_waves(sim)
+            sim._apply_infection_wave(0)
+            self.assertEqual(sim._agent_infection["r"]["status"], "R")
+        for fname in ("load.py", "resume.py"):
+            src = (Path(__file__).resolve().parent.parent / "backend/api/simulation/runtime" / fname).read_text(
+                encoding="utf-8")
+            self.assertNotIn("initially_immune_agents", src)
+
+    def test_config_field_default_validation_and_headless_propagation(self):
+        from ABM.simulation.headless import run_config
+        self.assertEqual(AgentConfig(name="a", system_prompt="x").infection_start_status, "S")   # 구버전 JSON
+        with self.assertRaises(ValidationError):
+            AgentConfig(name="a", system_prompt="x", infection_start_status="I")
+        cfg, _ = _golden_config()
+        cfg = cfg.model_copy(deep=True)
+        cfg.agents[1].infection_start_status = "R"
+        cfg.agents[1].role_type = True                 # 역할형도 같은 옵션을 쓴다
+        cfg.max_waves = 1
+        seen = {}
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            run_config(cfg, llm=_GoldenLLM(), log_dir=tmp,
+                       on_sim_ready=lambda s: seen.update(sim=s, st={k: dict(v) for k, v in s._agent_infection.items()}))
+        b = cfg.agents[1].name
+        self.assertEqual((seen["st"][b]["status"], seen["st"][b].get("initially_immune")), ("R", True))
+        self.assertEqual(seen["st"][cfg.agents[0].name]["status"], "S")
+        self.assertEqual(SimStartConfig(**json.loads(cfg.model_dump_json())).agents[1].infection_start_status, "R")
+
+    def test_badges_label_initial_immunity_as_immune_not_recovery(self):
+        from ABM.export.labels import infection_badge
+        self.assertEqual(infection_badge("R", "initial_immune")["label"], "면역")
+        self.assertEqual(infection_badge("R", "recovery")["label"], "회복·면역")
+        root = Path(__file__).resolve().parent.parent
+        from backend.api.simulation.runner import infection_badge_snapshot   # /load·/resume 공용
+        self.assertEqual(infection_badge_snapshot({"r": {"status": "R", "initially_immune": True}}),
+                         {"r": {"status": "R", "cause": "initial_immune"}})
+        if __import__("shutil").which("node"):                       # JS 뱃지도 같은 라벨(labels.py 미러)
+            import subprocess
+            js = ("const m = await import(" + json.dumps(str(root / "frontend/js/sim/state.js")) + ");"
+                  "process.stdout.write([m.infectionBadge('R','initial_immune').label,"
+                  " m.infectionBadge('R','recovery').label].join('|'));")
+            out = subprocess.run(["node", "--input-type=module", "-e", js], capture_output=True, timeout=60)
+            self.assertEqual(out.stdout.decode("utf-8"), "면역|회복·면역", out.stderr.decode("utf-8", "replace"))
+        self.assertIn("infection_start_status: a.infection_start_status === 'R' ? 'R' : 'S'",
+                      (root / "frontend/js/sim/scenarios.js").read_text(encoding="utf-8"))
+        control = (root / "frontend/js/sim/run/control.js").read_text(encoding="utf-8")
+        # 시드는 /start 가 받아들여진 뒤(res.ok 검사 뒤)·SSE 연결 전.
+        self.assertLess(control.index("if (!res.ok)"), control.index("  seedInitialImmunity();"))
+        self.assertLess(control.index("  seedInitialImmunity();"), control.index("  connectSSE();\n}"))
+
+    def test_rebeta_never_infects_initially_immune_agent(self):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        from ABM.export.csv import render_location_csv
+        from ABM.tools import rebeta
+        model = {**self.MODEL, "infectious_duration": {"kind": "uniform", "min_days": 30, "max_days": 30}}
+        script = {"a": [{"target": ["r"]}], "r": [{"target": ["a"]}], "s": [{"target": "self"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=4096) for k in script}
+            sim = Simulation(agents, [{"role": "user", "content": "x"}], tmp, llm=_ScriptedLLM(script),
+                             time_mode="fixed", time_per_wave=60, agent_locations={k: "거실" for k in script},
+                             infection_model=model, initially_immune_agents={"r"})
+            ev = []
+            sim._emit = lambda t, d: ev.append({"event_type": t, "wave": d.get("wave", 0), "data": d})
+            sim._set_infected("a", 0, "event", at_minutes=0, start_status="I")
+            sim.run("a", max_waves=4, step_delay=0, starvation_waves=99, resume_wave={k: [] for k in script})
+            path = os.path.join(tmp, "i_locations.csv")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(render_location_csv(sim.shared_log, ev))
+            obs = rebeta.load_location_csv(path)
+            seeds, _, _ = rebeta.resolve_seeds(obs, None)
+            res = rebeta.simulate_once(obs, rebeta.build_roster(obs), model, 1e6, 1, seeds=seeds)
+            engine = {e["data"]["agent"] for e in ev
+                      if e["event_type"] == "infection_update" and e["data"]["cause"] == "transmission"}
+        self.assertEqual(sim._agent_infection["r"]["status"], "R")
+        self.assertEqual(engine, {"s"})
+        self.assertEqual(obs.immune, {"r"})
+        self.assertEqual([s.agent for s in seeds], ["a"])
+        self.assertEqual(res.infected, {"a", "s"})                     # 면역자는 감염자로 세지 않는다
+        self.assertEqual(obs.observed_final_infected, 2)
+        self.assertEqual({r["infection_status"] for r in obs.rows[0] if r["agent"] == "r"}, {"R"})
+
+
+class MarkdownInitialImmunityColumnTests(unittest.TestCase):
+    """등장인물 표의 "감염 시작" 칸 — 감염 모델이 켜졌을 때만, py/js 같은 문구."""
+
+    def test_column_only_with_infection_model_and_marks_immune(self):
+        cfg, name, result = _run_golden()
+        on = cfg.model_copy(deep=True)
+        on.agents[1].infection_start_status = "R"
+        md_on = _render_golden(on, name, result)
+        off = on.model_copy(deep=True)
+        off.infection_model.enabled = False
+        md_off = _render_golden(off, name, result)
+        self.assertIn("| 아이콘 | 이름 | ID | 초기 활성 | 감염 시작 |", md_on)
+        self.assertIn("| 👩 | 나린 | `b` | ✅ | 🛡️ 면역 |", md_on)
+        self.assertIn("| 🤖 | 가온 | `a` | ✅ | 감염 가능 |", md_on)
+        self.assertIn("| 아이콘 | 이름 | ID | 초기 활성 |\n", md_off)
+        self.assertNotIn("감염 시작", md_off)
+        js = (Path(__file__).resolve().parent.parent / "frontend/js/sim/export/markdown.js").read_text(encoding="utf-8")
+        for needle in ("| 아이콘 | 이름 | ID | 초기 활성 | 감염 시작 |", "' 🛡️ 면역 |'", "' 감염 가능 |'",
+                       "|--------|------|----|-----------|-----------|"):
+            self.assertIn(needle, js)
+
+
 class LocationCsvTests(unittest.TestCase):
     """`ABM/export/csv.py` — `frontend/js/sim/export/csv.js` 의 파이썬 쌍둥이.
 
@@ -14209,7 +14418,11 @@ class SimulationAssemblyParityTests(unittest.TestCase):
     """
 
     # 정당한 예외가 생기면 여기에 필드명과 사유를 함께 남길 것.
-    _EXEMPT: dict[str, str] = {}
+    _EXEMPT: dict[str, str] = {
+        # 시작 옵션(처음부터 면역) — 새 실행에서만 적용한다. /load·/resume 은 저장된 감염 상태
+        # (initially_immune 표식 포함)를 restore_agent_state 로 되살리므로 일부러 넘기지 않는다.
+        "initially_immune_agents": "새 실행 전용 시작 옵션 — 재개 경로는 저장 상태를 쓴다",
+    }
 
     _HEADLESS = Path(__file__).resolve().parents[1] / "ABM" / "simulation" / "headless.py"
     _RUNTIME  = Path(__file__).resolve().parents[1] / "backend" / "api" / "simulation" / "runtime"

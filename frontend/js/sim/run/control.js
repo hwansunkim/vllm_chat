@@ -4,10 +4,10 @@
 import { sim, normalizeTargetDuration } from '../state.js';
 import { buildSimConfig } from '../config.js';
 import { readConfigFromUI } from '../settings/page.js';
-import { renderAgentCards, resetRunState } from './cards.js';
+import { renderAgentCards, resetRunState, updateAgentInfection } from './cards.js';
 import { removeTypingIndicator, resetWaveCardBuffer, flushPendingWaveCards } from './feed.js';
-import { initD3Graph } from '../graph/d3.js';
-import { initLocationMap } from '../map/d3.js';
+import { initD3Graph, refreshInfectionStyles } from '../graph/d3.js';
+import { initLocationMap, updateAgentInfectionOnMap } from '../map/d3.js';
 import { connectSSE, disconnectSSE } from './sse.js';
 import { clearErrorLog, renderErrorIndicator } from './errors.js';
 
@@ -75,6 +75,9 @@ export async function startSimulation() {
     return;
   }
 
+  // 시작이 받아들여진 뒤에만 처음부터 면역 뱃지를 단다(실패한 시작에는 엔진 상태도 없다). SSE 연결 전이라
+  // 이후 이벤트와 순서가 엇갈리지 않는다.
+  seedInitialImmunity();
   setStatus('running');
   connectSSE();
 }
@@ -137,4 +140,24 @@ export async function continueSimulation() {
 
   setStatus('running');
   connectSSE();
+}
+
+
+/**
+ * 새 실행 — 처음부터 면역(AgentConfig.infection_start_status='R')인 에이전트의 감염 뱃지를 미리 단다.
+ * 엔진은 이들을 R로 시작할 뿐 이벤트를 내지 않으므로(회복이 아니다) 화면이 설정에서 읽는다.
+ * cause 'initial_immune' → infectionBadge가 "면역"으로 표시(그래프·지도도 같은 맵을 쓴다).
+ * 감염 모델이 꺼져 있으면 엔진도 무시하므로 달지 않는다. /load·/resume은 이 함수를 쓰지 않고 응답의
+ * infection 스냅샷(backend runner.infection_badge_snapshot — 같은 cause)을 replay.js restoreInfectionBadges로 칠한다.
+ */
+function seedInitialImmunity() {
+  if (!sim.infection_model?.enabled) return;
+  for (const a of sim.agents) {
+    if (a.infection_start_status !== 'R') continue;
+    // 카드는 이미 그려져 있다 — SSE infection_update 와 같은 경로로 맵 갱신 + 카드·지도 칠하기.
+    updateAgentInfection({ agent: a.name, status: 'R', cause: 'initial_immune', wave: 0,
+                           disease_name: sim.infection_model.disease_name || '' });
+    updateAgentInfectionOnMap(a.name);
+  }
+  refreshInfectionStyles();
 }

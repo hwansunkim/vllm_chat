@@ -914,6 +914,27 @@ select, kind에 따라 k/θ 또는 μ/σ 칸, 항상 보이는 최소~최대(일
 문구가 나오고, 남은 구간 길이도 정확히 설정대로). 접촉 전파(`transmission`)는
 E에서 출발한다.
 
+**처음부터 면역(에이전트별 감염 시작 상태)** — `AgentConfig.infection_start_status`: `"S"`(감염 가능, 기본) |
+`"R"`(면역). 역할형 포함 모든 에이전트에 쓸 수 있고(설정 뷰 에이전트 카드의 "감염 시작 상태" — 감염병 모델을
+켰을 때만 의미), 구버전 시나리오(필드 없음)는 `"S"` = 기존과 같다. 감염 모델이 꺼져 있으면 무시한다.
+- **새 실행에서만 적용** — `headless.py`(=/start·CLI)만 `Simulation(initially_immune_agents=…)`를 넘기고, 엔진이
+  생성 시 그 사람의 감염 상태를 R 로 둔다(`infected_at`·`notify_recovery`·이벤트 없음 — 회복이 아니다).
+  `/load`·`/resume`은 저장 상태(`restore_agent_state`)를 쓰고 `/continue`는 같은 객체를 이어 쓰므로 다시 적용하지
+  않는다(조립 패리티 테스트의 의도적 예외). 저장 상태의 `initially_immune` 표식이 export/restore 로 이어진다.
+- **감염 계산은 그대로** — R 은 감염되지 않고(S 만), 전파원이 아니며(P/I 만), 진행 대상도 아니라(E/P/I 만)
+  `immune_after_recovery`와 무관하게 끝까지 R 이다(테스트로 고정).
+- **`infect_agent`가 R 을 가리키면** 감염시키지 않고 경고 로그를 남긴다 — 처음부터 면역이든
+  `immune_after_recovery=true`로 회복한 R 이든 같다(`_set_infected`는 원래 S 만 받는다 — 동작은 같고 경고만 추가).
+  `immune_after_recovery=false`면 회복이 S 로 돌아가므로 해당하지 않는다.
+- **표시** — 화면은 "🛡️ 면역"(회복의 "💚 회복·면역"과 구분). 새 실행은 프론트가 설정에서 뱃지를 시드하고
+  (`run/control.js::seedInitialImmunity` — `/start` 응답 성공 뒤·SSE 연결 전), `/load`·`/resume` 응답의 `infection`
+  스냅샷(공용 헬퍼 `backend/api/simulation/runner.py::infection_badge_snapshot`)은 cause `"initial_immune"`을 싣고
+  `replay.js`가 두 경로 모두 `restoreInfectionBadges`로 칠한다(예전엔 /resume 이 뱃지를 복원하지 않아 다른 사람의
+  감염 뱃지도 다음 전이까지 비어 있었다). 설정 뷰의 환자 0번 칩은 면역 에이전트에 🛡️ 를 달고, 면역자를 고르면
+  경고한다(엔진은 그 시드를 건너뛴다). 마크다운 등장인물 표는 감염 모델이 켜졌을 때 "감염 시작" 칸(감염 가능 /
+  🛡️ 면역)을 붙인다(py·js 같은 문구, 골든 갱신). 계산 상태·CSV
+  `infection_status`는 그대로 `R`(첫 wave 부터 R = 처음부터 면역).
+
 **길이 0 구간 즉시 건너뛰기** — `_set_infected`는 시작 지점(`start_status`, 전파는 E)에서
 출발해 **이번에 뽑힌 길이가 0인 구간을 순서대로 건너뛴** 첫 구간에서 시작하고, 건너뛴 구간
 길이의 합만큼 과거로 앵커링한다(I에서 멈춤 — I가 0일이면 다음 판정에서 회복). 그래서
@@ -1259,6 +1280,9 @@ python -m ABM.tools.rebeta <locations.csv> <scenario.json> --beta 0.02 0.04 0.1 
 같은 사람이 같은 시각에 감염(전원 발화·이동 후 재발화 사례). 난수열은
 도구 안에서만 재현된다 — 원래 실행은 이동 시간·시간 카테고리 등 다른 추첨도 같은 전역 난수로 했으므로
 원래 실행의 난수열과 같지 않다(그래서 β<∞ 에서는 원래 실행을 "재연"하는 게 아니라 분포를 낸다).
+
+**처음부터 면역** — 명단 형식에서 첫 명단 행부터 R(이고 `new_exposure` 아님)인 사람은 `obs.immune` — 시드·감염자로
+세지 않고 R 로 둔다(엔진 규칙상 끝까지 R). 구형식 CSV 는 면역과 "발화 전에 회복"을 구분할 수 없어 예전 규칙 그대로다.
 
 **명단 형식 CSV(기본) — 추론 없음** — CSV 에 `traveling` 컬럼이 있고 모든 wave 가 명단 행이면 행을 그대로
 쓴다: wave w 판정 = wave w 명단(전원, wave 시작 위치·`traveling`·`travel_group`)을 shim 에 넣고 엔진

@@ -172,6 +172,7 @@ class Observed:
     mixed: bool = False                               # 명단 wave 와 구형식(발화자만) wave 가 섞임 → 구형식 경로
     travel: dict = field(default_factory=dict)        # (명단 형식) wave → agent → travel_group(이동 중인 사람만)
     dropped_unjudged: list = field(default_factory=list)   # 마지막 명단 wave 뒤의 판정 안 된 wave(제외됨)
+    immune: set = field(default_factory=set)          # (명단 형식) 첫 행부터 R 인 사람 = 처음부터 면역(감염자 아님)
 
     @property
     def fixed_time(self) -> bool:
@@ -191,8 +192,9 @@ class Observed:
         그 뒤 다시 발화하지 않으면(마지막 wave 등) 상태로는 안 보이므로 `new_exposure=true` 행도 센다.
         """
         return len({r["agent"] for rs in self.rows.values() for r in rs
-                    if _status(r) in _INFECTED_STATES
-                    or (r.get("new_exposure") or "").strip().lower() == "true"})
+                    if (_status(r) in _INFECTED_STATES
+                        or (r.get("new_exposure") or "").strip().lower() == "true")
+                    and r["agent"] not in self.immune})
 
 
 _REQUIRED = ("wave", "agent", "location", "is_exterior", "infection_status", "elapsed_minutes_start")
@@ -280,6 +282,12 @@ def load_location_csv(path) -> Observed:
                        for w, rs in rows.items()}
         if all(roster_wave.values()):
             obs.full = True
+            # 첫 명단 행부터 R = 처음부터 면역(AgentConfig.infection_start_status="R") 또는 관찰 시작 전에 회복한
+            # 사람. 엔진에서 R 은 감염·전파·진행이 없어 끝까지 R 이다 — 감염자(시드·관찰 감염자)로 세지 않는다.
+            for a in agents:
+                first = next(r for r in rows[first_wave[a]] if r["agent"] == a)
+                if _status(first) == "R" and (first.get("new_exposure") or "").strip().lower() != "true":
+                    obs.immune.add(a)
             for w, rs in rows.items():
                 for r in rs:
                     if (r.get("traveling") or "").strip().lower() == "true":
@@ -369,6 +377,8 @@ def _resolve_seeds_full(obs: Observed) -> tuple[list[Seed], list[str], list[str]
                 continue
             st = _status(r)
             exposed = (r.get("new_exposure") or "").strip().lower() == "true"
+            if a in obs.immune:                       # 처음부터 면역 — 시드(감염자)가 아니다(load_location_csv)
+                break
             if st != "S" and (prev is None or (prev == "S" and exposed)):
                 seeds.append(Seed(a, w, st))          # 회복(S) 뒤 다시 시드되면 또 추가된다
             prev = st
@@ -561,6 +571,9 @@ def simulate_once(obs: Observed, roster: Roster, model: dict, beta: float, seed:
         eng._now[i] = now
         eng._now[i + 1] = ends[w]
         started.update(roster[w])
+        for a in obs.immune:                              # 처음부터 면역 — R 로 두면 엔진 규칙상 끝까지 R
+            if a in started:
+                eng._infection_entry(a)["status"] = "R"
         # 시드 — 이벤트 wave 와 첫 등장 중 늦은 쪽의 wave 시작에 건다(엔진: 이벤트는 wave 시작에 실행).
         for s in list(pending):
             a = s.agent

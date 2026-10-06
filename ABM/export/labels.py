@@ -252,6 +252,8 @@ def infection_badge(status, cause) -> dict | None:
         return {"icon": "😶", "label": "무증상 전염기", "cls": "presymptomatic"}
     if status == "I":
         return {"icon": "🦠", "label": "감염",     "cls": "infected"}
+    if status == "R" and cause == "initial_immune":
+        return {"icon": "🛡️", "label": "면역", "cls": "recovered"}   # 처음부터 면역(회복 아님)
     if status == "R":
         return {"icon": "💚", "label": "회복·면역", "cls": "recovered"}
     if status == "S" and cause == "recovery":

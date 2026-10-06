@@ -177,6 +177,8 @@ export function applyScenario(s) {
     relationships:      normalizeRelationships(a.relationships),
     // 역할형 에이전트 — 구버전 시나리오에는 필드가 없다(= 일반 에이전트).
     role_type:          a.role_type === true,
+    // 감염 시작 상태 — 구버전 시나리오에는 필드가 없다(= 감염 가능 S). 'R'만 면역.
+    infection_start_status: a.infection_start_status === 'R' ? 'R' : 'S',
   }));
   sim.background   = cfg.background   || '';
   sim.start_agent  = cfg.start_agent  || (cfg.agents?.[0]?.name ?? '');

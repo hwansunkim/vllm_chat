@@ -283,7 +283,11 @@ export function renderPatientZeroPicker() {
     chip.setAttribute('role', 'checkbox');
     chip.setAttribute('aria-checked', on ? 'true' : 'false');
     // 사용자 입력(이름/아이콘)이 그대로 들어오므로 textContent로만 넣는다.
-    chip.textContent = `${on ? '☑' : '☐'} ${getAgentIcon(agent, 'neutral')} ${agent.display_name || agent.name}`;
+    // 처음부터 면역(R)인 사람은 표시해 둔다 — 고르면 엔진이 그 시드를 건너뛴다(아래 경고).
+    const immune = agent.infection_start_status === 'R';
+    chip.textContent = `${on ? '☑' : '☐'} ${getAgentIcon(agent, 'neutral')} ${agent.display_name || agent.name}`
+      + (immune ? ' 🛡️' : '');
+    if (immune) chip.title = '감염 시작 상태가 면역(R)입니다 — 환자 0번으로 지정해도 감염되지 않습니다.';
     chip.onclick = () => _togglePatientZero(agent.name);
     chipsEl.appendChild(chip);
   });
@@ -396,6 +400,22 @@ export function updatePatientZeroWarning() {
   const chk     = document.getElementById('sim-inf-enabled');
   const enabled = chk ? chk.checked : !!sim.infection_model?.enabled;
   warnEl.classList.toggle('sim-hidden', !(enabled && _infectEvents().length === 0));
+
+  // 처음부터 면역(R)인 사람을 환자 0번으로 고르면 엔진이 infect_agent 를 건너뛴다(경고 로그만) — 미리 알린다.
+  // 에이전트 카드의 "감염 시작 상태" select 가 바뀌면 agents.js 가 renderPatientZeroPicker()로 다시 판정한다.
+  const immuneEl = document.getElementById('sim-inf-pz-immune-warn');
+  if (immuneEl) {
+    const immune = new Set(sim.agents.filter(a => a.infection_start_status === 'R').map(a => a.name));
+    const bad = [...new Set(_infectEvents().map(e => e.agent).filter(n => immune.has(n)))];
+    const names = bad.map(n => {
+      const a = sim.agents.find(x => x.name === n);
+      return (a && a.display_name) || n;
+    });
+    immuneEl.textContent = names.length
+      ? `⚠ 면역(R)으로 시작하는 에이전트는 감염되지 않습니다 — 환자 0번에서 빼거나 감염 시작 상태를 S로 바꾸세요: ${names.join(', ')}`
+      : '';
+    immuneEl.classList.toggle('sim-hidden', !(enabled && names.length));
+  }
 }
 
 // ── 시간 개념 경고 ────────────────────────────────────────────────────────────

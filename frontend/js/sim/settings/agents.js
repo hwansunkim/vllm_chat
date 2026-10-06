@@ -121,6 +121,16 @@ export function renderAgentListInConfig() {
           역할형 <span class="sim-acrd-label-hint">(주역이 아닌 역할 전용 — 불릴 때만 반응, 이동 안 함)</span>
         </label>
       </div>
+      <div class="sim-acrd-field-row">
+        <div class="sim-acrd-field"
+             title="감염병 모델을 켰을 때만 쓰입니다. 면역(R)이면 처음부터 감염되지도 옮기지도 않고 끝까지 면역입니다(회복 후 재감염 설정과 무관). 새 실행에서만 적용되고, 이어서 실행·불러오기·재개는 저장된 상태를 씁니다.">
+          <label>감염 시작 상태 <span class="sim-acrd-label-hint">(감염병 모델 사용 시)</span></label>
+          <select class="sim-acrd-infstart" data-idx="${idx}">
+            <option value="S" ${agent.infection_start_status === 'R' ? '' : 'selected'}>감염 가능(S)</option>
+            <option value="R" ${agent.infection_start_status === 'R' ? 'selected' : ''}>면역(R)</option>
+          </select>
+        </div>
+      </div>
       <div class="sim-acrd-prompt-row">
         <label>외모 묘사 <span class="sim-acrd-label-hint">(모르는 사람에게 보이는 외모)</span></label>
         <textarea class="sim-acrd-prompt" data-idx="${idx}" data-field="visual_description" data-autogrow
@@ -185,6 +195,13 @@ export function renderAgentListInConfig() {
       } else if (!e.target.checked && badge) {
         badge.remove();
       }
+    });
+
+    // 감염 시작 상태 — 'S'|'R'. buildSimConfig()가 에이전트 객체를 스프레드하므로 그대로 저장·전송된다.
+    body.querySelector('.sim-acrd-infstart').addEventListener('change', e => {
+      sim.agents[idx].infection_start_status = e.target.value === 'R' ? 'R' : 'S';
+      // 환자 0번 칩의 면역 표시·경고를 다시 판정한다(면역자를 시드로 고르면 엔진이 건너뛴다).
+      renderPatientZeroPicker();
     });
 
     // Delete

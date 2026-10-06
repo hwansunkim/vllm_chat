@@ -9,7 +9,7 @@ import uuid
 
 from fastapi import APIRouter, HTTPException
 
-from ..runner import finalize_run, swap_event_queue
+from ..runner import finalize_run, infection_badge_snapshot, swap_event_queue
 from ..schemas import SimStartConfig
 from ..state import _BUSY_STATES, _sim, _sim_lock, get_sim_db
 from .llm_config import _make_agent_llm_map, _make_llm
@@ -215,4 +215,8 @@ def resume_simulation(run_id: str):
     t = threading.Thread(target=_run, daemon=True)
     _sim["thread"] = t
     t.start()
-    return {"status": "resuming", "start_wave": prior_cum}
+    # 감염 뱃지 복원용 스냅샷 — 스레드가 복원할 저장 상태(saved_states)와 같은 값에서 만든다(/load 와 같은
+    # 헬퍼). 이게 없으면 재개 화면에서 감염·면역 뱃지가 다음 전이 때까지 비어 있었다.
+    infection = infection_badge_snapshot(
+        {k: st.get("infection") for k, st in (saved_states or {}).items() if isinstance(st, dict)})
+    return {"status": "resuming", "start_wave": prior_cum, "infection": infection}

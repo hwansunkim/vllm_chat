@@ -441,12 +441,21 @@ def render_markdown(
     md += f"> **상태** {status_label}\n"
     md += "\n---\n\n"
 
+    # 감염병 모델이 켜져 있으면 "감염 시작"(AgentConfig.infection_start_status) 칸을 붙인다 — 꺼져 있으면
+    # 엔진이 그 설정을 무시하므로 칸 자체를 두지 않는다(JS markdown.js 와 같은 규칙·같은 문구).
     md += "## 등장인물\n\n"
-    md += "| 아이콘 | 이름 | ID | 초기 활성 |\n"
-    md += "|--------|------|----|-----------|\n"
+    if infection["enabled"]:
+        md += "| 아이콘 | 이름 | ID | 초기 활성 | 감염 시작 |\n"
+        md += "|--------|------|----|-----------|-----------|\n"
+    else:
+        md += "| 아이콘 | 이름 | ID | 초기 활성 |\n"
+        md += "|--------|------|----|-----------|\n"
     for a in agents:
         active = "✅" if a.get("initial_active") is not False else "—"
-        md += f"| {a.get('icon') or '🤖'} | {a.get('display_name') or a.get('name')} | `{a.get('name')}` | {active} |\n"
+        row = f"| {a.get('icon') or '🤖'} | {a.get('display_name') or a.get('name')} | `{a.get('name')}` | {active} |"
+        if infection["enabled"]:
+            row += " 🛡️ 면역 |" if a.get("infection_start_status") == "R" else " 감염 가능 |"
+        md += row + "\n"
     md += "\n"
 
     if background:

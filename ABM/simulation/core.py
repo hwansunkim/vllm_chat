@@ -100,6 +100,10 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
         # 역할만 수행 — 소외 재투입·전원 침묵 강제 호출·디렉터 감지에서 빠지고 이동하지
         # 않는다. None/빈 집합 = 기존 동작 그대로.
         role_type_agents: set[str] | None             = None,
+        # 처음부터 면역(R)으로 시작하는 에이전트 key 집합(AgentConfig.infection_start_status="R").
+        # **새 실행(/start·headless)에서만** 넘긴다 — /load·/resume 은 저장 상태를 그대로 쓰고
+        # /continue 는 같은 객체를 이어 쓰므로 다시 적용하지 않는다. 감염 모델이 꺼져 있으면 무시.
+        initially_immune_agents: set[str] | None      = None,
         system_agent:     dict | None                 = None,
         agent_locations:  dict[str, str] | None       = None,
         agent_visuals:    dict[str, str] | None       = None,
@@ -467,6 +471,14 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
                 "recovered_at_minutes":  None,
                 "notify_recovery":       False,
             }
+        # 처음부터 면역(R) — 감염 계산은 그대로다: R 은 감염되지 않고(S 만), 전파원이 아니며(P/I 만),
+        # 진행 판정 대상도 아니라(E/P/I 만) immune_after_recovery 와 무관하게 끝까지 R 이다. 회복이 아니므로
+        # infected_at·notify_recovery·이벤트는 없다. `initially_immune` 은 표시용 표식(화면 "면역", /load 스냅샷)
+        # 이고 export/restore 로 이어진다.
+        if self._infection_enabled:
+            for key in sorted(k for k in (initially_immune_agents or ()) if k in self.agents):
+                self._agent_infection[key]["status"] = "R"
+                self._agent_infection[key]["initially_immune"] = True
 
         all_keys = list(self.agents.keys())
         for key in all_keys:
@@ -866,6 +878,8 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
                     "recovered_at_minutes":  rec_min if isinstance(rec_min, int) else None,
                     "notify_recovery":       bool(infection.get("notify_recovery", False)),
                 }
+                if infection.get("initially_immune"):
+                    self._agent_infection[key]["initially_immune"] = True
             agent_status = st.get("status")
             if isinstance(agent_status, dict) and agent_status.get("state"):
                 # base = 재개 첫 wave의 '지금' — 감염 복원과 같은 원점.

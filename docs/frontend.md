@@ -286,6 +286,11 @@ startSimulation() (run/control.js)
 
 ---
 
+> **에이전트 카드 — 감염 시작 상태** (`settings/agents.js`): "감염 가능(S) / 면역(R)" 선택(`infection_start_status`,
+> 감염병 모델 사용 시 의미). 저장·전송은 `buildSimConfig()`가 에이전트 객체를 스프레드해 그대로 싣고, 구버전 시나리오는
+> `applyScenario`가 `'S'`로 채운다. 새 실행 시작 시 `run/control.js::seedInitialImmunity`가 면역 에이전트의 감염 뱃지를
+> "🛡️ 면역"(cause `initial_immune`)으로 미리 단다 — 엔진은 이벤트를 내지 않는다. `/load` 스냅샷도 같은 cause.
+
 ## 7. 마크다운·CSV 내보내기
 
 - **마크다운** — 프론트(`sim/export/markdown.js`)와 파이썬(`ABM/export/markdown.py`)에

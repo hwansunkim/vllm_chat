@@ -371,12 +371,21 @@ function _buildMarkdown(log, events, statusStr, checks) {
   md += `> **상태** ${statusLabel}\n`;
   md += `\n---\n\n`;
 
+  // 감염병 모델이 켜져 있으면 "감염 시작"(infection_start_status) 칸을 붙인다 — ABM/export/markdown.py 와 같은 규칙.
+  const infection = buildInfectionModel(sim.infection_model);
   md += `## 등장인물\n\n`;
-  md += `| 아이콘 | 이름 | ID | 초기 활성 |\n`;
-  md += `|--------|------|----|-----------|\n`;
+  if (infection.enabled) {
+    md += `| 아이콘 | 이름 | ID | 초기 활성 | 감염 시작 |\n`;
+    md += `|--------|------|----|-----------|-----------|\n`;
+  } else {
+    md += `| 아이콘 | 이름 | ID | 초기 활성 |\n`;
+    md += `|--------|------|----|-----------|\n`;
+  }
   for (const a of sim.agents) {
     const active = a.initial_active !== false ? '✅' : '—';
-    md += `| ${a.icon || '🤖'} | ${a.display_name || a.name} | \`${a.name}\` | ${active} |\n`;
+    let row = `| ${a.icon || '🤖'} | ${a.display_name || a.name} | \`${a.name}\` | ${active} |`;
+    if (infection.enabled) row += a.infection_start_status === 'R' ? ' 🛡️ 면역 |' : ' 감염 가능 |';
+    md += row + `\n`;
   }
   md += `\n`;
 
@@ -385,7 +394,6 @@ function _buildMarkdown(log, events, statusStr, checks) {
   }
 
   // 감염병 모델이 켜져 있을 때만 — 꺼진 실행에는 아무 영향이 없는 설정이라 노이즈다.
-  const infection = buildInfectionModel(sim.infection_model);
   if (infection.enabled) {
     md += `## 🦠 감염병 모델 (${infection.model_type.toUpperCase()})\n\n`;
     md += `> **질병** ${infection.disease_name || '(이름 없음)'}\n`;

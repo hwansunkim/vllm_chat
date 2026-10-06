@@ -240,7 +240,7 @@ async def _gen():
 
 | 필드 | 기본 | 의미 |
 |---|---|---|
-| `agents[]` | — | `AgentConfig` — `name`(=key), `system_prompt`, `display_name`, `relationships`, `location`, `visual_description`, `server_id`, `temperature`, `initial_active` |
+| `agents[]` | — | `AgentConfig` — `name`(=key), `system_prompt`, `display_name`, `relationships`, `location`, `visual_description`, `server_id`, `temperature`, `initial_active`, `role_type`, `infection_start_status`(`"S"` 기본 \| `"R"` 처음부터 면역 — 새 실행에서만, 감염 모델 사용 시) |
 | `background` | — | 공통 장면 전제 |
 | `start_agent` | — | wave 0 발화자 (= `agents[].name` 중 하나) |
 | `max_waves` | 10 | wave 상한 (안전장치) |
