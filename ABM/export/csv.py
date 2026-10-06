@@ -13,6 +13,21 @@
 ``RunResult.events`` 는 DB 저장 여부와 무관하게 항상 메모리에 채워지므로, 이
 함수는 ``--no-db`` 실행에서도 그대로 동작한다(``render_markdown()`` 과 같은 이유).
 
+## 명단 형식 (2026-10 task B — ``wave_roster`` 이벤트가 있는 run)
+
+엔진이 wave 마다 남기는 ``wave_roster`` 이벤트(``infection.py::_wave_roster`` — 감염 판정 스냅샷과 같은 시점의
+활성 에이전트 전원 ``{agent, location, is_exterior, status, traveling, travel_group}`` + 시작·끝 경과분·시각)가
+있는 wave 는 **활성 에이전트 전원 1행씩**(명단 순서 = 이름순) 쓴다. 컬럼 3개 추가: ``acted``(그 wave 에 턴 로그가
+있나), ``traveling``, ``travel_group``(이동 중일 때만, ``|`` 구분 이름순). ``co_located_with`` 는
+``roster_contact_groups`` — 엔진 ``_compute_contact_groups`` 와 같은 규칙의 접촉 그룹 — 에서 자신을 뺀 전원이다.
+시각·경과분은 이벤트 값(fixed 모드·시간 없는 wave 도 끝이 있다). ``wave_roster`` 가 하나도 없으면 아래 구형식
+출력과 바이트 단위로 같고, 섞여 있으면(옛 run 을 /continue) 명단 없는 wave 는 구형식 행(``acted=true``, 뒤 두
+칸 빈 값)으로 둔다 — β 재계산 도구가 이 빈 값으로 형식을 구분한다. 중지된 run(또는 실행 중 내보내기)의
+마지막 wave 는 턴 일부만 돌고 판정 전에 멈춰 명단이 없으므로 같은 구형식 행으로 나온다 — 별도 표식은 두지 않고
+(바이트 패리티·구형식 유지), 도구가 "마지막 명단 wave 뒤의 구형식 wave = 판정되지 않은 wave"로 빼서 계산한다.
+
+## 구형식 (옛 run — 아래 설명은 이 형식 기준)
+
 각 로그 항목은 "그 에이전트가 그 wave 에 턴을 받았다"는 사실이고, 엔진이 실어주는
 ``location`` / ``is_exterior`` 는 **그 wave 의 이동이 적용되기 전** 값 — 즉 그 wave
 동안 실제로 접촉이 일어난 장소다(``ABM/simulation/turn.py`` ``_apply_turn_result``).
@@ -62,8 +77,13 @@ CSV_HEADER = (
     "co_located_with", "new_exposure",
 )
 
+# 명단 형식(``wave_roster`` 이벤트가 있는 run)에서만 붙는 컬럼.
+ROSTER_EXTRA_HEADER = ("acted", "traveling", "travel_group")
+
 # 이 이벤트의 ``data.end_time_str`` / ``end_elapsed_minutes`` 가 wave 종료의 1순위 출처다.
 _TIME_JUMP = "time_jump"
+# wave 시작 시점 활성 에이전트 전원 명단 + 시작·끝(엔진 infection.py::_wave_roster) — 명단 형식의 정본.
+_WAVE_ROSTER = "wave_roster"
 _INFECTION_UPDATE = "infection_update"
 # 새 감염(노출)으로 치는 원인 — 자연 진행(progression)·회복(recovery)은 제외.
 _EXPOSURE_CAUSES = ("event", "transmission")
@@ -153,6 +173,54 @@ def _is_int(v) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
 
 
+def _build_roster_map(events: list[dict] | None) -> dict[int, dict]:
+    """``wave_roster`` 이벤트 → ``{wave: data}``. ``agents`` 가 리스트가 아니면 건너뛴다.
+    한 wave 에 두 번 실리면(재개 등) 나중 값이 이긴다(time_jump 와 같은 규칙)."""
+    out: dict[int, dict] = {}
+    for evt in (events or []):
+        if not isinstance(evt, dict) or evt.get("event_type") != _WAVE_ROSTER:
+            continue
+        data = evt.get("data")
+        if not isinstance(data, dict) or not isinstance(data.get("agents"), list):
+            continue
+        wave = evt.get("wave")
+        out[0 if wave is None else wave] = data
+    return out
+
+
+def roster_contact_groups(agents: list[dict]) -> list[list[str]]:
+    """명단 → 엔진 ``_compute_contact_groups`` 와 **같은 규칙**의 접촉 그룹(2명 이상).
+
+    - zone 경계 이동 중(``traveling``)인 사람은 ``travel_group``(함께 이동하는 사람)끼리만.
+    - 외부 공간(``is_exterior``)은 접촉 없음.
+    - 위치가 빈 사람(floater)은 모든 장소 그룹에 낀다(이동 그룹에는 안 낌). 장소 그룹이 하나도
+      없으면 floater 끼리 한 그룹.
+    순서: 명단 순서(엔진은 key 정렬) 그대로 — JS ``rosterContactGroups`` 와 같아야 한다.
+    """
+    buckets: dict[str, list[str]] = {}
+    travel: dict[str, list[str]] = {}
+    floaters: list[str] = []
+    for a in agents:
+        if not isinstance(a, dict):
+            continue
+        key = a.get("agent") or ""
+        if a.get("traveling") is True:
+            members = a.get("travel_group") if isinstance(a.get("travel_group"), list) else []
+            tkey = "\u0000".join(sorted(str(m) for m in (members or [key])))
+            travel.setdefault(tkey, []).append(key)
+            continue
+        loc = a.get("location") or ""
+        if a.get("is_exterior") is True:
+            continue
+        if loc:
+            buckets.setdefault(loc, []).append(key)
+        else:
+            floaters.append(key)
+    groups = [g + floaters for g in buckets.values()] if buckets else [floaters]
+    groups += list(travel.values())
+    return [g for g in groups if len(g) >= 2]
+
+
 # ── 메인 ──────────────────────────────────────────────────────────────────────
 
 def render_location_csv(shared_log: list[dict] | None, events: list[dict] | None = None) -> str:
@@ -213,6 +281,9 @@ def render_location_csv(shared_log: list[dict] | None, events: list[dict] | None
         wave_end_elapsed[w] = jump_end_elapsed.get(w, fallback_el)
 
     new_exposure = _build_new_exposure_set(events)
+    roster = _build_roster_map(events)
+    if roster:
+        return _render_with_roster(entries, roster, wave_start, wave_end, wave_end_elapsed, new_exposure)
 
     # 3) wave 오름차순 정렬(같은 wave 안에서는 원래 턴 순서 유지 — sorted 는 안정 정렬).
     ordered = sorted(entries, key=_wave)
@@ -257,4 +328,92 @@ def render_location_csv(shared_log: list[dict] | None, events: list[dict] | None
             co_located,
             (speaker, w) in new_exposure,                             # true / false
         ]))
+    return "\r\n".join(lines) + "\r\n"
+
+
+def _legacy_rows(ordered: list[dict], wave_start, wave_end, wave_end_elapsed, new_exposure) -> list[list]:
+    """발화 행(구형식) — 같은 wave·같은 장소의 **다른 발화자**만 동석으로 친다."""
+    def _wave(e: dict) -> int:
+        w = e.get("wave")
+        return 0 if w is None else w
+
+    present: dict[tuple[int, str], list[str]] = {}
+    for e in ordered:
+        loc = e.get("location")
+        if not isinstance(loc, str) or not loc or e.get("is_exterior") is True:
+            continue
+        names = present.setdefault((_wave(e), loc), [])
+        who = e.get("speaker") or ""
+        if who not in names:
+            names.append(who)
+    rows = []
+    for e in ordered:
+        w = _wave(e)
+        exterior = e.get("is_exterior")
+        speaker = e.get("speaker") or ""
+        loc = e.get("location")
+        status = e.get("infection_status")
+        status = status if isinstance(status, str) and status else ""
+        if isinstance(loc, str) and loc and exterior is not True:
+            co_located = _CO_LOCATED_SEP.join(sorted(n for n in present.get((w, loc), []) if n != speaker))
+        else:
+            co_located = ""
+        start_el = e.get("elapsed_minutes")
+        rows.append([
+            w, wave_start.get(w, ""), wave_end.get(w, ""), speaker, e.get("location", ""),
+            exterior if isinstance(exterior, bool) else "",
+            status, (status in _INFECTIOUS_STATUSES) if status else "",
+            start_el if _is_int(start_el) else "", wave_end_elapsed.get(w, ""),
+            co_located, (speaker, w) in new_exposure,
+        ])
+    return rows
+
+
+def _render_with_roster(entries, roster, wave_start, wave_end, wave_end_elapsed, new_exposure) -> str:
+    """명단 형식 — ``wave_roster`` 가 있는 wave 는 **활성 에이전트 전원 1행씩**(엔진 감염 스냅샷과
+    같은 값), 없는 wave(같은 로그 안의 옛 run 등)는 발화 행(구형식)으로 둔다. 컬럼은 기존 12개 +
+    ``acted``·``traveling``·``travel_group``. 구형식 행은 ``acted=true`` 이고 뒤 두 칸이 빈 값이다
+    (그래서 β 재계산 도구가 wave 별로 형식을 구분한다)."""
+    def _wave(e: dict) -> int:
+        w = e.get("wave")
+        return 0 if w is None else w
+
+    by_wave: dict[int, list[dict]] = {}
+    for e in entries:
+        by_wave.setdefault(_wave(e), []).append(e)
+    lines = [_csv_row(CSV_HEADER + ROSTER_EXTRA_HEADER)]
+    for w in sorted(set(by_wave) | set(roster)):
+        spoken = by_wave.get(w, [])
+        data = roster.get(w)
+        if data is None:
+            for row in _legacy_rows(spoken, wave_start, wave_end, wave_end_elapsed, new_exposure):
+                lines.append(_csv_row(row + [True, "", ""]))
+            continue
+        agents = [a for a in data["agents"] if isinstance(a, dict)]
+        groups = roster_contact_groups(agents)
+        acted = {e.get("speaker") or "" for e in spoken}
+        start_el, end_el = data.get("start_elapsed_minutes"), data.get("end_elapsed_minutes")
+        start_str = data.get("start_time_str") if isinstance(data.get("start_time_str"), str) else ""
+        end_str = data.get("end_time_str") if isinstance(data.get("end_time_str"), str) else ""
+        listed = set()
+        for a in agents:
+            key = a.get("agent") or ""
+            listed.add(key)
+            status = a.get("status") if isinstance(a.get("status"), str) else ""
+            others = sorted({m for g in groups if key in g for m in g} - {key})
+            traveling = a.get("traveling") is True
+            group = a.get("travel_group") if traveling and isinstance(a.get("travel_group"), list) else []
+            ext = a.get("is_exterior")
+            lines.append(_csv_row([
+                w, start_str, end_str, key, a.get("location") or "",
+                ext if isinstance(ext, bool) else "",
+                status, (status in _INFECTIOUS_STATUSES) if status else "",
+                start_el if _is_int(start_el) else "", end_el if _is_int(end_el) else "",
+                _CO_LOCATED_SEP.join(others), (key, w) in new_exposure,
+                key in acted, traveling, _CO_LOCATED_SEP.join(sorted(str(m) for m in group)),
+            ]))
+        # 명단에 없는 발화자(엔진 불변식상 없어야 한다) — 버리지 않고 구형식 행으로 남긴다.
+        stray = [e for e in spoken if (e.get("speaker") or "") not in listed]
+        for row in _legacy_rows(stray, wave_start, wave_end, wave_end_elapsed, new_exposure):
+            lines.append(_csv_row(row + [True, "", ""]))
     return "\r\n".join(lines) + "\r\n"

@@ -152,6 +152,7 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
     wave_start_location = dict(_agent_location)   ← 이번 wave 시작 스냅샷
     infection_start = _infection_wave_start(run_wave)  ← 감염: 시작 접촉 그룹(이동 중이면 동행끼리만)
                                                          + 활성 명단·상태 스냅샷 (20a 에서 판정)
+    wave_roster = _wave_roster(run_wave)               ← 같은 시점 전원 명단 (20a 에서 emit)
 11. 각 성공한 speaker:
        resolved = _resolve_targets(result.targets, speaker)   ← 같은 방 + 1-wave 유예
        routed[target] += {speaker, content, action_note}       ← 두 모드 공통
@@ -271,6 +272,9 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
        (fixed: time_per_wave, variable: 이번 jump, 시간 안 흐른 wave: 0)
        시작 스냅샷 그룹의 P/I × S 쌍마다 p=1-exp(-β·t_d) → 새 노출 시각 = wave 끝
        진행(E→P→I→R)은 wave 끝 시각으로, 시작 스냅샷의 E/P/I 만 한 단계
+     _emit_wave_roster(run_wave, disp_wave, wave_roster) : 10번의 _wave_roster 스냅샷(활성 전원의
+       위치·외부·상태·이동 중·동행) + 시작·끝 경과분 → "wave_roster" 이벤트(영속, 위치 이력 CSV 정본).
+       no_progress 종료 직전에도 같은 두 호출. 중단(stop)된 wave 는 판정·emit 없음.
 
 21. current_wave = next_wave
 

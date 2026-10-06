@@ -48,6 +48,9 @@ _PERSIST_EVENTS: frozenset[str] = frozenset({
     # 화면(SSE 리스너·마크다운)에는 안 나가는 순수 로그 — journey.py
     # `_record_move_resolution` 참고.
     "move_intent",
+    # wave 시작 시점 활성 에이전트 전원 명단 + 시작·끝 경과분(infection.py::_wave_roster).
+    # 위치 이력 CSV 의 정본 — 화면 리스너는 없다(내보내기·β 재계산 전용).
+    "wave_roster",
 })
 
 # 시작 요일 키(프론트/스키마와 동일) → 표시 라벨. 인덱스 = 월요일 기준 0~6.
@@ -168,6 +171,10 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
         self._key_to_alias: dict[str, str] = {v: k for k, v in self._alias_to_key.items()}
 
         self._sim_id = sim_id
+        # `shared_log` 이 담고 있는 run 들의 id(오래된 순) — 내보내기(/events)가 이 run 들의
+        # 이벤트를 이어 붙여 로그와 같은 범위를 본다. /continue 는 같은 객체에 새 run id 를
+        # 덧붙이고(로그도 이어진다), /load 는 불러온 run id 로 채운다(backend runtime).
+        self._export_run_ids: list[str] = [sim_id] if sim_id else []
         self._db     = db
         self.completed_waves: int = 0
         self._pending_wave: dict  = {}

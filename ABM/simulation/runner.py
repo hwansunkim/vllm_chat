@@ -486,6 +486,9 @@ class _RunnerMixin:
             # 판정은 이번 wave 의 시간이 누적된 **뒤**(아래 `_finish_infection_wave`)에
             # 이번 wave 자신의 경과 시간으로 한다(사용자 wave 모형 — infection.py).
             infection_start = self._infection_wave_start(run_wave)
+            # 같은 시점의 활성 에이전트 전원 명단 — wave 끝에 `wave_roster` 이벤트로 남겨 위치
+            # 이력 CSV·β 재계산 도구가 추론 없이 엔진과 같은 접촉을 재구성한다(infection.py).
+            wave_roster = self._wave_roster(run_wave)
 
             # ── 발화 라우팅 (이동 적용 *전* 위치 스냅샷 기준) ──────────────────
             # turn.py의 1차 _resolve_targets() 해석(엣지/피드/DB 기록)과 반드시 같은
@@ -942,6 +945,7 @@ class _RunnerMixin:
                     # 가변 모드는 시간이 흐르지 않아 t_d=0(진행 판정만), fixed 모드는
                     # 시계가 wave 단위로 흐르므로 time_per_wave 만큼.
                     self._apply_infection_wave(run_wave, disp_wave, infection_start)
+                    self._emit_wave_roster(run_wave, disp_wave, wave_roster)
                     break
 
             # ── 시간 누적 (가변 모드) ─────────────────────────────────────────
@@ -1127,6 +1131,7 @@ class _RunnerMixin:
             # 판정한다. 시간이 안 흐른 wave(성공 발화 0)는 t_d=0. 모델이 꺼져 있으면 즉시
             # 반환한다. 반드시 시간 누적 **뒤**·목표 기간 종료 판정 **앞**이다.
             self._apply_infection_wave(run_wave, disp_wave, infection_start)
+            self._emit_wave_roster(run_wave, disp_wave, wave_roster)
 
             current_wave = next_wave
             logger.info(f"[W{disp_wave}] next_wave: {list(current_wave.keys())}")

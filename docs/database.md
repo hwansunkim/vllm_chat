@@ -169,7 +169,7 @@ nullable/기본값이라 기존 행은 영향 없음. 컬럼 삭제·이름 변�
 | `id` | INTEGER PK | |
 | `run_id` | TEXT | |
 | `wave` | INTEGER | |
-| `event_type` | TEXT | `agent_move`, `infection_update`, `system_intervention`, `meeting_update`, `scene_event`, `director_call`, `appearance_update`, `time_jump`, `agent_status_change` (= `_PERSIST_EVENTS`). `world_event`는 레거시 — 구 실행 행에만 존재 |
+| `event_type` | TEXT | `agent_move`, `infection_update`, `system_intervention`, `meeting_update`, `scene_event`, `director_call`, `appearance_update`, `time_jump`, `agent_status_change`, `post_move_delivery`, `journey_update`, `move_intent`, `wave_roster` (= `_PERSIST_EVENTS`). `wave_roster` 는 wave 마다 1건(활성 에이전트 전원의 wave 시작 위치·상태·이동 중·동행 + 시작·끝 경과분, 4명 기준 ≈0.6KB) — 위치 이력 CSV·β 재계산 전용. `world_event`는 레거시 — 구 실행 행에만 존재 |
 | `data_json` | TEXT | 이벤트 페이로드 |
 | `timestamp` | REAL | epoch |
 

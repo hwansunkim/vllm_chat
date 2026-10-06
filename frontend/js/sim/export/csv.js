@@ -20,8 +20,14 @@
 //   elapsed_minutes_end(time_jump.end_elapsed_minutes → 다음 wave 시작 폴백) ·
 //   co_located_with(같은 wave·같은 장소의 **다른 발화자**, `|` 구분·이름 오름차순, 외부 공간 제외) ·
 //   new_exposure(infection_update 중 cause가 event/transmission).
-// ⚠ 행은 "그 wave에 발화한 에이전트"뿐이라 발화하지 않은 동석자는 co_located_with에 안 잡힌다
-//   — 완전한 동석 기록이 아니라 발화한 사람들끼리의 동석이다.
+// ⚠ (구형식) 행은 "그 wave에 발화한 에이전트"뿐이라 발화하지 않은 동석자는 co_located_with에 안
+//   잡힌다 — 완전한 동석 기록이 아니라 발화한 사람들끼리의 동석이다.
+//
+// 명단 형식(2026-10 task B) — 엔진이 wave마다 `wave_roster` 이벤트(활성 에이전트 전원의 wave 시작
+// 위치·상태·이동 중 여부·동행 + 시작·끝 경과분)를 남긴 run은 그 wave를 **활성 에이전트 전원 1행씩**
+// 쓴다. 컬럼 3개 추가: acted(그 wave에 턴을 받았나) · traveling · travel_group. co_located_with는
+// 엔진 접촉 그룹(`rosterContactGroups` — infection.py::_compute_contact_groups와 같은 규칙)이다.
+// `wave_roster`가 하나도 없으면(옛 run) 예전 출력 그대로. 정의는 ABM/export/csv.py가 정본.
 
 import { sim } from '../state.js';
 import { downloadFile, safeFilename, nowTag } from '../utils/download.js';
@@ -31,6 +37,7 @@ const CSV_HEADER = [
   'infection_status', 'is_infectious', 'elapsed_minutes_start', 'elapsed_minutes_end',
   'co_located_with', 'new_exposure',
 ];
+const ROSTER_EXTRA_HEADER = ['acted', 'traveling', 'travel_group'];
 const EXPOSURE_CAUSES     = ['event', 'transmission'];   // 자연 진행·회복은 새 감염이 아니다
 const INFECTIOUS_STATUSES = ['P', 'I'];
 const CO_LOCATED_SEP      = '|';
@@ -95,11 +102,139 @@ function buildNewExposureSet(events) {
   return set;
 }
 
+/** `wave_roster` 이벤트 → wave → data (agents가 배열이 아니면 건너뜀, 나중 값이 이김). */
+function buildRosterMap(events) {
+  const map = new Map();
+  for (const evt of (events || [])) {
+    if (!evt || typeof evt !== 'object' || evt.event_type !== 'wave_roster') continue;
+    const d = evt.data;
+    if (!d || typeof d !== 'object' || !Array.isArray(d.agents)) continue;
+    map.set(evt.wave ?? 0, d);
+  }
+  return map;
+}
+
+/**
+ * 명단 → 엔진 `_compute_contact_groups`와 같은 규칙의 접촉 그룹(2명 이상).
+ * ABM/export/csv.py `roster_contact_groups`와 같아야 한다(이동 중은 travel_group끼리만, 외부 공간
+ * 제외, 위치 없는 floater는 모든 장소 그룹에 — 장소 그룹이 없으면 floater끼리 한 그룹).
+ */
+export function rosterContactGroups(agents) {
+  const buckets = new Map();
+  const travel = new Map();
+  const floaters = [];
+  for (const a of (agents || [])) {
+    if (!a || typeof a !== 'object') continue;
+    const key = a.agent || '';
+    if (a.traveling === true) {
+      const members = Array.isArray(a.travel_group) ? a.travel_group : [];
+      const tkey = (members.length ? members : [key]).map(String).sort().join('\u0000');
+      if (!travel.has(tkey)) travel.set(tkey, []);
+      travel.get(tkey).push(key);
+      continue;
+    }
+    const loc = a.location || '';
+    if (a.is_exterior === true) continue;
+    if (loc) {
+      if (!buckets.has(loc)) buckets.set(loc, []);
+      buckets.get(loc).push(key);
+    } else {
+      floaters.push(key);
+    }
+  }
+  const groups = buckets.size ? [...buckets.values()].map(g => [...g, ...floaters]) : [floaters];
+  groups.push(...travel.values());
+  return groups.filter(g => g.length >= 2);
+}
+
+/** 발화 행(구형식) — 같은 wave·같은 장소의 다른 발화자만 동석으로 친다. */
+function legacyRows(ordered, waveStart, waveEnd, waveEndElapsed, newExposure) {
+  const present = new Map();
+  for (const e of ordered) {
+    const loc = e.location;
+    if (typeof loc !== 'string' || !loc || e.is_exterior === true) continue;
+    const key = `${e.wave ?? 0}\u0000${loc}`;
+    if (!present.has(key)) present.set(key, []);
+    const names = present.get(key);
+    const who = e.speaker ?? '';
+    if (!names.includes(who)) names.push(who);
+  }
+  return ordered.map(e => {
+    const w = e.wave ?? 0;
+    const speaker = e.speaker ?? '';
+    const loc = e.location;
+    const status = (typeof e.infection_status === 'string' && e.infection_status) ? e.infection_status : '';
+    const coLocated = (typeof loc === 'string' && loc && e.is_exterior !== true)
+      ? (present.get(`${w}\u0000${loc}`) || []).filter(n => n !== speaker).sort().join(CO_LOCATED_SEP)
+      : '';
+    return [
+      w, waveStart.get(w) ?? '', waveEnd.get(w) ?? '', speaker, e.location ?? '',
+      typeof e.is_exterior === 'boolean' ? String(e.is_exterior) : '',
+      status, status ? INFECTIOUS_STATUSES.includes(status) : '',
+      isInt(e.elapsed_minutes) ? e.elapsed_minutes : '', waveEndElapsed.get(w) ?? '',
+      coLocated, newExposure.has(`${speaker}\u0000${w}`),
+    ];
+  });
+}
+
+/** 명단 형식 렌더링 — ABM/export/csv.py `_render_with_roster`와 같은 규칙. */
+function renderWithRoster(entries, roster, waveStart, waveEnd, waveEndElapsed, newExposure) {
+  const byWave = new Map();
+  for (const e of entries) {
+    const w = e.wave ?? 0;
+    if (!byWave.has(w)) byWave.set(w, []);
+    byWave.get(w).push(e);
+  }
+  const lines = [csvRow([...CSV_HEADER, ...ROSTER_EXTRA_HEADER])];
+  const waves = [...new Set([...byWave.keys(), ...roster.keys()])].sort((a, b) => a - b);
+  for (const w of waves) {
+    const spoken = byWave.get(w) || [];
+    const data = roster.get(w);
+    if (!data) {
+      for (const row of legacyRows(spoken, waveStart, waveEnd, waveEndElapsed, newExposure)) {
+        lines.push(csvRow([...row, true, '', '']));
+      }
+      continue;
+    }
+    const agents = data.agents.filter(a => a && typeof a === 'object');
+    const groups = rosterContactGroups(agents);
+    const acted = new Set(spoken.map(e => e.speaker ?? ''));
+    const startEl = data.start_elapsed_minutes;
+    const endEl = data.end_elapsed_minutes;
+    const startStr = typeof data.start_time_str === 'string' ? data.start_time_str : '';
+    const endStr = typeof data.end_time_str === 'string' ? data.end_time_str : '';
+    const listed = new Set();
+    for (const a of agents) {
+      const key = a.agent || '';
+      listed.add(key);
+      const status = typeof a.status === 'string' ? a.status : '';
+      const others = new Set();
+      for (const g of groups) if (g.includes(key)) for (const m of g) if (m !== key) others.add(m);
+      const traveling = a.traveling === true;
+      const group = traveling && Array.isArray(a.travel_group) ? a.travel_group : [];
+      lines.push(csvRow([
+        w, startStr, endStr, key, a.location || '',
+        typeof a.is_exterior === 'boolean' ? String(a.is_exterior) : '',
+        status, status ? INFECTIOUS_STATUSES.includes(status) : '',
+        isInt(startEl) ? startEl : '', isInt(endEl) ? endEl : '',
+        [...others].sort().join(CO_LOCATED_SEP), newExposure.has(`${key}\u0000${w}`),
+        acted.has(key), traveling, group.map(String).sort().join(CO_LOCATED_SEP),
+      ]));
+    }
+    // 명단에 없는 발화자(엔진 불변식상 없어야 한다) — 버리지 않고 구형식 행으로 남긴다.
+    const stray = spoken.filter(e => !listed.has(e.speaker ?? ''));
+    for (const row of legacyRows(stray, waveStart, waveEnd, waveEndElapsed, newExposure)) {
+      lines.push(csvRow([...row, true, '', '']));
+    }
+  }
+  return lines.join('\r\n') + '\r\n';
+}
+
 /**
  * 로그 배열 → 위치 이력 CSV 문자열. 순수 함수(네트워크 접근 없음).
  *
  * @param {Array<Object>} log - `/api/simulation/logs` 응답 (항목: {speaker, wave, time_str, location, is_exterior}).
- * @param {Array<Object>} [events] - `/api/simulation/events?types=time_jump,infection_update` 응답.
+ * @param {Array<Object>} [events] - `/api/simulation/events?types=time_jump,infection_update,wave_roster` 응답.
  *   생략/빈 배열이면 `wave_end_time`/`elapsed_minutes_end`는 "다음 wave 시작" 폴백으로만
  *   채워지고 `new_exposure`는 전부 false다.
  * @returns {string} CRLF 줄바꿈 CSV (헤더 1행 + 로그 항목당 1행).
@@ -136,6 +271,8 @@ export function buildLocationCsv(log, events) {
   });
 
   const newExposure = buildNewExposureSet(events);
+  const roster = buildRosterMap(events);
+  if (roster.size) return renderWithRoster(entries, roster, waveStart, waveEnd, waveEndElapsed, newExposure);
 
   // 3) wave 오름차순 정렬(같은 wave 안에서는 원래 턴 순서 유지 — Array.sort는 stable).
   const ordered = entries.slice().sort((a, b) => (a.wave ?? 0) - (b.wave ?? 0));
@@ -187,10 +324,11 @@ export function buildLocationCsv(log, events) {
 export async function exportLocationHistoryCsv() {
   // 두 요청은 서로 독립이라 병렬로 던진다(markdown.js `fetchAll()` 과 같은 패턴).
   // 이벤트 조회는 실패해도 CSV를 막지 않는다 — wave_end_time 이 폴백 경로로 내려갈 뿐이다.
-  // infection_update 는 new_exposure 컬럼용 — 타입 필터는 buildLocationCsv 안에서 다시 한다.
+  // infection_update 는 new_exposure 컬럼용, wave_roster 는 명단 형식(활성 에이전트 전원 행)의 정본 —
+  // 타입 필터는 buildLocationCsv 안에서 다시 한다.
   const [logRes, evtRes] = await Promise.all([
     fetch('/api/simulation/logs'),
-    fetch('/api/simulation/events?types=time_jump,infection_update').catch(() => null),
+    fetch('/api/simulation/events?types=time_jump,infection_update,wave_roster').catch(() => null),
   ]);
 
   if (!logRes.ok) throw new Error(`로그 조회 실패 (HTTP ${logRes.status})`);

@@ -301,7 +301,11 @@ startSimulation() (run/control.js)
   `action` 필드로 갈라 처리한다([simulation-features.md §7](simulation-features.md)).
 - **위치 이력 CSV** (`sim/export/csv.js`) — wave별 에이전트 위치. 감염병 접촉 분석용.
   컬럼 정의는 [simulation-features.md §14](simulation-features.md). `GET /api/simulation/events?
-  types=time_jump,infection_update`를 함께 받아 종료 시각·경과분과 `new_exposure`를 채우고,
+  types=time_jump,infection_update,wave_roster`를 함께 받아 종료 시각·경과분과 `new_exposure`를 채우고,
+  `wave_roster`가 있으면 **명단 형식**(wave마다 활성 에이전트 전원 1행 + `acted`·`traveling`·`travel_group`,
+  `co_located_with` = 엔진 접촉 그룹 — `rosterContactGroups`)으로 쓴다. 없으면 예전(발화 행) 출력 그대로.
+  `/events`는 `/logs`와 같은 범위(`/continue`로 이어 붙인 run 전부, `/load`로 불러온 run)를 돌려준다.
+  타입 필터 없는 요청(마크다운 `fetchAll`)에는 `wave_roster`가 빠진다 — 서버 `_EXPLICIT_ONLY_EVENTS`.
   타입 필터는 `buildLocationCsv` 안에서도 다시 한다. 파이썬 쌍둥이 `ABM/export/csv.py`와
   바이트 단위로 같은 출력을 낸다(테스트가 node로 직접 비교).
 

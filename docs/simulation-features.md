@@ -1174,9 +1174,42 @@ CSV 하나로 분석한다(예전엔 마크다운의 감염 이벤트와 따로 
 … --format csv`) / JS `frontend/js/sim/export/csv.js::buildLocationCsv`(브라우저 다운로드).
 컬럼 정의·한계의 정본은 `csv.py` 모듈 docstring.
 
-**행** — 로그 항목 하나 = "그 에이전트가 그 wave에 턴을 받았다(발화했다)". 위치·감염 상태·경과분은
-그 턴 시점의 엔진 스냅샷이다(`ABM/simulation/turn.py::_apply_turn_result` — 그 wave의 이동이
-적용되기 **전**, 즉 그 wave 동안 실제로 있던 장소).
+**행 — 명단 형식(2026-10 task B, 기본)** — 엔진이 wave마다 `wave_roster` 이벤트를 남긴다
+(`infection.py::_wave_roster`/`_emit_wave_roster`, 감염 판정 직후 emit, `_PERSIST_EVENTS`라 DB·headless·
+/load·/resume 모두 보존). 내용 = **wave 시작 시점 활성 에이전트 전원**의 `{agent, location(raw — 이동
+중이면 목적지), is_exterior, status(wave 시작 S/E/P/I/R), traveling, travel_group(이동 중일 때만)}` + 그
+wave의 시작·끝 경과분·시각(fixed 모드·시간이 안 흐른 wave도 끝이 있다). 감염 판정 스냅샷
+(`_infection_wave_start`)과 같은 시점·같은 값이다. 이 이벤트가 있는 wave는 **활성 에이전트 전원 1행씩**
+(agent 이름순) 쓴다 — 턴을 받지 않은 사람, 전원 턴 실패 wave, 첫 턴 전의 초기 위치, `/continue` 첫 wave
+(직전 run 끝 위치)도 행이 있다. 컬럼 3개가 붙는다:
+
+| 컬럼 | 의미 |
+|---|---|
+| `acted` | 그 wave에 턴을 받았나(턴 로그 항목이 있나) |
+| `traveling` | zone 경계 이동 중(엔진은 동행 외 접촉시키지 않음) |
+| `travel_group` | 이동 중일 때 함께 이동하는 사람 전원(자신 포함, `\|` 구분 이름순). bring_along 동행은 서로 접촉한다 |
+
+명단 wave의 `co_located_with`는 **엔진 접촉 그룹과 정확히 같다**(`roster_contact_groups` /
+`rosterContactGroups` — `_compute_contact_groups`와 같은 규칙: 이동 중이면 `travel_group`끼리만, 외부 공간
+제외, 위치 없는 floater는 모든 장소 그룹에(장소 그룹이 없으면 floater끼리)). 그래서 발화자끼리만의 동석이
+아니다. `infection_status`는 wave 시작 상태(턴 로그와 같은 값 — 테스트로 고정), `new_exposure`는 그대로.
+
+**행 — 구형식(옛 run)** — `wave_roster`가 하나도 없으면 예전 출력 그대로(12컬럼, 아래 표·한계). 한 로그
+안에 명단 wave와 옛 wave가 섞이면(옛 run을 `/continue`) 15컬럼으로 쓰고 옛 wave는 발화 행
+(`acted=true`, `traveling`·`travel_group` 빈 값)으로 둔다. 구형식 행: 로그 항목 하나 = "그 에이전트가 그
+wave에 턴을 받았다(발화했다)". 위치·감염 상태·경과분은 그 턴 시점의 엔진 스냅샷이다
+(`ABM/simulation/turn.py::_apply_turn_result` — 그 wave의 이동이 적용되기 **전**, 즉 그 wave 동안 실제로
+있던 장소).
+
+**이벤트 범위** — 브라우저 내보내기는 `/api/simulation/events?types=time_jump,infection_update,wave_roster`.
+`/events`는 이제 `/logs`와 같은 범위(`sim_obj._export_run_ids` — `/continue`로 이어 붙인 run 전부, `/load`로
+불러온 run)의 이벤트를 이어 붙인다(예전엔 현재 run id 뿐이라 `/continue` 뒤 앞 run의 wave, `/load` 뒤 전부가
+폴백으로만 채워졌다). 타입 필터 없이 부르면 `wave_roster`는 빠진다(마크다운 내보내기처럼 전체를 받는 소비자의
+응답을 키우지 않게 — `/runs/{id}/events`도 같음, 필요하면 types 로 명시). **중지된 run·실행 중 내보내기** — 마지막
+wave 가 턴 일부만 돌고 멈추면(판정 전) 그 wave 는 발화 행만 있고 명단이 없어 구형식 행(`traveling` 빈 값)으로
+나온다. β 재계산 도구는 마지막 명단 wave **뒤**의 이런 wave 를 "판정되지 않은 wave"로 빼고 명단 경로를 유지한다
+(앞·사이에 있으면 섞인 CSV 로 보고 구형식 경로). 크기: wave당 이벤트 ≈ 0.6KB(4명) — 1260 wave면 sim_events에 ≈0.75MB, CSV는 발화 행
+2641행·312KB → 명단 5040행·약 660KB(추정).
 
 | 컬럼 | 의미 |
 |---|---|
@@ -1189,13 +1222,13 @@ CSV 하나로 분석한다(예전엔 마크다운의 감염 이벤트와 따로 
 | `co_located_with` | 같은 wave·같은 장소의 **다른 발화자**(`\|` 구분, 이름 오름차순). 장소가 없거나 외부 공간이면 빈 값 — 엔진 접촉 판정과 같은 규칙 |
 | `new_exposure` | 이 wave에 이 에이전트가 새로 감염됐는가 — `infection_update`의 `cause` ∈ {event, transmission}. 자연 진행(progression)·회복은 아니다. 상태로 거르지 않는 이유: 길이 0 구간 건너뛰기(SIR 등)로 새 감염이 P/I로 시작할 수 있다 |
 
-**한계** — 행은 **발화한 에이전트뿐**이다. 같은 방에 있었지만 그 wave에 발화하지 않은 사람은 행이
+**한계(구형식 행만)** — 행은 **발화한 에이전트뿐**이다. 같은 방에 있었지만 그 wave에 발화하지 않은 사람은 행이
 없어 `co_located_with`에 안 잡히고(완전한 동석 기록이 아니라 발화한 사람들끼리의 동석), 새로
 감염됐어도 발화하지 않았으면 `new_exposure`를 표시할 행이 없다. 또 접촉 전파 판정은 wave 끝(시간
 누적 뒤)에 일어나므로 그 wave의 행은 `infection_status=S`이면서 `new_exposure=true`일 수 있다.
 엔진의 전염 판정은 이 CSV 의 `location`(= wave 시작 위치) × 그 wave 의 경과(`elapsed_minutes_end -
 elapsed_minutes_start`)와 같은 기준이다(§감염 "wave 타이밍"). 단 zone 경계 이동 중인 사람은 엔진이
-동행 외 접촉시키지 않지만 CSV 에는 이동 중 표시가 없다.
+동행 외 접촉시키지 않지만 구형식 CSV 에는 이동 중 표시가 없다(명단 형식은 `traveling`·`travel_group`).
 
 **하위 호환** — 컬럼 추가 이전 로그는 행을 버리지 않고 해당 칸을 빈 값으로 남긴다
 (`infection_status`·`is_infectious`·`elapsed_minutes_*`·위치 없는 행의 `co_located_with`).
@@ -1212,7 +1245,7 @@ DB는 `simulation_log`에 `infection_status TEXT`·`elapsed_minutes INTEGER` 컬
 
 ```
 python -m ABM.tools.rebeta <locations.csv> <scenario.json> --beta 0.02 0.04 0.1 --runs 1000 --seed 42 --out <dir>
-                           [--initial-mode replay|sample] [--backfill]
+                           [--initial-mode replay|sample] [--backfill(구형식만)]
 ```
 
 **가정** — 고정 행동: 에이전트의 이동·발화는 원래 실행 그대로이며 가상의 감염에 반응하지 않는다.
@@ -1227,7 +1260,17 @@ python -m ABM.tools.rebeta <locations.csv> <scenario.json> --beta 0.02 0.04 0.1 
 도구 안에서만 재현된다 — 원래 실행은 이동 시간·시간 카테고리 등 다른 추첨도 같은 전역 난수로 했으므로
 원래 실행의 난수열과 같지 않다(그래서 β<∞ 에서는 원래 실행을 "재연"하는 게 아니라 분포를 낸다).
 
-**접촉 재구성** — CSV는 발화자 행만 있고 `location`은 그 wave의 **시작(이동 전)** 위치 = 엔진이 그 wave
+**명단 형식 CSV(기본) — 추론 없음** — CSV 에 `traveling` 컬럼이 있고 모든 wave 가 명단 행이면 행을 그대로
+쓴다: wave w 판정 = wave w 명단(전원, wave 시작 위치·`traveling`·`travel_group`)을 shim 에 넣고 엔진
+`_compute_contact_groups` 로 그룹을 만든다 × (`elapsed_minutes_end - elapsed_minutes_start`, 엔진이 남긴 끝 —
+fixed·시간 없는 wave 포함). 채우기·`--backfill`·시나리오 시간 설정은 쓰지 않는다. 시드 = 명단의 wave 시작
+상태(첫 행부터 S 가 아닌 사람, S 였다가 `new_exposure=true` 인 행에서 E/P/I 가 된 사람 — `infect_agent` 는
+wave 시작에 실행돼 그 wave 행에 이미 반영된다. 면역 없는 모델에서 회복 뒤 다시 시드되면 그때마다), 경과는 `replay`(관찰 상태 그대로)/`sample`. 실제 runner e2e
+(조용히 이동한 사람·한 번도 말하지 않은 사람·초기 위치·구역 경계 이동 격리·잠든 동행을 안고 이동·전원 턴
+실패 + idle 점프·fixed/variable·`/continue`)에서 엔진과 같은 사람이 같은 시각에 감염된다.
+
+**구형식 CSV(옛 run) — 추론 경로(경고 출력)** — 명단이 없거나 섞인 CSV 는 예전 방식이다. CSV는 발화자 행만
+있고 `location`은 그 wave의 **시작(이동 전)** 위치 = 엔진이 그 wave
 판정에 쓰는 위치다. wave w 판정 = wave w 명단 × wave w 경과(`elapsed_minutes_end - elapsed_minutes_start`;
 시간 설정은 시나리오 `config.time_mode`·`time_per_wave` — **fixed 모드는 항상 `time_per_wave`**(fixed 는
 `time_jump` 를 내지 않아 마지막 행 종료 경과분이 비고, 행 없는 wave 가 끼면 다음 행 추정이 2×tpw 가 되므로),
@@ -1236,7 +1279,7 @@ variable 모드는 CSV 종료 경과분 → 다음 관찰 wave 시작 → 마지
 마지막 위치로 채운다(`is_imputed`). 첫 행 이전은 기본적으로 **부재**(`--backfill`이면 첫 위치). 외부 공간·
 floater 규칙은 엔진 `_compute_contact_groups` 그대로.
 
-**시드** — 시나리오의 `infect_agent` 이벤트가 정본(max(이벤트 wave, 첫 등장)에 걸림). 이벤트 정보가
+**시드(구형식)** — 시나리오의 `infect_agent` 이벤트가 정본(max(이벤트 wave, 첫 등장)에 걸림). 이벤트 정보가
 없으면 "앞선 감염자가 없을 때 감염으로 처음 관찰된 사람"만 시드. 그 밖에 처음부터 감염으로 관찰된
 사람은 발화 전에 감염된 것으로 보고 첫 등장부터 S로 시뮬레이션하며 경고한다. 시드의 경과는 기본
 `replay`(관찰 상태 재생 — gap 은 다음 행 상태, 관찰된 변화를 gap 첫 wave 부터 적용해 회복이 늦게
@@ -1244,19 +1287,10 @@ floater 규칙은 엔진 `_compute_contact_groups` 그대로.
 
 **재개 경계** — 엔진 t_d 가 wave 자신의 시작·끝 차이라 `/resume` 경계 보정이 필요 없다(예전 `--reset-at` 제거).
 
-**한계 (CSV 에 정보가 없음 — 후속 과제)** — 마지막 발화 이후 이동의 목적지는 CSV에 없다(한 번 `move_to`로
+**한계 (구형식 CSV 만 — 명단 형식에는 없음)** — 마지막 발화 이후 이동의 목적지는 CSV에 없다(한 번 `move_to`로
 떠나고 다시 발화하지 않은 사람은 출발지에 남는다 — e2e 테스트로 고정한 알려진 한계). zone 경계 이동
 중(traveling)은 엔진이 동행 외 접촉시키지 않지만 CSV 에 표시가 없어 gap 이 도착지로 채워진다(과대 추정
 가능). 여러 hop 여정·`bring_along`은 근사. 한 번도 발화하지 않은 사람·퇴장은 보이지 않는다. **행이 하나도 없는 wave**
 (variable 모드에서 전원 턴 실패 + idle 점프로 시간이 흐른 wave 등)는 보이지 않아 그 시간의 접촉이 빠진다.
 관찰 결과(sanity check 의 "관찰된 최종 감염자")는 `infection_status` 가 S 가 아닌 행 **또는 `new_exposure=true`**
 인 행의 에이전트 수다(wave 끝 전파는 그 행 상태가 S 라 마지막 wave 감염자를 놓치지 않게).
-
-**출력** — `<stem>_rebeta_summary.csv`(β별 평균±표준오차·표준편차·최소·최대, 최종 감염자 0..N 확률,
-에이전트별 감염 확률±표준오차, 첫 새 감염 시각 평균, 관찰 결과 재현 확률±표준오차),
-`<stem>_rebeta_beta<β>_waves.csv`(대표 run 하나 — 최종 감염자 수가 하위 중앙값인 run 중 가장 작은 번호 —
-의 전체 명단 + `is_imputed`·`sim_status`·`sim_is_infectious`·`sim_contact_location`·`sim_t_d_minutes`·`sim_new_exposure`·
-`sim_p_infect`(그 판정에서 감염될 **합산 확률** 1-(1-p)^k, k = 속한 각 그룹 전파원 수 합)). 두 CSV 맨 위
-`#` 줄에 가정과 관찰 기간(`pandas.read_csv(..., comment="#")`). 원래 β가 `--beta`에 없으면 sanity check용으로
-자동 추가하고, 재현 확률이 5% 미만이면 경고한다. 입력 오류(헤더만 있는 CSV·`--runs` < 1·음수 β)는
-종료 코드 2.

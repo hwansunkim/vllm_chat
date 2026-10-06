@@ -12039,12 +12039,12 @@ class LocationCsvContactColumnsTests(unittest.TestCase):
         self.assertEqual(pick(0, "b", *cols), ("S", "false", "0", "720", "a|c|e", "true"))
         self.assertEqual(pick(0, "e", "new_exposure"), ("true",))
         self.assertEqual(pick(0, "d", *cols), ("S", "false", "0", "720", "", "false"))
-        # W1 — b 는 E. e 는 W1 에 발화하지 않아 행이 없다 — 그래서 동석자 목록에도 없다(한계).
-        self.assertEqual(pick(1, "b", *cols), ("E", "false", "720", "1440", "a|c", "false"))
-        self.assertEqual(pick(1, "a", "co_located_with", "new_exposure"), ("b|c", "false"))
-        self.assertNotIn(("1", "e"), by)
-        self.assertEqual(sim._agent_infection["e"]["status"] in ("E", "I", "R"), True)
-        self.assertNotIn("e", by[("1", "a")]["co_located_with"])
+        # W1 — b 는 E. 명단 형식이라 W1 에 발화하지 않은 e·d 도 행이 있고(acted=false) 동석자에 잡힌다
+        # (예전 발화자 행만의 한계 해소).
+        self.assertEqual(pick(1, "b", *cols), ("E", "false", "720", "1440", "a|c|e", "false"))
+        self.assertEqual(pick(1, "a", "co_located_with", "new_exposure", "acted"), ("b|c|e", "false", "true"))
+        self.assertEqual(pick(1, "e", "infection_status", "acted"), ("E", "false"))
+        self.assertEqual(pick(1, "d", "co_located_with", "acted", "traveling"), ("", "false", "false"))
         # W2 — b 는 E(비전염), 새 노출 아님.
         self.assertEqual(pick(2, "b", "infection_status", "is_infectious", "new_exposure"),
                          ("E", "false", "false"))
@@ -12391,7 +12391,7 @@ class RebetaToolTests(unittest.TestCase):
 
     E2E_GRAPH = [{"name": "매장", "connects_to": ["창고"]}, {"name": "창고", "connects_to": ["매장"]}]
 
-    def _e2e(self, tmp, script, locs, waves=8):
+    def _e2e(self, tmp, script, locs, waves=8, roster=True):
         """실제 Simulation.run → render_location_csv → 도구. β=1e6 이라 전파가 결정적이다."""
         from ABM.agent import Agent
         from ABM.simulation import Simulation
@@ -12412,7 +12412,8 @@ class RebetaToolTests(unittest.TestCase):
         sim.run("a", max_waves=waves, step_delay=0.0, starvation_waves=99, resume_wave={k: [] for k in locs})
         path = os.path.join(tmp, "e_locations.csv")
         with open(path, "w", encoding="utf-8") as fh:
-            fh.write(render_location_csv(sim.shared_log, ev))
+            # roster=False — wave_roster 이벤트를 빼 옛 run(발화자 행만)의 CSV 를 만든다(구형식 경로 검증).
+            fh.write(render_location_csv(sim.shared_log, [e for e in ev if roster or e["event_type"] != "wave_roster"]))
         engine = {d["data"]["agent"]: d["data"]["elapsed_minutes"] for d in ev
                   if d["event_type"] == "infection_update" and d["data"].get("cause") == "transmission"}
         obs = rebeta.load_location_csv(path)
@@ -12432,7 +12433,7 @@ class RebetaToolTests(unittest.TestCase):
         self.assertIn("b", engine)
         self.assertEqual(tool, engine)
         b_rows = {r["wave"]: r for r in res.waves if r["agent"] == "b"}
-        self.assertEqual((b_rows[1]["location"], b_rows[1]["is_imputed"]), ("매장", True))
+        self.assertEqual((b_rows[1]["location"], b_rows[1]["is_imputed"]), ("매장", False))   # 명단 행(추론 아님)
 
     def test_e2e_real_runner_everyone_speaking_matches_engine(self):
         # QA e2e.py 케이스 — 전원이 매 wave 발화하며 b 가 창고에 갔다 돌아오는 경우 / b 가 창고로 간 뒤
@@ -12454,17 +12455,19 @@ class RebetaToolTests(unittest.TestCase):
                 self.assertTrue(engine)
                 self.assertEqual(tool, engine)
 
-    def test_e2e_known_limitation_move_after_last_row_is_invisible(self):
-        # QA e2e2.py — b 가 wave 0 에 move_to 로 a 에게 가고 **다시는 발화하지 않는다**. 목적지는 CSV 어디에도
-        # 없어(다음 행이 없음) b 는 출발지(창고)에 남는다 — 문서화된 한계(task B). 엔진은 b 를 wave 1(매장에
-        # 도착한 뒤 첫 wave) 끝에 감염시킨다.
+    def test_e2e_silent_mover_matches_engine_with_roster_rows(self):
+        # QA e2e2.py — b 가 wave 0 에 move_to 로 a 에게 가고 **다시는 발화하지 않는다**. 명단 형식 CSV 에는
+        # b 의 wave 1~ 행(매장, acted=false)이 있어 엔진과 같다(예전 발화자 행만의 CSV 에선 놓쳤다 — 아래 구형식).
         script = {"a": [{"target": ["c"]}], "b": [{"target": "self", "move_to": "매장"}, {"target": "self"}],
                   "c": [{"target": ["a"]}]}
         with tempfile.TemporaryDirectory() as tmp:
             engine, tool, res = self._e2e(tmp, script, {"a": "매장", "b": "창고", "c": "매장"}, waves=6)
+            _, legacy, _ = self._e2e(tmp, script, {"a": "매장", "b": "창고", "c": "매장"}, waves=6, roster=False)
         self.assertEqual(engine, {"b": 120, "c": 60})
-        self.assertEqual(tool, {"c": 60})                               # b 는 놓친다(한계)
-        self.assertEqual({r["location"] for r in res.waves if r["agent"] == "b"}, {"창고"})
+        self.assertEqual(tool, engine)
+        b_rows = {r["wave"]: r for r in res.waves if r["agent"] == "b"}
+        self.assertEqual([b_rows[w]["location"] for w in range(3)], ["창고", "매장", "매장"])
+        self.assertEqual(legacy, {"c": 60})                             # 구형식 경로 — 알려진 한계 그대로
 
     def test_e2e_fixed_mode_contact_in_the_last_wave_is_counted(self):
         # QA e2e_rebeta_last2 — fixed 모드는 time_jump 를 내지 않아 CSV 마지막 행의 elapsed_minutes_end 가
@@ -12849,6 +12852,402 @@ class InfectionWaveTimingTests(unittest.TestCase):
         self.assertEqual([round(x * 1440) for x in l_resumed], [30] * 6)
 
 
+class RosterCsvParityTests(unittest.TestCase):
+    """task B — 명단 형식 위치 이력 CSV(엔진 `wave_roster` 이벤트)로 β 재계산 도구가 **추론 없이** 엔진과
+    같은 값을 낸다. 실제 `Simulation.run` → `render_location_csv` → `rebeta` 를 β=1e6(결정적 전파)으로 돌려
+    엔진의 접촉 전파(누가·언제)와 도구 결과를 비교한다."""
+
+    MODEL = {"enabled": True, "disease_name": "감기", "beta": 1e6, "symptom_stages": [],
+             "exposed_duration": {"kind": "uniform", "min_days": 0.1, "max_days": 0.1},
+             "presymptomatic_duration": {"kind": "uniform", "min_days": 0, "max_days": 0},
+             "infectious_duration": {"kind": "uniform", "min_days": 30, "max_days": 30}}
+    HOME = [{"name": "거실", "connects_to": ["방1", "방2"]}, {"name": "방1", "connects_to": ["거실"]},
+            {"name": "방2", "connects_to": ["거실"]}]
+    ZONES = [{"name": "거실", "connects_to": ["안방", "대기실"], "zone": "집"},
+             {"name": "안방", "connects_to": ["거실"], "zone": "집"},
+             {"name": "대기실", "connects_to": ["거실", "진료실"], "zone": "병원"},
+             {"name": "진료실", "connects_to": ["대기실"], "zone": "병원"}]
+
+    def _sim(self, tmp, script, locs, *, graph=None, mode="fixed", tpw=60, durs=None, **kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in script}
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp, llm=_ScriptedLLM(script),
+            agent_locations=dict(locs), location_graph=graph or self.HOME, time_mode=mode, time_per_wave=tpw,
+            time_categories=[{"id": "normal_scene", "label": "t", "min_minutes": 30, "max_minutes": 30}],
+            state_categories=[{"id": "sleep", "label": "수면", "min_minutes": 600, "max_minutes": 600}],
+            max_scene_jump_minutes=0, max_daytime_jump_minutes=0, infection_model=self.MODEL, **kw)
+        ev = []
+        sim._emit = lambda t, d: ev.append({"event_type": t, "wave": d.get("wave", 0), "data": d})
+        if durs:
+            it = iter(durs)
+            sim._random_minutes_for_category = lambda cid: next(it)
+        return sim, ev
+
+    def _tool(self, tmp, sim, ev, *, mode="fixed", tpw=60):
+        from ABM.export.csv import render_location_csv
+        from ABM.tools import rebeta
+        path = os.path.join(tmp, "r_locations.csv")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(render_location_csv(sim.shared_log, ev))
+        obs = rebeta.load_location_csv(path)
+        obs.time_mode, obs.time_per_wave = mode, tpw
+        seeds, _, _ = rebeta.resolve_seeds(obs, None)
+        res = rebeta.simulate_once(obs, rebeta.build_roster(obs), self.MODEL, 1e6, 1, seeds=seeds, record=True)
+        engine = {e["data"]["agent"]: e["data"]["elapsed_minutes"] for e in ev
+                  if e["event_type"] == "infection_update" and e["data"]["cause"] == "transmission"}
+        tool = {a: m for a, m in res.infection_minutes.items() if a not in {s.agent for s in seeds}}
+        return obs, engine, tool, res
+
+    def _run(self, tmp, script, locs, *, waves=6, seed_agent="a", resume=None, **kw):
+        sim, ev = self._sim(tmp, script, locs, **kw)
+        sim._set_infected(seed_agent, 0, "event", at_minutes=0, start_status="I")
+        sim.run(seed_agent, max_waves=waves, step_delay=0, starvation_waves=99,
+                resume_wave=resume if resume is not None else {k: [] for k in script})
+        return sim, ev
+
+    def test_roster_rows_match_speaker_rows_and_engine_snapshot(self):
+        script = {"a": [{"target": ["b"], "move_to": "방1"}, {"target": ["b"]}], "b": [{"target": ["a"]}],
+                  "d": [{"target": "self"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, ev = self._run(tmp, script, {"a": "거실", "b": "방1", "d": "방2"}, waves=4)
+            obs, engine, tool, _ = self._tool(tmp, sim, ev)
+        self.assertTrue(obs.full)
+        # 발화 행(턴 로그)과 명단 행이 같은 wave·같은 사람이면 위치·상태가 같아야 한다(같은 wave 시작 스냅샷).
+        for e in sim.shared_log:
+            if "speaker" not in e:
+                continue
+            row = next(r for r in obs.rows[e["wave"]] if r["agent"] == e["speaker"])
+            self.assertEqual((row["location"], row["infection_status"], row["acted"]),
+                             (e["location"], e["infection_status"], "true"))
+        self.assertEqual(tool, engine)
+        self.assertEqual(engine, {"b": 120})                           # a 가 w0 에 방1 로 → w1 함께 → 120
+
+    def test_agent_who_never_speaks_and_initial_location(self):
+        # c 는 한 번도 턴을 받지 않는다(resume_wave 에 없고 아무도 안 부름) — 명단 행만으로 wave 0 의 초기
+        # 위치부터 잡혀 엔진과 같이 감염된다. 발화자 행만의 CSV 였다면 c 는 아예 보이지 않았다.
+        # a·b 가 서로만 부르며 대화를 이어가 침묵 재투입이 없고(targeted 지각이라 엿듣기도 없음), 같은 방의
+        # c 는 끝까지 턴을 받지 않는다.
+        script = {"a": [{"target": ["b"]}], "b": [{"target": ["a"]}],
+                  "c": [{"target": "self"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, ev = self._run(tmp, script, {"a": "거실", "b": "거실", "c": "거실"}, waves=3,
+                                resume={"a": [], "b": []})
+            obs, engine, tool, _ = self._tool(tmp, sim, ev)
+        self.assertNotIn("c", {e.get("speaker") for e in sim.shared_log})
+        self.assertEqual([(r["location"], r["acted"]) for r in obs.rows[0] if r["agent"] == "c"], [("거실", "false")])
+        self.assertEqual(engine, {"b": 60, "c": 60})
+        self.assertEqual(tool, engine)
+
+    def test_cross_zone_traveller_is_isolated_in_csv_and_tool(self):
+        script = {"a": [{"target": "self", "move_to": "대기실"}, {"target": "self"}], "c": [{"target": "self"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, ev = self._run(tmp, script, {"a": "거실", "c": "대기실"}, waves=4, graph=self.ZONES,
+                                zone_travel_min_minutes=120, zone_travel_max_minutes=120)
+            obs, engine, tool, _ = self._tool(tmp, sim, ev)
+        a1 = next(r for r in obs.rows[1] if r["agent"] == "a")
+        self.assertEqual((a1["location"], a1["traveling"], a1["travel_group"], a1["co_located_with"]),
+                         ("대기실", "true", "a", ""))                  # raw 위치는 목적지, 동석 없음
+        self.assertEqual(engine, {"c": 180})
+        self.assertEqual(tool, engine)
+
+    def test_escorted_sleeping_companion_counts_as_contact_during_travel(self):
+        # z(I, 수면 중)를 m 이 병원으로 안고 간다(bring_along). 이동 중 m·z 는 서로만 접촉(동행), 목적지의 c 와는
+        # 도착 뒤에만. m 은 출발 전 같은 방에서 이미 노출되므로, 이동 중 동행 접촉은 travel_group 으로 확인한다.
+        script = {"m": [{"target": "self", "move_to": "진료실", "bring_along": ["z"]}, {"target": "self"}],
+                  "z": [{"target": "self"}], "c": [{"target": "self"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, ev = self._sim(tmp, script, {"m": "거실", "z": "거실", "c": "대기실"}, graph=self.ZONES,
+                                zone_travel_min_minutes=120, zone_travel_max_minutes=120)
+            sim._set_infected("z", 0, "event", at_minutes=0, start_status="I")
+            sim._enter_state("z", 0, minutes=600, state="sleep")
+            sim.run("m", max_waves=4, step_delay=0, starvation_waves=99, resume_wave={"m": [], "c": []})
+            obs, engine, tool, _ = self._tool(tmp, sim, ev)
+        rows1 = {r["agent"]: r for r in obs.rows[1]}
+        self.assertEqual((rows1["m"]["traveling"], rows1["m"]["travel_group"], rows1["m"]["co_located_with"]),
+                         ("true", "m|z", "z"))
+        self.assertEqual(rows1["z"]["co_located_with"], "m")
+        self.assertEqual(rows1["c"]["co_located_with"], "")            # 목적지 사람은 아직 접촉 아님
+        self.assertEqual(engine, {"m": 60, "c": 180})
+        self.assertEqual(tool, engine)
+
+    def test_wave_with_all_turns_failed_but_idle_time(self):
+        # LLM 전부 실패 — wave 0 은 시간 미누적(t_d=0), wave 1 은 연속 침묵 idle 점프 60분. 발화 행은 하나도 없지만
+        # 명단 행이 있어 도구도 wave 1 의 60분 접촉을 본다.
+        class _Dead:
+            def __call__(self, *a, **k):
+                raise RuntimeError("LLM down")
+        script = {"a": [{}], "b": [{}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, ev = self._sim(tmp, script, {"a": "거실", "b": "거실"}, mode="variable", tpw=0,
+                                idle_minutes_schedule=[60])
+            sim._llm = _Dead()
+            sim._set_infected("a", 0, "event", at_minutes=0, start_status="I")
+            sim.run("a", max_waves=2, step_delay=0, resume_wave={"a": [], "b": []})
+            obs, engine, tool, _ = self._tool(tmp, sim, ev, mode="variable", tpw=0)
+        self.assertEqual([e for e in sim.shared_log if "speaker" in e], [])
+        self.assertEqual([(w, obs.start[w], obs.end[w]) for w in obs.waves], [(0, 0, 0), (1, 0, 60)])
+        self.assertEqual(engine, {"b": 60})
+        self.assertEqual(tool, engine)
+
+    def test_variable_mode_parity(self):
+        script = {"a": [{"target": ["b"], "move_to": "방1"}, {"target": ["b"], "move_to": "거실"},
+                        {"target": ["b"], "move_to": "방2"}, {"target": ["d"]}],
+                  "b": [{"target": ["a"]}], "d": [{"target": "self"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, ev = self._run(tmp, script, {"a": "거실", "b": "방2", "d": "방2"}, waves=4,
+                                mode="variable", tpw=0, durs=[5, 420, 30, 60])
+            _, engine, tool, _ = self._tool(tmp, sim, ev, mode="variable", tpw=0)
+        self.assertEqual(engine, {"b": 515, "d": 515})                 # w3(455~515) 방2 에서 함께
+        self.assertEqual(tool, engine)
+
+    def test_continue_run_starts_from_previous_end_location(self):
+        # /continue — 같은 객체로 이어 돌리면 둘째 run 의 첫 명단 위치 = 첫 run 끝 위치, wave 번호·경과도 이어진다.
+        from backend.api.simulation.runner import fold_elapsed_and_reset_waves
+        script = {"a": [{"target": "self"}, {"target": "self", "move_to": "방1"}, {"target": "self"}],
+                  "b": [{"target": "self"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, ev = self._run(tmp, script, {"a": "거실", "b": "방1"}, waves=2)
+            fold_elapsed_and_reset_waves(sim)
+            sim.run("a", max_waves=2, step_delay=0, starvation_waves=99, resume_wave={"a": [], "b": []})
+            obs, engine, tool, _ = self._tool(tmp, sim, ev)
+        self.assertEqual(obs.waves, [0, 1, 2, 3])
+        self.assertEqual([r["location"] for r in obs.rows[2] if r["agent"] == "a"], ["방1"])
+        self.assertEqual(obs.start[2], 120)
+        self.assertEqual(engine, {"b": 180})
+        self.assertEqual(tool, engine)
+
+    class _StopLLM:
+        """n 번째 에이전트 호출에서 콜백(중지·중간 내보내기)을 부르는 스텁 — 그 wave 는 턴 일부만 로그에 남는다."""
+
+        def __init__(self, at, cb):
+            self.n, self.at, self.cb = 0, at, cb
+
+        def __call__(self, messages, **kw):
+            text = messages[0]["content"]
+            if "시간 관찰자" in text:
+                return json.dumps({"category": "normal_scene", "reason": "t"}), "", {}
+            self.n += 1
+            if self.n == self.at:
+                self.cb()
+            return json.dumps({"content": "..", "target": "self"}), "", {}
+
+    def _stoppable(self, tmp, at, cb_kind):
+        import threading
+        from ABM.export.csv import render_location_csv
+        sim, ev = self._sim(tmp, {k: [{}] for k in "abc"}, {"a": "거실", "b": "거실", "c": "안방"},
+                            graph=self.ZONES, stop_event=threading.Event())
+        snap = {}
+
+        def cb():
+            if cb_kind == "stop":
+                sim._stop_event.set()
+            else:                                                      # 실행 중 내보내기
+                snap["csv"] = render_location_csv(list(sim.shared_log), list(ev))
+                snap["exposures"] = {e["data"]["agent"]: e["data"]["elapsed_minutes"] for e in list(ev)
+                                     if e["event_type"] == "infection_update"
+                                     and e["data"]["cause"] == "transmission"}
+        sim._llm = self._StopLLM(at, cb)
+        sim._set_infected("a", 0, "event", at_minutes=0, start_status="I")
+        sim.run("a", max_waves=6, step_delay=0, starvation_waves=99, resume_wave={k: [] for k in "abc"})
+        return sim, ev, snap
+
+    def test_stopped_run_drops_the_unjudged_last_wave(self):
+        # QA stop.py — 7번째 턴(wave 2 의 첫 턴)에서 중지. wave 2 는 발화 행만 있고 명단·판정이 없다(재개하면
+        # 다시 돈다). 도구는 그 wave 를 빼고 명단 경로를 유지해야 한다(예전: 섞인 CSV 로 보고 추론 경로 → 어긋남).
+        import contextlib, io
+        from ABM.tools import rebeta
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, ev, _ = self._stoppable(tmp, 7, "stop")
+            self.assertEqual([e["wave"] for e in ev if e["event_type"] == "wave_roster"], [0, 1])
+            self.assertIn(2, {e["wave"] for e in sim.shared_log if "speaker" in e})
+            obs, engine, tool, _ = self._tool(tmp, sim, ev)
+            sc = os.path.join(tmp, "sc.json")
+            with open(sc, "w", encoding="utf-8") as fh:
+                json.dump({"config": {"time_mode": "fixed", "time_per_wave": 60, "infection_model": self.MODEL}}, fh)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rebeta.main([os.path.join(tmp, "r_locations.csv"), sc, "--beta", "1e6", "--runs", "3",
+                             "--out", os.path.join(tmp, "o")])
+        self.assertTrue(obs.full)
+        self.assertFalse(obs.mixed)
+        self.assertEqual(obs.waves, [0, 1])
+        self.assertEqual(obs.dropped_unjudged, [2])
+        self.assertEqual(engine, {"b": 60})
+        self.assertEqual(tool, engine)
+        self.assertIn("판정을 하기 전에 멈춘", buf.getvalue())
+        self.assertNotIn("/continue", buf.getvalue())
+
+    def test_export_while_running_matches_engine_so_far(self):
+        # 실행 중 내보내기 — wave 1 의 두 번째 턴 도중에 CSV 를 만든다. 그 시점까지의 명단 wave(0)만 계산한다.
+        from ABM.tools import rebeta
+        with tempfile.TemporaryDirectory() as tmp:
+            _, _, snap = self._stoppable(tmp, 6, "export")
+            path = os.path.join(tmp, "mid_locations.csv")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(snap["csv"])
+            obs = rebeta.load_location_csv(path)
+            seeds, _, _ = rebeta.resolve_seeds(obs, None)
+            res = rebeta.simulate_once(obs, rebeta.build_roster(obs), self.MODEL, 1e6, 1, seeds=seeds)
+        self.assertTrue(obs.full)
+        self.assertEqual(obs.waves, [0])
+        # wave 1 의 턴은 병렬이라 내보낸 순간 로그에 몇 개가 실렸는지는 순서에 달렸다 — 실렸으면 제외된다.
+        self.assertIn(obs.dropped_unjudged, ([], [1]))
+        self.assertEqual({a: m for a, m in res.infection_minutes.items() if a != "a"}, snap["exposures"])
+        self.assertEqual(snap["exposures"], {"b": 60})
+
+    def test_non_roster_wave_before_a_roster_wave_is_still_mixed(self):
+        from ABM.tools import rebeta
+        hdr = ("wave,wave_start_time,wave_end_time,agent,location,is_exterior,infection_status,is_infectious,"
+               "elapsed_minutes_start,elapsed_minutes_end,co_located_with,new_exposure,acted,traveling,travel_group")
+        body = ["0,t0,t1,a,X,false,I,true,0,60,,false,true,,",            # 옛 run 의 wave(명단 없음)
+                "1,t1,t2,a,X,false,I,true,60,120,b,false,true,false,",
+                "1,t1,t2,b,X,false,S,false,60,120,a,false,false,false,"]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "m.csv")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("\n".join([hdr, *body]) + "\n")
+            obs = rebeta.load_location_csv(path)
+        self.assertEqual((obs.full, obs.mixed, obs.dropped_unjudged), (False, True, []))
+
+    def test_repeated_seeding_without_immunity(self):
+        # 면역 없는 모델: a 가 회복(S)한 뒤 infect_agent 로 다시 I — 두 번 모두 시드(첫 시드만 쓰면 두 번째 경과가 사라진다).
+        from ABM.tools import rebeta
+        hdr = ("wave,wave_start_time,wave_end_time,agent,location,is_exterior,infection_status,is_infectious,"
+               "elapsed_minutes_start,elapsed_minutes_end,co_located_with,new_exposure,acted,traveling,travel_group")
+        st = {0: "I", 1: "S", 2: "I", 3: "I"}
+        body = [f"{w},t,t,a,X,false,{st[w]},{str(st[w] == 'I').lower()},{w * 60},{w * 60 + 60},b,"
+                f"{str(w in (0, 2)).lower()},true,false," for w in range(4)]
+        body += [f"{w},t,t,b,X,false,S,false,{w * 60},{w * 60 + 60},a,false,false,false," for w in range(4)]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "s.csv")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("\n".join([hdr, *body]) + "\n")
+            obs = rebeta.load_location_csv(path)
+            seeds, _, _ = rebeta.resolve_seeds(obs, None)
+            model = {**self.MODEL, "immune_after_recovery": False}
+            res = rebeta.simulate_once(obs, rebeta.build_roster(obs), model, 0.0, 1, seeds=seeds, record=True)
+        self.assertEqual([(s.agent, s.wave, s.start_status) for s in seeds], [("a", 0, "I"), ("a", 2, "I")])
+        got = {r["wave"]: r["sim_status"] for r in res.waves if r["agent"] == "a"}
+        self.assertEqual(got, {0: "I", 1: "S", 2: "I", 3: "I"})
+
+    def test_events_feed_covers_every_run_in_the_log(self):
+        # /events 는 /logs(sim_obj.shared_log)와 같은 범위 — /continue 로 이어 붙인 run 들, /load 로 불러온 run.
+        from backend.api.simulation.runtime import feeds
+        from backend.api.simulation.state import _sim
+
+        class _DB:
+            def get_run_events(self, run_id, types=None):
+                return [{"run": run_id, "types": types, "event_type": "time_jump"},
+                        {"run": run_id, "types": types, "event_type": "wave_roster"}]
+
+        class _Obj:
+            _db, _sim_id, _export_run_ids = _DB(), "r2", ["r1", "r2"]
+
+        legacy = _Obj()
+        legacy._export_run_ids = []
+        before = _sim.get("sim_obj")
+        try:
+            _sim["sim_obj"] = _Obj()
+            got = feeds.get_sim_events("wave_roster,time_jump")
+            _sim["sim_obj"] = legacy
+            got_legacy = feeds.get_sim_events("")
+        finally:
+            _sim["sim_obj"] = before
+        self.assertEqual([g["run"] for g in got], ["r1", "r1", "r2", "r2"])
+        self.assertEqual(got[0]["types"], ["wave_roster", "time_jump"])
+        # 목록이 없으면 현재 run 만(예전 동작). 타입을 안 주면 wave_roster 는 빠진다(마크다운 등 전체 조회).
+        self.assertEqual([(g["run"], g["event_type"]) for g in got_legacy], [("r2", "time_jump")])
+
+    def test_engine_tracks_export_run_ids(self):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        with tempfile.TemporaryDirectory() as tmp:
+            a = {"a": Agent("a", "너는 a다.", tmp, token_limit=4096)}
+            with_id = Simulation(a, [], tmp, llm=_ScriptedLLM({"a": [{}]}), sim_id="run-1")
+            without = Simulation(a, [], tmp, llm=_ScriptedLLM({"a": [{}]}))
+        self.assertEqual(with_id._export_run_ids, ["run-1"])
+        self.assertEqual(without._export_run_ids, [])
+        for path, needle in (("backend/api/simulation/runtime/lifecycle.py", "run_ids.append(run_sim_id)"),
+                             ("backend/api/simulation/runtime/load.py", "sim_obj._export_run_ids = [run_id]")):
+            self.assertIn(needle, (Path(__file__).resolve().parent.parent / path).read_text(encoding="utf-8"))
+
+    @unittest.skipUnless(__import__("shutil").which("node"), "node 필요")
+    def test_python_and_js_render_identical_roster_csv(self):
+        import subprocess
+        from ABM.export.csv import render_location_csv
+        log = [  # wave 0 은 명단 없는 옛 wave(구형식 행), wave 1·2 는 명단
+            {"speaker": "a", "wave": 0, "time_str": "t0", "location": "거실", "is_exterior": False,
+             "infection_status": "I", "elapsed_minutes": 0},
+            {"speaker": "b", "wave": 0, "time_str": "t0", "location": "거실", "is_exterior": False,
+             "infection_status": "S", "elapsed_minutes": 0},
+            {"speaker": "a", "wave": 1, "time_str": "t1", "location": "거실", "is_exterior": False,
+             "infection_status": "I", "elapsed_minutes": 60},
+            {"speaker": "x", "wave": 2, "time_str": "t2", "location": "길", "is_exterior": True,
+             "infection_status": "S", "elapsed_minutes": 120},   # 명단에 없는 발화자(방어 경로)
+        ]
+        agents1 = [
+            {"agent": "a", "location": "거실", "is_exterior": False, "status": "I", "traveling": False},
+            {"agent": "b", "location": "거실", "is_exterior": False, "status": "E", "traveling": False},
+            {"agent": "f", "location": "", "is_exterior": False, "status": "S", "traveling": False},
+            {"agent": "m", "location": "진료실", "is_exterior": False, "status": "S", "traveling": True,
+             "travel_group": ["z", "m"]},
+            {"agent": "z", "location": "진료실", "is_exterior": False, "status": "I", "traveling": True,
+             "travel_group": ["m", "z"]},
+            {"agent": "s", "location": "진료실", "is_exterior": False, "status": "S", "traveling": True},
+            {"agent": "o", "location": "길", "is_exterior": True, "status": "S", "traveling": False},
+            {"agent": "q", "location": "안방, \"끝\"", "is_exterior": False, "status": "R", "traveling": False},
+        ]
+        agents2 = [{"agent": "f", "location": "", "is_exterior": False, "status": "S", "traveling": False},
+                   {"agent": "g", "location": "", "is_exterior": False, "status": "S", "traveling": False}]
+        events = [
+            {"event_type": "time_jump", "wave": 0, "data": {"end_time_str": "t1", "end_elapsed_minutes": 60}},
+            {"event_type": "wave_roster", "wave": 1, "data": {
+                "wave": 1, "start_elapsed_minutes": 60, "end_elapsed_minutes": 120,
+                "start_time_str": "t1", "end_time_str": "t2", "agents": agents1}},
+            {"event_type": "wave_roster", "wave": 2, "data": {
+                "wave": 2, "start_elapsed_minutes": 120, "end_elapsed_minutes": 120,
+                "start_time_str": "t2", "end_time_str": "t2", "agents": agents2}},
+            {"event_type": "infection_update", "wave": 1, "data": {"agent": "f", "cause": "transmission"}},
+            {"event_type": "move_intent", "wave": 1, "data": {}},
+        ]
+        py = render_location_csv(log, events)
+        legacy_only = render_location_csv(log, [e for e in events if e["event_type"] != "wave_roster"])
+        root = str(Path(__file__).resolve().parent.parent)
+        script = (
+            f"const m = await import({json.dumps(root + '/frontend/js/sim/export/csv.js')});"
+            "let s=''; process.stdin.on('data', c => s += c); process.stdin.on('end', () => {"
+            " const {log, events, legacy} = JSON.parse(s);"
+            " process.stdout.write(m.buildLocationCsv(log, events) + '=====' + m.buildLocationCsv(log, legacy)); });"
+        )
+        payload = {"log": log, "events": events,
+                   "legacy": [e for e in events if e["event_type"] != "wave_roster"]}
+        proc = subprocess.run(["node", "--input-type=module", "-e", script],
+                              input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                              capture_output=True, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
+        js, js_legacy = proc.stdout.decode("utf-8").split("=====")
+        self.assertEqual(js, py)
+        self.assertEqual(js_legacy, legacy_only)
+        rows = _csv_rows(py)
+        by = {(r[0], r[3]): dict(zip(rows[0], r)) for r in rows[1:]}
+        self.assertEqual(rows[0][-3:], ["acted", "traveling", "travel_group"])
+        self.assertEqual(len(_csv_rows(legacy_only)[0]), 12)            # 명단이 없으면 예전 출력 그대로
+        self.assertEqual(by[("0", "b")]["acted"], "true")               # 구형식 wave 행
+        self.assertEqual(by[("0", "b")]["traveling"], "")
+        self.assertEqual(by[("1", "a")]["co_located_with"], "b|f")      # floater f 는 장소 그룹에
+        self.assertEqual(by[("1", "f")]["co_located_with"], "a|b|q")    # floater 는 모든 장소 그룹
+        self.assertEqual(by[("1", "m")]["co_located_with"], "z")        # 동행끼리만
+        self.assertEqual(by[("1", "m")]["travel_group"], "m|z")
+        self.assertEqual(by[("1", "s")]["co_located_with"], "")         # 혼자 이동
+        self.assertEqual(by[("1", "o")]["co_located_with"], "")         # 외부 공간
+        self.assertEqual((by[("1", "b")]["acted"], by[("1", "a")]["acted"]), ("false", "true"))
+        self.assertEqual(by[("1", "f")]["new_exposure"], "true")
+        self.assertEqual(by[("2", "f")]["co_located_with"], "g")        # 장소 그룹이 없으면 floater 끼리
+        self.assertEqual(by[("2", "x")]["traveling"], "")               # 명단에 없는 발화자 → 구형식 행
+
+
 class LocationCsvTests(unittest.TestCase):
     """`ABM/export/csv.py` — `frontend/js/sim/export/csv.js` 의 파이썬 쌍둥이.
 
@@ -12997,7 +13396,11 @@ class LocationCsvTests(unittest.TestCase):
         _, _, result = _run_golden()                        # db=None
         rows = _csv_rows(render_location_csv(result.shared_log, result.events))
         turns = [e for e in result.shared_log if "speaker" in e]
-        self.assertEqual(len(rows) - 1, len(turns))
+        # 명단 형식(엔진 wave_roster) — wave 마다 활성 에이전트 전원 1행, 턴을 받은 행은 acted=true.
+        rosters = [e for e in result.events if e["event_type"] == "wave_roster"]
+        self.assertEqual(len(rows) - 1, sum(len(e["data"]["agents"]) for e in rosters))
+        self.assertEqual(rows[0][-3:], ["acted", "traveling", "travel_group"])
+        self.assertEqual(sum(r[12] == "true" for r in rows[1:]), len(turns))
         self.assertEqual(len(turns), 5)
         # 엔진이 실어준 위치 컬럼이 실제로 채워진다. `location` 은 그 wave 의 이동이
         # 적용되기 **전** 값이라(turn.py `_apply_turn_result`) 마지막에 현관으로 나간

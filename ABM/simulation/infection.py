@@ -386,15 +386,11 @@ class _InfectionMixin:
         buckets:  dict[str, list[str]] = {}
         travel:   dict[tuple, list[str]] = {}
         floaters: list[str] = []
-        statuses = getattr(self, "_agent_status", None) or {}
         for key in sorted(self.active_agents):
-            if now is not None:
-                st = statuses.get(key)
-                if (st and st.get("state") == "traveling"
-                        and now < st.get("until_elapsed", 0)):
-                    members = st.get("travel_group") or [key]
-                    travel.setdefault(tuple(sorted(members)), []).append(key)
-                    continue
+            members = self._travel_group_of(key, now)
+            if members is not None:
+                travel.setdefault(members, []).append(key)
+                continue
             loc = self._agent_location.get(key, "")
             if loc in self._exterior_locations:
                 continue  # 외부 공간 — 서로 접촉하지 않음
@@ -410,6 +406,66 @@ class _InfectionMixin:
             groups = [floaters]
         groups += list(travel.values())
         return [group for group in groups if len(group) >= 2]
+
+    def _travel_group_of(self, key: str, now: int | None) -> tuple | None:
+        """`now` 시점에 zone 경계 이동 중이면 함께 이동하는 사람들(자신 포함, 정렬), 아니면 None.
+
+        동행(bring_along)은 리더와 대상 모두의 traveling 상태에 같은 `travel_group` 이 실린다
+        (runner._move_one_hop). 혼자 이동하면 `(key,)`. `now` 가 None 이면 판정하지 않는다.
+        """
+        if now is None:
+            return None
+        st = (getattr(self, "_agent_status", None) or {}).get(key)
+        if not st or st.get("state") != "traveling" or now >= st.get("until_elapsed", 0):
+            return None
+        return tuple(sorted(st.get("travel_group") or [key]))
+
+    # ── wave 명단 (위치 이력 CSV 의 정본) ──────────────────────────────────────
+
+    def _wave_roster(self, run_wave: int) -> dict:
+        """wave **시작** 시점의 활성 에이전트 전원 명단 — 감염 판정 스냅샷과 같은 시점·같은 값.
+
+        `wave_roster` 이벤트(`_emit_wave_roster`)로 영속돼 위치 이력 CSV(ABM/export/csv.py,
+        frontend/js/sim/export/csv.js)와 β 재계산 도구(ABM/tools/rebeta.py)가 추론 없이 엔진과
+        같은 접촉을 재구성하게 한다. 감염 모델이 꺼져 있어도 만든다(상태는 전부 S).
+        항목: agent · location(raw, 이동 중이면 목적지) · is_exterior · status(wave 시작 S/E/P/I/R) ·
+        traveling · travel_group(이동 중일 때만 — 함께 이동하는 사람 전원, 자신 포함).
+        """
+        start = self._current_elapsed_minutes(run_wave)
+        agents = []
+        for key in sorted(self.active_agents):
+            loc = self._agent_location.get(key, "") or ""
+            group = self._travel_group_of(key, start)
+            item = {
+                "agent":       key,
+                "location":    loc,
+                "is_exterior": loc in self._exterior_locations,
+                "status":      (self._agent_infection.get(key) or {}).get("status", _S)
+                               if self._infection_enabled else _S,
+                "traveling":   group is not None,
+            }
+            if group is not None:
+                item["travel_group"] = list(group)
+            agents.append(item)
+        return {"start_minutes": start, "agents": agents}
+
+    def _emit_wave_roster(self, run_wave: int, disp_wave: int, roster: dict) -> None:
+        """wave **끝**(감염 판정 직후)에 시작 명단 + 시작·끝 경과분을 한 이벤트로 남긴다.
+
+        끝 경과분은 `_current_elapsed_minutes(run_wave + 1)` — 감염 판정이 t_d 로 쓰는 것과 같은 값이라
+        fixed 모드(time_jump 없음)·시간이 안 흐른 wave 도 정확한 끝을 갖는다. 중단돼 판정하지 않은
+        wave 는 내지 않는다(재개 시 같은 wave 를 다시 돈다).
+        """
+        end = self._current_elapsed_minutes(run_wave + 1)
+        start = roster["start_minutes"]
+        self._emit("wave_roster", {
+            "wave":                  disp_wave,
+            "start_elapsed_minutes": start,
+            "end_elapsed_minutes":   end,
+            "start_time_str":        self._format_time_str(self._sim_start_minutes + start),
+            "end_time_str":          self._format_time_str(self._sim_start_minutes + end),
+            "agents":                roster["agents"],
+        })
 
     # ── 매 wave 모델 적용 ─────────────────────────────────────────────────────
 

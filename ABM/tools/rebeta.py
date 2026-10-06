@@ -19,7 +19,18 @@
 **"최종 감염자" = 관찰 기간 끝까지.** 마지막 wave 이후의 감염은 세지 않는다(출력에 기간 X일 명시).
 감염자 = 관찰 기간 중 한 번이라도 S 를 벗어난 에이전트(시드 포함).
 
-## 접촉 재구성 (설계 결정)
+## 두 입력 형식
+
+  - **명단 형식(2026-10 task B 이후 실행, 기본)** — CSV 에 `traveling` 컬럼이 있고 모든 wave 가 엔진
+    `wave_roster` 명단 행(활성 에이전트 전원, wave 시작 위치·상태·이동 중·동행·시작/끝 경과분)이면 **추론하지
+    않는다**: 명단 = 행 그대로(채우기·`--backfill` 없음), 이동 중인 사람은 shim 의 `_agent_status` 에 traveling +
+    `travel_group` 으로 넣어 엔진 `_compute_contact_groups` 가 동행끼리만 묶게 하고, t_d = 행의 끝 − 시작(엔진이
+    남긴 값 — fixed 모드·시간 없는 wave 포함). 시드 = 명단의 wave 시작 상태(`_resolve_seeds_full` — 첫 행부터 S 가
+    아닌 사람, S 였다가 `new_exposure=true` 행에서 E/P/I 가 된 사람 = `infect_agent`). 시나리오 이벤트·시간 설정은
+    쓰지 않는다. 아래 "접촉 재구성"·"시드"·"한계"의 추론 규칙은 구형식에만 해당한다.
+  - **구형식(옛 실행 — 발화자 행만)** 또는 명단 wave 와 옛 wave 가 섞인 CSV — 아래 추론 경로(경고 출력).
+
+## 접촉 재구성 (설계 결정 — 구형식)
 
 엔진의 전염 판정(2026-10 wave 타이밍 정정 — `ABM/simulation/infection.py` 모듈 docstring)은
 **wave 시작 위치의 접촉 그룹 × 그 wave 자신의 경과 시간**이다. CSV 행의 `location` 이 바로 그 wave
@@ -55,7 +66,7 @@ E/P/I 지속 추첨·P 0일이면 E→I 직행·`immune_after_recovery`·새 노
 run 번호는 β 가 달라도 같은 난수열에서 출발한다(common random numbers). **원래 실행의 난수열과는
 같지 않다** — 원래 실행은 이동 시간·시간 카테고리 등 다른 추첨도 같은 전역 난수로 했기 때문이다.
 
-## 시드(환자 0번)와 처음부터 감염 상태인 사람 (설계 결정)
+## 시드(환자 0번)와 처음부터 감염 상태인 사람 (설계 결정 — 구형식)
 
   - **시드 = 시나리오의 `infect_agent` 이벤트**(agent, wave, start_status). 이벤트 정보가 있으면 이게
     정본이다. 시드는 max(이벤트 wave, 그 사람의 첫 등장 wave)의 **시작**에 걸린다(엔진도 이벤트를 wave 시작에
@@ -78,7 +89,7 @@ run 번호는 β 가 달라도 같은 난수열에서 출발한다(common random
 엔진의 t_d 는 각 wave 자신의 시작·끝 차이라 저장 상태가 없어 `/resume`·`/load` 경계에서도 이어 돌린 것과
 같다 — 경계 보정이 필요 없다(예전의 `--reset-at` 은 제거됨).
 
-## 한계 (CSV 에 정보가 없는 것 — 후속 과제)
+## 한계 (구형식 CSV — 명단 형식에는 없음)
   - 마지막 발화 이후 이동(tail)의 목적지는 알 수 없다 — 한 번 `move_to` 로 떠나고 다시 발화하지 않은
     사람은 출발지에 남는다(QA e2e2).
   - zone 경계 이동 중(traveling)인 사람을 엔진은 동행 외 누구와도 접촉시키지 않지만, CSV 에는 이동 중
@@ -157,6 +168,10 @@ class Observed:
     blank_status_rows: int = 0                        # infection_status 가 빈 행 수(S 로 취급)
     time_mode: str | None = None                      # 시나리오 config.time_mode (None = 모름 → variable 규칙)
     time_per_wave: int = 0                            # fixed 모드의 wave 길이(분)
+    full: bool = False                                # 명단 형식 — 모든 wave 가 활성 에이전트 전원 행
+    mixed: bool = False                               # 명단 wave 와 구형식(발화자만) wave 가 섞임 → 구형식 경로
+    travel: dict = field(default_factory=dict)        # (명단 형식) wave → agent → travel_group(이동 중인 사람만)
+    dropped_unjudged: list = field(default_factory=list)   # 마지막 명단 wave 뒤의 판정 안 된 wave(제외됨)
 
     @property
     def fixed_time(self) -> bool:
@@ -209,6 +224,22 @@ def load_location_csv(path) -> Observed:
                 f"CSV(ABM/export/csv.py)가 필요합니다."
             )
         raw = [r for r in reader if (r.get("agent") or "").strip()]
+    dropped: list[int] = []
+    if "traveling" in fieldnames:
+        # 명단 형식에서 마지막 명단 wave **뒤**에만 있는 구형식 행 = 엔진이 판정하지 않은 wave(중지된 run 의
+        # 마지막 반쯤 돈 wave, 실행 중 내보내기). 엔진 계산에 없으므로 빼고 명단 경로를 유지한다.
+        by_w: dict[int, list[dict]] = {}
+        for r in raw:
+            w = _int_or_none(r.get("wave"))
+            if w is not None:
+                by_w.setdefault(w, []).append(r)
+        is_roster = {w: all((r.get("traveling") or "").strip().lower() in ("true", "false") for r in rs)
+                     for w, rs in by_w.items()}
+        roster_ws = [w for w, ok in is_roster.items() if ok]
+        if roster_ws:
+            last = max(roster_ws)
+            dropped = sorted(w for w, ok in is_roster.items() if not ok and w > last)
+            raw = [r for r in raw if _int_or_none(r.get("wave")) not in set(dropped)]
 
     rows: dict[int, list[dict]] = {}
     start: dict[int, int] = {}
@@ -240,7 +271,23 @@ def load_location_csv(path) -> Observed:
             exterior.add(r["location"])
     if not rows:
         raise RebetaError(f"{path}: 데이터 행이 없습니다(헤더만 있는 CSV).")
-    return Observed(fieldnames, sorted(rows), start, end, rows, agents, first_wave, exterior, blank)
+    obs = Observed(fieldnames, sorted(rows), start, end, rows, agents, first_wave, exterior, blank)
+    obs.dropped_unjudged = dropped
+    if "traveling" in fieldnames:
+        # 명단 형식(ABM/export/csv.py `_render_with_roster`) — 명단 wave 의 행은 traveling 이 true/false,
+        # 구형식 행(옛 run 의 wave)은 빈 값이다. wave 단위로 판정한다.
+        roster_wave = {w: all((r.get("traveling") or "").strip().lower() in ("true", "false") for r in rs)
+                       for w, rs in rows.items()}
+        if all(roster_wave.values()):
+            obs.full = True
+            for w, rs in rows.items():
+                for r in rs:
+                    if (r.get("traveling") or "").strip().lower() == "true":
+                        group = [m for m in (r.get("travel_group") or "").split("|") if m] or [r["agent"]]
+                        obs.travel.setdefault(w, {})[r["agent"]] = group
+        elif any(roster_wave.values()):
+            obs.mixed = True
+    return obs
 
 
 @dataclass
@@ -304,8 +351,34 @@ def load_seed_events(path) -> list[Seed] | None:
     return seeds
 
 
+def _resolve_seeds_full(obs: Observed) -> tuple[list[Seed], list[str], list[str]]:
+    """명단 형식 — 추론 없이 엔진이 남긴 wave 시작 상태로 시드를 정한다.
+
+    - 첫 명단 행부터 S 가 아닌 사람(이전 run 에서 감염 · 이 run 이전 상태) → 그 wave, 그 상태로 시드.
+    - `infect_agent` 이벤트는 wave **시작**(스냅샷 앞)에 실행되므로 그 wave 행이 이미 E/P/I 이고
+      `new_exposure=true` 다 — S 였다가 그런 행이 나오면 그 wave 에 그 상태로 시드. 면역 없는 모델에서 회복(S)
+      뒤 다시 시드되면 그때마다 시드다.
+    접촉 전파로 감염된 사람은 그 wave 행이 S(+new_exposure)이고 다음 행부터 E 라 시드가 아니다(시뮬레이션 대상).
+    """
+    seeds: list[Seed] = []
+    for a in obs.agents:
+        prev = None
+        for w in obs.waves:
+            r = next((x for x in obs.rows[w] if x["agent"] == a), None)
+            if r is None:
+                continue
+            st = _status(r)
+            exposed = (r.get("new_exposure") or "").strip().lower() == "true"
+            if st != "S" and (prev is None or (prev == "S" and exposed)):
+                seeds.append(Seed(a, w, st))          # 회복(S) 뒤 다시 시드되면 또 추가된다
+            prev = st
+    return seeds, [], ["명단 형식 CSV 의 wave 시작 상태(첫 행의 E/P/I/R · infect_agent 로 바뀐 wave)"]
+
+
 def resolve_seeds(obs: Observed, seed_events: list[Seed] | None) -> tuple[list[Seed], list[str], list[str]]:
     """(적용할 시드, 경고, 시드 출처 설명). 규칙은 모듈 docstring "시드" 절."""
+    if obs.full:
+        return _resolve_seeds_full(obs)
     warnings: list[str] = []
     if seed_events is not None:
         seeds = []
@@ -368,12 +441,17 @@ def _fill(obs: Observed, value_of, *, backfill: bool) -> dict[int, dict[str, tup
 
 
 def build_roster(obs: Observed, *, backfill: bool = False) -> Roster:
+    if obs.full:                                      # 명단 형식 — 행 그대로(채우지 않음)
+        return {w: {r["agent"]: (r.get("location") or "", _ext(r), False) for r in rs}
+                for w, rs in obs.rows.items()}
     filled = _fill(obs, lambda r: (r.get("location") or "", _ext(r)), backfill=backfill)
     return {w: {a: (v[0], v[1], imp) for a, (v, imp) in d.items()} for w, d in filled.items()}
 
 
 def build_observed_status(obs: Observed, *, backfill: bool = False) -> dict[int, dict[str, str]]:
     """wave 별 관찰 감염 상태(행 사이는 다음 행 상태 — 관찰된 변화를 gap 의 첫 wave 부터 적용)."""
+    if obs.full:
+        return {w: {r["agent"]: _status(r) for r in rs} for w, rs in obs.rows.items()}
     filled = _fill(obs, _status, backfill=backfill)
     return {w: {a: v for a, (v, _imp) in d.items()} for w, d in filled.items()}
 
@@ -437,6 +515,9 @@ def wave_ends(obs: Observed) -> dict[int, int]:
     """
     out = {}
     for i, w in enumerate(obs.waves):
+        if obs.full and obs.end.get(w) is not None:   # 명단 형식 — 엔진이 남긴 끝(fixed 포함) 그대로
+            out[w] = max(obs.end[w], obs.start[w])
+            continue
         if obs.fixed_time:
             out[w] = obs.start[w] + max(0, obs.time_per_wave)
             continue
@@ -459,8 +540,10 @@ def simulate_once(obs: Observed, roster: Roster, model: dict, beta: float, seed:
     if seeds is None:
         seeds = resolve_seeds(obs, None)[0]
     ends = wave_ends(obs)
-    pending = {s.agent: s for s in seeds}                    # 아직 안 걸린 시드
-    seed_status = {s.agent: s.start_status for s in seeds}
+    # 아직 안 걸린 시드(wave 순). 같은 사람이 여러 번 시드될 수 있다(명단 형식 — 면역 없는 모델에서
+    # 회복 뒤 infect_agent 로 다시 감염). 엔진처럼 S 일 때만 걸린다.
+    pending = sorted(seeds, key=lambda x: x.wave)
+    seed_status: dict[str, str] = {}
     seen_infected: set[str] = set()
     started: set[str] = set()
     replay: set[str] = set()
@@ -479,13 +562,20 @@ def simulate_once(obs: Observed, roster: Roster, model: dict, beta: float, seed:
         eng._now[i + 1] = ends[w]
         started.update(roster[w])
         # 시드 — 이벤트 wave 와 첫 등장 중 늦은 쪽의 wave 시작에 건다(엔진: 이벤트는 wave 시작에 실행).
-        for a, s in list(pending.items()):
+        for s in list(pending):
+            a = s.agent
             if a in started and s.wave <= w:
-                del pending[a]
+                pending.remove(s)
+                if a in replay or (initial_mode != "replay" and eng._infection_entry(a)["status"] != "S"):
+                    continue                              # 이미 감염 중 — 엔진의 infect_agent 도 무시한다
                 seeded.add(a)
                 infected.add(a)
+                seed_status[a] = s.start_status
                 if initial_mode == "replay":
                     replay.add(a)
+                    seen_infected.discard(a)
+                elif s.start_status == "R":                # 관찰 시작부터 회복 상태 — 그대로 둔다
+                    eng._infection_entry(a)["status"] = "R" if eng._infection_immune else "S"
                 else:
                     eng._set_infected(a, w, "event", at_minutes=_anchor(s.wave), start_status=s.start_status)
         # replay — 관찰 상태를 강제하고 진행 시계는 얼린다. 관찰상 S 면(시드 직후 아직 감염 관찰 전이면
@@ -507,6 +597,9 @@ def simulate_once(obs: Observed, roster: Roster, model: dict, beta: float, seed:
         # 접촉 = 이 wave 의 시작 위치(= CSV location, gap 은 채운 값). 첫 등장 전인 사람은 부재.
         eng.active_agents = {a for a in roster[w] if a in started}
         eng._agent_location = {a: roster[w][a][0] for a in eng.active_agents}
+        # 명단 형식 — 이동 중인 사람은 엔진처럼 동행끼리만(엔진 `_compute_contact_groups` 의 traveling 판정).
+        eng._agent_status = {a: {"state": "traveling", "until_elapsed": _FROZEN, "travel_group": g}
+                             for a, g in obs.travel.get(w, {}).items() if a in eng.active_agents}
         start = eng._infection_wave_start(i)
         if record:
             p_of = _infection_probabilities(eng, start, ends[w] - now)
@@ -704,7 +797,19 @@ def _run_cli(args) -> int:
         warnings.append("시나리오의 감염 모델이 꺼져 있습니다(enabled=false) — 원래 실행에서는 감염 판정이 "
                         "없었으니 sanity check 는 의미가 없습니다.")
     last = obs.waves[-1]
-    if obs.time_mode is None:
+    if obs.dropped_unjudged:
+        d = obs.dropped_unjudged
+        warnings.append(f"마지막 명단 wave 뒤의 wave {d[0]}{'~' + str(d[-1]) if len(d) > 1 else ''} 는 엔진이 감염 "
+                        f"판정을 하기 전에 멈춘(중지된 run 의 마지막 wave · 실행 중 내보내기) wave 라 제외합니다.")
+    if obs.mixed:
+        warnings.append("명단 행이 없는 wave 가 명단 wave 앞이나 사이에 있습니다(명단 기록 이전 실행을 /continue 로 "
+                        "이어 붙인 로그 등) — 전체를 구형식(추론) 경로로 계산합니다.")
+    elif not obs.full:
+        warnings.append("구형식 CSV(발화자 행만) — 위치·상태를 행 사이에서 추론하고 시드를 시나리오 이벤트로 "
+                        "정합니다. 명단 형식 CSV(2026-10 이후 실행)면 엔진과 같은 값을 그대로 씁니다.")
+    if obs.full and args.backfill:
+        warnings.append("--backfill 은 구형식 CSV 에만 쓰입니다(명단 형식은 채울 것이 없음) — 무시합니다.")
+    if obs.time_mode is None and not obs.full:
         warnings.append("시나리오에 time_mode 가 없어 variable 규칙(CSV 의 종료 경과분)으로 접촉 시간을 계산합니다.")
     if not obs.fixed_time and obs.end.get(last) is None:
         warnings.append(f"마지막 wave {last} 의 종료 경과분이 없어 그 wave 의 접촉 시간을 0 으로 둡니다"
@@ -744,6 +849,7 @@ def _run_cli(args) -> int:
     for line in ASSUMPTION_LINES:
         print(f"  * {line}")
     tm = (f"fixed {obs.time_per_wave}분/wave" if obs.fixed_time else (obs.time_mode or "모름(variable 규칙)"))
+    tm += " · 형식: " + ("명단(엔진 값 그대로)" if obs.full else "구형식(추론)")
     print(f"  * 관찰 기간 {obs.observed_days:.2f}일 · 에이전트 {n}명({', '.join(obs.agents)}) · "
           f"runs={args.runs} · seed={args.seed} · 시드 경과: {args.initial_mode} · 시간: {tm}")
     print(f"  * 시드: {', '.join(f'{s.agent}(wave {s.wave}, {s.start_status})' for s in seeds) or '없음'} "

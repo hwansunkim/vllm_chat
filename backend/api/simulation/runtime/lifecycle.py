@@ -168,6 +168,10 @@ def continue_simulation(cfg: SimContinueConfig):
             sim_obj._event_queue    = eq
             sim_obj._stop_event     = stop_ev
             sim_obj._sim_id         = run_sim_id
+            # shared_log 이 이어지므로 내보내기 이벤트 범위도 이어 붙인다(feeds./events).
+            run_ids = getattr(sim_obj, "_export_run_ids", None)
+            if isinstance(run_ids, list):
+                run_ids.append(run_sim_id)
             # 이번까지의 총 경과를 _elapsed_minutes로 접고 completed_waves를 0으로
             # 되돌린다 — 접기를 빠뜨리면 fixed 모드에서 에이전트가 보는 [현재 시각]이
             # 시나리오 시작 시각으로 되감긴다. 순서 의존이 있어 헬퍼로 묶어뒀다.

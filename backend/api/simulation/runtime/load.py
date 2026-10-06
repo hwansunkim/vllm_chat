@@ -174,6 +174,9 @@ def load_simulation(run_id: str):
         ]
         # sim_obj.shared_log에도 복원 — /logs 엔드포인트가 sim_obj 우선으로 읽기 때문
         sim_obj.shared_log.extend(shared_log)
+        # 내보내기(/events)가 이 로그와 같은 run 의 이벤트(wave_roster·time_jump·infection_update)를
+        # 읽게 한다 — 불러온 객체는 sim_id 가 없어 예전엔 이벤트가 비어 CSV 가 폴백으로만 채워졌다.
+        sim_obj._export_run_ids = [run_id]
 
         with _sim_lock:
             _sim["agents"]         = sim_obj.agents
