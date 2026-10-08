@@ -116,7 +116,8 @@ def format_full_memory(
     "지금 이 순간"이 없으므로 run이 끝난 시점을 기준으로 고정한다.
 
     `token_budget` 을 주면 그 안에 들어가도록 오래된 에피소드 → 오래된 사실
-    순으로 덜어낸다(자기 상태·인물 관계는 짧고 회고 가치가 높아 유지).
+    순으로 덜어낸다(인물 관계는 짧고 회고 가치가 높아 유지). 예전의 "현재 상태"(self_state)는
+    압축 때만 덮어써 묵은 값이 되므로 라이브 프롬프트와 같이 싣지 않는다(memory_compressor 주석).
     긴 run 에서는 이 블록만으로 수천 토큰이 되므로 상한이 필요하다.
     """
     from ABM.agent import _estimate_tokens
@@ -125,9 +126,8 @@ def format_full_memory(
     episodes      = memory.get("episodes") or []
     facts         = memory.get("facts") or []
     relationships = memory.get("relationships") or []
-    self_state    = memory.get("self_state") or ""
 
-    if not any([episodes, facts, relationships, self_state]):
+    if not any([episodes, facts, relationships]):
         return None
 
     alias = key_to_alias or {}
@@ -152,8 +152,6 @@ def format_full_memory(
     def render(f_lines: list[str], eps: list[dict],
                f_omitted: int = 0, e_omitted: int = 0) -> str:
         lines = ["[나의 기억 요약]"]
-        if self_state:
-            lines.append(f"■ 현재 상태: {self_state}")
         if f_lines or f_omitted:
             lines.append("■ 알고 있는 사실:")
             if f_omitted:

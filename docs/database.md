@@ -276,6 +276,8 @@ LLM으로 델타 압축해 아래 테이블을 upsert하고 raw는 `messages`에
 ### `agent_self_state`
 
 `(sim_id, agent_key)` PK · `description`(동기·감정 한 문장) · `updated_wave` · `updated_at`.
+**2026-10-08 부터 쓰지도 읽지도 않는다**(압축 스키마에서 제거, 프롬프트에 싣지 않음 — simulation-engine.md 층 3).
+옛 run 의 행은 그대로 남고 `delete_run` 이 함께 지운다. `GET /agents/{name}/memory`(원본 DB 조회)는 옛 값을 그대로 돌려준다.
 
 ### `compression_log`
 

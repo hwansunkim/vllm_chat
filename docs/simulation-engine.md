@@ -449,7 +449,7 @@ compress() (ABM/memory_compressor.py):
       ← **LLM 호출 전**(근거 id 를 미리 확보). 호출·파싱 실패 시 db.delete_messages
         로 방금 넣은 행만 지운다 — "실패한 배치는 보관 안 함" 보장 유지
     기존 구조화 메모리 + 위 원문 → LLM (system: "기억 정리 도우미", JSON만)
-      → { episodes[], facts[], relationships[], self_state }
+      → { episodes[], facts[], relationships[] }   (예전의 self_state 는 2026-10-08 제거 — 아래)
       - facts 각 항목: judgment(신규|동일_의미|변경|보류) + matches_id(후보 id).
         _parse_compression_result 가 정규화 — 모르는 값·필드 없음·id 없는 동일/변경
         → 신규(예전과 같은 새 행 경로)
@@ -466,7 +466,8 @@ compress() (ABM/memory_compressor.py):
       일어난 시점, **코드가 못박음** — 배치 전체가 같은 값이지만 최소 "실제
       이 근처에 있었던 일"이라는 정확도는 보장된다. 배치 단위 오차(±압축 주기)는
       recency 버킷(층 3) 판정에는 충분)
-    db.upsert_relationships / upsert_self_state (wave 그대로, 시각 라벨 없음)
+    db.upsert_relationships (wave 그대로, 시각 라벨 없음)
+      (응답에 옛 self_state 가 와도 쓰지 않는다)
     → agent.memory.clear()
 
 실패 시 → 압축 안 하고 trim_to_token_limit 폴백 (오래된 memory부터 pop)
@@ -489,8 +490,17 @@ compress() (ABM/memory_compressor.py):
 ```
 
 같은 사건도 시간이 지나면 "방금" → "며칠 전"으로 자연스럽게 넘어간다. facts/
-relationships/self_state는 "계속 참인 것"이라 recency 라벨을 안 붙인다(층 2가
+relationships는 "계속 참인 것"이라 recency 라벨을 안 붙인다(층 2가
 그날 한정 정보를 애초에 episodes로 유도하므로).
+
+**"현재 상태"(self_state) 제거 (2026-10-08)** — 예전 블록 맨 위의 "■ 현재 상태: …"는 압축 때만(토큰 양 기준)
+덮어쓰는 한 줄이라 시각 없이 매 턴 붙으면서 평균 10~19 시뮬레이션 시간(조용한 에이전트는 최대 58시간) 묵은
+상태를 보여줬다(예: "7일차 일요일 오후 … 사과를 먹고 있는"이 취침을 지나 13시간 뒤까지). 최신 원문·엔진의
+[현재 상황]과 모순되고 반복 주제를 굳히며, 다음 압축 입력으로도 되먹였다. 기분의 흐름은 episodes(지시: 반응 — 감정
+반응 포함, 변화 — 상황·관계·기분의 변화)·relationships(stance+reason)·facts·페르소나·[현재 상황]이 맡는다.
+지금은 압축 스키마·지시에 없고, "기존 기억" 입력·매 턴 블록(라이브·/load·/resume·컨텍스트 조회)·인터뷰 블록
+어디에도 싣지 않으며, 옛 응답이 내도 쓰지 않는다. `agent_self_state` 테이블과 옛 행은 하위 호환으로 남는다
+(`delete_run` 정리 포함). 옛 행만 있는 에이전트는 "기억 없음"(블록 None)과 같다.
 
 **사실(facts)도 표시 상한이 있다** (`_fact_lines`, `_FACT_SHOW_MAX=15`) — episodes와
 달리 처음엔 상한이 전혀 없었다. 장기 시뮬레이션에서 압축 사이클이 쌓일수록

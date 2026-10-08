@@ -255,6 +255,7 @@ Prefix `/api/simulation`. 저장소는 채팅 DB `simulation_scenarios`.
 ### `GET /agents/{name}/memory`
 ```json
 { "episodes": [...], "facts": [...], "relationships": [...], "self_state": "..." }
+// self_state: 원본 DB 값 그대로(옛 run 의 행). 2026-10-08 부터 새로 쓰이지 않고 프롬프트에도 안 쓰인다.
 ```
 `404` 활성 시뮬레이션·메모리 DB 없음.
 

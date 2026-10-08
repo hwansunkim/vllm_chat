@@ -64,15 +64,15 @@ _COMPRESSION_PROMPT = """\
   ],
   "relationships": [
     {{"target": "<에이전트키>", "stance": "<trust|neutral|suspect|hostile>", "reason": "<이유>"}}
-  ],
-  "self_state": "<{agent_name}의 현재 동기·감정 상태를 한 문장으로>"
+  ]
 }}
 
 규칙:
 - episodes: 이번 대화에서 새로 경험한 사건만 (기존과 중복 제외). "몇 번째 wave"인지는
   적지 마세요 — 시스템이 실제 시각을 따로 기록합니다.
 - episodes의 사건 문장에는 다음을 우선 담으세요: 무엇을 원했는지(요구), 무엇을
-  했는지(행동), 상대가 어떻게 반응했는지(반응), 실제로 무엇이 바뀌었는지(변화),
+  했는지(행동), 상대가 어떻게 반응했는지(반응 — 그때의 감정 반응 포함), 실제로 무엇이
+  바뀌었는지(변화 — 상황·관계·기분의 변화),
   아직 해결되지 않은 요구나 지키지 않은 약속이 있는지(미해결). 단, "여러 번
   실패했으니 앞으로는 포기한다" 같은 앞으로의 행동 방침까지 추론해서 지어내지는
   마세요 — 그건 사건 요약의 범위를 넘는 추론입니다.
@@ -92,8 +92,11 @@ _COMPRESSION_PROMPT = """\
   비움)로 적으세요. 신규·보류는 평소처럼 새 사실로 저장됩니다. 후보 목록에 없는 id는
   적지 마세요.
 - relationships: 변화가 있는 관계만 (변화 없으면 제외)
-- self_state: 항상 포함 (기존과 동일해도)
 """
+# ⚠ "현재 상태(self_state)" 는 2026-10-08 제거됐다 — 압축 때만 덮어쓰는 한 줄이 시각 없이 매 턴 맨 위에 붙어
+# 평균 10~19 시뮬레이션 시간(최대 58시간) 묵은 상태("사과를 먹고 있는…")를 최신 원문·[현재 상황]과 모순되게
+# 보여주고, 다음 압축 입력으로도 되먹였다. 감정·기분의 흐름은 episodes(반응·변화)·relationships·[현재 상황]이
+# 담는다. agent_self_state 테이블·기존 행은 하위 호환으로 남기되 읽지도 쓰지도 않는다.
 
 
 # ---------------------------------------------------------------------------
@@ -306,15 +309,13 @@ def _candidate_fact_lines(candidates: list[dict], total: int) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _format_existing(
-    episodes: list, facts: list, relationships: list, self_state: str | None,
+    episodes: list, facts: list, relationships: list,
     now_elapsed: int, *, fact_total: int | None = None,
 ) -> str:
     """압축 LLM 에게 보여줄 "기존 구조화 기억". `facts`는 후보 사실(id 포함 —
-    `_select_candidate_facts`)이고, `fact_total`은 전체 사실 수(생략 안내용)다."""
+    `_select_candidate_facts`)이고, `fact_total`은 전체 사실 수(생략 안내용)다.
+    예전의 "현재 상태"(self_state)는 넣지 않는다(위 프롬프트 주석)."""
     lines: list[str] = []
-
-    if self_state:
-        lines.append(f"현재 상태: {self_state}")
 
     if facts:
         lines.append("알고 있는 사실 (후보 — 새 사실이 이 중 하나와 같거나 바뀐 것이면 id로 지칭):")
@@ -441,16 +442,13 @@ def build_memory_block(
     episodes      = db.get_episodes(sim_id, agent_key)
     facts         = db.get_facts(sim_id, agent_key)
     relationships = db.get_relationships(sim_id, agent_key)
-    self_state    = db.get_self_state(sim_id, agent_key)
+    # 옛 DB 의 agent_self_state 행은 읽지 않는다 — 그것만 있으면 "기억 없음"(None)과 같다.
 
-    if not any([episodes, facts, relationships, self_state]):
+    if not any([episodes, facts, relationships]):
         return None
 
     alias  = key_to_alias or {}
     lines  = ["[나의 기억 요약]"]
-
-    if self_state:
-        lines.append(f"■ 현재 상태: {self_state}")
 
     if facts:
         lines.append("■ 알고 있는 사실:")
@@ -495,13 +493,12 @@ def compress(
     episodes      = db.get_episodes(sim_id, agent_key)
     all_facts     = db.get_all_facts(sim_id, agent_key)
     relationships = db.get_relationships(sim_id, agent_key)
-    self_state    = db.get_self_state(sim_id, agent_key)
 
     messages_text = _format_messages(messages, sim_start_minutes, start_weekday_idx)
     # 후보 사실(id 포함) — 이번 배치와 겹치는 기존 사실을 코드가 먼저 추린다.
     candidates    = _select_candidate_facts(all_facts, messages_text)
     existing_text = _format_existing(
-        episodes, candidates, relationships, self_state, now_elapsed, fact_total=len(all_facts),
+        episodes, candidates, relationships, now_elapsed, fact_total=len(all_facts),
     )
 
     prompt = _COMPRESSION_PROMPT.format(
@@ -549,8 +546,7 @@ def compress(
             db.upsert_episodes(sim_id, agent_key, data["episodes"], wave, elapsed_minutes=now_elapsed)
         if data.get("relationships"):
             db.upsert_relationships(sim_id, agent_key, data["relationships"], wave)
-        if data.get("self_state"):
-            db.upsert_self_state(sim_id, agent_key, data["self_state"], wave)
+        # 옛 프롬프트에 익숙한 모델이 self_state 를 여전히 내도 쓰지 않는다(제거됨 — 프롬프트 주석).
     except BaseException:
         # 실패한 쓰기(예: upsert_relationships 중간)의 반쯤 열린 트랜잭션을 먼저 버린다 —
         # 그렇지 않으면 아래 delete_messages 의 commit 이 그 반쪽 쓰기까지 함께 커밋한다.

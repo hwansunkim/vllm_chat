@@ -15093,6 +15093,60 @@ class MemoryFactCapTests(unittest.TestCase):
         self.assertIn("다른 사실 3건은 생략", captured["prompt"])
 
 
+class SelfStateRemovedTests(unittest.TestCase):
+    """"현재 상태"(self_state) 제거(2026-10-08) — 압축 때만 덮어써 평균 10~19 시뮬레이션 시간 묵은 한 줄이 시각
+    없이 매 턴 맨 위에 붙던 것. 테이블·옛 행은 남지만 프롬프트·압축 입력·출력 어디에도 쓰이지 않는다."""
+
+    def _db(self, tmp):
+        from ABM.db import SimDB
+        return SimDB(os.path.join(tmp, "sim.db"))
+
+    def test_memory_block_ignores_an_existing_self_state_row(self):
+        from ABM.memory_compressor import build_memory_block
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            db.upsert_self_state("s1", "a", "7일차 일요일 오후 사과를 먹고 있다", 3)    # 옛 DB 의 행
+            only_state = build_memory_block("s1", "a", db)
+            db.upsert_facts("s1", "a", [{"fact": "사과를 좋아한다", "confidence": 0.9}], wave=0, elapsed_minutes=0)
+            block = build_memory_block("s1", "a", db)
+            self.assertEqual(db.get_self_state("s1", "a"), "7일차 일요일 오후 사과를 먹고 있다")   # 데이터는 보존
+        self.assertIsNone(only_state)                                   # 그것만 있으면 "기억 없음"
+        self.assertNotIn("현재 상태", block)
+        self.assertNotIn("사과를 먹고 있다", block)
+        self.assertIn("사과를 좋아한다", block)
+
+    def test_compression_prompt_has_no_self_state_and_legacy_output_is_not_written(self):
+        from ABM.memory_compressor import compress, _COMPRESSION_PROMPT
+        captured = {}
+
+        def fake_llm(messages, max_tokens=None, **kw):
+            captured["prompt"] = messages[-1]["content"]
+            return json.dumps({"episodes": [{"event": "e", "participants": ["a"], "importance": 2}],
+                               "facts": [], "relationships": [], "self_state": "새 상태"}), "", {}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(tmp)
+            db.upsert_self_state("s1", "a", "묵은 상태", 0)
+            compress(agent_name="a", agent_key="a", sim_id="s1",
+                     messages=[{"role": "user", "content": "x", "elapsed_minutes": 0}],
+                     wave=1, db=db, llm=fake_llm)
+            stored = db.get_self_state("s1", "a")
+        self.assertNotIn("self_state", _COMPRESSION_PROMPT)
+        self.assertNotIn("현재 상태", captured["prompt"])
+        self.assertNotIn("묵은 상태", captured["prompt"])
+        self.assertEqual(stored, "묵은 상태")                           # 옛 응답의 self_state 는 쓰지 않는다
+        # episodes 지시는 감정 반응·변화를 계속 담게 한다(현재 상태가 하던 기분 잇기 역할).
+        self.assertIn("감정 반응", _COMPRESSION_PROMPT)
+        self.assertIn("기분의 변화", _COMPRESSION_PROMPT)
+
+    def test_interview_memory_block_has_no_self_state(self):
+        from backend.api.simulation.interview import format_full_memory as _format_interview_memory
+        mem = {"episodes": [], "facts": [], "relationships": [], "self_state": "평온함"}
+        self.assertIsNone(_format_interview_memory(mem))
+        mem["facts"] = [{"fact": "f", "confidence": 1.0}]
+        self.assertNotIn("현재 상태", _format_interview_memory(mem))
+
+
 class FactIdMatchingTests(unittest.TestCase):
     """기억 메커니즘 2~3단계 — 사실(facts)의 후보 검색 · ID 판정 · 원문 근거.
 
@@ -16093,7 +16147,7 @@ class MemoryCompressorPromptTests(unittest.TestCase):
         # 아예 안 보여준다.
         from ABM.memory_compressor import _format_existing
         episodes = [{"event": "축구 골을 넣었다", "importance": 4, "elapsed_minutes": 0}]
-        text = _format_existing(episodes, [], [], None, now_elapsed=0)
+        text = _format_existing(episodes, [], [], now_elapsed=0)
         self.assertIn("축구 골을 넣었다", text)
         self.assertNotIn("중요도", text)
 
