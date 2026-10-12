@@ -20,51 +20,53 @@ class OpenAIProvider(OpenAICompatibleProvider):
     # gpt-4.1 이하는 max_completion_tokens 도 받아들이므로 모델별 분기 없이 통일한다.
     MAX_TOKENS_PARAM = "max_completion_tokens"
 
-    # gpt-5 / o-계열 추론 모델. 두 가지 분기에 같은 판별을 쓴다:
-    #   1) temperature 를 기본값(1) 외의 값으로 주면 400 → 파라미터 자체를 생략
-    #   2) reasoning_effort 를 이해하는 유일한 모델군 → 그 외에는 전송 금지
+    # gpt-5 / o-계열 추론 모델 — 이제 **최후 폴백**이다(한 번도 감지하지 않은 서버용). 판정 우선순위:
+    # 수동 설정 > 서버 설정 시 감지(probe_capabilities) > 서버의 사고 수준(thinking) > 이 이름 목록
+    # (`OpenAICompatibleProvider.is_reasoning`). 실측: 게이트웨이 모델 "gpt-6-astra"는 이름 목록에 없어
+    # 사고형인데도 헤드룸·reasoning_effort 없이 512 상한으로 호출돼 기억 압축이 수백 번 실패했다.
     _REASONING_PREFIXES = ("gpt-5", "o1", "o3", "o4")
     # 하위호환 별칭 (구 이름을 참조하는 코드/테스트용)
     _NO_TEMPERATURE_PREFIXES = _REASONING_PREFIXES
+    # 감지 요청에서 reasoning_effort 를 받아들였다 = 추론 모델(일반 모델은 400 으로 거부한다).
+    _PROBE_PARAM_ACCEPT_IMPLIES_REASONING = True
 
-    # 추론 모델이지만 `reasoning_effort` 파라미터는 거부하는 예외들.
+    # 추론 모델이지만 `reasoning_effort` 파라미터는 거부하는 예외들(감지 전 폴백 전용).
     # o1-mini / o1-preview 는 reasoning 을 하면서도 이 파라미터에 400 을 낸다.
-    # (bare "o1" prefix 가 이 둘을 함께 잡으므로 _thinking_body 에서만 따로 뺀다.
-    #  _temperature_body 는 이 둘도 temperature 를 거부하므로 prefix 그대로가 맞다.)
     _NO_REASONING_EFFORT = ("o1-mini", "o1-preview")
 
     def _is_reasoning_model(self) -> bool:
-        return self.model.startswith(self._REASONING_PREFIXES)
+        """하위호환 이름 — 이제 우선순위 판정(`is_reasoning`)."""
+        return self.is_reasoning()
 
-    def _temperature_body(self, temperature: float) -> dict:
-        if self._is_reasoning_model():
-            return {}
-        return {"temperature": temperature}
+    def _default_send_temperature(self) -> bool:
+        # 감지 전: 이름 목록·수동 설정으로 추론 모델이면 temperature 커스텀 값을 400 으로 거부하므로 생략한다.
+        # 서버 사고 수준(thinking)만으로 사고형이 된 경우는 생략하지 않는다 — 사고 수준은 "사고를 원한다"는 뜻일 뿐
+        # 모델이 temperature 를 거부한다는 증거가 아니다. 거부하면 실행 중 400 조정이 빼고 다시 보낸다.
+        # 이름 목록은 사고 수준이 켜져 있어 근거가 "thinking_level" 로 잡혀도 여전히 증거다(gpt-5 + high).
+        return not (self.is_reasoning()
+                    and (self.reasoning_source() in ("override", "model_name") or self._name_says_reasoning()))
+
+    def _default_send_reasoning_effort(self) -> bool:
+        return not self.model.startswith(self._NO_REASONING_EFFORT)
+
+    def _probe_reasoning_body(self) -> dict:
+        return {"reasoning_effort": "low"}
 
     def _thinking_body(self, level: str) -> dict:
-        """추론 모델에만 `reasoning_effort` 를 전송한다.
+        """사고형으로 판정된 모델에만 `reasoning_effort` 를 전송한다.
 
         일반 모델(gpt-4o 등)은 이 파라미터를 400 으로 거부하므로 level 이 조용한
-        no-op 이 된다 — 프론트에서 수준을 바꿔도 요청 바디는 변하지 않는다.
+        no-op 이 된다. 감지 결과가 "reasoning_effort 미지원"이면 사고형이어도 보내지 않는다.
 
         `off` 는 추론 모델에서 완전한 비활성이 불가능하다(OpenAI 는 reasoning 을
         끄는 스위치를 제공하지 않는다). 파라미터를 생략해 서버 기본값(medium)에
         맡기며, 이는 의도된 동작이다.
         """
-        if level == "off" or not self._is_reasoning_model():
-            return {}
-        if self.model.startswith(self._NO_REASONING_EFFORT):
+        if level == "off" or not self.is_reasoning() or not self._send_reasoning_effort():
             return {}
         return {"reasoning_effort": level}
 
     def needs_thinking_headroom(self, thinking_level: str | None = None) -> bool:
-        """추론 모델은 level 과 무관하게 항상 reasoning 토큰 헤드룸이 필요하다.
-
-        `off` 여도 OpenAI 는 reasoning 을 끌 수 없다(파라미터를 생략해 서버 기본값
-        medium 에 맡긴다). 이때 max_tokens 를 올려두지 않으면 4096 을 reasoning 이
-        대부분 소비해 답변이 비어서 돌아온다.
-
-        반대로 일반 모델(gpt-4o 등)은 4단계 전부 요청 바디가 변하지 않으므로
-        reasoning 토큰을 쓰지 않는다 — 헤드룸이 필요 없다.
-        """
-        return self._is_reasoning_model()
+        """추론 모델은 level 과 무관하게 항상 reasoning 토큰 헤드룸이 필요하다(off 여도 OpenAI 는 reasoning 을
+        끌 수 없다). 일반 모델은 필요 없다. (생성 예산 자체는 이제 모든 호출이 넉넉하게 받는다 — `_budget`.)"""
+        return self.is_reasoning()

@@ -15,6 +15,7 @@ from .schemas import (
 )
 from .. import config
 from ..db.database import get_db
+from ..llm.providers.openai_compatible import capabilities_from_row
 from ..llm.registry import get_provider_class, get_registry
 
 router = APIRouter(prefix="/api/servers")
@@ -54,8 +55,67 @@ def _row_to_dict(row) -> dict:
     d["provider_type"] = d.get("provider_type") or "vllm"
     d["api_key"] = _mask_api_key(d.get("api_key"))
     provider = get_registry().get_provider(d["id"])
-    d["model_len"] = provider.model_len if provider else d["max_model_len"]
+    d["model_len"] = provider.model_len if provider else (d["max_model_len"] or d.get("cap_max_model_len") or 0)
+    # 사고형 판정 — 감지 결과(detected: True/False/None=미확인)·수동 설정·실제로 쓰는 값과 근거.
+    caps = capabilities_from_row(d)
+    d["reasoning_override"] = caps["reasoning_override"]
+    d["capabilities"] = {k: caps[k] for k in ("is_reasoning", "supports_reasoning_effort", "supports_temperature",
+                                              "max_model_len", "probed_at", "probe_error")}
+    d["reasoning_detected"] = caps["is_reasoning"]
+    if provider is not None and hasattr(provider, "is_reasoning"):
+        d["reasoning_effective"] = bool(provider.is_reasoning())
+        d["reasoning_source"] = provider.reasoning_source()
+    else:
+        d["reasoning_effective"] = None
+        d["reasoning_source"] = None
     return d
+
+
+# 이 필드가 바뀌면 다른 서버(또는 다른 모델)라 능력을 다시 감지한다.
+_PROBE_TRIGGER_FIELDS = ("base_url", "model", "provider_type", "api_key")
+
+
+async def _probe_and_store(server_id: str, provider) -> dict | None:
+    """작은 요청으로 능력을 감지해 servers 행에 저장하고 실행 중 프로바이더에도 바로 반영한다.
+
+    서버 등록·수정(연결 관련 필드가 바뀌었거나 한 번도 감지하지 않았을 때)·연결 테스트 때만 부른다 —
+    실제 사용 중에는 감지하지 않는다. 실패해도 예외를 올리지 않고 probe_error 에 적는다(저장 자체는 성공).
+    """
+    if provider is None or not hasattr(provider, "probe_capabilities"):
+        return None
+    try:
+        caps = await provider.probe_capabilities()
+    except Exception as e:  # 감지는 부가 기능 — 서버 저장·연결 테스트를 막지 않는다
+        caps = {"is_reasoning": None, "supports_reasoning_effort": None, "supports_temperature": None,
+                "max_model_len": 0, "probed_at": datetime.now().isoformat(),
+                "probe_error": f"감지 실패 [{type(e).__name__}]: {e}"}
+
+    def _db(v):
+        return None if v is None else int(bool(v))
+
+    conn = get_db()
+    if caps.get("probe_error"):
+        # 실패한 재감지는 이전에 성공한 감지 결과를 지우지 않는다(지우면 조용히 폴백 판정으로 되돌아간다).
+        # 오류 문구만 남기고(시각을 앞에 붙여), 성공 시각(cap_probed_at)은 그대로 둔다. 길이는 얻었으면 갱신.
+        stamp = caps.get("probed_at") or datetime.now().isoformat()
+        conn.execute("UPDATE servers SET cap_probe_error=? WHERE id=?",
+                     (f"[{stamp}] {caps['probe_error']}", server_id))
+        if int(caps.get("max_model_len") or 0):
+            conn.execute("UPDATE servers SET cap_max_model_len=? WHERE id=?", (int(caps["max_model_len"]), server_id))
+    else:
+        conn.execute(
+            """UPDATE servers SET cap_is_reasoning=?, cap_supports_reasoning_effort=?, cap_supports_temperature=?,
+                   cap_max_model_len=?, cap_probed_at=?, cap_probe_error='' WHERE id=?""",
+            (_db(caps.get("is_reasoning")), _db(caps.get("supports_reasoning_effort")),
+             _db(caps.get("supports_temperature")), int(caps.get("max_model_len") or 0),
+             caps.get("probed_at") or datetime.now().isoformat(), server_id),
+        )
+    conn.commit()
+    row = conn.execute("SELECT * FROM servers WHERE id=?", (server_id,)).fetchone()
+    conn.close()
+    if row is not None and hasattr(provider, "apply_capabilities"):
+        provider.apply_capabilities(capabilities_from_row(dict(row)))
+    return caps
 
 
 @router.get("")
@@ -78,12 +138,12 @@ async def create_server(body: ServerCreate):
         conn.execute("UPDATE servers SET is_default=0")
 
     conn.execute(
-        """INSERT INTO servers (id, name, base_url, model, provider_type, api_key, weight, enabled, is_default, thinking, thinking_level, max_model_len, created_at)
-           VALUES (?,?,?,?,?,?,?,1,?,?,?,?,?)""",
+        """INSERT INTO servers (id, name, base_url, model, provider_type, api_key, weight, enabled, is_default, thinking, thinking_level, max_model_len, reasoning_override, created_at)
+           VALUES (?,?,?,?,?,?,?,1,?,?,?,?,?,?)""",
         (sid, body.name, body.base_url.rstrip("/"), body.model, body.provider_type, body.api_key,
          body.weight, int(body.is_default),
          int(body.thinking_level != "off"), body.thinking_level,
-         body.max_model_len, now),
+         body.max_model_len, body.reasoning_override, now),
     )
     conn.commit()
     row = dict(conn.execute("SELECT * FROM servers WHERE id=?", (sid,)).fetchone())
@@ -92,6 +152,10 @@ async def create_server(body: ServerCreate):
     provider = await get_registry().register(row)
     if provider:
         await provider.fetch_model_len()
+        await _probe_and_store(sid, provider)          # 서버 설정 시점의 능력 감지
+        conn = get_db()
+        row = dict(conn.execute("SELECT * FROM servers WHERE id=?", (sid,)).fetchone())
+        conn.close()
     return _row_to_dict(row)
 
 
@@ -203,6 +267,15 @@ async def update_server(server_id: str, body: ServerUpdate):
     if "base_url" in fields:
         fields["base_url"] = fields["base_url"].rstrip("/")
 
+    # 능력 재감지는 연결 관련 필드가 **실제로 바뀌었을 때만**(UI 는 저장마다 provider_type·base_url·model 을 늘
+    # 보낸다 — 있다는 것만으로 감지하면 이름만 바꿔도 매번 최대 4번의 채팅 요청으로 저장이 막힌다). api_key 는
+    # 위에서 "변경 안 함"이면 이미 빠졌으므로 남아 있으면 바뀐 것이다.
+    existing_d = dict(existing)
+    connection_changed = any(
+        f in fields and (f == "api_key" or fields[f] != (existing_d.get(f) or ("vllm" if f == "provider_type" else "")))
+        for f in _PROBE_TRIGGER_FIELDS
+    )
+
     set_clause = ", ".join(f"{k}=?" for k in fields)
     conn.execute(
         f"UPDATE servers SET {set_clause} WHERE id=?",
@@ -218,6 +291,12 @@ async def update_server(server_id: str, body: ServerUpdate):
         provider = await get_registry().register(row)
         if provider:
             await provider.fetch_model_len()
+            # 연결 관련 필드가 바뀌었거나 한 번도 (성공적으로) 감지하지 않은 서버면 능력을 (다시) 감지한다.
+            if connection_changed or not row.get("cap_probed_at"):
+                await _probe_and_store(server_id, provider)
+                conn = get_db()
+                row = dict(conn.execute("SELECT * FROM servers WHERE id=?", (server_id,)).fetchone())
+                conn.close()
     return _row_to_dict(row)
 
 
@@ -256,4 +335,7 @@ async def server_health(server_id: str):
         )
 
     report = await provider.health_status()
-    return ServerHealth(**base, **report.to_dict())
+    # "연결 테스트" — 연결되고 모델도 확인되면 능력도 함께 감지해 저장한다(실제 사용 중에는 감지하지 않는다).
+    # 모델이 없으면 감지 요청이 실패만 하므로 건너뛴다.
+    caps = await _probe_and_store(server_id, provider) if report.model_ok else None
+    return ServerHealth(**base, **report.to_dict(), capabilities=caps)

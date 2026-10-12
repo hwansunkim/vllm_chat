@@ -530,6 +530,7 @@ function renderServers() {
     const thinkingBadge = thinkingLevel !== 'off'
       ? `<span class="server-thinking-badge" title="사고 수준: ${THINKING_LEVEL_META[thinkingLevel].label}">🧠 ${THINKING_LEVEL_META[thinkingLevel].short}</span>`
       : '';
+    const reasoningBadge = reasoningBadgeHtml(s);
     const statusBadge   = s.enabled
       ? '<span class="server-status enabled">활성</span>'
       : '<span class="server-status disabled">비활성</span>';
@@ -541,7 +542,7 @@ function renderServers() {
       <div class="server-card" data-id="${s.id}">
         <div class="server-card-top">
           <div class="server-card-info">
-            <div class="server-card-name">${esc(s.name)} ${providerBadge} ${defaultBadge} ${thinkingBadge} ${statusBadge}</div>
+            <div class="server-card-name">${esc(s.name)} ${providerBadge} ${defaultBadge} ${thinkingBadge} ${reasoningBadge} ${statusBadge}</div>
             ${urlText}
             <div class="server-card-model">${esc(modelShort)}${esc(ctxInfo)}</div>
           </div>
@@ -592,6 +593,25 @@ function buildHealthTitle(data) {
   return lines.join('\n') || '상세 정보가 없습니다.';
 }
 
+// ── 사고형 감지 표시 (서버 설정 시 감지 — backend/api/servers.py::_probe_and_store) ──────────
+/** 감지 결과 문구: 감지됨 / 아님 / 미확인(+오류). */
+export function reasoningDetectedLabel(s) {
+  const caps = s?.capabilities || {};
+  const det  = s?.reasoning_detected ?? caps.is_reasoning;
+  let txt = det === true ? '사고형 감지됨' : det === false ? '사고형 아님' : '미확인';
+  if (caps.probe_error) txt += ` (감지 오류: ${caps.probe_error})`;
+  if (s?.reasoning_override === 'on')  txt += ' · 수동: 사고형으로 취급';
+  if (s?.reasoning_override === 'off') txt += ' · 수동: 일반 모델로 취급';
+  return txt;
+}
+
+function reasoningBadgeHtml(s) {
+  const eff = s?.reasoning_effective;
+  if (eff === null || eff === undefined) return '';
+  const title = `사고형: ${reasoningDetectedLabel(s)}${s?.reasoning_source ? ` · 근거: ${s.reasoning_source}` : ''}`;
+  return eff ? `<span class="server-thinking-badge" title="${esc(title)}">💭 사고형</span>` : '';
+}
+
 async function checkServerHealth(serverId, btn) {
   if (btn.disabled) return;
   btn.textContent = '● 확인 중...';
@@ -604,6 +624,13 @@ async function checkServerHealth(serverId, btn) {
     btn.textContent = ui.label;
     btn.className   = 'server-health-btn ' + ui.cls;
     btn.title       = buildHealthTitle(data);
+    // 연결 테스트가 능력도 다시 감지해 저장했다(목록 배지는 다음 목록 갱신 때 반영 — 다시 그리면 이 버튼의
+    // 결과 표시가 사라지므로 여기서는 툴팁에만 덧붙인다).
+    if (data?.capabilities) {
+      const c = data.capabilities;
+      btn.title += `\n사고형: ${c.is_reasoning === true ? '감지됨' : c.is_reasoning === false ? '아님' : '미확인'}`
+        + (c.probe_error ? ` (감지 오류: ${c.probe_error})` : '');
+    }
   } catch (e) {
     btn.textContent = HEALTH_UI_FALLBACK.label;
     btn.className   = 'server-health-btn ' + HEALTH_UI_FALLBACK.cls;
@@ -637,6 +664,10 @@ function showServerForm(serverId = null) {
     server ? rowThinkingLevel(server) : 'off';
   document.getElementById('sv-provider').value = providerType;
   _formProviderType = providerType;
+  const ovEl = document.getElementById('sv-reasoning-override');
+  if (ovEl) ovEl.value = ['on', 'off'].includes(server?.reasoning_override) ? server.reasoning_override : '';
+  const rsEl = document.getElementById('sv-reasoning-status');
+  if (rsEl) rsEl.textContent = server ? `감지: ${reasoningDetectedLabel(server)}` : '저장하면 자동으로 감지합니다.';
   applyProviderFieldVisibility(providerType);
 
   document.getElementById('server-list-panel').classList.add('hidden');
@@ -688,6 +719,9 @@ async function saveServer() {
     // ServerUpdate 는 부분 업데이트라 null 을 보내면 무시된다 —
     // 폼은 항상 유효한 4개 값 중 하나를 명시해 보낸다.
     thinking_level: normalizeThinkingLevel(document.getElementById('sv-thinking-level').value),
+    // 사고형 수동 설정 — '' 자동(감지 결과) | 'on' | 'off'. 감지 결과보다 우선한다.
+    reasoning_override: ['on', 'off'].includes(document.getElementById('sv-reasoning-override')?.value)
+      ? document.getElementById('sv-reasoning-override').value : '',
   };
   if (_editServerId) body.enabled = document.getElementById('sv-enabled').checked;
 

@@ -53,7 +53,7 @@ function renderAgents() {
           </div>
         </div>
         <div class="agent-card-prompt">${esc(promptPreview)}</div>
-        <div class="agent-card-meta">온도 ${a.temperature} · 최대 ${Number(a.max_tokens).toLocaleString()}토큰${esc(modelInfo)}</div>
+        <div class="agent-card-meta">온도 ${a.temperature} · 최소 ${Number(a.max_tokens).toLocaleString()}토큰 보장${esc(modelInfo)}</div>
       </div>`;
   }).join('');
 }

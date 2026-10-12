@@ -104,6 +104,8 @@ class ServerCreate(BaseModel):
     # deprecated: 구 클라이언트 호환용. thinking_level 미지정 시에만 True→"medium".
     thinking: bool | None = None
     max_model_len: int = 0  # 0 = 자동 감지
+    # 사고형 수동 설정 — "" 자동(감지 결과) | "on" 사고형 | "off" 일반. 감지 결과보다 우선한다.
+    reasoning_override: Literal["", "on", "off"] = ""
 
     @model_validator(mode="before")
     @classmethod
@@ -133,6 +135,8 @@ class ServerHealth(BaseModel):
     model_ok: bool          # /v1/models 에서 모델 확인 여부
     detail: str             # 사용자에게 보여줄 한국어 설명
     available_models: list[str] = []
+    # 연결 테스트가 함께 돌린 능력 감지 결과(저장됨). 연결 실패면 None.
+    capabilities: dict | None = None
 
 
 class ModelProbeRequest(BaseModel):
@@ -176,6 +180,7 @@ class ServerUpdate(BaseModel):
     # deprecated: 구 클라이언트 호환용. thinking_level 미지정 시에만 True→"medium".
     thinking: bool | None = None
     max_model_len: int | None = None
+    reasoning_override: Literal["", "on", "off"] | None = None
 
     @model_validator(mode="before")
     @classmethod

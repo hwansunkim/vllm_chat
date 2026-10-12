@@ -5532,10 +5532,16 @@ class ThinkingLevelTranslationTests(unittest.IsolatedAsyncioTestCase):
 
     def test_openai_classic_models_never_send_reasoning_effort(self):
         # gpt-4o 등 일반 모델은 이 파라미터를 400 으로 거부한다 → level 이 조용한 no-op.
+        # (2026-10-12) 판정 우선순위가 수동 > 감지 > 서버 사고 수준 > 이름이라, 서버 사고 수준을 켜 둔 채 한 번도
+        # 감지하지 않은 gpt-4o 는 사고형으로 취급된다(그때 400 은 런타임 조정이 흡수). 일반 모델로 보장되는 건
+        # 서버 수준이 off 이거나 감지 결과가 "사고형 아님"일 때다.
         for level in ("off", "low", "medium", "high"):
             with self.subTest(level=level):
-                p = OpenAIProvider("s", "t", "", "gpt-4o", thinking_level=level)
+                p = OpenAIProvider("s", "t", "", "gpt-4o", thinking_level="off")
                 self.assertEqual(p._thinking_body(level), {})
+                probed = OpenAIProvider("s", "t", "", "gpt-4o", thinking_level="high",
+                                        capabilities={"is_reasoning": False})
+                self.assertEqual(probed._thinking_body(level), {})
 
     def test_openai_off_omits_reasoning_effort_even_on_reasoning_models(self):
         # OpenAI 는 reasoning 을 끄는 스위치가 없다. 생략해 서버 기본값에 맡긴다.
@@ -5689,13 +5695,15 @@ class ThinkingHeadroomTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(fake.kwargs["json"]["max_tokens"], config.MAX_COMPLETION_TOKENS_THINKING)
 
-    async def test_off_leaves_short_max_tokens_untouched(self):
+    async def test_off_short_max_tokens_is_also_raised_to_the_generous_budget(self):
+        # (2026-10-12) 예전엔 사고가 꺼지면 256 을 그대로 보냈다. 이제 max_tokens 는 상한일 뿐이라 모든 호출이
+        # 넉넉한 기본 예산을 받는다(잘려서 이어 붙이기·파싱 실패를 반복하는 쪽이 훨씬 비싸다).
         p = VLLMProvider("s", "t", "http://vllm", "m", thinking_level="off")
         fake = self._fake_post(p)
 
         await p.chat([{"role": "user", "content": "hi"}], max_tokens=256)
 
-        self.assertEqual(fake.kwargs["json"]["max_tokens"], 256)
+        self.assertEqual(fake.kwargs["json"]["max_tokens"], config.GENEROUS_COMPLETION_TOKENS)
 
     async def test_headroom_never_lowers_a_larger_budget(self):
         p = VLLMProvider("s", "t", "http://vllm", "m", thinking_level="high")
@@ -5723,8 +5731,9 @@ class ThinkingHeadroomTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(p.needs_thinking_headroom("off"))
 
     def test_openai_classic_model_never_needs_headroom(self):
-        # gpt-4o 는 4단계 전부 no-op 이므로 reasoning 토큰을 쓰지 않는다.
-        p = OpenAIProvider("s", "t", "", "gpt-4o", thinking_level="high")
+        # gpt-4o 는 4단계 전부 no-op 이므로 reasoning 토큰을 쓰지 않는다. (2026-10-12) 서버 사고 수준이 켜져 있어도
+        # 감지 결과가 "사고형 아님"이면 일반 모델이다(감지 > 서버 수준).
+        p = OpenAIProvider("s", "t", "", "gpt-4o", thinking_level="high", capabilities={"is_reasoning": False})
         for level in config.THINKING_LEVELS:
             with self.subTest(level=level):
                 self.assertFalse(p.needs_thinking_headroom(level))
@@ -5772,6 +5781,454 @@ class OpenAIReasoningEffortExclusionTests(unittest.TestCase):
         p = OpenAIProvider("s", "t", "", "o1-mini", thinking_level="high")
         self.assertEqual(p._temperature_body(0.7), {})
         self.assertTrue(p.needs_thinking_headroom("high"))
+
+
+class _ScriptedHTTP:
+    """post/get/stream 을 순서대로 대본대로 돌려주는 가짜 httpx 클라이언트. 응답 = (status, payload|text)."""
+
+    def __init__(self, posts=(), models=None, streams=()):
+        self.posts = list(posts)
+        self.models = models
+        self.streams = list(streams)
+        self.sent = []
+
+    @staticmethod
+    def _resp(spec, url="http://x/v1/chat/completions"):
+        status, body = spec
+        req = httpx.Request("POST", url)
+        if isinstance(body, (dict, list)):
+            return httpx.Response(status, json=body, request=req)
+        return httpx.Response(status, text=str(body), request=req)
+
+    async def post(self, url, **kw):
+        self.sent.append(kw.get("json"))
+        spec = self.posts.pop(0)
+        if isinstance(spec, Exception):
+            raise spec
+        return self._resp(spec, url)
+
+    async def get(self, url, **kw):
+        if self.models is None:
+            return httpx.Response(500, text="no", request=httpx.Request("GET", url))
+        return httpx.Response(200, json={"data": self.models}, request=httpx.Request("GET", url))
+
+    def stream(self, method, url, **kw):
+        self.sent.append(kw.get("json"))
+        status, lines = self.streams.pop(0)
+        outer = self
+
+        class _S:
+            async def __aenter__(self_inner):
+                return self_inner
+
+            async def __aexit__(self_inner, *a):
+                return False
+
+            def raise_for_status(self_inner):
+                if status >= 400:
+                    resp = httpx.Response(status, text=lines, request=httpx.Request("POST", url))
+                    raise httpx.HTTPStatusError("err", request=resp.request, response=resp)
+
+            async def aiter_lines(self_inner):
+                for line in lines:
+                    yield line
+        return _S()
+
+    async def aclose(self):
+        return None
+
+
+def _ok_chat(content="5", *, reasoning_tokens=0, reasoning_content=None, reasoning=None):
+    msg = {"content": content}
+    if reasoning_content is not None:
+        msg["reasoning_content"] = reasoning_content
+    if reasoning is not None:
+        msg["reasoning"] = reasoning
+    usage = {"prompt_tokens": 5, "completion_tokens": 3}
+    if reasoning_tokens:
+        usage["completion_tokens_details"] = {"reasoning_tokens": reasoning_tokens}
+    return (200, {"choices": [{"message": msg, "finish_reason": "stop"}], "usage": usage})
+
+
+class ServerCapabilityProbeTests(unittest.IsolatedAsyncioTestCase):
+    """서버 설정 시 능력 감지(probe_capabilities) · 판정 우선순위 · 생성 예산 (2026-10-12).
+
+    실측: OpenAI 게이트웨이 "gpt-6-astra"(서버 사고 수준 medium)는 이름 목록(gpt-5/o1/o3/o4)에 없어 사고형으로
+    취급되지 않았고, 기억 압축이 llm_max_tokens=512 상한에 잘려 JSON 파싱 실패 → 원문 삭제 → 재시도를 수백 번
+    반복했다(messages seq 461,597 vs max id 293,955)."""
+
+    def _p(self, cls, model, client, **kw):
+        p = cls("s", "t", "http://x" if cls is VLLMProvider else "", model, **kw)
+        p._client = client
+        return p
+
+    async def test_probe_openai_reasoning_via_usage_reasoning_tokens(self):
+        c = _ScriptedHTTP(posts=[_ok_chat(reasoning_tokens=12)], models=[{"id": "gpt-6-astra"}])
+        caps = await self._p(OpenAIProvider, "gpt-6-astra", c).probe_capabilities()
+        self.assertEqual((caps["is_reasoning"], caps["supports_reasoning_effort"], caps["supports_temperature"],
+                          caps["probe_error"]), (True, True, True, ""))
+        self.assertEqual(c.sent[0]["reasoning_effort"], "low")
+        self.assertEqual(c.sent[0]["temperature"], 0.3)
+        self.assertTrue(caps["probed_at"])
+
+    async def test_probe_learns_rejected_params_by_400_retry(self):
+        # 일반 모델: reasoning_effort 거부 → 빼고 재시도 → 사고 흔적 없음.
+        c = _ScriptedHTTP(posts=[(400, "Unrecognized request argument supplied: reasoning_effort"), _ok_chat()])
+        caps = await self._p(OpenAIProvider, "gpt-4o", c).probe_capabilities()
+        self.assertEqual((caps["is_reasoning"], caps["supports_reasoning_effort"], caps["supports_temperature"]),
+                         (False, False, True))
+        self.assertNotIn("reasoning_effort", c.sent[1])
+        # 추론 모델: temperature 커스텀 값 거부 → 빼고 재시도.
+        c2 = _ScriptedHTTP(posts=[(400, "Unsupported value: 'temperature' does not support 0.3 with this model. "
+                                        "Only the default (1) value is supported."), _ok_chat()])
+        caps2 = await self._p(OpenAIProvider, "x-reasoner", c2).probe_capabilities()
+        self.assertEqual((caps2["is_reasoning"], caps2["supports_temperature"], caps2["supports_reasoning_effort"]),
+                         (True, False, True))
+        self.assertNotIn("temperature", c2.sent[1])
+
+    async def test_probe_vllm_reasoning_content_think_tag_and_plain(self):
+        cases = [(_ok_chat(reasoning_content="생각 중"), True), (_ok_chat(reasoning="r"), True),
+                 (_ok_chat(content="<think>음</think>5"), True), (_ok_chat(), False)]
+        for resp, expected in cases:
+            with self.subTest(expected=expected):
+                c = _ScriptedHTTP(posts=[resp], models=[{"id": "qwen", "max_model_len": 32768}])
+                caps = await self._p(VLLMProvider, "qwen", c).probe_capabilities()
+                self.assertEqual(caps["is_reasoning"], expected)
+                self.assertEqual(caps["max_model_len"], 32768)
+                self.assertEqual(c.sent[0]["chat_template_kwargs"]["enable_thinking"], True)
+
+    async def test_probe_failure_records_error_and_leaves_unknown(self):
+        c = _ScriptedHTTP(posts=[httpx.ConnectError("refused")])
+        caps = await self._p(VLLMProvider, "m", c).probe_capabilities()
+        self.assertIsNone(caps["is_reasoning"])
+        self.assertIn("ConnectError", caps["probe_error"])
+        c2 = _ScriptedHTTP(posts=[(401, "bad key")])
+        caps2 = await self._p(OpenAIProvider, "m", c2).probe_capabilities()
+        self.assertIn("HTTP 401", caps2["probe_error"])
+
+    def test_precedence_override_probe_thinking_level_name(self):
+        P = OpenAIProvider
+        cases = [
+            # (model, server level, capabilities, expected is_reasoning, expected source)
+            ("gpt-4o", "off", {"reasoning_override": "on", "is_reasoning": False}, True, "override"),
+            ("gpt-5", "high", {"reasoning_override": "off"}, False, "override"),
+            ("gpt-5", "high", {"is_reasoning": False}, False, "probe"),
+            ("gpt-4o", "off", {"is_reasoning": True}, True, "probe"),
+            ("gpt-6-astra", "medium", {}, True, "thinking_level"),       # 실측 서버 — 감지 전에도 즉시 사고형
+            ("gpt-5", "off", {}, True, "model_name"),
+            ("gpt-4o", "off", {}, False, "none"),
+        ]
+        for model, level, caps, expected, source in cases:
+            with self.subTest(model=model, caps=caps):
+                p = P("s", "t", "", model, thinking_level=level, capabilities=caps)
+                self.assertEqual((p.is_reasoning(), p.reasoning_source()), (expected, source))
+
+    def test_never_probed_thinking_server_gets_reasoning_params_immediately(self):
+        # chatGpt_kisti: provider openai, model gpt-6-astra, thinking medium, 감지 전.
+        p = OpenAIProvider("s", "t", "", "gpt-6-astra", thinking_level="medium")
+        self.assertEqual(p._thinking_body("medium"), {"reasoning_effort": "medium"})
+        # 사고 수준만으로 사고형이 된 경우 temperature 는 미리 빼지 않는다(거부하면 실행 중 400 조정이 뺀다).
+        self.assertEqual(p._temperature_body(0.7), {"temperature": 0.7})
+        self.assertTrue(p.needs_thinking_headroom(None))
+        # 이름 목록·수동 설정으로 사고형이면 미리 뺀다.
+        self.assertEqual(OpenAIProvider("s", "t", "", "gpt-5")._temperature_body(0.7), {})
+        self.assertEqual(OpenAIProvider("s", "t", "", "gpt-4o", capabilities={"reasoning_override": "on"})
+                         ._temperature_body(0.7), {})
+        # 감지가 "reasoning_effort 미지원·temperature 지원"이라고 하면 그대로 따른다.
+        q = OpenAIProvider("s", "t", "", "gpt-6-astra", thinking_level="medium",
+                           capabilities={"is_reasoning": True, "supports_reasoning_effort": False,
+                                         "supports_temperature": True})
+        self.assertEqual(q._thinking_body("medium"), {})
+        self.assertEqual(q._temperature_body(0.7), {"temperature": 0.7})
+
+    async def test_compression_sized_call_is_no_longer_capped_at_512(self):
+        c = _ScriptedHTTP(posts=[_ok_chat('{"episodes": []}')])
+        p = self._p(OpenAIProvider, "gpt-6-astra", c, thinking_level="medium")
+        await p.chat([{"role": "user", "content": "압축해"}], max_tokens=512)
+        self.assertEqual(c.sent[0]["max_completion_tokens"], config.GENEROUS_COMPLETION_TOKENS)
+        self.assertEqual(c.sent[0]["reasoning_effort"], "medium")
+        self.assertIn("temperature", c.sent[0])                       # 사고 수준 폴백은 temperature 를 빼지 않는다
+
+    async def test_budget_is_clamped_to_known_context_length(self):
+        c = _ScriptedHTTP(posts=[_ok_chat()])
+        p = self._p(VLLMProvider, "m", c, configured_max_len=8192)
+        msgs = [{"role": "user", "content": "가" * 4000}]
+        await p.chat(msgs, max_tokens=512)
+        expected = 8192 - (4000 // 2 + 8) - config.BUDGET_MARGIN_TOKENS
+        self.assertEqual(c.sent[0]["max_tokens"], expected)
+        # 감지로 알게 된 길이도 같은 클램프에 쓰인다(설정값이 없을 때).
+        q = VLLMProvider("s", "t", "http://x", "m", capabilities={"max_model_len": 4096})
+        self.assertEqual(q._budget(512, [{"role": "user", "content": "x"}]),
+                         4096 - (0 + 8) - config.BUDGET_MARGIN_TOKENS)
+        # 거의 꽉 찬 프롬프트 — 하한.
+        self.assertEqual(q._budget(512, [{"role": "user", "content": "가" * 20000}]), config.BUDGET_MIN_TOKENS)
+
+    async def test_runtime_400_adapts_without_probing(self):
+        # 감지 전 서버가 temperature·출력 상한을 거부해도 조정해 다시 보낸다(인스턴스 안에서만 학습).
+        c = _ScriptedHTTP(posts=[
+            (400, "Unsupported parameter: 'temperature' is not supported with this model."),
+            (400, "max_tokens is too large: 16384. This model supports at most 4096 completion tokens"),
+            _ok_chat("ok")])
+        p = self._p(OpenAIProvider, "gpt-4o", c)
+        out, _ = await p.chat([{"role": "user", "content": "hi"}], max_tokens=100)
+        self.assertEqual(out, "ok")
+        self.assertIn("temperature", c.sent[0])
+        self.assertNotIn("temperature", c.sent[1])
+        self.assertEqual(c.sent[2]["max_completion_tokens"], 4096)
+
+    async def test_stream_context_error_is_actually_retried(self):
+        # 예전엔 async with 안의 break 가 재시도 루프까지 끝내 빈 답으로 끝났다.
+        ok = [f"data: {json.dumps({'choices': [{'delta': {'content': 'hi'}, 'finish_reason': 'stop'}]})}",
+              "data: [DONE]"]
+        c = _ScriptedHTTP(streams=[
+            (400, "This model's maximum context length is 8192 tokens. However, your prompt contains at least 8000"),
+            (200, ok)])
+        p = self._p(VLLMProvider, "m", c)
+        events = [e async for e in p.stream_chat([{"role": "user", "content": "x"}])]
+        self.assertEqual(events[-1]["data"]["answer"], "hi")
+        self.assertEqual(c.sent[1]["max_tokens"], 192)
+
+
+class LLMContextAndOutputLimitTests(unittest.IsolatedAsyncioTestCase):
+    """컨텍스트 길이를 모르는 서버에서 16384 예산이 400 을 받아도 오류 문구의 숫자로 허용 출력을 계산해 다시 보낸다
+    (QA M3 — 실행 중 길이 조회는 하지 않는다). chat · stream_chat · llm 세 경로, 재시도는 한정."""
+
+    FORMATS = {
+        "vllm_new": ("'max_tokens' or 'max_completion_tokens' is too large: 16384. This model's maximum context "
+                     "length is 8192 tokens and your request has 120 input tokens (16384 > 8192 - 120).", 8072),
+        "vllm_old": ("This model's maximum context length is 8192 tokens. However, you requested 16504 tokens "
+                     "(120 in the messages, 16384 in the completion). Please reduce the length.", 8072),
+        "prompt_at_least": ("This model's maximum context length is 8192 tokens. However, your prompt contains at "
+                            "least 120 input tokens and you requested 16384 output tokens.", 8072),
+        "openai_at_most": ("max_completion_tokens is too large: 16384. This model supports at most 4096 completion "
+                           "tokens, whereas you provided 16384.", 4096),
+        "gateway_le": ("Invalid 'max_tokens': integer above maximum value. Expected a value <= 8192, but got 16384 "
+                       "instead.", 8192),
+    }
+
+    def _param(self, p):
+        return p.MAX_TOKENS_PARAM
+
+    async def test_chat_stream_and_llm_recover_from_each_format(self):
+        ok_lines = [f"data: {json.dumps({'choices': [{'delta': {'content': 'ok'}, 'finish_reason': 'stop'}]})}",
+                    "data: [DONE]"]
+        for name, (msg, allowed) in self.FORMATS.items():
+            for cls in (VLLMProvider, OpenAIProvider):
+                with self.subTest(fmt=name, cls=cls.__name__):
+                    c = _ScriptedHTTP(posts=[(400, msg), _ok_chat("ok")])
+                    p = cls("s", "t", "http://x", "m")
+                    p._client = c
+                    out, _ = await p.chat([{"role": "user", "content": "x"}], max_tokens=512)
+                    self.assertEqual(out, "ok")
+                    self.assertEqual(c.sent[1][self._param(p)], allowed)
+
+                    c2 = _ScriptedHTTP(streams=[(400, msg), (200, ok_lines)])
+                    p2 = cls("s", "t", "http://x", "m")
+                    p2._client = c2
+                    ev = [e async for e in p2.stream_chat([{"role": "user", "content": "x"}])]
+                    self.assertEqual(ev[-1]["data"]["answer"], "ok")
+                    self.assertEqual(c2.sent[1][self._param(p2)], allowed)
+
+                    c3 = _ScriptedHTTP(posts=[(400, msg), _ok_chat("ok")])
+                    p3 = cls("s", "t", "http://x", "m")
+                    p3._client = c3
+                    self.assertEqual(await p3.llm("x"), "ok")
+                    self.assertEqual(c3.sent[1][self._param(p3)], allowed)
+
+    async def test_retries_are_bounded(self):
+        msg = self.FORMATS["vllm_new"][0]
+        c = _ScriptedHTTP(posts=[(400, msg)] * 10)
+        p = VLLMProvider("s", "t", "http://x", "m")
+        p._client = c
+        with self.assertRaises(Exception):
+            await p.llm("x")
+        self.assertLessEqual(len(c.sent), 4)
+        c2 = _ScriptedHTTP(posts=[(400, msg)] * 10)
+        p2 = VLLMProvider("s", "t", "http://x", "m")
+        p2._client = c2
+        with self.assertRaises(Exception):
+            await p2.chat([{"role": "user", "content": "x"}])
+        self.assertLessEqual(len(c2.sent), 6)
+
+    def test_error_type_alone_is_not_a_parameter_rejection(self):
+        from backend.llm.providers.openai_compatible import _mentions_param
+        generic = json.dumps({"error": {"message": "Rate limit reached", "type": "invalid_request_error",
+                                        "param": "temperature"}})
+        self.assertFalse(_mentions_param(generic, "temperature"))
+        real = json.dumps({"error": {"message": "Unsupported value: 'temperature' does not support 0.7",
+                                     "type": "invalid_request_error"}})
+        self.assertTrue(_mentions_param(real, "temperature"))
+        self.assertTrue(_mentions_param("Unrecognized request argument supplied: reasoning_effort", "reasoning_effort"))
+
+
+class ServerProbeTriggerTests(unittest.IsolatedAsyncioTestCase):
+    """감지 시점 — UI 저장이 매번 감지하지 않고(QA M1), 실패한 재감지가 좋은 결과를 지우지 않으며(M2),
+    연결 확인은 모델이 확인됐을 때만 감지한다."""
+
+    async def _setup(self, **row):
+        import sqlite3
+        import backend.api.servers as servers_mod
+        from backend.db.database import init_tables, migrate_db
+        conn = sqlite3.connect(":memory:", check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        init_tables(conn)
+        migrate_db(conn)
+        base = {"id": "k", "name": "kisti", "base_url": "http://gw/v1", "model": "gpt-6-astra",
+                "provider_type": "openai", "api_key": "sk-secret-123456", "thinking": 1, "thinking_level": "medium",
+                "created_at": "t", "cap_probed_at": "2026-10-12T00:00:00", "cap_is_reasoning": 1,
+                "cap_supports_reasoning_effort": 1, "cap_supports_temperature": 0}
+        base.update(row)
+        cols = ",".join(base)
+        conn.execute(f"INSERT INTO servers ({cols}) VALUES ({','.join('?' * len(base))})", list(base.values()))
+        conn.commit()
+
+        class _NoClose:
+            def __init__(self, c): self.c = c
+            def __getattr__(self, n): return getattr(self.c, n)
+            def close(self): pass
+
+        probes = []
+
+        class _FakeProvider:
+            model_len = 0
+            def __init__(self, caps=None, model_ok=True):
+                self._caps, self._model_ok = caps, model_ok
+            async def fetch_model_len(self): return 0
+            async def probe_capabilities(self):
+                probes.append(1)
+                return self._caps or {"is_reasoning": True, "supports_reasoning_effort": True,
+                                      "supports_temperature": False, "max_model_len": 0, "probe_error": "",
+                                      "probed_at": "2026-10-13T00:00:00"}
+            def apply_capabilities(self, caps): self.applied = caps
+            def is_reasoning(self): return True
+            def reasoning_source(self): return "probe"
+            async def health_status(self):
+                from backend.llm.providers.base import HealthReport
+                return HealthReport(status="ok" if self._model_ok else "model_missing", reachable=True,
+                                    model_ok=self._model_ok)
+
+        class _FakeRegistry:
+            def __init__(self, provider): self.provider = provider
+            async def register(self, row): return self.provider
+            async def unregister(self, sid): pass
+            def get_provider(self, sid): return self.provider
+
+        return servers_mod, conn, _NoClose, _FakeProvider, _FakeRegistry, probes
+
+    async def test_ui_shaped_save_without_connection_change_does_not_probe(self):
+        from backend.api.schemas import ServerUpdate
+        sm, conn, NC, FP, FR, probes = await self._setup()
+        reg = FR(FP())
+        ui_body = ServerUpdate(name="새 이름", weight=2, provider_type="openai", base_url="http://gw/v1/",
+                               model="gpt-6-astra", api_key="", thinking_level="medium", is_default=False,
+                               max_model_len=0)
+        with mock.patch.object(sm, "get_db", lambda: NC(conn)), mock.patch.object(sm, "get_registry", lambda: reg):
+            await sm.update_server("k", ui_body)
+            self.assertEqual(probes, [])                                # 이름·가중치만 — 감지 안 함
+            await sm.update_server("k", ServerUpdate(model="gpt-6-astra-2", provider_type="openai",
+                                                     base_url="http://gw/v1"))
+            self.assertEqual(len(probes), 1)                             # 모델이 바뀜 → 감지
+            await sm.update_server("k", ServerUpdate(api_key="sk-new-key-9999"))
+            self.assertEqual(len(probes), 2)                             # 새 키 → 감지
+
+    async def test_failed_reprobe_keeps_previous_capabilities(self):
+        sm, conn, NC, FP, FR, probes = await self._setup()
+        failing = FP(caps={"is_reasoning": None, "supports_reasoning_effort": None, "supports_temperature": None,
+                           "max_model_len": 0, "probe_error": "감지 요청 실패 [ConnectError]: x",
+                           "probed_at": "2026-10-13T00:00:00"})
+        with mock.patch.object(sm, "get_db", lambda: NC(conn)):
+            await sm._probe_and_store("k", failing)
+        row = dict(conn.execute("SELECT * FROM servers WHERE id='k'").fetchone())
+        self.assertEqual((row["cap_is_reasoning"], row["cap_supports_reasoning_effort"],
+                          row["cap_supports_temperature"], row["cap_probed_at"]),
+                         (1, 1, 0, "2026-10-12T00:00:00"))
+        self.assertIn("ConnectError", row["cap_probe_error"])
+        self.assertIn("2026-10-13", row["cap_probe_error"])
+        self.assertEqual(failing.applied["is_reasoning"], True)          # 실행 중 프로바이더도 이전 값 유지
+        # 다음 성공한 감지는 오류를 지운다.
+        with mock.patch.object(sm, "get_db", lambda: NC(conn)):
+            await sm._probe_and_store("k", FP())
+        self.assertEqual(conn.execute("SELECT cap_probe_error FROM servers WHERE id='k'").fetchone()[0], "")
+
+    async def test_health_check_probes_only_when_model_is_confirmed(self):
+        sm, conn, NC, FP, FR, probes = await self._setup()
+        for model_ok, expected in ((False, 0), (True, 1)):
+            reg = FR(FP(model_ok=model_ok))
+            with mock.patch.object(sm, "get_db", lambda: NC(conn)), mock.patch.object(sm, "get_registry", lambda: reg):
+                res = await sm.server_health("k")
+            self.assertEqual(len(probes), expected)
+            self.assertEqual(res.capabilities is not None, model_ok)
+
+
+class ServerCapabilityStorageTests(unittest.IsolatedAsyncioTestCase):
+    """감지 결과 저장(servers 테이블 마이그레이션) · API 직렬화 · registry 전달."""
+
+    def _conn(self):
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def test_migration_adds_capability_columns_to_old_table(self):
+        from backend.db.database import migrate_db, init_tables
+        conn = self._conn()
+        conn.execute("""CREATE TABLE servers (id TEXT PRIMARY KEY, name TEXT NOT NULL, base_url TEXT NOT NULL,
+                        model TEXT NOT NULL, weight INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1,
+                        is_default INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)""")
+        conn.execute("INSERT INTO servers (id,name,base_url,model,created_at) VALUES ('k','chatGpt_kisti','','gpt-6-astra','t')")
+        init_tables(conn)
+        migrate_db(conn)
+        row = dict(conn.execute("SELECT * FROM servers WHERE id='k'").fetchone())
+        from backend.llm.providers.openai_compatible import capabilities_from_row
+        caps = capabilities_from_row(row)
+        self.assertEqual((caps["is_reasoning"], caps["reasoning_override"], caps["probed_at"]), (None, "", ""))
+
+    async def test_probe_and_store_writes_row_and_updates_live_provider(self):
+        import sqlite3
+        import backend.api.servers as servers_mod
+        from backend.db.database import init_tables, migrate_db
+        conn = sqlite3.connect(":memory:", check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        init_tables(conn)
+        migrate_db(conn)
+        conn.execute("""INSERT INTO servers (id,name,base_url,model,provider_type,thinking,thinking_level,created_at)
+                        VALUES ('k','kisti','','gpt-6-astra','openai',1,'medium','t')""")
+        conn.commit()
+
+        class _NoClose:
+            def __init__(self, c): self.c = c
+            def __getattr__(self, n): return getattr(self.c, n)
+            def close(self): pass
+
+        p = OpenAIProvider("k", "kisti", "", "gpt-6-astra", thinking_level="medium")
+        p._client = _ScriptedHTTP(posts=[(400, "Unsupported parameter: 'reasoning_effort'"), _ok_chat(reasoning_tokens=3)])
+        with mock.patch.object(servers_mod, "get_db", lambda: _NoClose(conn)):
+            caps = await servers_mod._probe_and_store("k", p)
+            d = servers_mod._row_to_dict(conn.execute("SELECT * FROM servers WHERE id='k'").fetchone())
+        self.assertEqual((caps["is_reasoning"], caps["supports_reasoning_effort"]), (True, False))
+        self.assertEqual(d["reasoning_detected"], True)
+        self.assertEqual(d["capabilities"]["supports_reasoning_effort"], False)
+        # 실행 중 프로바이더에 바로 반영 — 이제 reasoning_effort 는 보내지 않는다.
+        self.assertEqual(p._thinking_body("medium"), {})
+        self.assertEqual(p.reasoning_source(), "probe")
+
+    def test_schema_override_field_and_registry_passes_capabilities(self):
+        from backend.api.schemas import ServerCreate, ServerUpdate
+        self.assertEqual(ServerCreate(name="a", base_url="", model="m").reasoning_override, "")
+        self.assertEqual(ServerUpdate(reasoning_override="on").reasoning_override, "on")
+        with self.assertRaises(ValidationError):
+            ServerCreate(name="a", base_url="", model="m", reasoning_override="maybe")
+        import asyncio
+        from backend.llm.registry import ServerRegistry
+        reg = ServerRegistry()
+        p = asyncio.run(reg._create_provider({
+            "id": "k", "name": "n", "base_url": "", "model": "gpt-4o", "provider_type": "openai",
+            "enabled": 1, "thinking_level": "off", "max_model_len": 0, "reasoning_override": "on",
+            "cap_is_reasoning": 0, "cap_max_model_len": 0}))
+        self.assertEqual((p.is_reasoning(), p.reasoning_source()), (True, "override"))
+        src = (Path(__file__).resolve().parent.parent / "frontend/js/servers.js").read_text(encoding="utf-8")
+        for needle in ("reasoning_override:", "sv-reasoning-override", "reasoningDetectedLabel"):
+            self.assertIn(needle, src)
 
 
 class NormalizeThinkingLevelTests(unittest.TestCase):

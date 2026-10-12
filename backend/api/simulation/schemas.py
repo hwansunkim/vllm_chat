@@ -355,6 +355,9 @@ class SimStartConfig(BaseModel):
     max_waves:              int              = 10
     step_delay:             float            = 1.0
     token_limit:            int              = 8192
+    # 출력 토큰의 **최소 보장값**(2026-10-12 의미 변경 — 예전엔 상한). OpenAI 호환 프로바이더는 모든 호출에
+    # config.GENEROUS_COMPLETION_TOKENS 이상을 쓰고 이 값이 더 크면 이 값, 컨텍스트 길이를 알면 그 안으로
+    # 줄인다(backend/llm/providers/openai_compatible.py::_budget). 옛 설정(512 등)도 그대로 받는다 — 잘리지 않을 뿐.
     llm_max_tokens:         int              = 16384
     extra_fields:           list[ExtraField] = DEFAULT_EXTRA_FIELDS
     events:                 list[ScenarioEvent] = []

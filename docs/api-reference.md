@@ -121,18 +121,23 @@
 ## 5. LLM 서버
 
 ### `GET /api/servers`
-`api_key`는 마스킹. `model_len`은 레지스트리의 라이브 값.
+`api_key`는 마스킹. `model_len`은 레지스트리의 라이브 값. 사고형 감지(2026-10-12): `reasoning_override`(''|on|off),
+`capabilities`({is_reasoning, supports_reasoning_effort, supports_temperature, max_model_len, probed_at, probe_error} —
+None = 미확인), `reasoning_detected`(=capabilities.is_reasoning), `reasoning_effective`(실행 판정), `reasoning_source`
+(override|probe|thinking_level|model_name|none).
 
 ### `POST /api/servers` → `201` (`ServerCreate`)
 ```json
 { "name", "base_url", "model",
   "provider_type": "vllm",         // "vllm"|"openai"|"anthropic"
   "api_key": "", "weight": 1, "is_default": false,
-  "thinking_level": "off", "max_model_len": 0 }
+  "thinking_level": "off", "max_model_len": 0,
+  "reasoning_override": "" }        // ""(자동) | "on" | "off"
 ```
-등록 즉시 레지스트리에 추가 + `fetch_model_len()`.
+등록 즉시 레지스트리에 추가 + `fetch_model_len()` + **능력 감지**(작은 요청 — 실패해도 저장은 성공, 오류는 capabilities.probe_error).
 
 ### `PUT /api/servers/{id}` (`ServerUpdate`) — 부분 업데이트
+`base_url`·`model`·`provider_type`·`api_key`가 바뀌었거나 한 번도 감지하지 않은 서버면 능력을 다시 감지한다.
 ### `DELETE /api/servers/{id}` → `204`
 
 ### `POST /api/servers/probe-models` (`ModelProbeRequest`)
@@ -147,7 +152,8 @@
 { "server_id", "name", "model",
   "status": "ok",              // "ok"|"model_missing"|"unreachable"|"disabled"
   "healthy": true, "reachable": true, "model_ok": true,
-  "detail": "...", "available_models": [] }
+  "detail": "...", "available_models": [],
+  "capabilities": { "is_reasoning": true, ... } }   // 연결되면 능력도 다시 감지·저장(연결 실패면 null)
 ```
 
 ---

@@ -162,11 +162,41 @@ LLMProvider (Protocol)
 | 프로바이더 | `off` | `low`/`medium`/`high` | 헤드룸 |
 |---|---|---|---|
 | **vLLM** | 파라미터 없음 | `chat_template_kwargs: {enable_thinking: true, reasoning_effort: <level>}` (템플릿이 모르는 키는 무시) | `level != off` |
-| **OpenAI 일반** (gpt-4o 등) | — | **요청 바디 안 바뀜** (`reasoning_effort` 400 → 조용한 no-op) | 불필요 |
-| **OpenAI 추론** (gpt-5, o1/o3/o4) | reasoning 못 끔 → 파라미터 생략 (서버 기본 medium) | `reasoning_effort: <level>` (`o1-mini`/`o1-preview` 제외) | **항상 필요** — `off`여도 4096을 reasoning이 먹어 빈 답변 방지 |
+| **OpenAI 일반** (사고형 아님으로 판정) | — | **요청 바디 안 바뀜** (`reasoning_effort` 400 → 조용한 no-op) | 불필요 |
+| **OpenAI 사고형** (판정 — 아래 우선순위) | reasoning 못 끔 → 파라미터 생략 (서버 기본 medium) | `reasoning_effort: <level>` (감지에서 미지원이면 생략; 감지 전엔 `o1-mini`/`o1-preview` 제외), temperature 생략(감지에서 지원이면 보냄) | **항상 필요** — `off`여도 4096을 reasoning이 먹어 빈 답변 방지 |
 | **Anthropic** | thinking 미전송 | `thinking: {budget_tokens: <표>}` — low 2048 / medium 8192 / high 24576 | `level != off` |
 
-헤드룸이 필요하면 `max_tokens = max(max_tokens, MAX_COMPLETION_TOKENS_THINKING=16384)`.
+**생성 예산 (2026-10-12)** — vLLM·OpenAI(OpenAI 호환)는 사고 여부와 무관하게 **모든 호출**이
+`_budget(max_tokens, messages) = max(max_tokens, GENEROUS_COMPLETION_TOKENS=16384)`을 받는다. max_tokens 는 상한일 뿐이고
+과금은 실제 생성분이라, 작은 상한에 잘려 "계속"·JSON 파싱 실패·재시도를 반복하는 쪽이 훨씬 비싸다(실측: 기억 압축이
+llm_max_tokens=512 에 잘려 수백 번 실패). 컨텍스트 길이를 알면(설정값 > 감지값 > /v1/models) `max_model_len − 프롬프트
+추정(글자/2 + 메시지당 8) − 256` 이하로 줄이고(하한 256), 400 이 출력 상한을 알려주면("at most N completion tokens",
+"<= N") 그 이하로 학습한다. 길이를 모르는 서버가 컨텍스트 초과 400 을 내면 문구의 숫자로 허용 출력(= 컨텍스트 − 입력)을
+계산해 한 번 다시 보낸다 — vLLM 신형 "(16384 > 8192 - 120)", 구형 "(120 in the messages, …)", "prompt contains at least N"
+세 형식, chat·stream·llm 모두(재시도 한정). 실행 중 길이 조회는 하지 않는다(길이는 감지·수동 입력).
+**알려진 트레이드오프**: OpenAI 의 분당 토큰 한도(TPM)는 요청의 max_completion_tokens 를 미리 계산에 넣으므로, 넉넉한
+예산은 TPM 이 빠듯한 계정에서 429 를 조금 더 일찍 부를 수 있다(코드 변경 없음 — 필요하면 서버별 상한을 따로 둘 것). 호출자가 주는 max_tokens(시뮬레이션 `llm_max_tokens` 포함)는 이제 **최소 보장값** 힌트다. Anthropic 은
+모델별 출력 상한이 4K~64K 로 달라 기존 규칙(사고 시 budget + 4096)을 유지한다.
+
+**사고형 판정 — 서버 설정 시 감지 (2026-10-12)** — 실행 중에는 탐지하지 않는다. 서버 등록·수정(주소·모델·provider·키가
+**실제로 바뀌었거나**(UI 는 저장마다 이 필드들을 보내므로 기존 값과 비교) 한 번도 성공적으로 감지하지 않았을 때)·
+"연결 확인"(모델까지 확인됐을 때만) 때 `probe_capabilities()`가 작은 요청을 보내 `servers` 행에 저장한다
+(`backend/api/servers.py::_probe_and_store` — `cap_is_reasoning`·`cap_supports_reasoning_effort`·`cap_supports_temperature`·
+`cap_max_model_len`·`cap_probed_at`·`cap_probe_error`, 수동 설정 `reasoning_override` ''|on|off):
+- 사고형: `usage.completion_tokens_details.reasoning_tokens > 0` · `message.reasoning(_content)` · `<think>`. OpenAI 는 추가로
+  "reasoning_effort 를 받아들였다"·"temperature 커스텀 값을 거부했다"도 증거(일반 모델은 reasoning_effort 를 400 으로 거부).
+- 파라미터 지원: 커스텀 temperature(0.3)와 사고 파라미터(OpenAI `reasoning_effort`, vLLM `chat_template_kwargs`)를 실어
+  보내고, 400 이 그 파라미터를 거부하면 빼고 다시 보내 False 로 기록(오류 **메시지**에 파라미터 이름과 거부 표현이 함께
+  있어야 거부로 본다 — 오류 종류 "invalid_request_error"만으로는 아님). 첫 감지가 실패하면 미확인(NULL)·오류 문구,
+  **재감지가 실패하면 이전에 성공한 결과를 그대로 두고** 오류 문구(시각 포함)만 남긴다(성공 시각 cap_probed_at 은 안 바뀜).
+- 실행 시 판정 우선순위: **수동 설정 > 감지 결과 > 서버 사고 수준(thinking) > 모델명 목록(gpt-5/o1/o3/o4 — 감지 전 폴백)**.
+  그래서 감지 전 서버도 사고 수준이 켜져 있으면 바로 사고형 파라미터(reasoning_effort·헤드룸)를 받는다. 단 temperature 는
+  사고 수준만으로는 빼지 않는다(모델이 거부한다는 증거가 아님 — 거부하면 실행 중 400 조정이 뺀다). 미리 빼는 건 감지 결과
+  "미지원"·이름 목록·수동 "사고형"일 때다.
+- 실행 중 400 조정: 감지와 별개로, 우리가 보낸 temperature·reasoning_effort·출력 상한을 서버가 400 으로 거부하면 그
+  인스턴스 안에서만 빼거나 줄여 다시 보낸다(DB 는 안 바꿈 — 다음 저장/연결 확인 때 감지가 정본을 갱신).
+- 스트리밍의 컨텍스트 초과 재시도는 예전엔 `async with` 안의 `break` 가 재시도 루프까지 끝내 빈 답으로 끝났다 — 내부 예외로
+  고쳤다.
 
 ### 3.5 파이프라인 (`pipeline.py`)
 
@@ -249,6 +279,8 @@ conversations.send_chat  (body.web_search && WEB_SEARCH_MODE=="toggle")
 |---|---|---|
 | `MAX_COMPLETION_TOKENS` | 4096 | 기본 출력 상한 |
 | `MAX_COMPLETION_TOKENS_THINKING` | 16384 | 사고 켜졌을 때 상향값 |
+| `GENEROUS_COMPLETION_TOKENS` | 16384 | OpenAI 호환 프로바이더의 모든 호출 최소 예산(§3.4 생성 예산) |
+| `BUDGET_MARGIN_TOKENS` / `BUDGET_MIN_TOKENS` | 256 / 256 | 컨텍스트 클램프 여유 / 하한 |
 | `MAX_CONTINUATION_ROUNDS` | 5 | `finish_reason=length` 이어 생성 횟수 |
 | `THINKING_LEVELS` | `(off, low, medium, high)` | 프로바이더 중립 4단계 |
 | `THINKING_BUDGET_BY_LEVEL` | low 2048 / medium 8192 / high 24576 | Anthropic budget_tokens |

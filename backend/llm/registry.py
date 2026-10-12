@@ -8,6 +8,7 @@ from .. import config
 from .providers.anthropic import AnthropicProvider
 from .providers.base import LLMProvider
 from .providers.openai import OpenAIProvider
+from .providers.openai_compatible import capabilities_from_row
 from .providers.vllm import VLLMProvider
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,8 @@ class ServerRegistry:
                 default=config.normalize_thinking_level(row.get("thinking")),
             ),
             configured_max_len=int(row.get("max_model_len", 0)),
+            # 서버 설정 시 감지·저장한 능력 + 수동 설정. 실행 중에는 이 값을 그대로 쓴다(탐지하지 않음).
+            capabilities=capabilities_from_row(row),
         )
         self._providers[row["id"]] = p
         return p

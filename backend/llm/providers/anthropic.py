@@ -76,6 +76,7 @@ class AnthropicProvider:
         is_default: bool = False,
         thinking_level: str = "off",
         configured_max_len: int = 0,
+        capabilities: dict | None = None,
     ) -> None:
         self.id         = server_id
         self.name       = name
@@ -97,6 +98,39 @@ class AnthropicProvider:
         }
         if effective_key:
             self._headers["x-api-key"] = effective_key
+
+        self.apply_capabilities(capabilities or {})
+
+    # ── 능력(서버 설정) ───────────────────────────────────────────────
+    # Anthropic 의 extended thinking 은 요청 파라미터(thinking.budget_tokens)로만 켜지는 명시적 기능이라
+    # 실행 중 판정에 감지 결과를 쓰지 않는다 — 사고 수준(thinking_level)이 그대로 정본이다. 화면 표시를 위해
+    # 수동 설정·감지 필드만 같은 모양으로 갖는다. 생성 예산도 바꾸지 않는다(모델마다 출력 상한이 4K~64K 로 달라
+    # 넉넉한 기본값이 400 을 낼 수 있다 — 기존 budget+MAX_COMPLETION_TOKENS 규칙 유지).
+
+    def apply_capabilities(self, caps: dict) -> None:
+        ov = (caps.get("reasoning_override") or "").strip().lower()
+        self.reasoning_override = ov if ov in ("on", "off") else ""
+        self.cap_is_reasoning = caps.get("is_reasoning")
+        self.cap_supports_reasoning_effort = caps.get("supports_reasoning_effort")
+        self.cap_supports_temperature = caps.get("supports_temperature")
+        self.cap_probed_at = caps.get("probed_at") or ""
+        self.cap_probe_error = caps.get("probe_error") or ""
+
+    def reasoning_source(self) -> str:
+        if self.reasoning_override:
+            return "override"
+        return "thinking_level" if self.thinking_level != "off" else "none"
+
+    def is_reasoning(self) -> bool:
+        if self.reasoning_override:
+            return self.reasoning_override == "on"
+        return self.thinking_level != "off"
+
+    async def probe_capabilities(self) -> dict:
+        """Anthropic 은 사고가 명시 파라미터라 감지할 것이 없다 — 시각만 남기고 나머지는 미확인."""
+        from datetime import datetime
+        return {"is_reasoning": None, "supports_reasoning_effort": None, "supports_temperature": None,
+                "max_model_len": 0, "probe_error": "", "probed_at": datetime.now().isoformat()}
 
     # ── URL ──────────────────────────────────────────────────────────
 

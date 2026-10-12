@@ -24,4 +24,11 @@ class VLLMProvider(OpenAICompatibleProvider):
         """
         if level == "off":
             return {}
-        return {"chat_template_kwargs": {"enable_thinking": True, "reasoning_effort": level}}
+        kwargs = {"enable_thinking": True}
+        if self._send_reasoning_effort():          # 감지에서 거부됐으면 뺀다
+            kwargs["reasoning_effort"] = level
+        return {"chat_template_kwargs": kwargs}
+
+    def _probe_reasoning_body(self) -> dict:
+        # 사고를 켜 보고 응답에 사고 흔적(reasoning_content·<think>)이 있는지로 사고형을 판정한다.
+        return {"chat_template_kwargs": {"enable_thinking": True, "reasoning_effort": "low"}}

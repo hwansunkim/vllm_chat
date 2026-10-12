@@ -116,6 +116,14 @@ def init_tables(conn: sqlite3.Connection) -> None:
             thinking      INTEGER NOT NULL DEFAULT 0,
             thinking_level TEXT NOT NULL DEFAULT 'off',
             max_model_len INTEGER NOT NULL DEFAULT 0,
+            -- 서버 설정 시 감지한 능력(backend/api/servers.py::_probe_and_store). NULL = 미확인.
+            reasoning_override TEXT NOT NULL DEFAULT '',
+            cap_is_reasoning INTEGER,
+            cap_supports_reasoning_effort INTEGER,
+            cap_supports_temperature INTEGER,
+            cap_max_model_len INTEGER NOT NULL DEFAULT 0,
+            cap_probed_at TEXT NOT NULL DEFAULT '',
+            cap_probe_error TEXT NOT NULL DEFAULT '',
             created_at    TEXT NOT NULL
         );
 
@@ -168,6 +176,13 @@ def migrate_db(conn: sqlite3.Connection) -> None:
                 thinking INTEGER NOT NULL DEFAULT 0,
                 thinking_level TEXT NOT NULL DEFAULT 'off',
                 max_model_len INTEGER NOT NULL DEFAULT 0,
+                reasoning_override TEXT NOT NULL DEFAULT '',
+                cap_is_reasoning INTEGER,
+                cap_supports_reasoning_effort INTEGER,
+                cap_supports_temperature INTEGER,
+                cap_max_model_len INTEGER NOT NULL DEFAULT 0,
+                cap_probed_at TEXT NOT NULL DEFAULT '',
+                cap_probe_error TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
             )
         """)
@@ -189,6 +204,19 @@ def migrate_db(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE servers ADD COLUMN api_key TEXT NOT NULL DEFAULT ''")
         if "provider_type" not in server_cols:
             conn.execute("ALTER TABLE servers ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'vllm'")
+        # 서버 설정 시 감지한 능력 + 수동 설정(2026-10-12). 기존 행은 미확인(NULL)·자동('')으로 시작한다 —
+        # 실행 중에는 감지하지 않으므로 다음 저장/연결 테스트 때 채워진다(그 전엔 thinking 수준·이름 폴백).
+        for col, ddl in (
+            ("reasoning_override",            "TEXT NOT NULL DEFAULT ''"),
+            ("cap_is_reasoning",              "INTEGER"),
+            ("cap_supports_reasoning_effort", "INTEGER"),
+            ("cap_supports_temperature",      "INTEGER"),
+            ("cap_max_model_len",             "INTEGER NOT NULL DEFAULT 0"),
+            ("cap_probed_at",                 "TEXT NOT NULL DEFAULT ''"),
+            ("cap_probe_error",               "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if col not in server_cols:
+                conn.execute(f"ALTER TABLE servers ADD COLUMN {col} {ddl}")
 
     # NULL/오타/구버전 값이 섞여도 프로바이더 계층이 언제나 유효한 level 만 보게 한다.
     levels = ",".join(f"'{lv}'" for lv in config.THINKING_LEVELS)

@@ -187,6 +187,17 @@ sendMessage() (chat.js)
 `#context-info` 텍스트(`53.2% | 12,340 / 131,072 | 가용 118,732 [서버명]`). 서버가 입력
 토큰을 반환하지 않으면 "한계 N tokens"만 표시.
 
+### 5.3a 서버 설정 — 사고형 감지 (`servers.js`)
+
+(채팅 에이전트 카드·폼의 토큰 값은 이제 "최소 N토큰 보장" / "최소 보장 토큰" — 백엔드가 모든 호출에 넉넉한 기본 상한을 쓰고
+이 값이 더 크면 이 값을 쓴다, docs/backend.md §3.4.)
+
+
+서버 카드에 실행 판정이 사고형이면 "💭 사고형" 배지(툴팁: 감지 결과 · 근거 — override/probe/thinking_level/model_name).
+편집 폼의 "사고형 모델" select(`#sv-reasoning-override`: 자동 / 사고형으로 취급 / 일반 모델로 취급 → `reasoning_override`
+''|on|off)와 감지 상태 문구(`#sv-reasoning-status`: 사고형 감지됨 / 아님 / 미확인 + 감지 오류). 감지는 저장·"연결 확인" 때
+백엔드가 한다(연결 확인 툴팁에도 결과를 덧붙임). 실행 중에는 감지하지 않는다 — docs/backend.md §3.4.
+
 ### 5.4 사고 컨트롤 (`servers.js`)
 
 🧠 버튼은 토글이 아니라 **4단계 팝오버 메뉴**(`#thinking-menu`). `servers.js`가 소유하고
