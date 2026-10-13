@@ -3666,7 +3666,7 @@ class InfectionModelTypeFrontendTests(unittest.TestCase):
 
     def _run(self):
         import subprocess
-        root = str(Path(__file__).resolve().parent.parent)
+        root = Path(__file__).resolve().parent.parent.as_uri()   # file:// — Windows 경로(C:\…)는 Node ESM 이 거부
         proc = subprocess.run(
             ["node", "--input-type=module", "-e", f"const ROOT = {json.dumps(root)};\n" + self.SCRIPT],
             capture_output=True, text=True, timeout=60,
@@ -12775,7 +12775,7 @@ class LocationCsvContactColumnsTests(unittest.TestCase):
         return {(r[0], r[3]): dict(zip(hdr, r)) for r in rows[1:]}
 
     def test_engine_logs_status_and_elapsed_and_time_jump_end_elapsed(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             sim, db, events = self._run(tmp)
             log = [e for e in sim.shared_log if "speaker" in e]
             db_log = db.get_run_log("run-csv")
@@ -12801,7 +12801,7 @@ class LocationCsvContactColumnsTests(unittest.TestCase):
 
     def test_csv_contact_columns_from_a_real_infection_run(self):
         from ABM.export.csv import render_location_csv
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             sim, _, events = self._run(tmp)
             rows = _csv_rows(render_location_csv(sim.shared_log, events))
         by = self._by(rows)
@@ -12842,7 +12842,7 @@ class LocationCsvContactColumnsTests(unittest.TestCase):
 
     def test_infection_model_disabled_gives_all_s_and_no_exposure(self):
         from ABM.export.csv import render_location_csv
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             sim, _, events = self._run(tmp, infection=False)
             rows = _csv_rows(render_location_csv(sim.shared_log, events))
         body = [dict(zip(rows[0], r)) for r in rows[1:]]
@@ -12951,7 +12951,7 @@ class LocationCsvContactColumnsTests(unittest.TestCase):
         # QA: /load 가 infection_status·elapsed_minutes 를 shared_log 로 안 옮겨, 불러온 실행의
         # CSV(/api/simulation/logs → sim_obj.shared_log) 에서 그 칸들이 전부 빈 값이었다.
         from ABM.export.csv import render_location_csv
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             sim, db, events = self._run(tmp)
             original = render_location_csv(sim.shared_log, events)
             loaded = self._loaded_shared_log(db.get_run_log("run-csv"))
@@ -12978,7 +12978,7 @@ class LocationCsvContactColumnsTests(unittest.TestCase):
     def test_python_and_js_render_identical_csv(self):
         import subprocess
         from ABM.export.csv import render_location_csv
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             sim, _, events = self._run(tmp)
             log = [e for e in sim.shared_log if "speaker" in e]
             log_json = json.dumps(log, ensure_ascii=False, default=str)
@@ -12986,7 +12986,7 @@ class LocationCsvContactColumnsTests(unittest.TestCase):
             # 같은 결과여야 한다(JS 도 이제 타입을 직접 거른다).
             ev_json = json.dumps(events, ensure_ascii=False, default=str)
             py = render_location_csv(json.loads(log_json), json.loads(ev_json))
-        root = str(Path(__file__).resolve().parent.parent)
+        root = Path(__file__).resolve().parent.parent.as_uri()   # file:// — Windows 경로(C:\…)는 Node ESM 이 거부
         script = (
             f"const m = await import({json.dumps(root + '/frontend/js/sim/export/csv.js')});"
             "let s=''; process.stdin.on('data', c => s += c); process.stdin.on('end', () => {"
@@ -13989,7 +13989,7 @@ class RosterCsvParityTests(unittest.TestCase):
         ]
         py = render_location_csv(log, events)
         legacy_only = render_location_csv(log, [e for e in events if e["event_type"] != "wave_roster"])
-        root = str(Path(__file__).resolve().parent.parent)
+        root = Path(__file__).resolve().parent.parent.as_uri()   # file:// — Windows 경로(C:\…)는 Node ESM 이 거부
         script = (
             f"const m = await import({json.dumps(root + '/frontend/js/sim/export/csv.js')});"
             "let s=''; process.stdin.on('data', c => s += c); process.stdin.on('end', () => {"
@@ -14145,7 +14145,7 @@ class InitialImmunityTests(unittest.TestCase):
                          {"r": {"status": "R", "cause": "initial_immune"}})
         if __import__("shutil").which("node"):                       # JS 뱃지도 같은 라벨(labels.py 미러)
             import subprocess
-            js = ("const m = await import(" + json.dumps(str(root / "frontend/js/sim/state.js")) + ");"
+            js = ("const m = await import(" + json.dumps((root / "frontend/js/sim/state.js").as_uri()) + ");"
                   "process.stdout.write([m.infectionBadge('R','initial_immune').label,"
                   " m.infectionBadge('R','recovery').label].join('|'));")
             out = subprocess.run(["node", "--input-type=module", "-e", js], capture_output=True, timeout=60)
@@ -14306,7 +14306,7 @@ class EventDayRangeTests(unittest.TestCase):
             self.assertIn(needle, src)
         if __import__("shutil").which("node"):                       # 불러온 시나리오의 잘못된 값 정리(JS)
             import subprocess
-            js = ("const m = await import(" + json.dumps(str(root / "frontend/js/sim/scenarios.js")) + ");"
+            js = ("const m = await import(" + json.dumps((root / "frontend/js/sim/scenarios.js").as_uri()) + ");"
                   "const f = m.normalizeEventDayRange;"
                   "process.stdout.write(JSON.stringify([f({type:'x'}), f({from_day:0, until_day:'3'}),"
                   " f({from_day:5, until_day:2}), f({from_day:2.5, until_day:null})]));")
@@ -15690,7 +15690,7 @@ class MemoryCompressorRecencyTests(unittest.TestCase):
 
     def test_episode_moves_from_recent_to_distant_as_time_passes(self):
         from ABM.memory_compressor import build_memory_block
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             db.upsert_episodes("s1", "a", [{"event": "축구 골을 넣었다", "importance": 3}],
                                wave=5, elapsed_minutes=100)
@@ -15707,7 +15707,7 @@ class MemoryCompressorRecencyTests(unittest.TestCase):
 
     def test_distant_bucket_caps_by_importance_and_reports_omitted_count(self):
         from ABM.memory_compressor import build_memory_block
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             trivial = [{"event": f"사소한 일 {i}", "importance": 1} for i in range(5)]
             important = [{"event": "중요한 일", "importance": 5}]
@@ -15719,7 +15719,7 @@ class MemoryCompressorRecencyTests(unittest.TestCase):
 
     def test_no_structured_memory_yet_returns_none(self):
         from ABM.memory_compressor import build_memory_block
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             self.assertIsNone(build_memory_block("s1", "a", db, now_elapsed=0))
 
@@ -15761,7 +15761,7 @@ class MemoryFactCapTests(unittest.TestCase):
 
     def test_build_memory_block_caps_facts_and_keeps_highest_confidence(self):
         from ABM.memory_compressor import build_memory_block, _FACT_SHOW_MAX
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             for f in self._facts(_FACT_SHOW_MAX + 5):
                 db.upsert_facts("s1", "a", [f], wave=0, elapsed_minutes=0)
@@ -15773,7 +15773,7 @@ class MemoryFactCapTests(unittest.TestCase):
 
     def test_fact_count_within_cap_shows_everything_without_omission_note(self):
         from ABM.memory_compressor import build_memory_block, _FACT_SHOW_MAX
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             for f in self._facts(_FACT_SHOW_MAX):
                 db.upsert_facts("s1", "a", [f], wave=0, elapsed_minutes=0)
@@ -15798,7 +15798,7 @@ class MemoryFactCapTests(unittest.TestCase):
                 "episodes": [], "facts": [], "relationships": [], "self_state": "평온함",
             }), "", {}
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = SimDB(os.path.join(tmp, "sim.db"))
             for i in range(_FACT_SHOW_MAX + 3):
                 db.upsert_facts("s1", "a", [{"fact": f"사실 {i}", "confidence": 1.0 - i * 0.01}],
@@ -15824,7 +15824,7 @@ class SelfStateRemovedTests(unittest.TestCase):
 
     def test_memory_block_ignores_an_existing_self_state_row(self):
         from ABM.memory_compressor import build_memory_block
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             db.upsert_self_state("s1", "a", "7일차 일요일 오후 사과를 먹고 있다", 3)    # 옛 DB 의 행
             only_state = build_memory_block("s1", "a", db)
@@ -15845,7 +15845,7 @@ class SelfStateRemovedTests(unittest.TestCase):
             return json.dumps({"episodes": [{"event": "e", "participants": ["a"], "importance": 2}],
                                "facts": [], "relationships": [], "self_state": "새 상태"}), "", {}
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             db.upsert_self_state("s1", "a", "묵은 상태", 0)
             compress(agent_name="a", agent_key="a", sim_id="s1",
@@ -15927,7 +15927,7 @@ class FactIdMatchingTests(unittest.TestCase):
             captured["prompt"] = messages[-1]["content"]
             return json.dumps({"facts": [], "self_state": "x"}), "", {}
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             db.upsert_facts("s1", "a", [{"fact": "코로나19로 맛과 냄새를 느끼지 못한다", "confidence": 1.0}], wave=0)
             fid = self._rows(db)[0]["id"]
@@ -15969,7 +15969,7 @@ class FactIdMatchingTests(unittest.TestCase):
             return json.dumps({"facts": [], "self_state": "x"}), "", {}
 
         self.assertGreater(len(self.EVERYDAY_FACTS) + 1, _CANDIDATE_FACT_LIMIT)
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             for fact in self.EVERYDAY_FACTS:
                 db.upsert_facts("s1", "a", [{"fact": fact, "confidence": 0.9}], wave=0)
@@ -15993,7 +15993,7 @@ class FactIdMatchingTests(unittest.TestCase):
     # ── upsert 라우팅 ─────────────────────────────────────────────────────────
 
     def test_same_meaning_merges_sources_without_new_row_or_confidence_change(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             db.upsert_facts("s1", "a", [{"fact": "6일차까지 맛과 냄새를 못 느낀다", "confidence": 0.7}],
                             wave=0, elapsed_minutes=100, source_message_ids=[1, 2])
@@ -16012,7 +16012,7 @@ class FactIdMatchingTests(unittest.TestCase):
         self.assertEqual(json.loads(after["source_message_ids"]), [1, 2, 3, 4])   # 순서 유지·중복 제거
 
     def test_changed_updates_row_and_keeps_previous_values(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             db.upsert_facts("s1", "a", [{"fact": "엄마는 햄버거를 주겠다고 약속했다", "confidence": 0.8}],
                             wave=0, source_message_ids=[1])
@@ -16032,7 +16032,7 @@ class FactIdMatchingTests(unittest.TestCase):
         self.assertEqual(r["elapsed_minutes"], 500)
 
     def test_new_unsure_and_missing_fields_insert_like_before(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             db.upsert_facts("s1", "a", [{"fact": "기존 사실", "confidence": 0.8}], wave=0)
             fid = self._rows(db)[0]["id"]
@@ -16049,7 +16049,7 @@ class FactIdMatchingTests(unittest.TestCase):
         self.assertEqual({json.loads(r["source_message_ids"])[-1] for r in rows}, {9})
 
     def test_matches_id_from_another_agent_or_run_is_rejected(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             db.upsert_facts("s1", "b", [{"fact": "b의 사실", "confidence": 0.7}], wave=0)
             db.upsert_facts("s2", "a", [{"fact": "다른 실행의 a 사실", "confidence": 0.7}], wave=0)
@@ -16085,7 +16085,7 @@ class FactIdMatchingTests(unittest.TestCase):
     def test_compress_saves_messages_before_llm_and_links_their_ids(self):
         from ABM.memory_compressor import compress
         seen = {}
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             self.assertEqual(db.save_messages("x", "y", self._msgs(2), 0), [1, 2])   # id 반환
 
@@ -16105,7 +16105,7 @@ class FactIdMatchingTests(unittest.TestCase):
         for bad in (lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
                     lambda *a, **k: ("이건 JSON 이 아니다", "", {})):
             with self.subTest():
-                with tempfile.TemporaryDirectory() as tmp:
+                with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
                     db = self._db(tmp)
                     self.assertIsNone(compress("a", "a", "s1", self._msgs(3), 1, db, bad))
                     n = db._conn().execute("SELECT COUNT(*) FROM messages").fetchone()[0]
@@ -16114,7 +16114,7 @@ class FactIdMatchingTests(unittest.TestCase):
 
     def test_old_schema_db_migrates_without_touching_rows(self):
         import sqlite3
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             path = os.path.join(tmp, "old.db")
             conn = sqlite3.connect(path)
             conn.executescript("""
@@ -16147,7 +16147,7 @@ class FactIdMatchingTests(unittest.TestCase):
 
     def test_save_messages_failure_rolls_back_and_releases_the_lock(self):
         import sqlite3, threading
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             bad = [{"role": "user", "content": "멀쩡함"}, {"role": "user", "content": None}]
             with self.assertRaises(Exception):
@@ -16169,7 +16169,7 @@ class FactIdMatchingTests(unittest.TestCase):
             self.assertEqual(err, [])
 
     def test_two_changes_to_the_same_text_in_one_batch_keep_prev_fact(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             db.upsert_facts("s1", "a", [{"fact": "X는 0.5", "confidence": 0.5}], wave=0)
             fid = self._rows(db)[0]["id"]
@@ -16187,7 +16187,7 @@ class FactIdMatchingTests(unittest.TestCase):
         # 대상이 된다 — 근거 **배치** 수(메시지 수 아님)를 함께 보여준다.
         from ABM.memory_compressor import compress, consolidate_facts
         captured = {}
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             llm = self._smell_llm(with_judgment=True)
             for day in range(3):                              # 3배치 × 3메시지 → 1행
@@ -16210,7 +16210,7 @@ class FactIdMatchingTests(unittest.TestCase):
         from ABM.memory_compressor import compress, _parse_compression_result
         with self.assertRaises(ValueError):
             _parse_compression_result('[{"fact": "x"}]')
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             out = compress("a", "a", "s1", self._msgs(3), 1, db,
                            lambda *a, **k: ('[{"fact": "배열 응답"}]', "", {}))
@@ -16223,7 +16223,7 @@ class FactIdMatchingTests(unittest.TestCase):
     def test_review1_id_outside_this_calls_candidates_is_rejected(self):
         # 13개 중 후보 12개만 보여줬는데 LLM 이 후보 밖 id 로 "변경"을 지정 → 거부(신규 폴백).
         from ABM.memory_compressor import compress, _CANDIDATE_FACT_LIMIT
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             for i in range(_CANDIDATE_FACT_LIMIT + 1):
                 db.upsert_facts("s1", "a", [{"fact": f"서로 다른 취향 {i}", "confidence": 0.9}], wave=0)
@@ -16253,7 +16253,7 @@ class FactIdMatchingTests(unittest.TestCase):
         self.assertIsNotNone(rows[seen["inside"]]["source_message_ids"])
 
     def test_review1_direct_call_without_candidates_disables_id_matching(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             db.upsert_facts("s1", "a", [{"fact": "원래 사실", "confidence": 0.8}], wave=0)
             fid = self._rows(db)[0]["id"]
@@ -16283,7 +16283,7 @@ class FactIdMatchingTests(unittest.TestCase):
     def test_review2_changed_fact_counts_only_its_own_supporting_batches(self):
         from ABM.memory_compressor import compress, consolidate_facts
         captured = {}
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             llm = self._football_llm()
             for i in range(4):
@@ -16305,7 +16305,7 @@ class FactIdMatchingTests(unittest.TestCase):
         self.assertEqual(prev_batches, 3)                                # 이전 3배치는 과거 버전 근거로 보존
 
     def test_review3_every_previous_version_survives_a_b_c(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             db.upsert_facts("s1", "a", [{"fact": "축구를 좋아한다", "confidence": 0.9}],
                             wave=0, source_message_ids=[1, 2])
@@ -16325,7 +16325,7 @@ class FactIdMatchingTests(unittest.TestCase):
 
     def test_review3_legacy_row_without_sources_keeps_its_first_text(self):
         import sqlite3
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             db._conn().execute(
                 "INSERT INTO semantic_memory (sim_id, agent_key, fact, confidence, source_wave, "
@@ -16342,7 +16342,7 @@ class FactIdMatchingTests(unittest.TestCase):
                           hist[0]["elapsed_minutes"], hist[0]["updated_at"]), (0.8, None, 120, 1.5))
 
     def test_review4_change_into_an_existing_text_merges_into_one_row(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             db.upsert_facts("s1", "a", [{"fact": "6일차까지 증상이 있다", "confidence": 0.7}],
                             wave=0, source_message_ids=[1])
@@ -16372,7 +16372,7 @@ class FactIdMatchingTests(unittest.TestCase):
 
     def test_upsert_failure_rolls_back_everything_and_releases_the_lock(self):
         import sqlite3, threading
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             db.upsert_facts("s1", "a", [{"fact": "X", "confidence": 0.5}], wave=0)
             x = self._rows(db)[0]["id"]
@@ -16420,7 +16420,7 @@ class FactIdMatchingTests(unittest.TestCase):
         llm = lambda *a, **k: (json.dumps({"facts": [{"fact": "f", "confidence": 0.9}],
                                            "episodes": [{"event": "e", "participants": [], "importance": 3}],
                                            "self_state": "x"}), "", {})
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             with mock.patch.object(db, "upsert_facts", side_effect=RuntimeError("boom")):
                 with self.assertRaises(RuntimeError):
@@ -16438,7 +16438,7 @@ class FactIdMatchingTests(unittest.TestCase):
             "facts": [{"fact": "f", "confidence": 0.9}],
             "relationships": [{"target": "b", "trust": 0.5}, {"trust": 0.1}],   # 둘째 행 target 없음
         }), "", {})
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             with self.assertRaises(Exception):
                 compress("a", "a", "s1", self._msgs(3), 1, db, llm)
@@ -16451,7 +16451,7 @@ class FactIdMatchingTests(unittest.TestCase):
         self.assertEqual(n_rel, 0)                     # 반쪽 관계 쓰기는 롤백됨
 
     def test_same_text_change_is_treated_exactly_like_same_meaning(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             db.upsert_facts("s1", "a", [{"fact": "축구를 좋아한다", "confidence": 0.95}],
                             wave=0, elapsed_minutes=10, source_message_ids=[1])
@@ -16468,7 +16468,7 @@ class FactIdMatchingTests(unittest.TestCase):
         self.assertEqual(hist, 0)
 
     def test_delete_run_removes_fact_history(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             db.upsert_facts("run-x", "a", [{"fact": "A", "confidence": 0.9}], wave=0)
             fid = self._rows(db, "run-x")[0]["id"]
@@ -16482,7 +16482,7 @@ class FactIdMatchingTests(unittest.TestCase):
         self.assertEqual(left, 0)
 
     def test_history_redirect_requires_the_representative_to_be_a_candidate(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             db.upsert_facts("s1", "a", [{"fact": "6일차까지 증상", "confidence": 0.7}], wave=0)
             db.upsert_facts("s1", "a", [{"fact": "7일차까지 증상", "confidence": 0.9}], wave=0)
@@ -16502,7 +16502,7 @@ class FactIdMatchingTests(unittest.TestCase):
         self.assertEqual(final[id1], "9일차까지 증상")
 
     def test_change_keeps_lookup_for_a_duplicate_sharing_the_old_text(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             for _ in range(2):        # 기존 중복(이 기능 이전 실행) — 같은 문장 두 행
                 db._conn().execute("INSERT INTO semantic_memory (sim_id, agent_key, fact, confidence, "
@@ -16539,7 +16539,7 @@ class FactIdMatchingTests(unittest.TestCase):
 
     def test_week_of_restatements_stays_one_row(self):
         from ABM.memory_compressor import compress
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             llm = self._smell_llm(with_judgment=True)
             batch_ids = []
@@ -16559,7 +16559,7 @@ class FactIdMatchingTests(unittest.TestCase):
         # 문장은 최신 날짜로, 직전 문장은 prev_fact 로 남는다.
         from ABM.memory_compressor import compress, _COMPRESSION_PROMPT
         self.assertIn('"6일차까지 …" → "7일차까지 …"', _COMPRESSION_PROMPT)
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             llm = self._smell_llm(with_judgment=True, judgment="변경")
             for day in range(6):
@@ -16580,7 +16580,7 @@ class FactIdMatchingTests(unittest.TestCase):
         # 대조군(회귀 기준선) — 판정 필드를 안 주는 응답(구버전과 같은 형태)은 예전처럼
         # 날짜만 다른 행이 6개 쌓인다. 판정 필드가 실제로 일을 하고 있다는 근거.
         from ABM.memory_compressor import compress
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             llm = self._smell_llm(with_judgment=False)
             for day in range(6):
@@ -16622,7 +16622,7 @@ class MemoryConsolidationTests(unittest.TestCase):
                 ],
             }), "", {}
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             # 표현만 다른 같은 이야기(괴물→블랙홀→은하계) — 문자열이 달라 별개 행으로 쌓인다.
             for fact in ("아픈 느낌을 괴물에 빗대어 말한다",
@@ -16676,7 +16676,7 @@ class MemoryConsolidationTests(unittest.TestCase):
                 ],
             }), "", {}
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             db.upsert_facts("s1", "a", [{"fact": "사실 A", "confidence": 0.5}], wave=0)
             db.upsert_facts("s1", "a", [{"fact": "사실 B", "confidence": 0.5}], wave=0)
@@ -16701,7 +16701,7 @@ class MemoryConsolidationTests(unittest.TestCase):
             called.append(1)
             return json.dumps({"adjustments": []}), "", {}
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             db.upsert_facts("s1", "a", [{"fact": "사실 하나뿐", "confidence": 0.5}], wave=0)
             applied = consolidate_facts("a", "a", "s1", db, fake_llm)
@@ -16717,7 +16717,7 @@ class MemoryConsolidationTests(unittest.TestCase):
             fid = int(re.search(r"\[id=(\d+)\]", messages[-1]["content"]).group(1))
             return json.dumps({"adjustments": [{"id": fid, "new_confidence": 0.1}]}), "", {}
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             db.upsert_facts("s1", "a", [{"fact": "사소한 사실", "confidence": 0.5}], wave=0)
             db.upsert_facts("s1", "a", [{"fact": "다른 사실 1", "confidence": 0.5}], wave=0)
@@ -16730,7 +16730,7 @@ class MemoryConsolidationTests(unittest.TestCase):
         self.assertEqual(len(facts), 4)   # 행 수는 그대로
 
     def test_count_compressions_tracks_per_agent(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = self._db(tmp)
             self.assertEqual(db.count_compressions("s1", "a"), 0)
             db.log_compression("s1", "a", msg_count=5, wave=1)
@@ -16877,7 +16877,7 @@ class MemoryCompressorPromptTests(unittest.TestCase):
         # 위 테스트는 "압축 LLM 입력"에서만 뺀 것이지 최종 렌더링을 바꾼 게 아니다.
         from ABM.db import SimDB
         from ABM.memory_compressor import build_memory_block
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = SimDB(os.path.join(tmp, "sim.db"))
             db.upsert_episodes("s1", "a", [{"event": "축구 골을 넣었다", "importance": 4}],
                                wave=1, elapsed_minutes=0)
@@ -16908,7 +16908,7 @@ class MemoryCompressorPromptTests(unittest.TestCase):
                 "facts": [], "relationships": [], "self_state": "평온함",
             }), "", {}
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = SimDB(os.path.join(tmp, "sim.db"))
             messages = [
                 {"role": "user",      "content": "학교 가야지", "elapsed_minutes": 500},
@@ -16936,7 +16936,7 @@ class MemoryCompressorPromptTests(unittest.TestCase):
                 "facts": [{"fact": "매운 음식을 좋아한다", "confidence": 0.9}],
             }), "", {}
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             db = SimDB(os.path.join(tmp, "sim.db"))
             messages = [{"role": "user", "content": "x", "elapsed_minutes": 200}]
             compress(
@@ -17033,7 +17033,7 @@ class MemoryCompressionIntegrationTests(unittest.TestCase):
         return sim, db
 
     def test_compressed_episode_elapsed_minutes_tracks_the_wave_clock(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             sim, db = self._sim(tmp)
             sim.run("a", max_waves=20, step_delay=0.0, resume_wave={"a": [], "b": []})
 
