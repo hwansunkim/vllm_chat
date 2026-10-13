@@ -506,6 +506,40 @@ class _RunnerMixin:
             # 결정론적으로 만든다(LLM 호출 자체의 병렬성은 그대로 유지).
             results = {k: results[k] for k in sorted(results)}
 
+            # ── 이번 wave 의 "세계에 보이는 활동" (엔진이 아는 신호만 — 대사·action_note 텍스트는 해석하지 않는다) ──
+            # 아무도 서로 말을 걸지 않아도(독백 모델 — gpt-astra 실측) 누가 이동·이동 의도·상태 진입/해제·외모 변경을
+            # 했거나 예정 이벤트 알림을 받고 턴을 했으면 그 wave 는 "전원 침묵"이 아니다 — 연속 침묵 카운터를 리셋하고
+            # idle 점프 대신 일반 시간 추정을 탄다(아래 침묵 처리). 실측 532fa382 화: 06:50~08:40 알림마다 한 명씩
+            # 일어나·옷 입고·화장실로 가는데 독백이라 침묵 11회로 쌓여 08:45 에 180분 점프 → 11:45.
+            #
+            # 범위를 좁힌 이유(QA 재생 — 532fa382·8890f96a·e2aa142d): 처음 판정은 옛 침묵 wave 의 85~90% 를 활동으로
+            # 뒤집었다. 대부분 사용자 정의 상태(업무 등)가 30~50분마다 자연 만료 → 같은 상태 재진입이었다. 그래서
+            #   - 자연 만료는 **수면(기상)·이동(도착)**만, 같은 wave 에 같은 상태로 다시 들어가면 활동 아님,
+            #     동행으로 옮겨진 뒤 원래 잠금으로 돌아간 경우(resumed_status)도 아님
+            #   - 상태 진입은 방금 끝난 것과 **다른** 상태만(같은 상태 재진입·재선언은 아님)
+            #   - 이동은 실제 이동·새로 깔린 경로·바뀐 만남 의도만(도달 불가·잘못된 move_to·역할형 move_to 는 아님 —
+            #     `_apply_move_intents` 뒤 결과로 판정)
+            #   - 외모는 실제로 바뀐 경우만, 예정 알림 응답은 역할형이 아니고 같은 상태 재선언(스누즈)이 아닐 때만
+            world_activity: set[str] = set()
+            expired_kind: dict[str, str] = {}
+            for key, st in expired_statuses.items():          # wave 시작의 상태 해제
+                state = st.get("state")
+                if st.get("resumed_status") or state not in ("sleep", "traveling"):
+                    continue
+                expired_kind[key] = state
+                world_activity.add(f"{'기상' if state == 'sleep' else '도착'}:{key}")
+            for speaker_key, result in results.items():
+                if not result.get("success") or speaker_key not in event_invited:
+                    continue
+                if speaker_key in self._role_type_agents:
+                    continue
+                st_now = self._agent_active_status(speaker_key, now_elapsed)
+                declared = result.get("enter_state")
+                if st_now is not None and declared and (
+                        self._resolve_state_category(declared) or {}).get("id") == st_now.get("state"):
+                    continue                                   # 스누즈 — 같은 상태 재선언
+                world_activity.add(f"알림응답:{speaker_key}")
+
             turn_counter += len(current_wave)
             total_turns  += len(current_wave)
             self.completed_waves = run_wave + 1
@@ -599,6 +633,8 @@ class _RunnerMixin:
                 update_appearance = result.get("update_appearance")
                 if not update_appearance:
                     continue
+                if (self._agent_visual.get(speaker_key) or "").strip() != str(update_appearance).strip():
+                    world_activity.add(f"외모:{speaker_key}")
                 self._agent_visual[speaker_key] = update_appearance
                 display = self._key_to_alias.get(speaker_key, speaker_key)
                 self._emit("appearance_update", {
@@ -656,6 +692,7 @@ class _RunnerMixin:
                     st = self._agent_active_status(speaker_key, now_elapsed)
                     if st is not None and st.get("state") != "traveling":
                         del self._agent_status[speaker_key]
+                        world_activity.add(f"상태해제:{speaker_key}")
                         # 보류분은 턴 직전 관문에서 이미 꺼냈지만, 방어적으로 남은
                         # 게 있으면 다음 wave 로 넘긴다(상태 dict 와 함께 사라지지 않게).
                         leftover = st.get("held_incoming")
@@ -678,6 +715,15 @@ class _RunnerMixin:
                     continue
                 minutes = self._enter_state(speaker_key, now_elapsed, category_id=category_id)
                 if minutes is not None:
+                    # 새로 들어간 상태만 — 같은 상태 재선언은 None 이고, 방금(wave 시작) 끝난 것과 같은 상태로 다시
+                    # 들어가는 것(업무 30분 만료 → 업무)도 활동이 아니다. 그 경우 그 사람의 기상/도착 표시도 지운다.
+                    ended = (expired_statuses.get(speaker_key) or {}).get("state")
+                    new_state = (self._agent_status.get(speaker_key) or {}).get("state")
+                    if ended and ended == new_state:
+                        world_activity.discard(f"기상:{speaker_key}")
+                        world_activity.discard(f"도착:{speaker_key}")
+                    else:
+                        world_activity.add(f"상태진입:{speaker_key}")
                     st    = self._agent_status.get(speaker_key, {})
                     state = st.get("state", category_id)
                     logger.info(f"[W{disp_wave}] {speaker_key} 상태 진입: {state} ({minutes}분)")
@@ -713,12 +759,21 @@ class _RunnerMixin:
             # meeting_update가 영영 안 나간다. diff 기준은 "지난 wave 종료 시점"이다.
             meeting_before = dict(self._meeting_intent)
             journey_dest_before = {k: j.get("destination") for k, j in self._journey.items()}
+            path_before = {k: tuple(p) for k, p in self._agent_path.items()}
             self._apply_move_intents(results, disp_wave)
             self._update_meeting_paths(scene_injections)
             # 3) 동행(bring_along) — 리더의 이번 경로가 확정된 뒤에 대상을 리더에 묶는다.
             #    대상은 자기 경로 없이 아래 이동 루프에서 리더의 hop 을 그대로 밟는다.
             self._apply_bring_along(results, disp_wave, journey_dest_before)
             self._emit_meeting_updates(disp_wave, meeting_before)
+            # 이동 의도는 **엔진이 받아들인 것**만 활동이다 — 새로 깔렸거나 바뀐 경로, 새로/다르게 잡힌 만남 의도.
+            # 도달 불가·잘못된 장소·역할형의 move_to 는 경로가 안 생겨 여기 안 걸린다(실제 이동은 아래 루프가 센다).
+            for k, p in self._agent_path.items():
+                if p and tuple(p) != path_before.get(k):
+                    world_activity.add(f"이동의도:{k}")
+            for k, target in self._meeting_intent.items():
+                if target != meeting_before.get(k):
+                    world_activity.add(f"이동의도:{k}")
             self._escort_prune()
 
             # 이동 시간 없이(zone_travel_max_minutes == 0) 경유지에 들어선 여정 중인
@@ -758,6 +813,7 @@ class _RunnerMixin:
                 # zone 경계면 **같은 이동 시간**으로 밟는다(meeting._apply_bring_along).
                 companions = self._companions_of(agent_key)
                 group = frozenset((agent_key, *companions))
+                world_activity.add(f"이동:{agent_key}")
                 crossing_zone, travel_minutes = self._move_one_hop(
                     agent_key, old_loc, next_loc, disp_wave, now_elapsed, scene_injections,
                     group=group,
@@ -859,7 +915,29 @@ class _RunnerMixin:
             # 이번 wave 끝에 결정적 idle 시간 점프를 할지(아래 시간 누적 블록).
             idle_jump = False
 
-            if not next_wave:
+            # 세계 활동이 있었어도 활성 에이전트 **전원**이 상태(수면·이동 등)에 묶였으면 그 활동은 "잠들기/떠나기"로
+            # 끝난 것이다 — 예전처럼 침묵 처리(가장 먼저 풀리는 시점까지 점프)를 탄다.
+            _pool_now = self._forced_call_pool()
+            all_locked_now = bool(_pool_now) and all(self._agent_unavailable(k, now_elapsed) for k in _pool_now)
+            # 혼자 깨어 있는 사람(가용자가 1명 이하)의 활동은 기상·예정 알림 응답이 아니면 침묵으로 친다 — 잠 못 드는
+            # 한 사람이 밤새 서성이며(이동·외모) 밤을 5분 추정 wave 50개로 늘이지 않게(532fa382 W234~236: 짱아 혼자
+            # 머리 말리며 거실↔누나방). 아침 사례(알림 응답·기상)는 그대로 카운터를 리셋한다.
+            _available_now = [k for k in _pool_now if not self._agent_unavailable(k, now_elapsed)]
+            lone_activity = (
+                len(_available_now) <= 1
+                and not any(tag.startswith(("알림응답:", "기상:")) for tag in world_activity)
+            )
+            if not next_wave and world_activity and not all_locked_now and not lone_activity:
+                # 말은 아무에게도 닿지 않았지만 세계가 움직였다 — 침묵이 아니다. 카운터를 리셋하고 시간은 일반 추정.
+                # 재투입은 전원 침묵 1회째와 같다(상태에 안 묶인 가용 전원) — 무언가 막 일어났으니 다들 반응할 수 있게.
+                # 재투입 규칙 자체(1회째 전원 · 2회째부터 소외 해당자)는 바꾸지 않는다 — 카운터만 리셋된다.
+                silence_count = 0
+                pool = self._forced_call_pool()
+                available = sorted(k for k in pool if not self._agent_unavailable(k, now_elapsed))
+                next_wave = {k: [] for k in available}
+                logger.info(f"[W{disp_wave}] 말은 닿지 않았지만 활동 있음 — 침묵 아님(가용 전원 재투입 "
+                            f"{len(available)}명): {sorted(world_activity)}")
+            elif not next_wave:
                 # 전원 침묵 — 이번 wave 에 아무도 서로에게 닿지 않았다. 종료하지
                 # 않는다(max_waves 까지 계속). 누구를 다시 부를지는 연속 횟수로
                 # 갈린다(직접 타깃팅 — routed/scene_injections — 은 위 조립에서 이미
@@ -1001,6 +1079,10 @@ class _RunnerMixin:
                     # 어차피 아래 all_locked 분기가 해제 시점으로 덮어쓴다.
                     sched = self._idle_minutes_schedule or [60]
                     idx  = max(0, min(silence_count - 1, len(sched)) - 1)
+                    # 별도 가드는 두지 않는다(2026-10-13 설계 결정): 활동(이동·상태 진입/해제·외모·알림 응답)이 있던
+                    # wave 는 위에서 침묵이 아니므로 카운터가 0 으로 돌아가고, 그 뒤 첫 침묵은 일반 추정, 두 번째가
+                    # 스케줄 첫 값이다 — 활동 직후에 큰 단계로 뛰는 경로가 없다. 남은 경로(다중 hop)는 다음 wave 에 실제
+                    # 이동(=활동)이 되고, 이동 중(traveling)은 아래 상태 해제 시점 클램프가 도착 시각에서 멈춘다.
                     raw_jump    = sched[idx]
                     jump_reason = f"연속 전원 침묵 {silence_count}회"
                     # 활성 에이전트 **전원**이 상태(수면·이동 등)에 묶여 있다면,

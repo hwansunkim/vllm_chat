@@ -231,7 +231,11 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
          (보류분은 직접 타깃이 아니므로 "닿음"이 아니다).
 
 ── 침묵 처리 — 종료가 아니라 재투입/시간 점프 ──
-18. next_wave 비었으면 (전원 침묵): silence_count += 1
+17b. world_activity(이번 wave 의 엔진 신호 — 실제 이동·받아들인 경로/만남 의도·상태 새 진입(같은 상태 재진입 제외)/
+     턴 해제·자연 만료는 기상·도착만·실제로 바뀐 외모·예정 알림 응답 턴(역할형·스누즈 제외); 텍스트 해석 없음) 가 있고
+     next_wave 가 비었고 전원 상태 잠금이 아니며 "혼자의 활동"(가용 ≤1명이고 기상·알림 응답 아님)이 아니면
+       → 침묵 아님: silence_count = 0, 가용 전원 재투입, 시간은 일반 경로 (2026-10-13 — features "침묵"의 정의)
+18. (위가 아니고) next_wave 비었으면 (전원 침묵): silence_count += 1
        가용(sleep·busy·traveling 에 안 묶인) 활성 에이전트가 있으면:
          silence_count == 1 → 가용 전원 재투입 (시간은 일반 경로)
          silence_count >= 2 → **소외 기준 해당자만** 재투입(_starved_agents — 아래 소외

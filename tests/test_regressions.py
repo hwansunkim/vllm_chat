@@ -8994,7 +8994,8 @@ class SelfDeclaredStateTests(unittest.TestCase):
             )
             jumps = []
             sim._emit = lambda t, d: (jumps.append(d) if t == "time_jump" else None)
-            # W0: a 수면 선언 + b 독백 → 전원 침묵 #1(일반 시간 경로, b만 재투입).
+            # W0: a 수면 선언 + b 독백 → 전원 침묵 #1(일반 시간 경로, b만 재투입). a 의 수면 진입은 세계 활동이지만
+            # 그 뒤 깨어 있는 사람이 b 혼자라(혼자의 활동 규칙, 2026-10-13) 침묵으로 센다.
             # W1: b 독백 → 전원 침묵 #2 → idle 점프. a(잠김)만 있고 b는 안 잠긴
             # 상태라 a 의 해제 시점이 아니라 idle 스케줄 값이어야 한다.
             sim.run("a", max_waves=2, step_delay=0.0,
@@ -11040,14 +11041,24 @@ class SilenceReinjectScopeTests(unittest.TestCase):
 
     def test_second_silence_onward_reinjects_only_starved_agents(self):
         # starvation_waves=1. W0·W1 전원 독백(침묵 #1 전원 → #2 해당자 없음) →
-        # idle 60분이 12:30 예정 이벤트에 클램프(20분) → W2 는 알림 대상 a 만 →
-        # 침묵 #3 → b·d 가 1 wave 쉬어 소외 해당 → W3 은 b·d 만(a 제외).
+        # idle 60분이 12:30 예정 이벤트에 클램프(20분) → W2 는 알림 대상 a 만인데 a 의 턴이 실패한다(LLM 오류 —
+        # 성공한 알림 응답이 아니라 세계 활동이 아니다) → 침묵 #3 → b·d 가 1 wave 쉬어 소외 해당 → W3 은 b·d 만.
         events = [{"at_time": "12:30", "type": "system_message",
                    "message": "12:30. 점심시간이다.", "targets": ["a"]}]
         with tempfile.TemporaryDirectory() as tmp:
             sim = self._sim(tmp, ["a", "b", "d"],
                             {"a": "거실", "b": "회사", "d": "학교"},
                             sim_start_time="12:00")
+            inner = sim._llm
+            calls = {"a": 0}
+
+            def flaky(messages, **kw):
+                if "너는 a다." in (messages[0].get("content", "") if messages else ""):
+                    calls["a"] += 1
+                    if calls["a"] == 3:                        # W2 알림 턴
+                        raise RuntimeError("LLM down")
+                return inner(messages, **kw)
+            sim._llm = flaky
             turns, emitted = self._go(sim, max_waves=4, events=events, starvation_waves=1,
                                       resume_wave={"a": [], "b": [], "d": []})
         self.assertEqual(self._speakers(turns, 1), {"a", "b", "d"})
@@ -11058,6 +11069,23 @@ class SilenceReinjectScopeTests(unittest.TestCase):
         # 침묵 분기의 재투입도 같은 관전 이벤트로 나간다(W3 끝엔 이번엔 a 차례).
         self.assertEqual(sr[0], (2, ["b", "d"], {"b": 1, "d": 1}))
         self.assertEqual(sr[1][:2], (3, ["a"]))
+
+    def test_alert_response_wave_is_not_silence(self):
+        # 같은 장면에서 a 가 12:30 알림에 정상으로 턴을 하면(2026-10-13) 그 wave 는 침묵이 아니다 — 카운터 리셋,
+        # 시간은 일반 추정, 재투입은 전원 침묵 1회째와 같은 가용 전원(a·b·d), 소외 재투입 이벤트 없음.
+        events = [{"at_time": "12:30", "type": "system_message",
+                   "message": "12:30. 점심시간이다.", "targets": ["a"]}]
+        with tempfile.TemporaryDirectory() as tmp:
+            sim = self._sim(tmp, ["a", "b", "d"],
+                            {"a": "거실", "b": "회사", "d": "학교"},
+                            sim_start_time="12:00")
+            turns, emitted = self._go(sim, max_waves=4, events=events, starvation_waves=1,
+                                      resume_wave={"a": [], "b": [], "d": []})
+        self.assertEqual(self._speakers(turns, 2), {"a"})
+        self.assertEqual(self._speakers(turns, 3), {"a", "b", "d"})
+        self.assertEqual([d for t, d in emitted if t == "starvation_reinject"], [])
+        jumps = [(d["wave"], d["mode"]) for t, d in emitted if t == "time_jump"]
+        self.assertEqual(jumps[2], (2, "category"))
 
     # ── 빈 wave 안전장치 ─────────────────────────────────────────────────────
 
@@ -11171,10 +11199,221 @@ class SilenceReinjectScopeTests(unittest.TestCase):
         self.assertEqual(self._speakers(turns, 2), {"k"})
         k_w2 = next(inc for w, k, inc in turns if w == 2 and k == "k")
         self.assertEqual(k_w2[0]["content"], "[씬] 하던 일을 마쳤다: 수련. (도장)")
+        # k 의 수련(busy) 자연 만료는 세계 활동이 아니다(2026-10-13 — 자연 만료는 기상·도착만) → 침묵 #3 → 60분.
         self.assertEqual(jumps[2], (2, "idle", 60, None))
         self.assertEqual(self._speakers(turns, 3), {"f", "k", "m", "z"})
-        # LLM 턴 수: 3 + 3 + 1 + 4 = 11 (예전: 3 + 3 + 4 + 4 = 14)
+        # LLM 턴 수: 3 + 3 + 1 + 4 = 11 (예전 클램프 도입 전: 3 + 3 + 4 + 4 = 14)
         self.assertEqual(len(turns), 11)
+
+
+class MonologueMorningTimeTests(unittest.TestCase):
+    """독백 모델의 아침 — 말은 아무에게도 닿지 않아도 이동·상태 해제·외모 변경·예정 알림 응답이 있으면
+    "전원 침묵"이 아니다(2026-10-13). 실측(gpt-6-astra):
+      - 532fa382 화: 06:50/07:30/08:25/08:40 알림마다 한 명씩 일어나·옷 입고·화장실·드레스룸으로 가는데 독백이라
+        침묵 11회로 쌓여 08:45 에 180분 점프 → 11:45, 다들 12:00 무렵 도착.
+      - 8890f96a 목: 07:30 +55분(짱아 옷 입는 중), 08:40 아빠가 깬 직후 +81분.
+    """
+
+    GRAPH = [{"name": n, "connects_to": ["거실"]} for n in ("짱아방", "안방", "공용화장실", "드레스룸", "현관")] + [
+        {"name": "거실", "connects_to": ["짱아방", "안방", "공용화장실", "드레스룸", "현관"]}]
+    ACTIONS = {   # 알림 문구 → 그 알림을 받은 사람의 엔진이 보는 행동(대사는 독백)
+        "06:50": {"move_to": "공용화장실"},
+        "07:30": {"move_to": "드레스룸"},
+        "08:25": {"update_appearance": "교복을 입은 아이"},
+        "08:40": {"move_to": "현관"},
+    }
+
+    class _AlertLLM:
+        """알림을 처음 본 턴에만 행동(이동·외모), 그 밖에는 독백만 — 독백 모델 흉내. 시간 분류는 10분짜리 장면."""
+
+        def __init__(self, actions):
+            self.actions, self.done = actions, set()
+
+        def __call__(self, messages, max_tokens=None, **kw):
+            sys_text = messages[0].get("content", "") if messages else ""
+            if "시간 관찰자" in sys_text:
+                return json.dumps({"category": "normal_scene", "reason": "t"}), "", {}
+            me = next((k for k in ("짱아", "아빠", "짱구", "엄마") if f"너는 {k}다." in sys_text), "?")
+            blob = " ".join(str(m.get("content", "")) for m in messages)
+            out = {"content": "...", "action_note": "", "target": "self", "move_to": None,
+                   "update_appearance": None, "enter_state": None, "bring_along": None}
+            for tag, act in self.actions.items():
+                if f"ALERT {tag}" in blob and (me, tag) not in self.done:
+                    self.done.add((me, tag))
+                    out.update(act)
+                    break
+            return json.dumps(out), "", {}
+
+    def _sim(self, tmp, start="06:30", **kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        keys = ("짱아", "아빠", "짱구", "엄마")
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in keys}
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 아침"}], tmp, llm=self._AlertLLM(self.ACTIONS),
+            agent_locations={"짱아": "짱아방", "아빠": "안방", "짱구": "짱아방", "엄마": "거실"},
+            location_graph=self.GRAPH, time_mode="variable", sim_start_time=start,
+            time_categories=[{"id": "normal_scene", "label": "t", "min_minutes": 10, "max_minutes": 10}],
+            state_categories=[{"id": "sleep", "label": "수면", "min_minutes": 600, "max_minutes": 600}],
+            idle_minutes_schedule=[60, 120, 180], max_scene_jump_minutes=0, max_daytime_jump_minutes=0, **kw)
+        ev = []
+        sim._emit = lambda t, d: ev.append((t, d))
+        return sim, ev
+
+    EVENTS = [{"at_time": "06:50", "type": "system_message", "message": "ALERT 06:50 일어날 시간", "targets": ["짱아"]},
+              {"at_time": "07:30", "type": "system_message", "message": "ALERT 07:30 출근 준비", "targets": ["아빠"]},
+              {"at_time": "08:25", "type": "system_message", "message": "ALERT 08:25 옷 입기", "targets": ["짱구"]},
+              {"at_time": "08:40", "type": "system_message", "message": "ALERT 08:40 등원", "targets": ["짱구"]}]
+
+    @staticmethod
+    def _clock(sim, elapsed):
+        return sim._sim_start_minutes + elapsed
+
+    def test_tuesday_alerts_with_monologue_do_not_skip_the_morning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, ev = self._sim(tmp)
+            sim.run("짱아", max_waves=30, step_delay=0, starvation_waves=3, events=self.EVENTS,
+                    resume_wave={"짱아": [], "아빠": [], "짱구": [], "엄마": []})
+        jumps = [d for t, d in ev if t == "time_jump"]
+        moves = {(d["agent"], d["to"]): d["wave"] for t, d in ev if t == "agent_move"}
+        self.assertIn(("짱구", "현관"), moves)                          # 08:40 알림까지 실제로 갔다
+        # 08:40 알림 응답 직후 큰 점프(예전 180분 → 11:45)가 없다 — 첫 idle 단계(60분) 이하.
+        wave_0840 = moves[("짱구", "현관")]
+        after = [j for j in jumps if j["wave"] in (wave_0840, wave_0840 + 1, wave_0840 + 2)]
+        self.assertTrue(after)
+        self.assertTrue(all(j["minutes"] <= 60 for j in after), [(j["wave"], j["minutes"], j["mode"]) for j in after])
+        self.assertEqual([j["mode"] for j in jumps if j["wave"] == wave_0840], ["category"])
+        # 알림·행동이 있었던 wave 는 idle 점프가 아니다.
+        acted = {w for w in moves.values()} | {d["wave"] for t, d in ev if t == "appearance_update"}
+        self.assertTrue(acted)
+        self.assertFalse([j for j in jumps if j["wave"] in acted and j["mode"] == "idle"])
+        # 진짜 침묵은 여전히 커진다 — 마지막 행동 뒤 독백만 이어지면 60 → 120 → 180.
+        tail = [j["minutes"] for j in jumps if j["wave"] > wave_0840 and j["mode"] == "idle"]
+        self.assertIn(120, tail)
+
+    def test_thursday_wake_release_is_not_an_idle_jump(self):
+        # 아빠가 08:40 까지 자고(상태 해제 = 활동), 짱아가 07:30 에 옷을 입는다. 그 두 wave 는 일반 추정(10분).
+        events = [{"at_time": "07:30", "type": "system_message", "message": "ALERT 08:25 옷 입기", "targets": ["짱아"]}]
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, ev = self._sim(tmp, start="07:00")
+            sim._agent_status["아빠"] = {"state": "sleep", "until_elapsed": 100}      # 08:40 기상
+            sim.run("짱아", max_waves=25, step_delay=0, starvation_waves=3, events=events,
+                    resume_wave={"짱아": [], "짱구": [], "엄마": []})
+        jumps = {d["wave"]: d for t, d in ev if t == "time_jump"}
+        dress = next(d["wave"] for t, d in ev if t == "appearance_update")
+        wake = next(d["wave"] for t, d in ev if t == "agent_status_change" and d.get("agent") == "아빠"
+                    and d.get("action") == "clear")
+        for w in (dress, wake):
+            self.assertEqual(jumps[w]["mode"], "category", (w, jumps[w]))
+            self.assertEqual(jumps[w]["minutes"], 10)
+        # 깬 직후 wave 도 큰 점프 없음(예전 +81분).
+        self.assertLessEqual(jumps[wake + 1]["minutes"], 60)
+
+    def _probe(self, tmp, fn, *, keys=("a", "b"), waves=6, pre=None, events=None, role=()):
+        """두 사람(기본) 장면을 돌려 (elapsed, [(wave, mode, minutes)]) — fn(me) 가 그 턴의 추가 출력."""
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+
+        def llm(messages, max_tokens=None, **kw):
+            sys_text = messages[0].get("content", "")
+            if "시간 관찰자" in sys_text:
+                return json.dumps({"category": "normal_scene", "reason": "t"}), "", {}
+            me = next(k for k in keys if f"너는 {k}다." in sys_text)
+            out = {"content": "...", "action_note": "", "target": "self", "move_to": None,
+                   "update_appearance": None, "enter_state": None, "bring_along": None}
+            out.update(fn(me, messages) or {})
+            return json.dumps(out), "", {}
+
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in keys}
+        sim = Simulation(agents, [{"role": "user", "content": "[배경]"}], tmp, llm=llm,
+                         agent_locations={k: ("거실" if i % 2 == 0 else "안방") for i, k in enumerate(keys)},
+                         location_graph=self.GRAPH, time_mode="variable", sim_start_time="13:00",
+                         time_categories=[{"id": "normal_scene", "label": "t", "min_minutes": 5, "max_minutes": 5}],
+                         state_categories=[{"id": "work", "label": "업무", "min_minutes": 30, "max_minutes": 30},
+                                           {"id": "sleep", "label": "수면", "min_minutes": 600, "max_minutes": 600}],
+                         idle_minutes_schedule=[60, 120, 180], max_scene_jump_minutes=0,
+                         max_daytime_jump_minutes=0, role_type_agents=set(role))
+        ev = []
+        sim._emit = lambda t, d: ev.append((t, d))
+        if pre:
+            pre(sim)
+        sim.run(keys[0], max_waves=waves, step_delay=0, events=events, resume_wave={k: [] for k in keys})
+        return sim._elapsed_minutes, [(d["wave"], d["mode"], d["minutes"]) for t, d in ev if t == "time_jump"]
+
+    def test_no_op_signals_escalate_like_pure_monologue(self):
+        # QA probe — 도달 불가 move_to 반복·같은 외모 반복은 세계 변화가 아니다 → 순수 독백과 똑같이 커진다
+        # (6 wave 725분, 예전 판정이면 30분).
+        with tempfile.TemporaryDirectory() as tmp:
+            pure, _ = self._probe(tmp, lambda me, m: {})
+            bad_move, _ = self._probe(tmp, lambda me, m: {"move_to": "없는장소"} if me == "a" else {})
+            same_look, _ = self._probe(tmp, lambda me, m: {"update_appearance": "같은 옷"} if me == "a" else {},
+                                       pre=lambda sim: sim._agent_visual.__setitem__("a", "같은 옷"))
+        self.assertEqual(pure, 725)
+        self.assertEqual(bad_move, pure)
+        self.assertEqual(same_look, pure)
+
+    def test_work_state_cycling_is_not_activity(self):
+        # b 가 업무(30분)에 들어가 만료될 때마다 같은 업무로 다시 들어간다 — 자연 만료는 기상·도착만, 같은 상태 재진입은
+        # 활동이 아니다(QA 실측 대부분이 custom 업무 상태의 30~50분 순환이었다).
+        with tempfile.TemporaryDirectory() as tmp:
+            _, jumps = self._probe(tmp, lambda me, m: {"enter_state": "work"} if me == "b" else {}, waves=8)
+        self.assertIn("idle", [mode for _, mode, _ in jumps[2:]])
+
+    def test_lone_wakeful_agent_does_not_stretch_the_night(self):
+        # 532fa382 W234~238 — 다들 자는데 짱아 혼자 거실↔방을 오가며 외모를 바꾼다. 혼자의 활동은 침묵으로 쳐
+        # 60·120·180 으로 커지고, 아침에 한 명이 깨면(기상 = 자연 수면 만료) 그 wave 는 리셋.
+        def act(me, messages):
+            if me == "a":
+                n = sum(1 for m in messages if m.get("role") == "assistant")
+                return {"move_to": "안방" if n % 2 == 0 else "거실", "update_appearance": f"잠옷 {n}"}
+            return {"enter_state": "sleep"}
+
+        def pre(sim):
+            for k, until in (("b", 400), ("c", 900), ("d", 900)):
+                sim._agent_status[k] = {"state": "sleep", "until_elapsed": until}
+        with tempfile.TemporaryDirectory() as tmp:
+            _, jumps = self._probe(tmp, act, keys=("a", "b", "c", "d"), waves=7, pre=pre)
+        idle = [mn for _, mode, mn in jumps if mode == "idle"]
+        self.assertGreaterEqual(len(idle), 3, jumps)
+        self.assertIn(120, idle)
+
+    def test_snooze_and_role_type_alert_responses_are_not_activity(self):
+        events = [{"at_time": "13:20", "type": "system_message", "message": "ALERT 알람", "targets": ["a"]}]
+        with tempfile.TemporaryDirectory() as tmp:
+            # a 는 자고 있다가 알람에 같은 수면을 다시 선언한다(스누즈). b 는 혼자 깨어 독백.
+            _, snooze = self._probe(tmp, lambda me, m: {"enter_state": "sleep"} if me == "a" else {}, waves=6,
+                                    events=events,
+                                    pre=lambda sim: sim._agent_status.__setitem__(
+                                        "a", {"state": "sleep", "until_elapsed": 600}))
+            _, asleep = self._probe(tmp, lambda me, m: {"enter_state": "sleep"} if me == "a" else {}, waves=6,
+                                    pre=lambda sim: sim._agent_status.__setitem__(
+                                        "a", {"state": "sleep", "until_elapsed": 600}))
+            _, plain = self._probe(tmp, lambda me, m: {}, waves=6)
+            _, role = self._probe(tmp, lambda me, m: {}, waves=6, events=events, role=("a",))
+        # 스누즈 알람이 있어도 알람이 없는 밤과 시간 흐름의 **모양**이 같다(알람 wave 만 이벤트 클램프로 짧아질 수 있음).
+        self.assertEqual([mode for _, mode, _ in snooze], [mode for _, mode, _ in asleep], (snooze, asleep))
+        self.assertEqual([mode for _, mode, _ in role], [mode for _, mode, _ in plain])
+
+    def test_genuine_silence_still_escalates_and_all_asleep_jumps_to_release(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, ev = self._sim(tmp, start="13:00")
+            sim.run("짱아", max_waves=5, step_delay=0, starvation_waves=99,
+                    resume_wave={"짱아": [], "아빠": [], "짱구": [], "엄마": []})
+        self.assertEqual([(d["mode"], d["minutes"]) for t, d in ev if t == "time_jump"],
+                         [("category", 10), ("idle", 60), ("idle", 120), ("idle", 180), ("idle", 180)])
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, ev = self._sim(tmp, start="22:00")
+            for k, until in (("짱아", 300), ("아빠", 420), ("짱구", 360), ("엄마", 480)):
+                sim._agent_status[k] = {"state": "sleep", "until_elapsed": until}
+            # 깨워진 사람은 잠꼬대하며 같은 수면을 다시 선언한다(재선언 = 새 상태가 아니라 활동 아님).
+            sim._llm = lambda messages, **kw: (json.dumps({
+                "content": "드르렁", "action_note": "", "target": "self", "move_to": None,
+                "update_appearance": None, "enter_state": "sleep"}), "", {}) if "시간 관찰자" not in (
+                messages[0].get("content", "")) else (json.dumps({"category": "normal_scene"}), "", {})
+            sim.run("짱아", max_waves=1, step_delay=0, resume_wave={})
+        idle = [d for t, d in ev if t == "time_jump" and d["mode"] == "idle"]
+        self.assertEqual(idle[0]["reason"], "전원 상태(수면·이동 등) 해제 대기")
+        self.assertEqual(idle[0]["minutes"], 300)
 
 
 class DirectorPlacementAwarenessTests(unittest.TestCase):
