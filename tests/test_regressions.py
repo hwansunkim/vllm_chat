@@ -11309,7 +11309,7 @@ class MonologueMorningTimeTests(unittest.TestCase):
         # 깬 직후 wave 도 큰 점프 없음(예전 +81분).
         self.assertLessEqual(jumps[wake + 1]["minutes"], 60)
 
-    def _probe(self, tmp, fn, *, keys=("a", "b"), waves=6, pre=None, events=None, role=()):
+    def _probe(self, tmp, fn, *, keys=("a", "b"), waves=6, pre=None, events=None, role=(), graph=None, ev_out=None):
         """두 사람(기본) 장면을 돌려 (elapsed, [(wave, mode, minutes)]) — fn(me) 가 그 턴의 추가 출력."""
         from ABM.agent import Agent
         from ABM.simulation import Simulation
@@ -11327,13 +11327,13 @@ class MonologueMorningTimeTests(unittest.TestCase):
         agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in keys}
         sim = Simulation(agents, [{"role": "user", "content": "[배경]"}], tmp, llm=llm,
                          agent_locations={k: ("거실" if i % 2 == 0 else "안방") for i, k in enumerate(keys)},
-                         location_graph=self.GRAPH, time_mode="variable", sim_start_time="13:00",
+                         location_graph=graph or self.GRAPH, time_mode="variable", sim_start_time="13:00",
                          time_categories=[{"id": "normal_scene", "label": "t", "min_minutes": 5, "max_minutes": 5}],
                          state_categories=[{"id": "work", "label": "업무", "min_minutes": 30, "max_minutes": 30},
                                            {"id": "sleep", "label": "수면", "min_minutes": 600, "max_minutes": 600}],
                          idle_minutes_schedule=[60, 120, 180], max_scene_jump_minutes=0,
                          max_daytime_jump_minutes=0, role_type_agents=set(role))
-        ev = []
+        ev = [] if ev_out is None else ev_out
         sim._emit = lambda t, d: ev.append((t, d))
         if pre:
             pre(sim)
@@ -11376,6 +11376,31 @@ class MonologueMorningTimeTests(unittest.TestCase):
         idle = [mn for _, mode, mn in jumps if mode == "idle"]
         self.assertGreaterEqual(len(idle), 3, jumps)
         self.assertIn(120, idle)
+
+    def test_lone_multi_hop_trip_is_not_idle_jumped(self):
+        # case1_v12 W132~134 — 다들 자는데 아빠 혼자 안방화장실→드레스룸→안방으로 가며 hop 마다 idle 점프(+60·+120)를
+        # 맞아 23:17 출발이 02:17 에야 끝났다. 목적지를 향한 다중 hop 이동(mid-trip)은 혼자여도 활동이다.
+        graph = [{"name": "거실", "connects_to": ["안방", "복도"]}, {"name": "안방", "connects_to": ["거실"]},
+                 {"name": "복도", "connects_to": ["거실", "서재"]}, {"name": "서재", "connects_to": ["복도", "끝방"]},
+                 {"name": "끝방", "connects_to": ["서재"]}]
+
+        def act(me, messages):
+            if me == "a" and not any(m.get("role") == "assistant" for m in messages):
+                return {"move_to": "끝방"}   # 거실→복도→서재→끝방(3 hop), 이후 턴은 독백(move_to null = 이어서 간다)
+            return {} if me == "a" else {"enter_state": "sleep"}
+
+        def pre(sim):
+            for k in ("b", "c"):
+                sim._agent_status[k] = {"state": "sleep", "until_elapsed": 900}
+        ev = []
+        with tempfile.TemporaryDirectory() as tmp:
+            sim_elapsed, jumps = self._probe(tmp, act, keys=("a", "b", "c"), waves=6, pre=pre, graph=graph, ev_out=ev)
+        moves = [(d["wave"], d["to"]) for t, d in ev if t == "agent_move" and d["agent"] == "a"]
+        self.assertEqual([to for _, to in moves], ["복도", "서재", "끝방"], moves)
+        move_waves = {w for w, _ in moves}
+        self.assertFalse([j for j in jumps if j[0] in move_waves and j[1] == "idle"], jumps)
+        # 도착 뒤 혼자 독백만 이어지면 다시 침묵으로 커진다.
+        self.assertIn("idle", [mode for w, mode, _ in jumps if w > max(move_waves)], jumps)
 
     def test_snooze_and_role_type_alert_responses_are_not_activity(self):
         events = [{"at_time": "13:20", "type": "system_message", "message": "ALERT 알람", "targets": ["a"]}]

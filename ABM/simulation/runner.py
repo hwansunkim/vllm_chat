@@ -781,6 +781,8 @@ class _RunnerMixin:
             # (`_journey_after_moves`). 루프 안에서 판정하면 순회 순서에 따라 같은
             # wave 에 떠나는 사람이 아직 있는 것으로 보이기도, 없기도 한다.
             instant_via_arrivals: list[str] = []
+            # 이번 wave 에 실제 hop 을 밟은 mid-trip 이동자 — 아래 침묵 처리의 lone 예외가 쓴다.
+            mid_trip_movers: set[str] = set()
             for agent_key in list(self.active_agents):
                 if agent_key in self._escort_of:
                     continue  # 동행 대상 — 리더의 hop 과 함께 움직인다(아래 companions)
@@ -814,6 +816,10 @@ class _RunnerMixin:
                 companions = self._companions_of(agent_key)
                 group = frozenset((agent_key, *companions))
                 world_activity.add(f"이동:{agent_key}")
+                # 목적지를 향해 가는 중(mid-trip) — 이번 hop 뒤에도 남은 경로가 있거나, wave 시작 전부터
+                # 깔려 있던 경로의 연속이다. 이번 wave 에 새로 깔린 1-hop 으로 한 칸 옮기고 끝난 서성임은 아니다.
+                if path or path_before.get(agent_key):
+                    mid_trip_movers.add(agent_key)
                 crossing_zone, travel_minutes = self._move_one_hop(
                     agent_key, old_loc, next_loc, disp_wave, now_elapsed, scene_injections,
                     group=group,
@@ -922,9 +928,15 @@ class _RunnerMixin:
             # 혼자 깨어 있는 사람(가용자가 1명 이하)의 활동은 기상·예정 알림 응답이 아니면 침묵으로 친다 — 잠 못 드는
             # 한 사람이 밤새 서성이며(이동·외모) 밤을 5분 추정 wave 50개로 늘이지 않게(532fa382 W234~236: 짱아 혼자
             # 머리 말리며 거실↔누나방). 아침 사례(알림 응답·기상)는 그대로 카운터를 리셋한다.
+            # 단, 목적지를 향한 다중 hop 이동 중(mid-trip)은 혼자여도 활동이다 — 안 그러면 hop 마다 idle 점프가 걸려
+            # 방 두 칸 걷는 데 몇 시간이 걸린다(case1_v12 W132~134: 아빠 혼자 23:17 안방화장실→드레스룸→안방, hop 마다
+            # +60·+120분으로 02:17 에야 잠듦). 이번 hop 뒤 zone 경계 이동(traveling)이 된 사람은 이미 unavailable 이라
+            # 기존 경로(해제 시점 클램프)를 타므로 빼고 센다.
             _available_now = [k for k in _pool_now if not self._agent_unavailable(k, now_elapsed)]
+            _mid_trip_now = any(not self._agent_traveling(k, now_elapsed) for k in mid_trip_movers)
             lone_activity = (
                 len(_available_now) <= 1
+                and not _mid_trip_now
                 and not any(tag.startswith(("알림응답:", "기상:")) for tag in world_activity)
             )
             if not next_wave and world_activity and not all_locked_now and not lone_activity:

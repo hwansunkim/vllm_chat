@@ -234,6 +234,8 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
 17b. world_activity(이번 wave 의 엔진 신호 — 실제 이동·받아들인 경로/만남 의도·상태 새 진입(같은 상태 재진입 제외)/
      턴 해제·자연 만료는 기상·도착만·실제로 바뀐 외모·예정 알림 응답 턴(역할형·스누즈 제외); 텍스트 해석 없음) 가 있고
      next_wave 가 비었고 전원 상태 잠금이 아니며 "혼자의 활동"(가용 ≤1명이고 기상·알림 응답 아님)이 아니면
+     (혼자여도 mid-trip 이동 — 14번 이동 루프에서 hop 뒤 남은 경로가 있거나 13번 이동 의도 적용 전 스냅샷(path_before)에 이미 경로가 있던 hop, traveling 제외 —
+      이 있으면 "혼자의 활동"이 아니다. case1_v12 W132~134)
        → 침묵 아님: silence_count = 0, 가용 전원 재투입, 시간은 일반 경로 (2026-10-13 — features "침묵"의 정의)
 18. (위가 아니고) next_wave 비었으면 (전원 침묵): silence_count += 1
        가용(sleep·busy·traveling 에 안 묶인) 활성 에이전트가 있으면:
