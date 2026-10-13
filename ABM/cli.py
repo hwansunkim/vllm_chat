@@ -723,7 +723,22 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _utf8_stdio() -> None:
+    """표준 출력·오류를 UTF-8 로 맞춘다.
+
+    Windows 에서 `> out.md`·파이프로 리다이렉트하면 기본 인코딩이 로캘(cp949)이라 마크다운의
+    이모지(🕐·🦠)나 경고의 ⚠ 에서 UnicodeEncodeError 로 죽고, 죽지 않아도 파일이 cp949 로
+    저장된다(`-o` 파일 출력은 이미 UTF-8). 대화형 콘솔은 영향이 없고, Linux·macOS 는 원래 UTF-8 이다.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass   # StringIO 로 바꿔 끼운 테스트 환경 등 — reconfigure 가 없다
+
+
 def main(argv: list[str] | None = None) -> int:
+    _utf8_stdio()
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)

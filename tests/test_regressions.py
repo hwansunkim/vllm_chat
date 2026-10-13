@@ -12567,6 +12567,26 @@ class CliTests(unittest.TestCase):
         from ABM.cli import build_parser
         return build_parser().parse_args(argv)
 
+    def test_redirected_output_is_utf8_on_every_platform(self):
+        # Windows 에서 `python -m ABM.cli export … > out.md` 처럼 리다이렉트하면 기본 인코딩이 cp949 라
+        # 마크다운의 🕐·🦠·⚠ 에서 UnicodeEncodeError 로 죽었다(2026-10-14 재현). 파이프로 받은 바이트가
+        # UTF-8 이어야 한다 — 인코딩을 강제하는 환경변수는 지워 OS 기본값으로 실행한다.
+        import subprocess
+        import sys
+        root = Path(__file__).resolve().parent.parent
+        env = {k: v for k, v in os.environ.items() if k not in ("PYTHONIOENCODING", "PYTHONUTF8")}
+        helped = subprocess.run([sys.executable, "-m", "ABM.cli", "--help"],
+                                cwd=root, env=env, capture_output=True, timeout=60)
+        self.assertEqual(helped.returncode, 0, helped.stderr)
+        self.assertIn("시나리오", helped.stdout.decode("utf-8"))
+        emoji = subprocess.run([sys.executable, "-c",
+                                "import sys; from ABM.cli import _utf8_stdio; _utf8_stdio();"
+                                " print('### 🕐 월요일 · 🦠'); print('⚠ 경고', file=sys.stderr)"],
+                               cwd=root, env=env, capture_output=True, timeout=60)
+        self.assertEqual(emoji.returncode, 0, emoji.stderr)
+        self.assertEqual(emoji.stdout.decode("utf-8").strip(), "### 🕐 월요일 · 🦠")
+        self.assertEqual(emoji.stderr.decode("utf-8").strip(), "⚠ 경고")
+
     def test_dry_run_prints_the_engine_contract(self):
         from ABM.cli import EXIT_OK, cmd_run
         import io
