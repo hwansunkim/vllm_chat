@@ -132,15 +132,70 @@ def _normalize_bring_along(raw) -> list[str] | None:
     return out or None
 
 
-def parse_json_extras(content: str) -> dict:
-    """Extract move_to/bring_along/update_appearance/enter_state from the LLM response
-    without breaking existing API."""
+# 문자열 계약 필드 — 값은 장소명·사람 ID·외모 묘사·상태 ID 같은 **문자열**이어야 한다.
+# 계약(prompt_contract)이 문자열을 요구해도 모델이 `{"id": "sleep"}` 같은 객체를
+# 넣는 일이 실측됐다(case1 v12: `'dict' object has no attribute 'strip'` 5건 —
+# 턴 대사가 통째로 사라지고 롤백·turn_error 도 생략됐다).
+_STRING_EXTRA_FIELDS = ("move_to", "update_appearance", "enter_state")
+
+
+def _normalize_str_field(field: str, raw, errors: list[dict] | None = None) -> str | None:
+    """문자열 계약 필드 값 정규화 — 문자열이면 strip(빈 문자열은 None), None 이면 None.
+
+    그 외 타입(dict·list·숫자·bool)은 **이 필드만 None 으로 버리고** 타입 위반을
+    ``errors`` 에 기록한다. ``str(value)`` 로 강제 변환하지 않는다 — 그러면
+    ``"{'id': 'sleep'}"`` 가 실제 상태 ID·장소명으로 전달돼 다른 오류를 숨긴다.
+    객체 형태를 지원하려면 허용 키와 의미를 계약에 먼저 명시해야 한다.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        return raw.strip() or None
+    if errors is not None:
+        try:
+            shown = json.dumps(raw, ensure_ascii=False)
+        except (TypeError, ValueError):
+            shown = repr(raw)
+        errors.append({
+            "field":   field,
+            "type":    type(raw).__name__,
+            "preview": shown[:120],
+        })
+    return None
+
+
+def parse_json_extras_checked(content: str) -> tuple[dict, list[dict]]:
+    """`parse_json_extras` + 필드 타입 위반 목록.
+
+    반환 ``(extras, type_errors)``. ``type_errors`` 의 각 항목은
+    ``{"field", "type", "preview"}`` — 호출부(`_step_agent`)가 wave·agent·원문과 함께
+    경고 로그를 남긴다(이 모듈은 그 맥락을 모른다). 타입이 틀린 필드만 None 이 되고
+    대사·다른 필드는 그대로 쓰인다 — 턴은 성공한다.
+    """
     data = _extract_first_json_object(content)
     if data is None:
-        return {}
-    return {
-        "move_to":           (data.get("move_to") or "").strip() or None,
+        return {}, []
+    errors: list[dict] = []
+    extras = {
+        "move_to":           _normalize_str_field("move_to", data.get("move_to"), errors),
         "bring_along":       _normalize_bring_along(data.get("bring_along")),
-        "update_appearance": (data.get("update_appearance") or "").strip() or None,
-        "enter_state":       (data.get("enter_state") or "").strip() or None,
+        "update_appearance": _normalize_str_field("update_appearance", data.get("update_appearance"), errors),
+        "enter_state":       _normalize_str_field("enter_state", data.get("enter_state"), errors),
     }
+    return extras, errors
+
+
+def parse_json_extras(content: str) -> dict:
+    """Extract move_to/bring_along/update_appearance/enter_state from the LLM response
+    without breaking existing API.
+
+    문자열 필드에 문자열이 아닌 값이 오면 그 필드만 None 이 되고 경고가 남는다
+    (`_normalize_str_field`). 타입 위반 목록이 필요하면 `parse_json_extras_checked`.
+    """
+    extras, errors = parse_json_extras_checked(content)
+    for e in errors:
+        logger.warning(
+            f"[parser] extras 필드 타입 위반 — {e['field']}: {e['type']} "
+            f"(문자열/null 이어야 함) → 이 필드만 무시. 값: {e['preview']}"
+        )
+    return extras

@@ -331,7 +331,29 @@ zone은 순수 위치 개념.)
 - **시간 추론 프롬프트가 받는 컨텍스트** (`time_classifier.py`): `[현재 시각]`,
   `[인물 배치]`(화자들이 함께 있나 흩어졌나 — `_placement_summary`),
   `[다음 예정 시각]`(가장 이른 미발동 `at_time` 이벤트 — §9), 방법론 블록
-  (`_METHOD_BLOCK`), `reason` 먼저 `minutes` 나중.
+  (`_METHOD_BLOCK`). 출력은 **숫자 먼저** — `{"minutes": 7, "reason": "…"}` /
+  `{"category": "…", "reason": "…"}`, `reason`은 선택·40자 이내.
+  - **2026-10 출력 순서 변경** — 예전엔 "먼저 근거를 한 줄로 정리하고" + `reason`
+    우선 예시라, 근거가 길어지면 256토큰 요청 한도에서 숫자를 쓰기 전에 잘렸다
+    (case1 v12: 실패 248건 중 83%가 `Unterminated string starting at line 2 column 13`
+    = `reason` 값 잘림). `minutes` 뒤 `reason`이 잘린 응답은 여전히 JSON이
+    불완전해 **실패로 처리**한다 — 잘린 JSON을 임의로 닫거나 정규식으로 `minutes`만
+    뽑아 성공시키지 않는다(의도).
+  - **응답 파싱** (`_parse_time_json`·`_parse_minutes`) — 코드 펜스는 개행 유무와
+    무관하게 안전히 벗기고(`_strip_fence`, 개행 없는 ```` ```json{…}``` ```` 에서
+    IndexError 나던 결함 수정), 전체 `json.loads` 대신 **첫 JSON 객체**만
+    읽는다(`parser._extract_first_json_object` 재사용 — 뒤에 붙은 두 번째 객체는
+    무시, `Extra data` 방지). `minutes`는 bool이 아닌 정수(정수값 float `7.0` 허용,
+    문자열 `"7"`·소수·bool은 실패), 절대 범위 0~10080(7일) 밖이면 실패, 그 안에서
+    `lo`~`hi`를 벗어나면 기존처럼 clamp(`hi`는 다음 예정 시각까지로 좁혀지는 일정
+    캡이기도 해서 실패로 보지 않는다). `reason`은 없어도 성공.
+  - **실패 로그** — 한 줄 경고에 `kind=time_estimate|time_classify`, `wave=`,
+    `실패유형=` (`llm_exception`/`empty`/`no_json`/`invalid_json`/`missing_field`/
+    `bad_type`/`out_of_range`/`unknown_category`), 상세(`invalid_json`이면 엄격 파싱
+    오류 문구 — 예전 로그와 같은 `Unterminated string …`), 요청 `max_tokens`, usage
+    (`prompt_tokens`·`completion_tokens`·있으면 `total_tokens`·`reasoning_tokens`),
+    종료 사유(현재 provider가 usage에 싣지 않아 `finish_reason=미제공`으로 표기 —
+    실리게 되면 자동으로 찍힘), 원문 앞 200자(개행 이스케이프 `\n`)를 싣는다.
   - **2026-09 재보정** — 예전엔 "대사는 거의 실시간·의심스러우면 짧게"로
     앵커가 강하게 짧은 쪽으로 쏠려, wave당 평균 2~5분씩만 흘러 하루를
     지나는 데 수백 wave가 필요했다. 대사만 문자 그대로 읽는 속도가 아니라

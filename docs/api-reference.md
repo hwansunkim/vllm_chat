@@ -217,7 +217,7 @@ Prefix `/api/simulation`. 저장소는 채팅 DB `simulation_scenarios`.
 | `turn_start` | `turn`, `wave`, `speaker`, `memory_size`, `est_tokens`, `token_limit` | |
 | `turn_situation` | `wave`, `agent`, `text` (`[현재 상황]` 또는 `[몸 상태]`) | |
 | `turn_complete` | `turn`, `wave`, `speaker`, `targets[]`, `content`, `action_note`, `meta{}`, `prompt_tokens`, `token_limit`, `reasoning_preview`, `new_edges[]`, `is_exterior`, `time_str` | |
-| `turn_error` | `turn`, `speaker`, `error` | |
+| `turn_error` | `turn`, `speaker`, `error` (+ `wave` — 턴 처리 예외 안전망에서만) | |
 | `turn_language_fix` | `speaker`, `wave`, `turn` | |
 | `scene_event` | `event_type` (`system_message`/`agent_enter`/`agent_exit`/`infect_agent`/`update_appearance`), `message`, `targets[]`, `agent`, `observer_only` | ✅ |
 | `director_call` | `wave`, `digest_waves`, `prompt_tokens`, `prompt_chars`, `elapsed_ms`, `intervened`, `n_interventions`, `failed`, `icon`, `display_name` | ✅ |

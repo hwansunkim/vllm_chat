@@ -338,10 +338,30 @@ target_sections:
 8. content, reasoning, usage, error = _call_llm_for_agent_msgs(...)   ← 브릿지 동기 콜러블
       실패 → _emit("turn_error"), _rollback_incoming, return {success: False}
 9. 외국어 감지(_has_foreign_chars) + lang_fix_enabled → _retry_language_fix (최대 N회)
-10. extras = parse_json_extras(content)   → move_to, update_appearance
-11. result = _apply_turn_result(...)   (§4)
-12. _consume_recovery_notice(agent_key)
+10. extras, type_errors = parse_json_extras_checked(content)
+      → move_to, bring_along, update_appearance, enter_state
+      문자열 필드(move_to/update_appearance/enter_state)에 dict·list·숫자·bool 이 오면
+      **그 필드만 None**, 경고 로그([extras 타입 위반] field·type·값·원문) — 턴은 성공
+11. result = _apply_turn_result(..., progress=progress)   (§4)
+      파싱 불가 → turn_error, _rollback_incoming, return {success: False}
+12. _consume_recovery_notice / _commit_seen / _commit_time_anchor
 ```
+
+**턴 예외 안전망** — 2~12단계(incoming 주입 이후 전부)는 `_run_turn_after_inject`로
+분리돼 `try`로 감싸인다. 예상 못한 예외가 나면 `_handle_turn_exception`이
+`logger.exception`(wave·agent·turn·traceback)과 `turn_error` emit 후
+`{success: False}`를 돌려준다. **롤백 범위는 커밋 지점으로 가른다** — 커밋 지점 =
+`_apply_turn_result`가 assistant 응답을 메모리에 append하기 직전
+(`progress["committed"] = True`):
+
+| 예외 위치 | 상태 | 처리 |
+|---|---|---|
+| 커밋 전 (프롬프트 조립·압축·LLM·extras 파싱·응답 파싱) | 메모리엔 주입한 incoming뿐, shared_log·DB·turn_complete 없음 | turn_error + `_rollback_incoming` (LLM 실패와 동일) |
+| 커밋 후 (메모리·shared_log·edge·turn_complete·DB log_turn·후처리) | 일부/전부 반영됨, SSE·DB는 되감을 수 없음 | 롤백 **안 함**, turn_error + traceback만. `success False`라 이동·상태·라우팅 같은 후속 반영은 건너뜀 |
+
+runner의 `future.result()` 예외 포착은 최후의 안전망으로 남아 있고(주입 이전 구간
+예외만 도달) 역시 `logger.exception`으로 traceback을 남긴다. 응답 파싱 실패
+경고에는 `kind=agent_turn wave= agent= turn= max_tokens=` + usage + 원문 앞 200자가 실린다.
 
 `_llm_for(agent_key)` — 에이전트에 `server_id` 오버라이드가 있으면 그 콜러블, 없으면
 시뮬레이션 기본. 시뮬레이션 레벨 호출(시간 분류, 디렉터)은 항상 `self._llm`.

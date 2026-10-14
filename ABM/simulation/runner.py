@@ -485,7 +485,10 @@ class _RunnerMixin:
                 try:
                     results[agent_key] = future.result()
                 except Exception as e:
-                    logger.error(f"Wave {disp_wave} agent {agent_key} 예외: {e}")
+                    # 최후의 안전망 — `_step_agent` 가 주입 이후 예외를 스스로 turn_error·
+                    # 롤백으로 수렴시키므로 정상이라면 여기 오지 않는다(주입 이전 구간의
+                    # 예외만 남는다). 원인 추적을 위해 traceback 을 반드시 남긴다.
+                    logger.exception(f"Wave {disp_wave} agent {agent_key} 예외: {type(e).__name__}: {e}")
                     results[agent_key] = {"success": False, "agent_key": agent_key}
                 if self._stop_event.is_set():
                     break
@@ -1744,6 +1747,7 @@ class _RunnerMixin:
                 next_beat = f"{beat[1]} (지금부터 {beat[0] - self._elapsed_minutes}분 뒤)"
             category_id = classify_wave_time(
                 entries, self._time_categories, self._llm,
+                wave=wave_num,
                 key_to_alias=self._key_to_alias,
                 llm_max_tokens=min(self.llm_max_tokens, 256),
                 current_time=now_str,
@@ -1881,6 +1885,7 @@ class _RunnerMixin:
 
             return estimate_wave_minutes(
                 entries, self._llm,
+                wave=wave_num,
                 key_to_alias=self._key_to_alias,
                 llm_max_tokens=min(self.llm_max_tokens, 256),
                 current_time=now_str,

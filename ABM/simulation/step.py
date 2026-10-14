@@ -1,7 +1,8 @@
 import logging
 
 from ..agent import Agent
-from ..parser import parse_json_extras
+from ..llm import preview_raw
+from ..parser import parse_json_extras_checked
 from ._constants import (
     _COMPRESSION_THRESHOLD, _COMPRESSION_MIN_MSGS, _has_foreign_chars,
     _CONSOLIDATION_EVERY_N_COMPRESSIONS,
@@ -368,6 +369,79 @@ class _StepMixin:
             incoming = [*time_anchor_msgs, *incoming, *reunion_msgs]
         incoming_msgs = self._inject_incoming(active_agent, incoming, now_elapsed)
 
+        # ── 안전망: 주입 이후 ~ 결과 반영까지의 예상 못한 예외 ──────────────────
+        # 여기서부터 끝까지(프롬프트 조립·압축·LLM 호출·extras 파싱·결과 반영·후처리)
+        # 에서 예외가 새면 예전엔 runner 의 `future.result()` 까지 올라가 오류 문자열
+        # 한 줄만 남고 turn_error·incoming 롤백이 생략됐다(case1 v12: dict.strip 5건).
+        # 롤백 정책은 `progress["committed"]` 로 가른다 — `_handle_turn_exception` 참고.
+        progress = {"committed": False}
+        try:
+            return self._run_turn_after_inject(
+                agent_key, active_agent, run_wave, disp_wave, turn,
+                incoming_msgs, now_elapsed, seen_updates, time_anchor_commit, progress,
+            )
+        except Exception as e:
+            return self._handle_turn_exception(
+                e, agent_key, active_agent, disp_wave, turn, incoming_msgs, progress,
+            )
+
+    def _handle_turn_exception(
+        self,
+        exc:           Exception,
+        agent_key:     str,
+        active_agent:  Agent,
+        disp_wave:     int,
+        turn:          int,
+        incoming_msgs: list[dict],
+        progress:      dict,
+    ) -> dict:
+        """`_step_agent` 의 주입 이후 구간에서 새어 나온 예외를 정상 실패 경로로 수렴.
+
+        롤백 정책(원자성의 경계 = `_apply_turn_result` 의 assistant 메모리 append):
+
+        - **커밋 전**(`progress["committed"]` False) — 에이전트 메모리에 이번 턴의
+          흔적은 주입한 incoming 뿐이고 shared_log·DB·turn_complete 는 아직 없다.
+          LLM 실패 경로와 똑같이 turn_error emit + `_rollback_incoming` +
+          ``success False`` — 다음 강제 재투입 때 같은 말을 다시 듣고 재시도한다.
+        - **커밋 후**(True) — assistant 응답이 메모리에 들어갔고, 이어서 shared_log·
+          관계 edge·turn_complete·DB log_turn 이 순서대로 일부 또는 전부 반영됐을 수
+          있다. 이걸 되감을 수단이 없고(이미 SSE 로 나간 이벤트, 저장된 DB 행), 메모리
+          꼬리가 assistant 라 `_rollback_incoming` 은 어차피 아무것도 꺼내지 못한다.
+          그래서 **롤백하지 않고** 오류만 기록한다(turn_error + traceback).
+          결과는 ``success False`` — 이동·상태·발화 라우팅 같은 후속 반영은 하지
+          않는다(어디까지 유효한 값인지 보장할 수 없으므로). 대사 기록은 남는다.
+        """
+        committed = bool(progress.get("committed"))
+        logger.exception(
+            f"[턴 예외] wave={disp_wave} agent={agent_key} turn={turn} "
+            f"stage={'커밋 후(롤백 안 함)' if committed else '커밋 전(incoming 롤백)'}: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        self._emit("turn_error", {
+            "turn":    turn,
+            "wave":    disp_wave,
+            "speaker": agent_key,
+            "error":   f"턴 처리 예외({type(exc).__name__}): {exc}",
+        })
+        if not committed:
+            self._rollback_incoming(active_agent, incoming_msgs)
+        return {"success": False, "agent_key": agent_key}
+
+    def _run_turn_after_inject(
+        self,
+        agent_key:          str,
+        active_agent:       Agent,
+        run_wave:           int,
+        disp_wave:          int,
+        turn:               int,
+        incoming_msgs:      list[dict],
+        now_elapsed:        int,
+        seen_updates,
+        time_anchor_commit,
+        progress:           dict,
+    ) -> dict:
+        """`_step_agent` 의 incoming 주입 이후 본체. 예외는 호출부 안전망이 받는다."""
+
         ctx             = self._assemble_agent_prompt(agent_key, run_wave)
         visible_agents  = ctx["visible_agents"]
         extended_alias  = ctx["key_to_alias"]
@@ -459,10 +533,19 @@ class _StepMixin:
                 self._rollback_incoming(active_agent, incoming_msgs)
                 return {"success": False, "agent_key": agent_key}
 
-        extras = parse_json_extras(content)
+        extras, type_errors = parse_json_extras_checked(content)
+        for err in type_errors:
+            # 타입이 틀린 필드만 버렸다(None) — 대사·다른 필드는 정상 반영되고 턴은
+            # 성공한다. 어떤 필드가 어떤 모양으로 왔는지 원문과 함께 남긴다.
+            logger.warning(
+                f"[extras 타입 위반] kind=agent_turn wave={disp_wave} agent={agent_key} "
+                f"field={err['field']} type={err['type']} 값={err['preview']} "
+                f"→ 이 필드만 무시(문자열/null 이어야 함). 원문(앞 200자)={preview_raw(content)}"
+            )
         result = self._apply_turn_result(
             active_agent, agent_key, content, reasoning, usage, disp_wave, turn, est_tokens,
-            time_str=time_str, elapsed_minutes=now_elapsed,
+            time_str=time_str, elapsed_minutes=now_elapsed, progress=progress,
+            max_tokens=self.llm_max_tokens,
         )
         if not result.get("success"):
             # 파싱 불가 — _apply_turn_result 가 이미 turn_error 를 emit 했다. LLM

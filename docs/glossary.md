@@ -368,7 +368,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin,
 | **시간 분류기** | `time_classifier.py` | 가변 시간 모드에서 `classify_wave_time` (카테고리 선택) / `estimate_wave_minutes` (AI 직접 추론) LLM 호출 |
 | **메모리 압축기** | `memory_compressor.py` | `compress()` — 에이전트 `memory`가 토큰 한도에 근접하면 구조화 DB 메모리(에피소드·사실·관계·자아상태)로 압축 후 비움 |
 | **시스템 에이전트 러너** | `system_agent.py` | `run_system_agent()` — 디렉터 LLM 호출 (개입/세계사건/메모 판단) |
-| **파서** | `parser.py` | `parse_json_response` (content/meta/targets 추출), `parse_json_extras` (`move_to`, `update_appearance`) |
+| **파서** | `parser.py` | `parse_json_response` (content/meta/targets 추출), `parse_json_extras`/`parse_json_extras_checked` (`move_to`, `bring_along`, `update_appearance`, `enter_state` — 문자열 필드 타입 위반은 그 필드만 None + 경고) |
 | **프롬프트 계약 검증** | `prompt_contract.py::verify_contract` | 위와 동일 |
 | **설정/상수** | `config.py`, `constants.py`, `simulation/_constants.py` | `LOG_DIR`, `TOKEN_LIMIT`, 요일 라벨, 디렉터 반복 감지 상수 |
 | **LLM 타입** | `llm.py` | `LLMCall` 콜러블 타입 별칭 |
@@ -532,7 +532,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin,
 | `turn_start` | 한 에이전트 발화 시작 | 타이핑 인디케이터 |
 | `turn_situation` | 그 턴에 주입된 `[현재 상황]`/`[몸 상태]` | 상황 카드 |
 | `turn_complete` | 발화 완료 (content, meta, targets, tokens, time_str) | 발화 말풍선 + 엣지 추가 |
-| `turn_error` | 발화 실패 (빈 응답/예외) | 오류 배지 누적 |
+| `turn_error` | 발화 실패 (빈 응답/LLM 예외/파싱 불가/턴 처리 예외) | 오류 배지 누적 |
 | `turn_language_fix` | 언어 교잡 감지 → 재시도 시작 | — |
 | **`scene_event`** | 시나리오 이벤트 실행 (`system_message`/`agent_enter`/`agent_exit`) | 씬 카드 |
 | **`system_intervention`** | 디렉터 개입 (`targets` 1..N, `target_label`, `message`) | 개입 카드 🎬 `→ 대상` |

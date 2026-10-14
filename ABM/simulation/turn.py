@@ -3,6 +3,7 @@ import time
 import logging
 
 from ..agent import Agent
+from ..llm import preview_raw, summarize_usage
 from ..parser import parse_json_response
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,8 @@ class _TurnMixin:
         est_tokens:  int,
         time_str:    str | None = None,
         elapsed_minutes: int | None = None,
+        progress:    dict | None = None,
+        max_tokens:  int | None = None,
     ) -> dict:
         """Parse the LLM response, update memory/log/edges, emit events, persist to DB.
 
@@ -30,6 +33,12 @@ class _TurnMixin:
         ``{"success": False}`` 를 돌려준다 — 호출부(``_step_agent``)가 LLM 실패와
         똑같이 turn_error emit + incoming 롤백을 한다. 원본 JSON 텍스트가 대사로
         새어 shared_log·피드·메모리를 오염시키던 경로를 끊는다.
+
+        ``progress`` (선택) — 호출부 안전망(`_step_agent`)과 공유하는 dict. 상태를
+        처음 바꾸기 **직전**(assistant 메모리 append)에 ``progress["committed"] = True``
+        를 세운다. 그 뒤(메모리·shared_log·edge·turn_complete·DB)에서 예외가 나면
+        부분 반영을 되감을 수 없으므로 호출부는 incoming 롤백을 하지 않는다.
+        ``max_tokens`` (선택) — 파싱 실패 진단 로그에 요청 한도를 싣기 위한 값.
         """
         prompt_tokens = usage.get("prompt_tokens", est_tokens)
         agent._last_prompt_tokens = prompt_tokens
@@ -38,7 +47,9 @@ class _TurnMixin:
         if parsed is None:
             logger.warning(
                 f"[{agent.name}] 턴 결과 파싱 실패 (유효한 JSON 객체 없음) — turn_error 로 처리. "
-                f"원본: {raw_content[:200]}"
+                f"kind=agent_turn wave={wave} agent={agent_key} turn={turn} "
+                f"max_tokens={max_tokens if max_tokens is not None else '미상'} "
+                f"{summarize_usage(usage)} 원문(앞 200자)={preview_raw(raw_content)}"
             )
             self._emit("turn_error", {
                 "turn":    turn,
@@ -47,6 +58,10 @@ class _TurnMixin:
             })
             return {"success": False, "agent_key": agent_key}
 
+        # ── 커밋 지점 ── 여기부터 상태가 바뀐다(되감을 수 없음). 호출부 안전망이
+        # 이후 예외에서 incoming 을 롤백하지 않도록 표시한다.
+        if progress is not None:
+            progress["committed"] = True
         # 메모리에는 원본이 아니라 **정규화한 첫 객체**를 남긴다 — 모델이 자기
         # 히스토리의 깨진 형식(중첩 펜스·다중 객체·앞뒤 산문)을 다시 보고 같은
         # 패턴을 반복하는 루프를 끊는다. 정상 응답에서는 사실상 no-op(같은 내용).

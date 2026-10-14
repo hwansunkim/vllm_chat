@@ -4,7 +4,8 @@ from __future__ import annotations
 import json
 import logging
 
-from .llm import LLMCall
+from .llm import LLMCall, preview_raw, summarize_usage
+from .parser import _extract_first_json_object, _sanitize_json_strings
 
 logger = logging.getLogger(__name__)
 
@@ -49,12 +50,9 @@ _USER_TEMPLATE = """\
 
 {method_block}
 
-먼저 근거를 한 줄로 정리하고, 그다음 카테고리를 고르세요.
-다음 JSON 형식으로만 응답하세요:
-{{
-  "reason": "무엇을 보고 이 카테고리라 판단했는지 한 줄",
-  "category": "<카테고리 id 중 하나>"
-}}"""
+카테고리를 고르세요. 근거(reason)는 선택이며, 쓴다면 40자 이내로 짧게.
+다음 JSON 형식으로만 응답하세요(category 를 먼저):
+{{"category": "<카테고리 id 중 하나>", "reason": "40자 이내 근거(선택)"}}"""
 
 
 _MINUTES_SYSTEM_PROMPT = (
@@ -64,6 +62,12 @@ _MINUTES_SYSTEM_PROMPT = (
     "반드시 JSON으로만 응답하세요."
 )
 
+# 출력 순서: 숫자(minutes/category)를 **먼저**, 근거(reason)는 선택·짧게.
+# 예전엔 "먼저 근거를 한 줄로 정리하고" + reason 우선 예시라, 근거가 길어지면
+# 256토큰 요청 한도에서 숫자를 쓰기 전에 잘렸다(case1 v12 시간 추론 실패 248건 중
+# 83% 가 `Unterminated string starting at line 2 column 13` = reason 값 잘림).
+# minutes 뒤 reason 이 잘리는 경우는 여전히 JSON 이 불완전해 실패한다 — 의도된
+# 동작이다(잘린 JSON 을 고쳐 성공시키지 않는다).
 _MINUTES_USER_TEMPLATE = """\
 아래는 이번 Wave의 장면입니다.
 {current_time_block}{placement_block}{next_beat_block}[장면] (대사 {turn_count}줄)
@@ -72,15 +76,12 @@ _MINUTES_USER_TEMPLATE = """\
 {method_block}
 
 이 장면이 이야기 속에서 몇 분 동안 일어난 일인지 추정하세요.
-- 먼저 근거를 한 줄로 정리하고, 그다음 숫자를 정하세요.
 - 답은 {lo}분 이상 {hi}분 이하의 정수. 30·60 같은 라운드 넘버에 얽매이지 마세요.
 - 확신이 없으면 장면 성격에 맞는 중간값으로.
+- 근거(reason)는 선택이며, 쓴다면 40자 이내로 짧게.
 
-다음 JSON 형식으로만 응답하세요:
-{{
-  "reason": "무엇을 보고 몇 분이라 판단했는지 한 줄",
-  "minutes": <정수>
-}}"""
+다음 JSON 형식으로만 응답하세요(minutes 를 먼저, 7 은 형식 예시일 뿐):
+{{"minutes": 7, "reason": "40자 이내 근거(선택)"}}"""
 
 
 def _format_entries(entries: list[dict], key_to_alias: dict[str, str] | None) -> str:
@@ -97,10 +98,124 @@ def _format_entries(entries: list[dict], key_to_alias: dict[str, str] | None) ->
 
 
 def _strip_fence(raw: str) -> str:
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-    return raw
+    """앞뒤 코드 펜스(```json … ```)를 걷어낸다. 어떤 입력에도 예외를 내지 않는다.
+
+    예전 구현(``raw.split("\n", 1)[1]``)은 개행 없는 펜스(```json{...}``` · 잘려서
+    ```json 만 온 응답)에서 IndexError 를 냈다(case1 v12 Wave 423 `list index out
+    of range`). 여는 펜스 뒤 언어 태그는 개행이 있든 없든 떼고, 닫는 펜스는
+    끝에 있을 때만 뗀다.
+    """
+    raw = (raw or "").strip()
+    if not raw.startswith("```"):
+        return raw
+    body = raw[3:]
+    nl = body.find("\n")
+    if nl != -1:
+        body = body[nl + 1:]
+    else:
+        # 개행 없음 — 언어 태그(json 등 영숫자)만 떼고 나머지는 남긴다.
+        i = 0
+        while i < len(body) and (body[i].isalnum() or body[i] in "_-"):
+            i += 1
+        body = body[i:]
+    body = body.rstrip()
+    if body.endswith("```"):
+        body = body[:-3]
+    return body.strip()
+
+
+# ── 시간 추론 응답 파싱 ────────────────────────────────────────────────────────
+# 실패 유형 코드 — 로그 grep 용(`실패유형=<code>`).
+#   llm_exception : LLM 호출 자체가 예외
+#   empty         : 빈 응답
+#   no_json       : `{` 가 아예 없음(산문만)
+#   invalid_json  : `{` 는 있으나 완결된 객체가 없음 — 잘림(Unterminated string 등)
+#                   또는 형식 오류. 잘린 JSON 을 임의로 닫거나 정규식으로 값만
+#                   뽑아 성공 처리하지 않는다(분석 보고서 권고).
+#   missing_field : 객체는 있으나 필수 필드(minutes/category) 없음
+#   bad_type      : 필드 타입 위반(minutes 가 문자열·bool·소수 등)
+#   out_of_range  : minutes 가 절대 허용 범위(0~_ABS_MAX_MINUTES) 밖
+#   unknown_category : category 가 목록에 없는 id
+#   unexpected    : 검증 코드 자체의 예상 못한 예외(방어용, 정상이면 나오지 않음)
+
+# minutes 의 절대 허용 범위. 이 범위 안이면 호출부가 준 [lo, hi] 로 clamp 한다
+# (hi 는 다음 예정 시각까지의 남은 분으로 좁혀지는 **일정 캡**이기도 해서, 그걸
+# 넘었다고 실패시키면 유효한 추정을 버리고 무작위 폴백을 쓰게 된다). 음수나
+# 일주일을 넘는 값은 장면 길이로 의미가 없으므로 실패로 본다.
+_ABS_MAX_MINUTES = 7 * 1440
+
+
+def _parse_time_json(content) -> tuple[dict | None, str | None, str]:
+    """응답에서 첫 JSON 객체를 꺼낸다 → ``(obj, 실패유형, 상세)``.
+
+    성공이면 ``(dict, None, "")``. 전체 ``json.loads`` 대신 첫 객체만 읽으므로
+    뒤에 붙은 두 번째 객체·설명은 무시된다(`Extra data` 방지).
+    """
+    if not isinstance(content, str) or not content.strip():
+        return None, "empty", "빈 응답"
+    text = _strip_fence(content)
+    if "{" not in text:
+        return None, "no_json", "JSON 객체 없음"
+    obj = _extract_first_json_object(text)
+    if obj is None:
+        # 진단용 — 첫 `{` 부터 엄격 파싱했을 때의 오류 메시지(예전 로그와 같은 문구라
+        # `Unterminated string` 같은 패턴으로 이전 실행과 비교할 수 있다).
+        detail = "완결된 JSON 객체 없음"
+        try:
+            json.JSONDecoder().raw_decode(_sanitize_json_strings(text[text.index("{"):]))
+        except ValueError as e:
+            detail = f"{detail}: {e}"
+        return None, "invalid_json", detail
+    return obj, None, ""
+
+
+def _parse_minutes(obj: dict) -> tuple[int | None, str | None, str]:
+    """``minutes`` 필드 검증 → ``(분, 실패유형, 상세)``.
+
+    허용: bool 이 아닌 int, 또는 정수값 float(7.0). 문자열("7")·소수(7.5)·bool 은
+    계약(정수) 위반으로 실패 — 모호한 값을 추측해 성공시키지 않는다.
+    """
+    if "minutes" not in obj or obj.get("minutes") is None:
+        return None, "missing_field", "minutes 없음"
+    raw = obj["minutes"]
+    if isinstance(raw, bool):
+        return None, "bad_type", f"minutes 가 bool({raw!r})"
+    if isinstance(raw, float):
+        if not raw.is_integer():
+            return None, "bad_type", f"minutes 가 정수가 아닌 수({raw!r})"
+        raw = int(raw)
+    if not isinstance(raw, int):
+        return None, "bad_type", f"minutes 가 {type(raw).__name__}({raw!r})"
+    if raw < 0 or raw > _ABS_MAX_MINUTES:
+        return None, "out_of_range", f"minutes={raw} (허용 0~{_ABS_MAX_MINUTES})"
+    return raw, None, ""
+
+
+def _reason_of(obj: dict) -> str:
+    """reason 은 선택 필드 — 문자열일 때만 쓰고 없거나 다른 타입이면 빈 문자열."""
+    r = obj.get("reason")
+    return r.strip() if isinstance(r, str) else ""
+
+
+def _log_time_failure(
+    call_kind: str, wave, fail_kind: str, detail: str,
+    content, max_tokens, usage, reasoning=None,
+) -> None:
+    """시간 추론/분류 실패 경고 한 줄 — 원문·요청 한도·usage·종료 사유 포함.
+
+    ``finish_reason``/``stop_reason`` 은 provider 가 usage 에 실어 줄 때만 나온다
+    (현재는 미제공 — `summarize_usage` 가 "미제공"으로 명시한다).
+    """
+    label = "AI 시간 추론" if call_kind == "time_estimate" else "시간 분류"
+    reasoning_part = (
+        f" reasoning_chars={len(reasoning)}" if isinstance(reasoning, str) and reasoning else ""
+    )
+    logger.warning(
+        f"[time_classifier] {label} 실패 kind={call_kind} "
+        f"wave={wave if wave is not None else '-'} agent=- 실패유형={fail_kind} — {detail} | "
+        f"max_tokens={max_tokens} {summarize_usage(usage)}{reasoning_part} "
+        f"원문(앞 200자)={preview_raw(content)}"
+    )
 
 
 def _context_blocks(current_time: str, placement: str, next_beat: str) -> dict:
@@ -129,6 +244,7 @@ def estimate_wave_minutes(
     hi: int = 480,
     placement: str = "",
     next_beat: str = "",
+    wave: int | None = None,
 ) -> tuple[int, str] | None:
     """LLM에게 이번 wave의 경과 시간(분)을 **직접** 추론시킨다 (AI 모드).
 
@@ -142,6 +258,11 @@ def estimate_wave_minutes(
         모드로 폴백해야 한다.
 
     ``classify_wave_time``과 동일하게 예외를 밖으로 던지지 않는다.
+
+    ``minutes`` 는 bool 이 아닌 정수(또는 정수값 float)여야 하고 0~``_ABS_MAX_MINUTES``
+    안이어야 한다. 그 안에서 ``lo``~``hi`` 를 벗어나면 clamp(실패 아님). ``reason`` 은
+    선택이다. 실패는 유형별로 구분해 원문과 함께 경고한다(`_log_time_failure`).
+    ``wave`` 는 로그 식별용(선택).
     """
     if not entries:
         return None
@@ -171,21 +292,19 @@ def estimate_wave_minutes(
     ]
 
     try:
-        content, _, _ = llm(messages, max_tokens=llm_max_tokens)
-        parsed = json.loads(_strip_fence(content))
-        if not isinstance(parsed, dict):
-            logger.warning("[time_classifier] AI 시간 추론 응답이 객체가 아님 — 폴백")
-            return None
-        raw_minutes = parsed.get("minutes")
-        # bool은 int의 서브클래스라 명시적으로 배제한다.
-        if isinstance(raw_minutes, bool):
-            return None
-        if isinstance(raw_minutes, (int, float)):
-            minutes = int(raw_minutes)
-        elif isinstance(raw_minutes, str):
-            minutes = int(float(raw_minutes.strip()))
-        else:
-            logger.warning(f"[time_classifier] AI 시간 추론 minutes 해석 불가({raw_minutes!r}) — 폴백")
+        content, reasoning, usage = llm(messages, max_tokens=llm_max_tokens)
+    except Exception as exc:
+        _log_time_failure("time_estimate", wave, "llm_exception",
+                          f"{type(exc).__name__}: {exc}", None, llm_max_tokens, None)
+        return None
+
+    try:
+        parsed, fail, detail = _parse_time_json(content)
+        if parsed is not None:
+            minutes, fail, detail = _parse_minutes(parsed)
+        if fail is not None:
+            _log_time_failure("time_estimate", wave, fail, detail,
+                              content, llm_max_tokens, usage, reasoning)
             return None
 
         clamped = max(lo, min(hi, minutes))
@@ -194,11 +313,12 @@ def estimate_wave_minutes(
                 f"[time_classifier] AI 시간 추론 {minutes}분 → sanity clamp {clamped}분 "
                 f"(범위 {lo}~{hi})"
             )
-        reason = str(parsed.get("reason", "")).strip()
+        reason = _reason_of(parsed)
         logger.info(f"[time_classifier] AI 시간 추론: {clamped}분 — {reason}")
         return clamped, reason
-    except Exception as exc:
-        logger.warning(f"[time_classifier] AI 시간 추론 실패: {exc}")
+    except Exception as exc:   # 방어 — 위 검증은 예외를 내지 않아야 한다
+        _log_time_failure("time_estimate", wave, "unexpected",
+                          f"{type(exc).__name__}: {exc}", content, llm_max_tokens, usage)
         return None
 
 
@@ -211,6 +331,7 @@ def classify_wave_time(
     current_time: str = "",
     placement: str = "",
     next_beat: str = "",
+    wave: int | None = None,
 ) -> str | None:
     """Call LLM to classify the elapsed-time category of a single wave's scene.
 
@@ -238,16 +359,28 @@ def classify_wave_time(
     valid_ids = {c["id"] for c in categories}
 
     try:
-        content, _, _ = llm(messages, max_tokens=llm_max_tokens)
-        raw = content.strip()
-        # Strip markdown code fence if present
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        parsed = json.loads(raw)
-        category = parsed.get("category")
-        if category not in valid_ids:
+        content, reasoning, usage = llm(messages, max_tokens=llm_max_tokens)
+    except Exception as exc:
+        _log_time_failure("time_classify", wave, "llm_exception",
+                          f"{type(exc).__name__}: {exc}", None, llm_max_tokens, None)
+        return None
+
+    try:
+        parsed, fail, detail = _parse_time_json(content)
+        if parsed is not None:
+            category = parsed.get("category")
+            if category is None:
+                fail, detail = "missing_field", "category 없음"
+            elif not isinstance(category, str):
+                fail, detail = "bad_type", f"category 가 {type(category).__name__}({category!r})"
+            elif category not in valid_ids:
+                fail, detail = "unknown_category", f"category={category!r}"
+        if fail is not None:
+            _log_time_failure("time_classify", wave, fail, detail,
+                              content, llm_max_tokens, usage, reasoning)
             return None
         return category
-    except Exception as exc:
-        logger.warning(f"[time_classifier] 시간 분류 실패: {exc}")
+    except Exception as exc:   # 방어
+        _log_time_failure("time_classify", wave, "unexpected",
+                          f"{type(exc).__name__}: {exc}", content, llm_max_tokens, usage)
         return None
