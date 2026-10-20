@@ -546,7 +546,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin,
 | **`appearance_update`** | `update_appearance`로 외모 변경 | 외모 카드 👗 |
 | **`time_jump`** | 가변 시간 모드의 경과 분 결정. `mode`: `category`/`ai`/`idle`(연속 전원 침묵·전원 상태 잠금 강제 점프) | 시간 점프 카드 🕐 |
 | `compression_start` / `compression_done` | 에이전트 메모리 압축 | — |
-| **`simulation_end`** | 종료 (total_turns, end_reason: `max_waves`/`target_duration`/`no_agents`/`no_progress`/`stopped`) | "완료 \| 총 N턴 \| 사유" |
+| **`simulation_end`** | 종료 (total_turns = 이번 실행에서 기록된 턴 수, attempted_turns = 배정·시도 수, end_reason: `max_waves`/`target_duration`/`no_agents`/`no_progress`/`stopped`) | "완료 \| 총 N턴 (시도 M — 다를 때만) \| 사유" |
 | `error` | 연결 오류 (브라우저 스펙상 메시지 없음) | 연결 오류 누적 |
 | `ping` | keepalive | 무시 |
 

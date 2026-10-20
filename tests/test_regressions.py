@@ -12469,6 +12469,36 @@ class RunTurnCountTests(unittest.TestCase):
             _finish_db_run(db, "cli", sim, "done")
             self.assertEqual(self._stored_and_rows(db, "cli"), (1, 1))
 
+    def test_simulation_end_reports_recorded_and_attempted_turns_separately(self):
+        # 실시간 종료 이벤트도 total_turns = 이번 run 에서 기록된 턴 수, attempted_turns = 배정·시도 수.
+        # 예전엔 total_turns 가 시도 수라 파싱 실패 1회에도 "총 1턴"이었다(Codex 분석 P2 보류 항목).
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        from backend.api.simulation.runner import fold_elapsed_and_reset_waves
+
+        def run_once(sim):
+            ends = []
+            orig = sim._emit
+            sim._emit = lambda t, d: (ends.append(d) if t == "simulation_end" else None, orig(t, d))
+            sim.run("a", max_waves=1, step_delay=0)
+            sim._emit = orig
+            return ends[-1]["total_turns"], ends[-1]["attempted_turns"]
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            for name, raw, expected in (("ok", '{"content":"hello","target":"self"}', (1, 1)),
+                                        ("parse-failure", "not json", (0, 1))):
+                with self.subTest(name=name):
+                    folder = str(Path(tmp) / name)
+                    sim = Simulation({"a": Agent("a", "Act as a.", folder, token_limit=4096)},
+                                     [{"role": "user", "content": "[배경] test"}], folder,
+                                     llm=lambda *a, raw=raw, **k: (raw, "", {}),
+                                     lang_fix_enabled=False, time_mode="fixed", time_per_wave=1)
+                    self.assertEqual(run_once(sim), expected)
+                    if name == "ok":   # 이어서 실행 — 배경문·이전 run 기록은 세지 않는다
+                        fold_elapsed_and_reset_waves(sim)
+                        self.assertEqual(run_once(sim), (1, 1))
+                        self.assertEqual(len(sim.shared_log), 3)   # 배경 1 + 기록 2
+
     def test_error_exit_and_continued_run_count_only_their_own_rows(self):
         import queue
         from backend.api.simulation.runner import finalize_run, fold_elapsed_and_reset_waves

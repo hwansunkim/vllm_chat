@@ -556,13 +556,16 @@ def cmd_run(args) -> int:
                     )
                 progress.say(
                     f"[run {idx}/{n}] ✅ {res.end_reason or status} · "
-                    f"wave {res.completed_waves} · 턴 {res.total_turns} · "
+                    f"wave {res.completed_waves} · 턴 {res.total_turns}"
+                    + (f"(시도 {res.attempted_turns})" if res.attempted_turns != res.total_turns else "")
+                    + " · "
                     f"{time.time() - started:.0f}s"
                 )
                 return {
                     "idx": idx, "run_id": run_id, "doc": doc, "error": None,
                     "end_reason": res.end_reason,
                     "waves": res.completed_waves, "turns": res.total_turns,
+                    "attempted_turns": res.attempted_turns,
                 }
 
             if args.concurrency > 1 and n > 1:

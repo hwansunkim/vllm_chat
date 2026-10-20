@@ -40,7 +40,8 @@ class RunResult:
     edges:           list[dict]
     end_reason:      str
     completed_waves: int
-    total_turns:     int
+    total_turns:     int          # 이번 실행에서 기록된 턴 수(DB simulation_log 행과 같은 기준)
+    attempted_turns: int = 0      # 배정·시도한 턴 수(파싱 실패·중지 포함) — 기록 수와 다를 수 있다
     # 실행이 끝난 Simulation 객체. lifecycle 이 finalize_run(스냅샷 저장 등)에 쓰고
     # /continue 가 이어받는다. 순수 CLI 소비자는 무시해도 된다.
     sim:             Any = field(default=None, repr=False)
@@ -215,5 +216,6 @@ def run_config(
         end_reason      = end_data.get("end_reason", ""),
         completed_waves = sim.completed_waves,
         total_turns     = int(end_data.get("total_turns", 0) or 0),
+        attempted_turns = int(end_data.get("attempted_turns", 0) or 0),
         sim             = sim,
     )

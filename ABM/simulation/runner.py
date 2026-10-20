@@ -146,7 +146,13 @@ class _RunnerMixin:
             dict(resume_wave) if resume_wave is not None else {start_agent: []}
         )
         turn_counter  = 0
-        total_turns   = 0
+        # 턴 수는 두 가지다(docs/decisions.md 2026-10-20):
+        # - attempted_turns: wave 에 배정한 턴 수(시도). 파싱 실패·중지·기록 전 오류도 센다.
+        # - 기록된 턴 수: 이번 run() 동안 shared_log 에 추가된 에이전트 기록 수 — shared_log 에
+        #   append 하는 곳은 turn.py 의 턴 기록 하나뿐이라 DB simulation_log 행과 같은 기준이다.
+        #   배경문(초기 항목)·이전 run 의 기록은 시작 길이를 빼서 제외한다.
+        attempted_turns = 0
+        log_start       = len(self.shared_log)
         silence_count = 0
         # 연속으로 "성공한 발화가 0인" wave 수. 옛 early_stop 이 암묵적으로 하던
         # "LLM 이 전부 죽으면 max_waves 까지 두들기지 말고 멈춘다"를 대체하는
@@ -544,7 +550,7 @@ class _RunnerMixin:
                 world_activity.add(f"알림응답:{speaker_key}")
 
             turn_counter += len(current_wave)
-            total_turns  += len(current_wave)
+            attempted_turns += len(current_wave)
             self.completed_waves = run_wave + 1
             # 소외 재투입 판정용 "마지막으로 턴을 받은 wave"(key 기준, disp_wave 축).
             # 성공 여부와 무관하게 턴을 받았으면 갱신한다 — LLM 실패로 같은
@@ -1310,7 +1316,9 @@ class _RunnerMixin:
         self._save_edges()
 
         self._emit("simulation_end", {
-            "total_turns": total_turns,
+            # total_turns = 이번 run 에서 기록된 턴 수, attempted_turns = 배정·시도 수.
+            "total_turns":     len(self.shared_log) - log_start,
+            "attempted_turns": attempted_turns,
             "edges_count": len(self.edges),
             "log_count":   len(self.shared_log),
             # 종료 사유 (추가 필드 — 모르는 소비자는 무시해도 기존과 동일하게 동작):

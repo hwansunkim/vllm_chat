@@ -197,8 +197,11 @@ export function connectSSE() {
     removeTypingIndicator();
     document.querySelectorAll('.sim-agent-card').forEach(c => c.classList.remove('speaking'));
     const reason = END_REASON_LABELS[d.end_reason];
+    // total_turns = 기록된 턴 수, attempted_turns = 배정·시도 수(파싱 실패 등으로 다를 때만 표시).
+    const attempted = (d.attempted_turns != null && d.attempted_turns !== d.total_turns)
+      ? ` (시도 ${d.attempted_turns})` : '';
     document.getElementById('sim-turn-text').textContent =
-      `완료  |  총 ${d.total_turns}턴${reason ? `  |  ${reason}` : ''}`;
+      `완료  |  총 ${d.total_turns}턴${attempted}${reason ? `  |  ${reason}` : ''}`;
     document.getElementById('sim-progress-fill').style.width = '100%';
     es.close();
     sim.eventSource = null;

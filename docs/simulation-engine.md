@@ -292,7 +292,9 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
 
 ── 루프 종료 후 ──
 _pending_wave = current_wave;  _save_edges()
-_emit("simulation_end", {total_turns, edges_count, log_count, end_reason})
+_emit("simulation_end", {total_turns, attempted_turns, edges_count, log_count, end_reason})
+    # total_turns = 이번 run() 동안 shared_log 에 추가된 에이전트 기록 수(DB 행과 같은 기준),
+    # attempted_turns = wave 에 배정한 턴 수(파싱 실패·중지·기록 전 오류 포함)
 ```
 
 **`end_reason`**: `max_waves` / `target_duration` / `no_agents` / `no_progress` / `stopped`.
