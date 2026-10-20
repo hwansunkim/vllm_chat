@@ -10646,6 +10646,20 @@ class ZonelessTravelBoundaryTests(unittest.TestCase):
             self.assertNotIn(sim._travel_zone("고등학교"), set(sim._location_zone.values()))
             self.assertNotEqual(sim._travel_zone("고등학교"), sim._travel_zone("누나학원"))
 
+    def test_unset_or_off_map_origin_keeps_previous_boundary_rule(self):
+        # Codex 리뷰 P2-1 — 위치 미설정('')·지도 밖 이름에서의 첫 이동은 예전 zone 문자열 비교를
+        # 그대로 따른다: zone 없는 장소로는 즉시(경계 아님), zone 안 장소로는 경계(이동 시간).
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            sim, _ = self._sim(tmp, {"z": [self._IDLE]}, {"z": "거실"})
+            for origin in ("", "지도에_없는_곳"):
+                with self.subTest(origin=origin):
+                    self.assertFalse(sim._crosses_boundary(origin, "고등학교"))
+                    self.assertFalse(sim._crosses_boundary("고등학교", origin))
+                    self.assertTrue(sim._crosses_boundary(origin, "거실"))
+                    self.assertTrue(sim._crosses_boundary("거실", origin))
+            # 지도 안 노드끼리는 새 규칙 그대로다.
+            self.assertTrue(sim._crosses_boundary("고등학교", "누나학원"))
+
     def test_direct_link_preferred_over_route_through_home(self):
         with tempfile.TemporaryDirectory() as tmp:
             sim, _ = self._sim(tmp, {"z": [self._IDLE]}, {"z": "고등학교"})

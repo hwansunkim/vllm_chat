@@ -101,6 +101,11 @@ class _LocationMixin:
         """
         if not self._location_zone:
             return False
+        # 지도 밖 위치(빈 값·그래프에 없는 이름)가 낀 hop은 예전 zone 문자열 비교를 그대로
+        # 쓴다 — 위치 미설정 에이전트가 zone 없는 장소로 가는 첫 이동은 즉시, zone 안 장소로
+        # 가는 첫 이동은 경계(이동 시간)였던 기존 동작을 보존한다(Codex 리뷰 P2-1).
+        if a not in self._location_graph or b not in self._location_graph:
+            return self._location_zone.get(a, "") != self._location_zone.get(b, "")
         return self._travel_zone(a) != self._travel_zone(b)
 
     def _find_path(self, start: str, goal: str) -> list[str]:
