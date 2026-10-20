@@ -48,19 +48,22 @@
 - 연구 가정(모델 공식·단위·기본값, 실험 범위, 시나리오 규칙)을 바꾸면 같은 커밋에서 한 줄을 추가한다.
 - 결정과 충돌하는 지시를 받으면 작업하기 전에 사용자에게 확인한다.
 
-## 6. 환경 (Windows, conda)
+## 6. 환경
 
-기본 `python`(base miniconda)은 이 프로젝트의 어느 용도에도 맞지 않는다. 항상 아래 실행 파일을 쓴다.
+이 파일에는 **어느 컴퓨터에서나 같은 규칙**만 적는다. 실행 파일 경로, conda 설치 위치, Codex CLI 경로, LLM 서버 주소처럼 컴퓨터마다 다른 값은 저장소 루트의 **`AGENTS.local.md`**(git 추적 제외)에 둔다. 작업을 시작할 때 이 파일도 읽는다. 없으면 `AGENTS.local.example.md`를 복사해 만들고 사용자에게 값을 확인한다(10절).
 
-| 용도 | 실행 파일 |
-| --- | --- |
-| 테스트 | `C:\Users\ADMIN\miniconda3\envs\vllm\python.exe -m pytest tests/ -q -p no:cacheprovider` (캐시 플러그인을 끄면 샌드박스의 `.pytest_cache` 쓰기 권한 경고가 없다) |
-| 웹 서버 실행 | `C:\Users\ADMIN\miniconda3\envs\fastapi\python.exe run.py` (포트 8888). `requirements.txt`와 어긋날 수 있으니 의존성은 이 환경에서 확인한다. |
-| LaTeX 컴파일 | `C:\Users\ADMIN\miniconda3\envs\tex\Library\bin\tectonic.exe -X compile <파일>.tex --outdir <임시 폴더>` |
+| 용도 | conda 환경 이름 | 명령 (경로는 `AGENTS.local.md`의 값을 쓴다) |
+| --- | --- | --- |
+| 테스트 | `vllm` | `<vllm python> -m pytest tests/ -q -p no:cacheprovider` |
+| 웹 서버 실행 | `fastapi` | `<fastapi python> run.py` (포트 8888) |
+| LaTeX 컴파일 | `tex` (Tectonic) | `<tectonic> -X compile <파일>.tex --outdir <임시 폴더>` |
 
-- 전체 테스트는 Windows에서 모두 통과하는 상태다(2026-10-14 기준 874개). 새 실패는 기존 실패로 넘기지 말고 원인을 보고한다.
+- 기본 `python`(conda base 등)은 이 프로젝트의 어느 용도에도 맞지 않는다. 위 환경의 인터프리터를 쓴다.
+- `-p no:cacheprovider`: 캐시 플러그인을 끄면 Codex 샌드박스에서 `.pytest_cache` 쓰기 권한 경고가 나지 않는다.
+- `fastapi` 환경은 `requirements.txt`와 어긋날 수 있으니 의존성은 그 환경에서 확인한다.
+- 전체 테스트는 모두 통과하는 상태를 유지한다. 새 실패는 기존 실패로 넘기지 말고 원인을 보고한다.
 - 엔진 코드를 바꾼 뒤 실제 시뮬레이션에 반영하려면 웹 서버를 재시작해야 한다.
-- 시뮬레이션 기록: `logs_graph/simulation.db`(실행·로그·이벤트), `memory.db`(저장된 시나리오). 분석할 때는 읽기 전용으로 연다.
+- **각 컴퓨터가 따로 가지는 것(git에 넣지 않는다):** 시뮬레이션 기록 `logs_graph/simulation.db`·`memory.db`(분석할 때는 읽기 전용으로 연다), 실행용 시나리오 폴더 `run/`, LLM 서버 주소(환경 변수 `VLLM_BASE_URL` 등), `AGENTS.local.md`.
 
 ## 7. 언어
 
@@ -80,3 +83,24 @@
 - 기본 브랜치는 `master`다. 개발은 작업 브랜치에서 하고, 검증이 끝나면 fast-forward로 머지한다.
 - 커밋 메시지는 기존 형식(`fix:`, `feat:`, `test:`, `refactor:` + 한국어 요약)을 따른다.
 - 푸시는 사용자가 요청할 때만 한다.
+
+## 10. Codex 자동 실행과 새 환경 준비
+
+### Codex 자동 실행 (Claude가 수행)
+사용자가 수동 전달을 원하지 않으면 Claude가 Codex CLI를 직접 실행한다. 명령 형식:
+
+```
+<codex> exec -s workspace-write -C <저장소 루트> -o <임시 폴더>/<작업명>_last.md "<지시문>" > <임시 폴더>/<작업명>_log.txt 2>&1
+```
+
+- `<codex>`의 실제 경로는 `AGENTS.local.md`에 있다. 임시 폴더는 저장소 밖(세션 임시 폴더)을 쓴다.
+- 오래 걸리므로 백그라운드로 실행하고 완료 알림을 기다린다. 진행 로그는 읽지 않고 `-o`로 받은 마지막 요약과 보고서의 필요한 절만 읽는다.
+- 지시문에는 반드시 넣는다: `AGENTS.md`를 따를 것, 읽을 `to_serve/` 메모, 쓸 `to_master/` 보고서 경로, 운영 코드·DB 수정과 커밋 금지, 마지막 응답은 판정 3줄 요약.
+- 실행이 끝나면 `git status`로 운영 코드가 바뀌지 않았는지 확인한다.
+- 2차 검증 지시문: 같은 보고서에 "2차 검증 결과" 절과 최신 판정을 덧붙이고, 보류 항목은 사유의 타당성만 판단하게 한다.
+
+### 새 컴퓨터에서 이 협업 체계를 쓰기 위한 준비
+1. Claude Code와 Codex CLI(`npm i -g @openai/codex`)를 설치하고 `codex login`으로 ChatGPT 계정에 로그인한다.
+2. conda 환경 `vllm`(테스트, `pytest` 포함), `fastapi`(서버), 필요하면 `tex`(`conda install -c conda-forge tectonic`)를 만든다.
+3. `AGENTS.local.example.md`를 `AGENTS.local.md`로 복사하고 그 컴퓨터의 경로와 LLM 서버 주소를 채운다.
+4. 테스트 명령으로 전체 스위트가 통과하는지 확인한다.

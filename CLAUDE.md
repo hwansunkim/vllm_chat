@@ -1,6 +1,7 @@
 # vLLM Chat
 
 @AGENTS.md
+@AGENTS.local.md
 
 ## Claude Code의 역할
 

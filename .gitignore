@@ -10,3 +10,9 @@ logs_graph/
 *.db-wal
 make_graph.py
 simulator.py
+
+# 컴퓨터마다 따로 가지는 것 (AGENTS.md 6절)
+AGENTS.local.md
+run/
+out.md
+config.json
