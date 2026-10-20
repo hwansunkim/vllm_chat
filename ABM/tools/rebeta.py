@@ -12,6 +12,9 @@
     `infection_model`, 또는 infection_model 객체 자체. E/P/I 지속 시간 분포·`immune_after_recovery`·
     원래 β 를 쓰고, `infect_agent` 이벤트가 있으면 환자 0번(시드)으로 쓴다.
 
+β의 단위는 분⁻¹이며 접촉시간은 분 단위다(엔진과 동일). β=0.04에서 100분 접촉 시 약 98.17%.
+이전 일 단위 전파율로 실행한 CSV는 같은 β 숫자로 재계산해도 원래 실행과 전파 확률이 다르다.
+
 **고정 행동 가정 (중요).** 에이전트의 이동·발화는 원래 실행 그대로 고정된다 — 가상의 감염에
 반응해 행동이 바뀌지 않는다(예: 원래 실행에선 안 아팠던 사람이 이 재계산에서 감염돼도 여전히
 원래대로 돌아다닌다). 결과는 "같은 동선에서 β 만 달랐다면"의 확률 분포다.
@@ -642,7 +645,7 @@ def _infection_probabilities(eng: _ReplayEngine, start: dict, t_d_minutes: int) 
     엔진은 그룹마다 (그룹의 전파원 수)만큼 독립 추첨하고 감염되면 멈춘다. floater 는 여러 그룹에
     끼므로 그룹마다 따로 판정된다 — k = 그 사람이 속한 각 그룹의 전파원 수 합.
     """
-    t_d = max(0, t_d_minutes) / 1440
+    t_d = max(0, t_d_minutes)  # 엔진과 동일: β는 분⁻¹, 접촉 시간은 분.
     status = start["status"]
     infectious = {a for a, st in status.items() if st in _CARRIER_STATES}
     if not infectious or eng._infection_beta <= 0 or t_d <= 0:
@@ -898,7 +901,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m ABM.tools.rebeta", description=__doc__.split("\n\n")[0])
     ap.add_argument("csv", help="위치 이력 CSV(_locations.csv)")
     ap.add_argument("scenario", help="시나리오 JSON(config.infection_model) 또는 infection_model JSON")
-    ap.add_argument("--beta", type=float, nargs="+", required=True)
+    ap.add_argument("--beta", type=float, nargs="+", required=True,
+                    help="전염 계수(분⁻¹). 접촉 시간(분)에 곱해 감염 확률을 계산합니다.")
     ap.add_argument("--runs", type=int, default=1000)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out", default=".")

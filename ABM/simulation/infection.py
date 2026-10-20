@@ -48,10 +48,10 @@ wave 시작 시점에 같은 장소에 있던 전파원(P 또는 I) 1명과 비�
     P = 1 - exp(-λ)
     rn < P 면 감염(E로 전이)
 
-`β`는 사용자가 설정하는 옵션(기본 0.04). `t_d`(접촉 시간, **일 단위**)는 **그 wave
+`β`는 사용자가 설정하는 전파율(**분⁻¹**, 기본 0.04). `t_d`(접촉 시간, **분 단위**)는 **그 wave
 자신의 경과 시간**(wave 끝 − wave 시작)이다 — 이 엔진은 wave마다 실제 경과 시간(분)이
-들쭉날쭉하므로(가변 시간 모드: 식사 장면 5분 vs 취침 장면 7시간), 그 경과 시간을 일
-단위로 환산해 접촉 시간으로 쓴다.
+들쭉날쭉하므로(가변 시간 모드: 식사 장면 5분 vs 취침 장면 7시간), 그 경과 시간을 분
+단위 그대로 접촉 시간으로 쓴다. β=0.04에서 100분 접촉 시 감염 확률은 약 98.17%다.
 
 ## wave 타이밍 (사용자 wave 모형 — 2026-10 정정)
 
@@ -502,7 +502,8 @@ class _InfectionMixin:
         `start` = `_infection_wave_start(run_wave)` 스냅샷. 생략하면 지금 뜬다(단위 테스트
         편의 — "지금 상태가 곧 이번 wave 시작 상태"; variable 모드에선 시작=끝이라 t_d=0).
 
-        - **접촉 시간** t_d = (wave 끝 − wave 시작)/1440일 = 이번 wave 자신의 경과 시간.
+        - **접촉 시간** t_d = wave 끝 − wave 시작(분) = 이번 wave 자신의 경과 시간.
+          β는 분⁻¹이므로 일 단위로 환산하지 않는다(E/P/I 지속 기간 설정의 일 단위와 구분).
           시간이 흐르지 않은 wave(가변 모드에서 성공한 발화가 없음·시간 비활성)는 t_d=0.
           직전 판정 시각 같은 저장 상태가 없으므로 첫 wave·재개 직후도 같은 규칙이다.
         - **전염** — 시작 스냅샷의 그룹에서 시작 시점 P/I(전파원) × 시작 시점 S 쌍마다
@@ -521,7 +522,7 @@ class _InfectionMixin:
         if start is None:
             start = self._infection_wave_start(run_wave)
         end = self._current_elapsed_minutes(run_wave + 1)
-        t_d_days = max(0, end - start["start_minutes"]) / _MINUTES_PER_DAY
+        t_d_minutes = max(0, end - start["start_minutes"])
         status0 = start["status"]
 
         # 전파원 = P(무증상 전염기) 또는 I(감염기) — 모두 wave 시작 상태.
@@ -532,8 +533,8 @@ class _InfectionMixin:
 
         # 1) 전염 — Monte Carlo: λ = β × t_d, P = 1 - exp(-λ). 같은 장소 그룹 안의
         #    (전파원 × 감염가능) 쌍마다 독립 판정한다.
-        if infectious_now and self._infection_beta > 0.0 and t_d_days > 0.0:
-            lam = self._infection_beta * t_d_days
+        if infectious_now and self._infection_beta > 0.0 and t_d_minutes > 0:
+            lam = self._infection_beta * t_d_minutes
             p = 1.0 - math.exp(-lam)
             newly_exposed: set[str] = set()
             for group in start["groups"]:

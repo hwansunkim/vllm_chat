@@ -487,8 +487,8 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin,
 | **SEPIR / SEPIRS** | S(감염 가능)→E(잠복기, 비전염)→P(무증상 전염기, 전염 가능)→I(감염기, 전염 가능)→R(회복). P 지속 0이면 P를 건너뛰어 SEIR과 동일. `immune_after_recovery` true=회복 후 면역 / false=SEPIRS(재감염 가능) |
 | **환자 0번 (patient zero)** | 감염(노출) 시작점. 지정 안 하면 유행이 시작되지 않음 |
 | **발병 시점 (onset wave)** | 환자 0번이 노출(E) 상태로 전환되는 wave |
-| **전염 계수 (beta)** | Monte Carlo 전염 확률의 β. λ=β×t_d, P=1-exp(-λ). 기본 0.04, P(무증상 전염기)·I(감염기)가 전파원 |
-| **접촉 시간 (t_d)** | 그 wave에 걸린 시간(일 단위, wave 끝 − 시작) — wave 시작 위치의 접촉에 곱한다. wave 길이가 들쭉날쭉해도 실제 노출 시간에 비례 |
+| **전염 계수 (beta)** | Monte Carlo 전염 확률의 β(분⁻¹). λ=β×t_d, P=1-exp(-λ). 기본 0.04, P(무증상 전염기)·I(감염기)가 전파원 |
+| **접촉 시간 (t_d)** | 그 wave에 걸린 시간(분 단위, wave 끝 − 시작) — wave 시작 위치의 접촉에 곱한다. wave 길이가 들쭉날쭉해도 실제 노출 시간에 비례 |
 | **증상 문구 (symptom stage)** | `{status: E\|P\|I, symptom_text}`. 지금 실제 상태와 그 상태에 머문 비율로 고른다 — 같은 상태 문구 n개는 그 상태 진행 구간을 n등분(등록 순서). 문구 없는 상태는 카드 없음. 옛 "노출 후 경과분" 시간창은 제거(상태 불일치 버그의 근본 해법) |
 | **model_type** | `sir`/`seir`/`sepir` — 설정 화면 전용. 숨긴 구간(SIR: E·P, SEIR: P) 지속을 0일로 강제. 엔진은 읽지 않음 |
 | **지속 시간 분포 (DurationSpec)** | E/P/I 공통 설정: `kind`(uniform/gamma/gaussian) + 파라미터(k·θ / μ·σ) + `min_days`~`max_days` 절단 범위(항상 적용, min==max면 고정) |

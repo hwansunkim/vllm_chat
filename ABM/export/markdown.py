@@ -465,7 +465,7 @@ def render_markdown(
     if infection["enabled"]:
         md += f"## 🦠 감염병 모델 ({infection['model_type'].upper()})\n\n"
         md += f"> **질병** {infection['disease_name'] or '(이름 없음)'}\n"
-        md += f"> **전염 계수(β)** {_js_num(infection['beta'])} — 접촉 확률 λ=β×t_d, P=1-exp(-λ)\n"
+        md += f"> **전염 계수(β)** {_js_num(infection['beta'])} 분⁻¹ — 접촉 확률 λ=β×t_d, P=1-exp(-λ), t_d: 분\n"
         md += (f"> **잠복기(E)** {_describe_duration(infection['exposed_duration'])}"
                f" · **무증상 전염기(P)** {_describe_duration(infection['presymptomatic_duration'])}"
                f" · **감염기(I)** {_describe_duration(infection['infectious_duration'])}\n")

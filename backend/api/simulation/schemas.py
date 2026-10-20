@@ -290,9 +290,10 @@ class InfectionModelConfig(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
     enabled:                  bool  = False
     disease_name:             str   = ""
-    # 전염 확률의 β(λ=β×t_d, P=1-exp(-λ)). t_d는 그 wave에 걸린 시간(일 단위) — wave
+    # 전염 확률의 β(분⁻¹, λ=β×t_d, P=1-exp(-λ)). t_d는 그 wave에 걸린 시간(분 단위) — wave
     # 시작 위치의 접촉 × 그 wave 경과다. infection.py::_apply_infection_wave 참고.
-    beta:                     float = Field(default=0.04, ge=0.0)
+    beta:                     float = Field(
+        default=0.04, ge=0.0, description="전염 계수(분⁻¹). P=1-exp(-β×접촉시간(분)).")
     symptom_stages:           list[SymptomStage] = []
     # 설정 화면의 모델 선택(UI 전용). 엔진은 읽지 않는다 — S→E→P→I→R 하나의 구조에서
     # E/P 지속을 0으로 두면 SIR/SEIR이 된다. 프론트가 sir/seir 선택 시 숨긴 구간의

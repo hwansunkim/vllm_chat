@@ -154,7 +154,7 @@ export function isTimeConceptDisabled(timeMode, timePerWave) {
 // 전염 가능)→R(회복) 순으로 전이한다. E/P/I 지속 시간은 DurationSpec(분포 종류 +
 // 파라미터 + min~max 절단 범위, 일 단위)으로 설정한다 — 기본값은 SEPIR 도입 전의
 // 연구 스펙 상수(E 절단 감마, P 0일 = 건너뜀, I 8일 고정)와 동일하다
-// (ABM/simulation/infection.py 참고). 전염 확률은 λ=beta×t_d, P=1-exp(-λ)
+// (ABM/simulation/infection.py 참고). 전염 확률은 λ=beta×t_d, P=1-exp(-λ) (beta: 분⁻¹, t_d: 분)
 // (Monte Carlo). 증상 진행은 "노출 후 경과 분" 기준이다.
 export const DEFAULT_BETA = 0.04;
 

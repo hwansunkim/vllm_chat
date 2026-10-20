@@ -2908,6 +2908,51 @@ class InfectionTimeModelTests(unittest.TestCase):
             fresh._apply_infection_wave(0)  # 첫 wave 라도 시작에 I 면 그 wave 60분으로 판정
             self.assertEqual(fresh._agent_infection["b"]["status"], "E")
 
+    def test_transmission_beta_is_per_minute_in_both_time_modes(self):
+        from ABM.tools.rebeta import _infection_probabilities
+        from backend.api.simulation.schemas import InfectionModelConfig
+
+        # 공저자 기준: 기본 β=0.04에서 100분 노출 시 98.1684%.
+        # 짧은 접촉·β 변경·경과 0도 검사해 분/일 혼동과 β 변환 회귀를 잡는다.
+        cases = [
+            (None, 100, 0.9816843611112658, ((0.98, "E"), (0.99, "S"))),
+            (0.02, 100, 0.8646647167633873, ((0.86, "E"), (0.87, "S"))),
+            (None, 1, 0.0392105608476768, ((0.039, "E"), (0.040, "S"))),
+            (None, 0, 0.0, ((0.0, "S"),)),
+        ]
+        for mode in ("fixed", "variable"):
+            for beta, minutes, probability, draws in cases:
+                for draw, expected in draws:
+                    with self.subTest(mode=mode, beta=beta, minutes=minutes, draw=draw):
+                        model = InfectionModelConfig(enabled=True).model_dump()
+                        if beta is not None:
+                            model["beta"] = beta
+                        with tempfile.TemporaryDirectory() as tmp:
+                            sim = self._sim(tmp, infection=model, time_mode=mode,
+                                            time_per_wave=minutes, elapsed_init=500,
+                                            locations={"a": "거실", "b": "거실"})
+                            self.assertEqual(sim._infection_beta, 0.04 if beta is None else beta)
+                            sim._set_infected("a", 0, "event", start_status="I")
+                            start = sim._infection_wave_start(0)
+                            probabilities = _infection_probabilities(sim, start, minutes)
+                            self.assertAlmostEqual(probabilities.get("b", 0.0), probability)
+                            if mode == "variable":
+                                sim._elapsed_minutes += minutes
+                            with mock.patch("ABM.simulation.infection.random.random",
+                                            return_value=draw) as rng:
+                                sim._apply_infection_wave(0, start=start)
+                            if minutes:
+                                rng.assert_called_once()
+                            else:
+                                rng.assert_not_called()
+                            entry = sim._agent_infection["b"]
+                            self.assertEqual(entry["status"], expected)
+                            if expected == "E":
+                                self.assertEqual(entry["infected_at_minutes"], 500 + minutes)
+                                # E/P/I 기간 설정은 계속 일 단위: 기본 감염기는 8일.
+                                self.assertEqual(entry["recover_at_minutes"] -
+                                                 entry["infectious_at_minutes"], 8 * 1440)
+
     # ── LLM 계약: raw 값은 절대 프롬프트에 안 들어간다 ───────────────────────────
 
     def test_prompt_never_leaks_raw_infection_values(self):
@@ -13094,14 +13139,16 @@ class RebetaToolTests(unittest.TestCase):
         times = {10: (0, 5), 11: (5, 425), 12: (425, 455), 13: (455, None)}
         with tempfile.TemporaryDirectory() as tmp:
             rb, obs, ro = self._load(tmp, rows, times=times)
-            res = rb.simulate_once(obs, ro, self.MODEL, 1.0, 1, record=True)
+            # 모든 wave의 노출 확률을 확인할 수 있도록 S 상태를 유지한다.
+            with mock.patch("ABM.simulation.infection.random.random", return_value=1.0):
+                res = rb.simulate_once(obs, ro, self.MODEL, 0.04, 1, record=True)
             one = rb.simulate_once(*self._load(tmp, rows[:2], times={10: (0, 60)})[1:], self.MODEL, 1e6, 1)
         p = {r["wave"]: r["sim_p_infect"] for r in res.waves if r["agent"] == "b"}
         td = {r["wave"]: r["sim_t_d_minutes"] for r in res.waves if r["agent"] == "b"}
         self.assertEqual(td, {10: 5, 11: 420, 12: 30, 13: 0})          # 마지막 wave 종료 경과분 없음 → 0
-        self.assertAlmostEqual(p[10], 1 - math.exp(-5 / 1440))
+        self.assertAlmostEqual(p[10], 1 - math.exp(-0.04 * 5))
         self.assertEqual(p[11], 0.0)                                    # 7시간 따로 — 접촉 아님
-        self.assertAlmostEqual(p[12], 1 - math.exp(-30 / 1440))
+        self.assertAlmostEqual(p[12], 1 - math.exp(-0.04 * 30))
         self.assertEqual(p[13], 0.0)
         # 첫 wave 라도 시작에 I 면 그 wave 경과로 판정한다(예전의 "첫 판정 t_d=0" 규칙 없음).
         self.assertEqual(one.infection_minutes.get("b"), 60)
@@ -13119,9 +13166,10 @@ class RebetaToolTests(unittest.TestCase):
         rows = [(w, k, "X", False, "I" if k == "a" else "S") for w in range(6) for k in "abcd"]
         with tempfile.TemporaryDirectory() as tmp:
             rb, obs, ro = self._load(tmp, rows, step=30)
-            r1 = rb.run_beta(obs, ro, self.MODEL, 2.0, 50, 42)
-            r2 = rb.run_beta(obs, ro, self.MODEL, 2.0, 50, 42)
-            r3 = rb.run_beta(obs, ro, self.MODEL, 2.0, 50, 43)
+            # 분⁻¹ 기준에서도 확률이 1로 포화되지 않아 시드 차이가 드러나는 전파율.
+            r1 = rb.run_beta(obs, ro, self.MODEL, 0.002, 50, 42)
+            r2 = rb.run_beta(obs, ro, self.MODEL, 0.002, 50, 42)
+            r3 = rb.run_beta(obs, ro, self.MODEL, 0.002, 50, 43)
         self.assertEqual(r1.counts, r2.counts)
         self.assertEqual(r1.representative_run, r2.representative_run)
         self.assertNotEqual(r1.counts, r3.counts)
@@ -13359,12 +13407,12 @@ class RebetaToolTests(unittest.TestCase):
             rows += [(w, "a", "X", False, "I"), (w, "b", "X", False, "I"), (w, "s", "X", False, "S"),
                      (w, "c", "Y", False, "I"), (w, "f", "", False, "S")]
         with tempfile.TemporaryDirectory() as tmp:
-            rb, obs, ro = self._load(tmp, rows)
-            res = rb.simulate_once(obs, ro, self.MODEL, 0.5, 1, record=True)
-        p1 = 1 - math.exp(-0.5 * 60 / 1440)
+            rb, obs, ro = self._load(tmp, rows, step=5)
+            res = rb.simulate_once(obs, ro, self.MODEL, 0.04, 1, record=True)
+        p1 = 1 - math.exp(-0.04 * 5)
         p = {(r["wave"], r["agent"]): r["sim_p_infect"] for r in res.waves}
-        self.assertAlmostEqual(p[(1, "s")], 1 - (1 - p1) ** 2)            # 같은 그룹 전파원 2명
-        self.assertAlmostEqual(p[(1, "f")], 1 - (1 - p1) ** 3)            # floater: X 그룹 2 + Y 그룹 1
+        self.assertAlmostEqual(p[(0, "s")], 1 - (1 - p1) ** 2)            # 같은 그룹 전파원 2명
+        self.assertAlmostEqual(p[(0, "f")], 1 - (1 - p1) ** 3)            # floater: X 그룹 2 + Y 그룹 1
 
     def test_cli_edge_cases(self):
         import contextlib, io
@@ -13530,9 +13578,9 @@ class InfectionWaveTimingTests(unittest.TestCase):
                     sim._elapsed_minutes += minutes           # wave 끝 시간 누적
                     sim._apply_infection_wave(i, 10 + i, start)
         self.assertEqual(len(lams), 2)
-        self.assertAlmostEqual(lams[0], 5 / 1440)
-        self.assertAlmostEqual(lams[1], 30 / 1440)
-        self.assertAlmostEqual(sum(lams), 35 / 1440)
+        self.assertAlmostEqual(lams[0], 5)
+        self.assertAlmostEqual(lams[1], 30)
+        self.assertAlmostEqual(sum(lams), 35)
 
     def test_user_example_through_the_real_runner(self):
         # 같은 예시를 실제 run() 으로 — wave 별 경과 5/420/30/60분, a 가 매 wave move_to 로 오간다.
@@ -13551,7 +13599,7 @@ class InfectionWaveTimingTests(unittest.TestCase):
             moves = [(d["wave"], d["to"]) for t, d in ev if t == "agent_move" and d["agent"] == "a"]
         self.assertEqual(jumps, [5, 420, 30, 60])
         self.assertEqual(moves, [(0, "짱구방"), (1, "거실"), (2, "짱구방")])
-        self.assertEqual([round(x * 1440) for x in lams], [5, 30])      # 함께였던 wave 0·2 만, 각자 경과
+        self.assertEqual(lams, [5, 30])                              # β=1/분: 함께였던 wave 0·2의 경과
 
     # ── 이동 직후 / 이동해 들어온 wave ──────────────────────────────────────────
 
@@ -13643,8 +13691,8 @@ class InfectionWaveTimingTests(unittest.TestCase):
                 second.run("a", max_waves=3, step_delay=0, resume_wave=pending)
         self.assertEqual(cont._elapsed_minutes, 180)
         self.assertEqual(second._elapsed_minutes, 180)
-        self.assertEqual([round(x * 1440) for x in l_cont], [30] * 6)
-        self.assertEqual([round(x * 1440) for x in l_resumed], [30] * 6)
+        self.assertEqual(l_cont, [30] * 6)
+        self.assertEqual(l_resumed, [30] * 6)
 
 
 class RosterCsvParityTests(unittest.TestCase):

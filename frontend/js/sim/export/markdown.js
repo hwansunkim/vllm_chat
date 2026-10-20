@@ -397,7 +397,7 @@ function _buildMarkdown(log, events, statusStr, checks) {
   if (infection.enabled) {
     md += `## 🦠 감염병 모델 (${infection.model_type.toUpperCase()})\n\n`;
     md += `> **질병** ${infection.disease_name || '(이름 없음)'}\n`;
-    md += `> **전염 계수(β)** ${infection.beta} — 접촉 확률 λ=β×t_d, P=1-exp(-λ)\n`;
+    md += `> **전염 계수(β)** ${infection.beta} 분⁻¹ — 접촉 확률 λ=β×t_d, P=1-exp(-λ), t_d: 분\n`;
     md += `> **잠복기(E)** ${describeDuration(infection.exposed_duration)}`
         + ` · **무증상 전염기(P)** ${describeDuration(infection.presymptomatic_duration)}`
         + ` · **감염기(I)** ${describeDuration(infection.infectious_duration)}\n`;

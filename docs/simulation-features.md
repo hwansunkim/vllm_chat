@@ -940,7 +940,7 @@ schemas.py`, 샘플러 `infection.py::_sample_duration_minutes`)으로 사용자
 |---|---|
 | `enabled` | 활성화 |
 | `disease_name` | 질병명 (안내 문구용) |
-| `beta` | 전염 확률 계수(β). 기본 0.04. Monte Carlo: λ=β×t_d, P=1-exp(-λ) |
+| `beta` | 전염 계수(β, 분⁻¹). 기본 0.04. Monte Carlo: λ=β×t_d, P=1-exp(-λ), t_d는 분 |
 | `symptom_stages[]` | `{status: "E"\|"P"\|"I", symptom_text}` — **상태별** 증상 문구. 같은 status 여러 개 = 그 상태 안의 순서대로 진행(아래 "증상 문구") |
 | `immune_after_recovery` | `true` = 영구 면역(화면 라벨 "영구 면역") / `false` = 재감염 가능(SEPIRS, 라벨 "재감염 가능") |
 | `model_type` | `"sir"`\|`"seir"`\|`"sepir"`(기본) — **UI 전용**, 엔진은 읽지 않는다(아래 "모델 선택") |
@@ -1007,11 +1007,15 @@ P=0이면 I에서 시작한다. 설정 화면의 증상 문구 묶음도 같은 
   아무와도 접촉 없음). 시작 시점 **P 또는 I** 인 사람이 전파원이다(E는 아직 비전염).
   전파원 × 시작 시점 S 쌍마다 `λ = β × t_d`, `P = 1 - exp(-λ)`, `random.random() < P`로
   독립 판정(감염되면 남은 전파원 판정 생략, 같은 wave 안 연쇄 전파 없음). `t_d`(접촉 시간,
-  일 단위) = **그 wave 의 경과**(끝 − 시작: fixed 는 `time_per_wave`, variable 은 그 wave 의
+  분 단위) = **그 wave 의 경과**(끝 − 시작: fixed 는 `time_per_wave`, variable 은 그 wave 의
   time_jump, 성공한 발화가 없어 시간이 안 흐른 wave 는 0). 저장된 "직전 판정 시각"이 없어
   첫 wave·`/resume` 직후도 같은 규칙이다(예전의 "첫 판정 t_d=0"과 재개 직후 한 구간 손실이
   함께 사라짐). **시간 개념이 꺼져 있으면(경과분이 항상 0) t_d도 항상 0이라 β가 아무리
   커도 전염이 일어나지 않는다** — 회귀가 아니라 모델의 정의상 결과.
+  **β의 단위는 분⁻¹**이다. β=0.04에서 전파자 1명과 100분 접촉하면
+  `1-exp(-0.04×100) ≈ 98.17%`로, 공저자 연구계획의 의도를 따른다.
+  E/P/I 지속 기간의 입력 단위(일)와 구분한다. 기존 시나리오의 β 숫자도 변환 없이 분⁻¹로
+  적용하므로, 접촉 시간을 일로 환산하던 이전 버전과는 같은 β에서도 감염 결과가 달라진다.
 - **새 노출 시각 = wave 끝** (`infected_at_minutes`, `infection_update.elapsed_minutes`) — 접촉은
   wave 어딘가에서 일어났지만 그 사람의 상태는 다음 wave 프롬프트부터 보이고, 잠복기도 그때부터
   센다. wave 시작으로 잡으면 긴 wave(7시간 취침)의 노출이 과거로 당겨져 진행이 앞당겨지고,
@@ -1325,6 +1329,9 @@ DB는 `simulation_log`에 `infection_status TEXT`·`elapsed_minutes INTEGER` 컬
 **목적** — 위치 이력 CSV(§14)와 시나리오의 `infection_model`(+ `infect_agent` 이벤트)만으로, 같은
 동선에서 β만 달랐다면 확산이 어떻게 달라졌을지 Monte Carlo로 다시 계산한다. LLM 시뮬레이션을 다시
 돌리지 않는다. 설계 결정 전체는 `ABM/tools/rebeta.py` 모듈 docstring.
+
+`--beta`와 시나리오의 `beta`는 모두 **분⁻¹**이며 접촉시간은 분 단위다. 이전 일 단위 전파율로
+실행한 CSV를 재계산하면 같은 β 숫자에서도 원래 실행과 전파 확률이 다르다.
 
 ```
 python -m ABM.tools.rebeta <locations.csv> <scenario.json> --beta 0.02 0.04 0.1 --runs 1000 --seed 42 --out <dir>
