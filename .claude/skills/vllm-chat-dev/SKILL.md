@@ -13,7 +13,7 @@ vLLM Chat 프로젝트(FastAPI 백엔드 + Vanilla JS 프론트엔드 + ABM 시�
 |-------|------|------|
 | 풀스택 피처 개발 | 에이전트 팀 | backend-dev ↔ frontend-dev 간 API 계약 실시간 조율 필요 |
 | ABM 독립 작업 | 서브 에이전트 | abm-engineer 단독, 팀 통신 불필요 |
-| QA/버그 검증 | 서브 에이전트 | qa-reviewer 단독, 독립 검증이 핵심 |
+| QA/버그 검증 | **Codex 인수인계** | Claude 토큰을 개발에 집중 — 검증은 Codex가 `AGENTS.md` 협업 루프로 수행 |
 
 ## 에이전트 구성
 
@@ -22,7 +22,7 @@ vLLM Chat 프로젝트(FastAPI 백엔드 + Vanilla JS 프론트엔드 + ABM 시�
 | backend-dev | 커스텀 | FastAPI, SQLite, LLM 파이프라인 | backend-skill |
 | frontend-dev | 커스텀 | HTML, CSS, JavaScript, UI | frontend-skill |
 | abm-engineer | 커스텀 | ABM 시나리오, 시뮬레이션 로직 | abm-skill |
-| qa-reviewer | 커스텀 | 코드 리뷰, 버그 탐지, 정합성 검증 | — |
+| qa-reviewer | 커스텀 | 코드 리뷰, 버그 탐지, 정합성 검증 (**사용자가 명시 요청할 때만**. 기본 검증은 Codex) | — |
 
 ## 워크플로우
 
@@ -108,8 +108,14 @@ Agent(
 )
 ```
 
-#### 2-D. QA/버그 조사 (서브 에이전트)
-**실행 모드: 서브 에이전트**
+#### 2-D. QA/버그 조사 (Codex 인수인계)
+**실행 모드: Codex 인수인계** — 기본값. 아래 `qa-reviewer` 서브 에이전트는 사용자가 "Claude가 직접 검증"을 명시 요청할 때만 쓴다.
+
+1. 작업 브랜치에 커밋한다.
+2. `to_serve/_TEMPLATE_handoff.md` 양식으로 `to_serve/<YYYY-MM-DD>_<작업명>_handoff.md`를 쓴다.
+3. 사용자에게 "Codex에 검증을 요청해 주세요: `to_serve/<파일>`"이라고 알리고 기다린다. 전체 테스트 스위트는 직접 돌리지 않는다(수정한 부분의 테스트만 확인).
+
+사용자가 명시 요청한 경우의 서브 에이전트 실행:
 
 ```
 Agent(
@@ -119,14 +125,15 @@ Agent(
 )
 ```
 
-### Phase 3: QA 검증 (풀스택 피처 완료 후)
+### Phase 3: 검증 (Codex 협업 루프)
 
-풀스택 피처 개발(2-A) 완료 후 자동으로 QA 실행:
+모든 개발 작업(2-A·2-B·2-C) 완료 후 `AGENTS.md` 3절의 협업 루프를 따른다:
 
-1. 에이전트 팀 정리 (TeamDelete)
-2. qa-reviewer 서브 에이전트 실행 (2-D 패턴)
-3. QA 보고서(`_workspace/qa_report.md`) 확인
-4. 이슈 발견 시: 해당 에이전트에게 수정 요청 (2-B 패턴으로 단독 재실행)
+1. (2-A였다면) 에이전트 팀 정리 (TeamDelete)
+2. 2-D의 Codex 인수인계 — `to_serve/`에 메모 작성 후 사용자에게 검증 요청
+3. Codex 보고서(`to_master/<YYYY-MM-DD>_<작업명>_review.md`)가 오면 **P1·P2 지적을 재현 명령으로 직접 확인**한 뒤 수정한다. 보고서를 확인 없이 그대로 반영하지 않는다.
+4. 보고서 끝 "Claude 답변" 표에 수용·반박·보류와 근거를 적는다.
+5. 반복은 최대 2회. 남은 지적이나 의견 차이는 `to_human/`으로 넘긴다. Codex 판정이 통과면 머지한다.
 
 ### Phase 4: 정리 및 보고
 
@@ -134,7 +141,7 @@ Agent(
 2. 사용자에게 요약 보고:
    - 변경된 파일 목록
    - 주요 변경 내용
-   - QA 결과 (발견 이슈 및 처리 여부)
+   - 검증 상태 (Codex 검증 대기 / Codex 보고서 반영 결과)
 3. 후속 작업 피드백 요청 ("개선할 부분이 있나요?")
 
 ## 데이터 흐름
@@ -147,9 +154,9 @@ Agent(
     │                             _workspace/backend_*     _workspace/frontend_*
     │                                    └──────────────────────────┘
     │                                              ↓
-    │                                    TeamDelete → qa-reviewer
+    │                                    TeamDelete → to_serve/ 인수인계
     │                                              ↓
-    │                                    _workspace/qa_report.md
+    │                          [Codex 검증] → to_master/ 보고서 → Claude 반영
     │
     ├── 단독/ABM → Agent() → _workspace/done.md
     │
@@ -161,9 +168,9 @@ Agent(
 | 상황 | 전략 |
 |------|------|
 | 팀원 1명 실패 | SendMessage로 상태 확인 → 재시작 또는 단독 재실행(2-B) |
-| QA에서 버그 발견 | 해당 에이전트 단독 재실행 후 재검증 |
+| Codex 보고서에서 버그 발견 | 재현 확인 → 해당 에이전트 단독 재실행 → Codex 재검증 (최대 2회) |
 | API 계약 불일치 | backend-dev와 frontend-dev 간 SendMessage로 스펙 재합의 |
-| 테스트 실패 | qa_report.md 기반으로 수정 요청 |
+| 테스트 실패 | Codex 보고서의 재현 명령으로 확인 후 수정 |
 
 ## 테스트 시나리오
 
@@ -172,7 +179,7 @@ Agent(
 2. Phase 1: 풀스택 피처로 분류
 3. Phase 2-A: backend-dev (복사 API 불필요 — 순수 프론트엔드로 재분류) → 2-B로 전환
 4. frontend-dev: `messages.js`에 복사 버튼 DOM 추가, CSS 스타일 추가
-5. Phase 3: qa-reviewer — XSS 체크, clipboard API 브라우저 호환성 확인
+5. Phase 3: `to_serve/` 인수인계 → Codex가 XSS·clipboard API 호환성 검증 → `to_master/` 보고서 반영
 6. Phase 4: 변경 파일 목록 보고
 
 ### 에러 흐름 (ABM 시나리오 추가)
@@ -181,4 +188,4 @@ Agent(
 3. abm-engineer가 import 에러로 실패
 4. 오케스트레이터: `scenarios/__init__.py` 등록 누락 확인
 5. abm-engineer 재실행 (수정 지시 포함)
-6. 정상 완료, qa_report 없이 Phase 4 진행
+6. 정상 완료 → `to_serve/` 인수인계 후 Phase 4 진행 (검증 대기로 보고)
