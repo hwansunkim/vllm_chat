@@ -96,6 +96,13 @@ class RunsMixin:
         )
         conn.commit()
 
+    def count_run_turns(self, run_id: str) -> int:
+        """그 실행의 기록된 턴 수 = `simulation_log` 행 수(`finish_run` 저장값과 같은 기준)."""
+        row = self._conn().execute(
+            "SELECT COUNT(*) FROM simulation_log WHERE run_id=?", (run_id,)
+        ).fetchone()
+        return int(row[0]) if row else 0
+
     def get_runs(self, scenario_id: str | None = None) -> list[dict]:
         conn = self._conn()
         if scenario_id:

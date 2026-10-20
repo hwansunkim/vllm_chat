@@ -12499,6 +12499,48 @@ class RunTurnCountTests(unittest.TestCase):
                         self.assertEqual(run_once(sim), (1, 1))
                         self.assertEqual(len(sim.shared_log), 3)   # 배경 1 + 기록 2
 
+    def test_stop_mid_wave_and_db_write_failure_keep_counts_consistent(self):
+        # Codex 리뷰(to_master/2026-10-21_attempted-turns-label_review.md):
+        # P2-1 LLM 호출 중 중지 → 제출된 턴은 기록되므로 시도 수도 1이어야 한다(예전 0).
+        # P2-2 shared_log 추가 뒤 DB 저장 실패 → 기록 수는 DB 행 수 0이어야 한다(예전 1).
+        from ABM.agent import Agent
+        from ABM.db import SimDB
+        from ABM.simulation import Simulation
+
+        def run_case(tmp, name, *, stop_in_llm=False, fail_db=False):
+            folder = str(Path(tmp) / name)
+            db = SimDB(str(Path(tmp) / f"{name}.db"))
+            db.create_run(name, None, name, "{}")
+            holder = {}
+
+            def llm(*a, **k):
+                if stop_in_llm:
+                    holder["sim"]._stop_event.set()
+                return '{"content":"hello","target":"self"}', "", {}
+
+            sim = Simulation({"a": Agent("a", "Act as a.", folder, token_limit=4096)},
+                             [{"role": "user", "content": "[배경] test"}], folder,
+                             llm=llm, db=db, sim_id=name, lang_fix_enabled=False,
+                             time_mode="fixed", time_per_wave=1)
+            holder["sim"] = sim
+            ends = []
+            orig = sim._emit
+            sim._emit = lambda t, d: (ends.append(d) if t == "simulation_end" else None, orig(t, d))
+            if fail_db:
+                def broken(*a, **k):
+                    raise sqlite3.OperationalError("database is locked")
+                db.log_turn = broken
+            sim.run("a", max_waves=1, step_delay=0)
+            return ends[-1], db.count_run_turns(name)
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            end, rows = run_case(tmp, "stop", stop_in_llm=True)
+            self.assertEqual(end["end_reason"], "stopped")
+            self.assertEqual((end["total_turns"], end["attempted_turns"], rows), (1, 1, 1))
+
+            end, rows = run_case(tmp, "db-fail", fail_db=True)
+            self.assertEqual((end["total_turns"], end["attempted_turns"], rows), (0, 1, 0))
+
     def test_error_exit_and_continued_run_count_only_their_own_rows(self):
         import queue
         from backend.api.simulation.runner import finalize_run, fold_elapsed_and_reset_waves

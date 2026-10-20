@@ -148,9 +148,10 @@ class _RunnerMixin:
         turn_counter  = 0
         # 턴 수는 두 가지다(docs/decisions.md 2026-10-20):
         # - attempted_turns: wave 에 배정한 턴 수(시도). 파싱 실패·중지·기록 전 오류도 센다.
-        # - 기록된 턴 수: 이번 run() 동안 shared_log 에 추가된 에이전트 기록 수 — shared_log 에
-        #   append 하는 곳은 turn.py 의 턴 기록 하나뿐이라 DB simulation_log 행과 같은 기준이다.
-        #   배경문(초기 항목)·이전 run 의 기록은 시작 길이를 빼서 제외한다.
+        # - 기록된 턴 수: DB를 쓰는 실행이면 이 run 의 simulation_log 행 수(finish_run 과 같은
+        #   기준). shared_log 추가 뒤 DB 저장 전에 턴이 실패할 수 있어 shared_log 길이로는 DB와
+        #   같다고 보장할 수 없다(Codex 리뷰 P2-2). DB가 없으면 이번 run() 동안 shared_log 에
+        #   추가된 에이전트 기록 수(배경문·이전 run 은 시작 길이를 빼서 제외).
         attempted_turns = 0
         log_start       = len(self.shared_log)
         silence_count = 0
@@ -486,6 +487,9 @@ class _RunnerMixin:
                 ): agent_key
                 for i, (agent_key, incoming) in enumerate(current_wave.items())
             }
+            # 시도 수는 제출 시점에 센다 — 아래 중지 분기가 wave 를 빠져나가도 제출된 턴은
+            # 끝까지 실행·기록되므로(Codex 리뷰 P2-1) 여기서 세야 기록 수와 모순이 없다.
+            attempted_turns += len(future_map)
             for future in as_completed(future_map):
                 agent_key = future_map[future]
                 try:
@@ -550,7 +554,6 @@ class _RunnerMixin:
                 world_activity.add(f"알림응답:{speaker_key}")
 
             turn_counter += len(current_wave)
-            attempted_turns += len(current_wave)
             self.completed_waves = run_wave + 1
             # 소외 재투입 판정용 "마지막으로 턴을 받은 wave"(key 기준, disp_wave 축).
             # 성공 여부와 무관하게 턴을 받았으면 갱신한다 — LLM 실패로 같은
@@ -1317,7 +1320,11 @@ class _RunnerMixin:
 
         self._emit("simulation_end", {
             # total_turns = 이번 run 에서 기록된 턴 수, attempted_turns = 배정·시도 수.
-            "total_turns":     len(self.shared_log) - log_start,
+            "total_turns":     (
+                self._db.count_run_turns(self._sim_id)
+                if self._db is not None and self._sim_id is not None
+                else len(self.shared_log) - log_start
+            ),
             "attempted_turns": attempted_turns,
             "edges_count": len(self.edges),
             "log_count":   len(self.shared_log),
