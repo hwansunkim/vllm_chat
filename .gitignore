@@ -16,3 +16,6 @@ AGENTS.local.md
 run/
 out.md
 config.json
+
+# 다시 만들 수 있는 묶음 파일 (예: Overleaf 업로드용 zip)
+docs/*.zip

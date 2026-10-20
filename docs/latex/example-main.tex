@@ -1,0 +1,19 @@
+% Minimal example: how a main manuscript pulls in methods.tex.
+% Compile with:  pdflatex example-main.tex  (run twice so \ref resolves)
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{amsmath}
+\usepackage[hidelinks]{hyperref}   % optional: clickable \ref links
+
+\begin{document}
+
+\section{Results}
+Each wave follows the order shown in Fig.~\ref{fig:methods:wave}.
+
+\section{Methods}
+\input{methods}
+
+\end{document}

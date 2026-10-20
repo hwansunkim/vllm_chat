@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="900" viewBox="0 0 1800 900" role="img" aria-labelledby="title desc">
+<title id="title">One wave in Rippletown</title><desc id="desc">Seven steps of a wave: scheduled events, state endings, concurrent agent turns, routing by start-of-wave positions, applying requests, advancing the clock and contact processes.</desc>
+<style>text{font-family:"Malgun Gothic","Noto Sans KR",sans-serif}</style>
+<rect width="1800" height="900" fill="#F6F8FC"/>
+<text x="70" y="62" font-size="34" font-weight="700" fill="#192B45">One wave in Rippletown</text>
+<text x="72" y="100" font-size="21" font-weight="400" fill="#586A80">Language-model steps sit inside an engine loop that fixes their order, the positions used and the time</text>
+<rect x="70" y="170" width="370" height="214" rx="19" fill="white" stroke="#D5DFE9" stroke-width="2"/>
+<rect x="90" y="190" width="42" height="38" rx="10" fill="#EAF6F3" stroke="#EAF6F3" stroke-width="1"/>
+<text x="103" y="218" font-size="23" font-weight="700" fill="#147D76">1</text>
+<rect x="332" y="195" width="88" height="28" rx="14" fill="#EAF6F3" stroke="#147D76" stroke-width="2"/>
+<text x="344" y="215" font-size="15" font-weight="700" fill="#147D76">ENGINE</text>
+<text x="91" y="268" font-size="25" font-weight="700" fill="#147D76">Scheduled events</text>
+<text x="91" y="306" font-size="19" font-weight="400" fill="#192B45">Fire at their clock time</text>
+<text x="91" y="333" font-size="19" font-weight="400" fill="#192B45">Deliver daily-routine cues</text>
+<text x="91" y="360" font-size="19" font-weight="400" fill="#192B45">Cued agents join the wave</text>
+<rect x="485" y="170" width="370" height="214" rx="19" fill="white" stroke="#D5DFE9" stroke-width="2"/>
+<rect x="505" y="190" width="42" height="38" rx="10" fill="#EAF6F3" stroke="#EAF6F3" stroke-width="1"/>
+<text x="518" y="218" font-size="23" font-weight="700" fill="#147D76">2</text>
+<rect x="747" y="195" width="88" height="28" rx="14" fill="#EAF6F3" stroke="#147D76" stroke-width="2"/>
+<text x="759" y="215" font-size="15" font-weight="700" fill="#147D76">ENGINE</text>
+<text x="506" y="268" font-size="25" font-weight="700" fill="#147D76">States end</text>
+<text x="506" y="306" font-size="19" font-weight="400" fill="#192B45">Sleep, private activity, travel</text>
+<text x="506" y="333" font-size="19" font-weight="400" fill="#192B45">Agent told the state is over</text>
+<text x="506" y="360" font-size="19" font-weight="400" fill="#192B45">and what it missed</text>
+<rect x="900" y="170" width="370" height="214" rx="19" fill="white" stroke="#D5DFE9" stroke-width="2"/>
+<rect x="920" y="190" width="42" height="38" rx="10" fill="#EDF4FE" stroke="#EDF4FE" stroke-width="1"/>
+<text x="933" y="218" font-size="23" font-weight="700" fill="#2864B5">3</text>
+<rect x="1192" y="195" width="58" height="28" rx="14" fill="#EDF4FE" stroke="#2864B5" stroke-width="2"/>
+<text x="1204" y="215" font-size="15" font-weight="700" fill="#2864B5">LLM</text>
+<text x="921" y="268" font-size="25" font-weight="700" fill="#2864B5">Agent turns</text>
+<text x="921" y="306" font-size="19" font-weight="400" fill="#192B45">All participants at once</text>
+<text x="921" y="333" font-size="19" font-weight="400" fill="#192B45">Speech, action and requests</text>
+<text x="921" y="360" font-size="19" font-weight="400" fill="#192B45">Memory compressed as context fills</text>
+<rect x="1315" y="170" width="370" height="214" rx="19" fill="white" stroke="#D5DFE9" stroke-width="2"/>
+<rect x="1335" y="190" width="42" height="38" rx="10" fill="#EAF6F3" stroke="#EAF6F3" stroke-width="1"/>
+<text x="1348" y="218" font-size="23" font-weight="700" fill="#147D76">4</text>
+<rect x="1577" y="195" width="88" height="28" rx="14" fill="#EAF6F3" stroke="#147D76" stroke-width="2"/>
+<text x="1589" y="215" font-size="15" font-weight="700" fill="#147D76">ENGINE</text>
+<text x="1336" y="268" font-size="25" font-weight="700" fill="#147D76">Route messages</text>
+<text x="1336" y="306" font-size="19" font-weight="400" fill="#192B45">By start-of-wave positions</text>
+<text x="1336" y="333" font-size="19" font-weight="400" fill="#192B45">Addressed, overheard, seen</text>
+<text x="1336" y="360" font-size="19" font-weight="400" fill="#192B45">Held while in a state</text>
+<rect x="1315" y="490" width="370" height="214" rx="19" fill="white" stroke="#D5DFE9" stroke-width="2"/>
+<rect x="1335" y="510" width="42" height="38" rx="10" fill="#EAF6F3" stroke="#EAF6F3" stroke-width="1"/>
+<text x="1348" y="538" font-size="23" font-weight="700" fill="#147D76">5</text>
+<rect x="1577" y="515" width="88" height="28" rx="14" fill="#EAF6F3" stroke="#147D76" stroke-width="2"/>
+<text x="1589" y="535" font-size="15" font-weight="700" fill="#147D76">ENGINE</text>
+<text x="1336" y="588" font-size="25" font-weight="700" fill="#147D76">Apply requests</text>
+<text x="1336" y="626" font-size="19" font-weight="400" fill="#192B45">Move one step, bring others</text>
+<text x="1336" y="653" font-size="19" font-weight="400" fill="#192B45">Appearance and states</text>
+<text x="1336" y="680" font-size="19" font-weight="400" fill="#192B45">Within spatial, state rules</text>
+<rect x="900" y="490" width="370" height="214" rx="19" fill="white" stroke="#D5DFE9" stroke-width="2"/>
+<rect x="920" y="510" width="42" height="38" rx="10" fill="#EAF6F3" stroke="#EAF6F3" stroke-width="1"/>
+<text x="933" y="538" font-size="23" font-weight="700" fill="#147D76">6</text>
+<rect x="1106" y="515" width="144" height="28" rx="14" fill="white" stroke="#147D76" stroke-width="2"/>
+<text x="1118" y="535" font-size="15" font-weight="700" fill="#147D76">LLM + ENGINE</text>
+<text x="921" y="588" font-size="25" font-weight="700" fill="#147D76">Advance the clock</text>
+<text x="921" y="626" font-size="19" font-weight="400" fill="#192B45">LLM estimates the minutes</text>
+<text x="921" y="653" font-size="19" font-weight="400" fill="#192B45">Engine bounds them by the</text>
+<text x="921" y="680" font-size="19" font-weight="400" fill="#192B45">schedule and agents&#x27; states</text>
+<rect x="485" y="490" width="370" height="214" rx="19" fill="white" stroke="#D5DFE9" stroke-width="2"/>
+<rect x="505" y="510" width="42" height="38" rx="10" fill="#FCF0E2" stroke="#FCF0E2" stroke-width="1"/>
+<text x="518" y="538" font-size="23" font-weight="700" fill="#B46A22">7</text>
+<rect x="747" y="515" width="88" height="28" rx="14" fill="#EAF6F3" stroke="#147D76" stroke-width="2"/>
+<text x="759" y="535" font-size="15" font-weight="700" fill="#147D76">ENGINE</text>
+<text x="506" y="588" font-size="25" font-weight="700" fill="#B46A22">Contact processes</text>
+<text x="506" y="626" font-size="19" font-weight="400" fill="#192B45">For example, infection</text>
+<text x="506" y="653" font-size="19" font-weight="400" fill="#192B45">Start-of-wave grouping</text>
+<text x="506" y="680" font-size="19" font-weight="400" fill="#192B45">credited with the wave&#x27;s time</text>
+<polyline points="440,277 485,277" fill="none" stroke="#147D76" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="485.0,277.0 474.0,281.9 474.0,272.1" fill="#147D76"/>
+<polyline points="855,277 900,277" fill="none" stroke="#147D76" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="900.0,277.0 889.0,281.9 889.0,272.1" fill="#147D76"/>
+<polyline points="1270,277 1315,277" fill="none" stroke="#147D76" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="1315.0,277.0 1304.0,281.9 1304.0,272.1" fill="#147D76"/>
+<polyline points="1500,384 1500,490" fill="none" stroke="#147D76" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="1500.0,490.0 1495.1,479.0 1504.9,479.0" fill="#147D76"/>
+<polyline points="1315,597 1270,597" fill="none" stroke="#147D76" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="1270.0,597.0 1281.0,592.1 1281.0,601.9" fill="#147D76"/>
+<polyline points="900,597 855,597" fill="none" stroke="#147D76" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="855.0,597.0 866.0,592.1 866.0,601.9" fill="#147D76"/>
+<polyline points="485,597 390,597 390,384" fill="none" stroke="#147D76" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="390.0,384.0 394.9,395.0 385.1,395.0" fill="#147D76"/>
+<text x="70" y="530" font-size="22" font-weight="700" fill="#147D76">Next wave</text>
+<text x="70" y="564" font-size="18" font-weight="400" fill="#586A80">Agents addressed in this wave,</text>
+<text x="70" y="590" font-size="18" font-weight="400" fill="#586A80">plus those cued by events,</text>
+<text x="70" y="616" font-size="18" font-weight="400" fill="#586A80">released from a state or</text>
+<text x="70" y="642" font-size="18" font-weight="400" fill="#586A80">re-invoked by the scheduler</text>
+<rect x="70" y="740" width="1620" height="2" rx="1" fill="#D5DFE9" stroke="#D5DFE9" stroke-width="1"/>
+<rect x="70" y="774" width="58" height="28" rx="14" fill="#EDF4FE" stroke="#2864B5" stroke-width="2"/>
+<text x="82" y="794" font-size="15" font-weight="700" fill="#2864B5">LLM</text>
+<text x="140" y="795" font-size="18" font-weight="400" fill="#586A80">generated by the language model</text>
+<rect x="450" y="774" width="88" height="28" rx="14" fill="#EAF6F3" stroke="#147D76" stroke-width="2"/>
+<text x="462" y="794" font-size="15" font-weight="700" fill="#147D76">ENGINE</text>
+<text x="550" y="795" font-size="18" font-weight="400" fill="#586A80">explicit engine rule</text>
+<rect x="790" y="774" width="144" height="28" rx="14" fill="white" stroke="#147D76" stroke-width="2"/>
+<text x="802" y="794" font-size="15" font-weight="700" fill="#147D76">LLM + ENGINE</text>
+<text x="946" y="795" font-size="18" font-weight="400" fill="#586A80">model proposes, engine bounds</text>
+<text x="70" y="840" font-size="18" font-weight="400" fill="#586A80">Ongoing states limit turn scheduling and message delivery; direct addressing can interrupt sleep or private activity.</text>
+</svg>
