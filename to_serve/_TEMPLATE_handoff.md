@@ -13,7 +13,7 @@
 <수정 후 어떻게 동작해야 하는지. 수정 전 문제와 실측 근거(실행 ID, wave 번호 등)를 함께>
 
 ## 검증 요청
-1. 전체 테스트: `C:\Users\ADMIN\miniconda3\envs\vllm\python.exe -m pytest tests/ -q`
+1. 전체 테스트: `C:\Users\ADMIN\miniconda3\envs\vllm\python.exe -m pytest tests/ -q -p no:cacheprovider`
 2. <이 변경에 특화된 확인 항목 — 예: 특정 테스트, 시뮬레이션 재실행 조건, 확인할 지표>
 
 ## 위험 지점

@@ -7,7 +7,7 @@
 - 판정: **통과** / **수정 필요** / **사람 결정 필요**
 
 ## 테스트 결과
-- 명령: `C:\Users\ADMIN\miniconda3\envs\vllm\python.exe -m pytest tests/ -q`
+- 명령: `C:\Users\ADMIN\miniconda3\envs\vllm\python.exe -m pytest tests/ -q -p no:cacheprovider`
 - 결과: <N passed, M failed>
 - 실패가 있으면 테스트 이름과 오류 한 줄씩. 전체 로그는 붙이지 않는다.
 

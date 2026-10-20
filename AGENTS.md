@@ -20,10 +20,10 @@
 
 ## 3. 협업 루프
 
-1. **구현 (Claude).** 작업 브랜치에서 구현·커밋하고 `to_serve/`에 인수인계 메모를 쓴다(`to_serve/_TEMPLATE_handoff.md`).
+1. **구현 (Claude).** 작업 브랜치에서 구현·커밋하고 `to_serve/`에 인수인계 메모를 쓴다(`to_serve/_TEMPLATE_handoff.md`). 메모에서 "유지된다", "바뀌지 않는다"고 적은 동작은 **테스트로 뒷받침**하고, 하위 에이전트가 쓴 메모라면 넘기기 전에 Claude가 그 주장을 직접 확인한다.
 2. **검증 (Codex).** 메모와 `git diff master...<브랜치>`를 읽고, 테스트를 실행하고, 반박하는 관점으로 검토해 `to_master/`에 보고서를 쓴다(`to_master/_TEMPLATE_review.md`).
 3. **반영 (Claude).** 보고서의 상위 지적을 **직접 확인한 뒤** 수정하고, 보고서 끝의 답변 절에 수용·반박·보류를 적는다. 보고서를 확인 없이 그대로 반영하지 않는다.
-4. **종료.** Codex 판정이 통과이면 Claude가 머지한다.
+4. **종료.** Codex 판정이 통과이면 Claude가 머지하고, 그 작업의 인수인계 메모와 검증 보고서를 커밋해 이력으로 남긴다.
 
 - 반복은 **최대 2회**다. 그 뒤 남은 지적은 사용자에게 `to_human/`으로 넘긴다.
 - 심각도 P3(표현·가독성)만 남으면 반복하지 않고 종료한다.
@@ -40,6 +40,7 @@
 - 파일 이름: `<YYYY-MM-DD>_<작업명>_<종류>.md`. 종류는 `handoff`, `review`, `decision`, `summary` 중 하나다(예: `2026-10-21_lone-hop-idle_review.md`).
 - 모든 문서 머리에 다음을 적는다: 작성 에이전트, 작성일, **기준 커밋**(검토·작업한 HEAD), 대상 파일·브랜치. 실행 결과를 인용하면 실행 ID와 설정 파일 경로도 적는다.
 - `_TEMPLATE_`로 시작하는 파일은 양식이다. 지우지 않는다.
+- 세 폴더의 문서는 감사 기록으로 **커밋한다.** 검증 루프의 메모·보고서는 루프가 끝날 때 함께 커밋한다.
 
 ## 5. 결정 기록
 
@@ -53,7 +54,7 @@
 
 | 용도 | 실행 파일 |
 | --- | --- |
-| 테스트 | `C:\Users\ADMIN\miniconda3\envs\vllm\python.exe -m pytest tests/ -q` |
+| 테스트 | `C:\Users\ADMIN\miniconda3\envs\vllm\python.exe -m pytest tests/ -q -p no:cacheprovider` (캐시 플러그인을 끄면 샌드박스의 `.pytest_cache` 쓰기 권한 경고가 없다) |
 | 웹 서버 실행 | `C:\Users\ADMIN\miniconda3\envs\fastapi\python.exe run.py` (포트 8888). `requirements.txt`와 어긋날 수 있으니 의존성은 이 환경에서 확인한다. |
 | LaTeX 컴파일 | `C:\Users\ADMIN\miniconda3\envs\tex\Library\bin\tectonic.exe -X compile <파일>.tex --outdir <임시 폴더>` |
 
