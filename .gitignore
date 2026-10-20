@@ -13,9 +13,9 @@ simulator.py
 
 # 컴퓨터마다 따로 가지는 것 (AGENTS.md 6절)
 AGENTS.local.md
-run/
-out.md
-config.json
+/run/
+/out.md
+/config.json
 
 # 다시 만들 수 있는 묶음 파일 (예: Overleaf 업로드용 zip)
 docs/*.zip
