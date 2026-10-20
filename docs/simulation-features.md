@@ -35,7 +35,15 @@
   (hop 수 최소), zone 지도는 **(zone 경계 횡단 수, hop 수)** 사전순 최소
   (`_find_path_zoned`) — 순수 BFS는 탈출 엣지 때문에 입구에서 먼 방끼리의 이동을
   바깥으로 돌렸다(안방화장실→거실이 집 안 3홉 대신 `[고등학교, 거실]` = zone 이동 2회).
-  동률은 BFS와 같이 먼저 발견된 쪽. 이동은 **wave당 한 칸**씩 `_agent_path`를 pop. 단 **이동 중(`traveling`, §7)이면 pop 하지 않고 경로를
+  동률은 BFS와 같이 먼저 발견된 쪽.
+  **경계 판정 규칙**(`_crosses_boundary` / `_travel_zone`) — zone 지도에서 zone 없는
+  장소(회사·고등학교·동네 등)는 **각자 독립 구역**이다. 그래서 zone 없는 장소끼리
+  직접 hop해도 경계를 넘는다(이동 시간 `traveling`). 같은 zone 안 방끼리는 즉시,
+  zone ↔ zone 없는 장소는 경계. 이 하나의 판정을 경로 비용(`_find_path_zoned`)·이동
+  시간(runner `_move_one_hop`)·경유지(`_is_zone_boundary`)가 함께 쓴다 — 그래서 직접
+  연결 A→B(경계 1회)가 집 경유 A→거실→B(경계 2회)보다 우선한다. zone을 전혀 안 쓰는
+  지도는 경계가 없다(즉시 이동). **인지**(§2, 같은 zone의 다른 방 사람을 앎)는 실제
+  zone 문자열로만 판정하므로 zone 없는 장소끼리는 여전히 서로를 모른다. 이동은 **wave당 한 칸**씩 `_agent_path`를 pop. 단 **이동 중(`traveling`, §7)이면 pop 하지 않고 경로를
   보존**한다 — zone 경계를 건넌 hop은 N분짜리 이동이라, 그 사이 짧은 wave(idle 점프가
   남의 상태 해제·예정 이벤트 시점에 클램프돼 1분만 흐른 wave 등)에 다음 hop을 꺼내면
   traveling을 덮어써 순간이동이 되고 중간 노드 사람에게 갈 도착 알림도 사라진다
@@ -76,7 +84,7 @@ raw, kind, destination, path, via, target, reason}`(영속, 화면 비노출) �
 없었다. 그래프는 실제 길이라 바꾸지 않고 **가는 방법을 엔진이 정하고 알려준다.**
 
 **용어** — **경유지(via)** = 경로의 **중간** 노드 중 zone 경계를 넘는 hop으로 도착하는 곳
-(`_path_via`). **여정** = 경유지가 있는 장소 이동의 의도 `_journey[key] = {destination,
+(`_path_via`; zone 없는 장소끼리의 hop도 경계 — 위 "경계 판정 규칙"). **여정** = 경유지가 있는 장소 이동의 의도 `_journey[key] = {destination,
 origin, via, status: en_route|paused, paused_at}`. 구역 안 다중 hop(거실→안방화장실)만 있는
 경로는 여정이 아니고 동작도 예전 그대로다.
 

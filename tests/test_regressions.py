@@ -10569,6 +10569,156 @@ class JourneyTests(unittest.TestCase):
         self.assertNotIn("🧭", md_off)
 
 
+class ZonelessTravelBoundaryTests(unittest.TestCase):
+    """zone 없는 장소는 각자 독립 구역 — 그 사이 직접 hop도 경계 통과(이동 시간).
+
+    배경: 경계 판정이 zone 문자열 비교라서 zone 없는 장소(고등학교·누나학원 등)끼리
+    직접 연결하면 둘 다 zone ''로 같아 순간이동했다. 이제 판정은
+    `_crosses_boundary`(location.py) 하나로 모이고, zone 없는 노드의 "유효 구역"은
+    노드 자신이다. 인지(같은 zone의 다른 방 사람을 앎)는 실제 zone으로만 판정하므로
+    바뀌지 않는다. zone을 전혀 안 쓰는 지도는 예전처럼 경계가 없다.
+    """
+
+    # JourneyTests 지도 + 외부 장소 간 직접 연결(고등학교↔누나학원, 동네↔공원).
+    _GRAPH = [
+        {"name": "거실",     "connects_to": ["안방"], "zone": "우리집", "is_zone_entry": True},
+        {"name": "안방",     "connects_to": ["거실"], "zone": "우리집"},
+        {"name": "고등학교", "connects_to": ["우리집", "누나학원"]},
+        {"name": "누나학원", "connects_to": ["우리집", "고등학교"]},
+        {"name": "동네",     "connects_to": ["우리집", "공원"], "is_exterior": True},
+        {"name": "공원",     "connects_to": ["동네"], "is_exterior": True},
+    ]
+    _FLAT_GRAPH = [
+        {"name": "고등학교", "connects_to": ["누나학원"]},
+        {"name": "누나학원", "connects_to": ["고등학교"]},
+    ]
+    _IDLE = {"content": "...", "target": "self"}
+
+    def _sim(self, tmp, script, locations, *, graph=None, travel=(10, 20)):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in script}
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=_ScriptedLLM(script),
+            agent_locations=locations, location_graph=graph or self._GRAPH,
+            zone_travel_min_minutes=travel[0], zone_travel_max_minutes=travel[1],
+            time_mode="variable",
+        )
+        emitted: list[tuple[str, dict]] = []
+        sim._emit = lambda t, d: emitted.append((t, d))
+        return sim, emitted
+
+    @staticmethod
+    def _travel_enters(emitted, key):
+        return [d for t, d in emitted
+                if t == "agent_status_change" and d.get("agent") == key
+                and d.get("action") == "enter" and d.get("state") == "traveling"]
+
+    def test_direct_hop_between_zoneless_places_is_traveling_within_range(self):
+        for src, dst in (("고등학교", "누나학원"), ("동네", "공원")):  # 외부 공간끼리 포함
+            with self.subTest(src=src, dst=dst), tempfile.TemporaryDirectory() as tmp:
+                sim, emitted = self._sim(
+                    tmp, {"z": [{"content": "간다.", "target": "self", "move_to": dst}]},
+                    {"z": src},
+                )
+                sim.run("z", max_waves=1, step_delay=0.0, resume_wave={"z": []})
+                moves = [(d["from"], d["to"]) for t, d in emitted if t == "agent_move"]
+                self.assertEqual(moves, [(src, dst)])  # 직접 1홉(집 경유 아님)
+                self.assertEqual(sim._agent_location["z"], dst)
+                enters = self._travel_enters(emitted, "z")
+                self.assertEqual(len(enters), 1)
+                self.assertGreaterEqual(enters[0]["minutes"], 10)
+                self.assertLessEqual(enters[0]["minutes"], 20)
+                st = sim._agent_status.get("z")
+                self.assertIsNotNone(st)
+                self.assertEqual(st["state"], "traveling")
+                self.assertEqual(st["arrival_location"], dst)
+
+    def test_boundary_helper_semantics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _ = self._sim(tmp, {"z": [self._IDLE]}, {"z": "거실"})
+            self.assertTrue(sim._crosses_boundary("고등학교", "누나학원"))
+            self.assertTrue(sim._crosses_boundary("거실", "고등학교"))
+            self.assertFalse(sim._crosses_boundary("거실", "안방"))
+            self.assertTrue(sim._is_zone_boundary("고등학교", "누나학원"))
+            # 내부 키는 실제 zone 이름과 충돌하지 않는다.
+            self.assertNotIn(sim._travel_zone("고등학교"), set(sim._location_zone.values()))
+            self.assertNotEqual(sim._travel_zone("고등학교"), sim._travel_zone("누나학원"))
+
+    def test_direct_link_preferred_over_route_through_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _ = self._sim(tmp, {"z": [self._IDLE]}, {"z": "고등학교"})
+            self.assertEqual(sim._find_path("고등학교", "누나학원"), ["누나학원"])
+            self.assertEqual(sim._find_path("누나학원", "고등학교"), ["고등학교"])
+            self.assertEqual(sim._path_via("고등학교", ["누나학원"]), [])
+            # 집 안으로 가는 길은 여전히 입구 거실을 거친다.
+            self.assertEqual(sim._find_path("고등학교", "안방"), ["거실", "안방"])
+
+    def test_zoneless_chain_counts_each_hop_as_boundary(self):
+        # 집과 무관하게 이어진 zone 없는 장소 사슬: 중간 노드는 경유지다(경계 hop 도착).
+        graph = [
+            {"name": "거실", "connects_to": [], "zone": "우리집", "is_zone_entry": True},
+            {"name": "회사", "connects_to": ["역"]},
+            {"name": "역",   "connects_to": ["회사", "학원"]},
+            {"name": "학원", "connects_to": ["역"]},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _ = self._sim(tmp, {"z": [self._IDLE]}, {"z": "회사"}, graph=graph)
+            path = sim._find_path("회사", "학원")
+            self.assertEqual(path, ["역", "학원"])
+            self.assertEqual(sim._path_via("회사", path), ["역"])
+
+    def test_map_without_zones_still_moves_instantly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, emitted = self._sim(
+                tmp, {"z": [{"content": "간다.", "target": "self", "move_to": "누나학원"}]},
+                {"z": "고등학교"}, graph=self._FLAT_GRAPH,
+            )
+            sim.run("z", max_waves=1, step_delay=0.0, resume_wave={"z": []})
+            self.assertEqual(sim._agent_location["z"], "누나학원")
+            self.assertEqual(sim._agent_status, {})
+            self.assertEqual(self._travel_enters(emitted, "z"), [])
+            self.assertFalse(sim._crosses_boundary("고등학교", "누나학원"))
+            self.assertFalse(sim._is_zone_boundary("고등학교", "누나학원"))
+
+    def test_zoneless_places_do_not_become_mutually_aware(self):
+        # 인지 판정은 실제 zone 으로만 — 직접 연결된 zone 없는 장소끼리도 서로 모른다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _ = self._sim(
+                tmp, {"a": [self._IDLE], "b": [self._IDLE], "c": [self._IDLE]},
+                {"a": "고등학교", "b": "누나학원", "c": "고등학교"},
+            )
+            self.assertEqual(sim._compute_zone_awareness("a"), ([], []))
+            self.assertEqual(sim._compute_zone_awareness("b"), ([], []))
+            known, strangers = sim._compute_wave_targets("a")
+            self.assertNotIn("b", known)
+            self.assertNotIn("b", [s[1] for s in strangers])
+
+    def test_companion_shares_leader_travel_time_on_zoneless_hop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, emitted = self._sim(
+                tmp,
+                {"m": [{"content": "학원 가자.", "target": "self", "move_to": "누나학원",
+                        "bring_along": ["z"]}, self._IDLE],
+                 "z": [self._IDLE, self._IDLE]},
+                {"m": "고등학교", "z": "고등학교"}, travel=(20, 40),
+            )
+            sim.run("m", max_waves=1, step_delay=0.0, resume_wave={"m": []},
+                    starvation_waves=99)
+            self.assertEqual(sim._agent_location["z"], "누나학원")
+            st_m, st_z = sim._agent_status.get("m"), sim._agent_status.get("z")
+            self.assertIsNotNone(st_m)
+            self.assertIsNotNone(st_z)
+            self.assertEqual(st_m["state"], "traveling")
+            self.assertEqual(st_z["state"], "traveling")
+            self.assertEqual(st_m["until_elapsed"], st_z["until_elapsed"])
+            m_min = self._travel_enters(emitted, "m")[0]["minutes"]
+            z_min = self._travel_enters(emitted, "z")[0]["minutes"]
+            self.assertEqual(m_min, z_min)
+            self.assertTrue(20 <= m_min <= 40)
+
+
 class AgentContextStatusFieldTests(unittest.TestCase):
     """GET /agents/{name}/context 응답에 상태(수면·이동 등) 필드가 실리는지.
 

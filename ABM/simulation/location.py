@@ -4,6 +4,10 @@ from collections import defaultdict, deque
 
 logger = logging.getLogger(__name__)
 
+# zone 없는 노드의 "이동 구역" 키 접두사 — 실제 zone 이름(사용자 입력 문자열)과
+# 충돌하지 않도록 NUL 문자로 시작한다. 경계 판정 전용(인지 판정에는 쓰지 않는다).
+_ZONELESS_TRAVEL_PREFIX = "\0place:"
+
 
 class _LocationMixin:
     """위치 그래프, BFS 경로 탐색, 상황 컨텍스트 관련 메서드."""
@@ -68,6 +72,37 @@ class _LocationMixin:
                 for interior in zone_nodes.get(target, []):
                     _add(interior, x)  # 탈출 (E 포함)
 
+    # ── 경계 통과 판정 (이동 시간·경유지·경로 비용 공통) ──────────────────────
+
+    def _travel_zone(self, node: str) -> str:
+        """이동 시간 판정용 "유효 구역" — zone이 있으면 그 zone, 없으면 노드 자신.
+
+        zone을 쓰는 지도에서 zone 없는 장소(회사·고등학교·동네 등)는 **각자 독립된
+        구역**이다. 그래서 zone 없는 장소끼리 직접 hop해도 경계를 넘는다(이동 시간).
+        지도 밖 노드(빈 문자열 포함)는 예전처럼 '' — 위치 미설정 에이전트의 첫 이동
+        판정을 바꾸지 않는다.
+
+        **인지(awareness) 판정에는 쓰지 않는다** — 같은 zone의 다른 방 사람을 아는
+        규칙은 실제 zone 문자열(`_location_zone`)로만 비교한다. zone 없는 장소의
+        사람끼리 서로를 인지하게 되면 안 된다.
+        """
+        zone = self._location_zone.get(node, "")
+        if zone:
+            return zone
+        if node and node in self._location_graph:
+            return _ZONELESS_TRAVEL_PREFIX + node
+        return ""
+
+    def _crosses_boundary(self, a: str, b: str) -> bool:
+        """a→b hop이 구역 경계를 넘는가. zone을 전혀 안 쓰는 지도는 항상 False.
+
+        runner `_move_one_hop`(이동 시간), journey `_is_zone_boundary`(경유지),
+        `_find_path_zoned`(경로 비용)가 함께 쓰는 단일 기준이다.
+        """
+        if not self._location_zone:
+            return False
+        return self._travel_zone(a) != self._travel_zone(b)
+
     def _find_path(self, start: str, goal: str) -> list[str]:
         """최단 경로. 시작 제외, 목표 포함.
 
@@ -123,7 +158,7 @@ class _LocationMixin:
             if node == goal:
                 break
             for nb in self._location_graph.get(node, []):
-                step = 1 if self._location_zone.get(node, "") != self._location_zone.get(nb, "") else 0
+                step = 1 if self._crosses_boundary(node, nb) else 0
                 cost = (crossings + step, hops + 1)
                 if nb not in best or cost < best[nb]:
                     best[nb] = cost

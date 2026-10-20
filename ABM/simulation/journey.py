@@ -62,11 +62,10 @@ class _JourneyMixin:
 
         runner 이동 루프의 `crossing_zone`과 같은 지리 판정이되 이동 시간 설정
         (`zone_travel_max_minutes`)과 무관하다 — 경유지는 지도상의 사실이다.
-        외부·zone 없는 노드는 zone ''로 취급돼 내부 zone과 자연히 구분된다.
+        zone 없는 노드는 각자 독립 구역이라(`_travel_zone`) 내부 zone과도, 다른
+        zone 없는 노드와도 구분된다. 판정은 `_crosses_boundary` 하나로 모은다.
         """
-        if not self._location_zone:
-            return False
-        return self._location_zone.get(a, "") != self._location_zone.get(b, "")
+        return self._crosses_boundary(a, b)
 
     def _path_via(self, start: str, path: list[str]) -> list[str]:
         """경로의 경유지 — zone 경계를 넘는 hop으로 도착하는 **중간** 노드들(순서대로).

@@ -1385,10 +1385,11 @@ class _RunnerMixin:
         # 쪽은 무조건 1홉이라(location.py::_expand_zone_edges "구역 안
         # 어디서든 1홉 탈출") raw 위치가 이 hop 하나로 바로 바뀐다. 지리적
         # 사실이라 에이전트가 아니라 엔진이 판단한다(0이면 기능 꺼짐).
-        # 외부 노드는 zone이 없어(zone='') 내부 zone과 자연히 구분된다.
+        # zone 없는 노드는 각자 독립 구역이다(location._travel_zone) — 외부
+        # 장소끼리 직접 hop해도 이동 시간이 붙는다. zone 안 쓰는 지도는 False.
         crossing_zone = (
             self._zone_travel_max_minutes > 0
-            and self._location_zone.get(old_loc, "") != self._location_zone.get(next_loc, "")
+            and self._crosses_boundary(old_loc, next_loc)
         )
         if crossing_zone:
             if not travel_minutes:
