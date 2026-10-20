@@ -12422,6 +12422,71 @@ def _render_golden(cfg, name, result, include=None):
     )
 
 
+class RunTurnCountTests(unittest.TestCase):
+    """`simulation_runs.total_turns` 는 그 실행의 `simulation_log` 행 수와 같아야 한다.
+
+    예전엔 종료 처리가 `len(shared_log)`를 저장해 초기 배경문 1개만큼 항상 +1이었고(DB의
+    12개 실행 전부), 이어서 실행은 이전 실행 기록까지, 오류 종료는 0을 저장했다
+    (Codex 분석 `to_master/2026-10-20_turn-count-mismatch_analysis.md` 재현 B).
+    """
+
+    def _run(self, tmp, name, *, raw='{"content":"hello","target":"self"}', backgrounds=1):
+        from ABM.agent import Agent
+        from ABM.db import SimDB
+        from ABM.simulation import Simulation
+        folder = str(Path(tmp) / name)
+        db = SimDB(str(Path(tmp) / f"{name}.db"))
+        db.create_run(name, None, name, "{}")
+        sim = Simulation(
+            {"a": Agent("a", "Act as a.", folder, token_limit=4096)},
+            [{"role": "user", "content": "[배경] test"}] * backgrounds, folder,
+            llm=lambda *a, **k: (raw, "", {}), db=db, sim_id=name,
+            lang_fix_enabled=False, time_mode="fixed", time_per_wave=1,
+        )
+        sim.run("a", max_waves=1, step_delay=0)
+        return db, sim
+
+    def _stored_and_rows(self, db, rid):
+        return db.get_run(rid)["total_turns"], len(db.get_run_log(rid))
+
+    def test_gui_finalize_stores_log_row_count(self):
+        import queue
+        from backend.api.simulation.runner import finalize_run
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            for name, kw in (("fresh", {}), ("two-backgrounds", {"backgrounds": 2}),
+                             ("parse-failure", {"raw": "not json"})):
+                with self.subTest(name=name):
+                    db, sim = self._run(tmp, name, **kw)
+                    finalize_run(db, name, threading.Event(), sim, queue.Queue())
+                    stored, rows = self._stored_and_rows(db, name)
+                    self.assertEqual(stored, rows)
+                    self.assertEqual(rows, 0 if name == "parse-failure" else 1)
+
+    def test_cli_finish_stores_log_row_count(self):
+        from ABM.cli import _finish_db_run
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            db, sim = self._run(tmp, "cli")
+            _finish_db_run(db, "cli", sim, "done")
+            self.assertEqual(self._stored_and_rows(db, "cli"), (1, 1))
+
+    def test_error_exit_and_continued_run_count_only_their_own_rows(self):
+        import queue
+        from backend.api.simulation.runner import finalize_run, fold_elapsed_and_reset_waves
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            db, sim = self._run(tmp, "error")
+            finalize_run(db, "error", threading.Event(), sim, queue.Queue(), error=RuntimeError("x"))
+            self.assertEqual(self._stored_and_rows(db, "error"), (1, 1))   # 예전엔 0
+
+            db, sim = self._run(tmp, "first")
+            finalize_run(db, "first", threading.Event(), sim, queue.Queue())
+            sim._sim_id = "second"
+            fold_elapsed_and_reset_waves(sim)
+            db.create_run("second", None, "second", "{}", start_wave=sim._wave_base)
+            sim.run("a", max_waves=1, step_delay=0)
+            finalize_run(db, "second", threading.Event(), sim, queue.Queue())
+            self.assertEqual(self._stored_and_rows(db, "second"), (1, 1))  # 예전엔 3
+
+
 class HeadlessRunnerTests(unittest.TestCase):
     """`run_config` 가 GUI /start 와 같은 조립을 하는지 (ABM/simulation/headless.py)."""
 

@@ -70,14 +70,24 @@ class RunsMixin:
         pending_wave:  dict | None = None,
         elapsed_minutes: int | None = None,
     ):
+        """실행 종료 메타데이터를 저장한다.
+
+        `total_turns` 인자는 호출부 호환용으로만 남아 있고 **저장에 쓰지 않는다.** 저장되는
+        턴 수는 그 `run_id`의 `simulation_log` 행 수(영속화된 에이전트 응답·행동 기록)다.
+        호출부가 넘기던 `len(shared_log)`는 초기 배경문을 1개 더 세고, 이어서 실행에서는
+        이전 실행의 기록까지 누적해 저장값이 로그와 어긋났다(전 실행 +1 — Codex 분석
+        `to_master/2026-10-20_turn-count-mismatch_analysis.md`). 오류 종료 경로가 넘기던 0도
+        같은 이유로 무시된다.
+        """
         conn = self._conn()
         conn.execute(
             "UPDATE simulation_runs "
-            "SET status=?, total_waves=?, total_turns=?, finished_at=?, "
+            "SET status=?, total_waves=?, "
+            "total_turns=(SELECT COUNT(*) FROM simulation_log WHERE run_id=?), finished_at=?, "
             "active_agents_json=?, pending_wave_json=?, elapsed_minutes=? "
             "WHERE run_id=?",
             (
-                status, total_waves, total_turns, time.time(),
+                status, total_waves, run_id, time.time(),
                 json.dumps(list(active_agents), ensure_ascii=False) if active_agents is not None else None,
                 json.dumps(pending_wave, ensure_ascii=False) if pending_wave is not None else None,
                 elapsed_minutes,
