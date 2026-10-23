@@ -12913,6 +12913,39 @@ class CliTests(unittest.TestCase):
         from ABM.cli import build_parser
         return build_parser().parse_args(argv)
 
+    def test_run_bundle_final_context_and_safe_names(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from pathlib import Path
+        from ABM.cli import _write_run_bundle
+        agent = Mock()
+        agent.build_messages.return_value = [
+            {"role": "system", "content": "계약"},
+            {"role": "user", "content": "최종 기억"},
+        ]
+        sim = Mock()
+        sim.agents = {"../가": agent, "..\\가": agent}
+        sim.background_log = []
+        sim._assemble_agent_prompt.return_value = dict(
+            visible_agents=[], key_to_alias={}, target_sections=None,
+            location_name="방", situation_targets=False, ephemeral_msgs=[],
+        )
+        sim._fresh_memory_block.return_value = "최신 기억"
+        res = SimpleNamespace(sim=sim, shared_log=[], events=[])
+        cfg = Mock()
+        cfg.model_dump.return_value = {}
+        with tempfile.TemporaryDirectory() as directory:
+            with patch("ABM.export.markdown.render_markdown", return_value="시나리오"), \
+                 patch("ABM.export.csv.render_location_csv", return_value="agent,location\r\n"):
+                _write_run_bundle(directory, cfg, "이름", res, "done", None)
+            root = Path(directory)
+            self.assertEqual((root / "scenario.md").read_text(), "시나리오")
+            self.assertTrue((root / "locations.csv").exists())
+            files = list((root / "contexts").glob("*.md"))
+            self.assertEqual(len(files), 2)
+            self.assertIn("최종 기억", files[0].read_text())
+            self.assertEqual(agent.build_messages.call_args.args[-1], "최신 기억")
+
     def test_redirected_output_is_utf8_on_every_platform(self):
         # Windows 에서 `python -m ABM.cli export … > out.md` 처럼 리다이렉트하면 기본 인코딩이 cp949 라
         # 마크다운의 🕐·🦠·⚠ 에서 UnicodeEncodeError 로 죽었다(2026-10-14 재현). 파이프로 받은 바이트가

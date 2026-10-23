@@ -458,6 +458,35 @@ def _finish_db_run(db, run_id: str, sim, status: str) -> None:
         pass
 
 
+def _write_run_bundle(directory, cfg, scenario_name, res, status, include):
+    """실행 종료 상태를 GUI 컨텍스트 조회와 같은 프롬프트 조립 경로로 저장한다."""
+    from ABM.export.csv import render_location_csv
+    from ABM.export.markdown import render_markdown
+
+    _write_output(render_markdown(
+        config=cfg.model_dump(), shared_log=res.shared_log, events=res.events,
+        scenario_name=scenario_name, status=status, include=include,
+    ), os.path.join(directory, "scenario.md"))
+    _write_output(render_location_csv(res.shared_log, res.events),
+                  os.path.join(directory, "locations.csv"))
+    sim = res.sim
+    for index, (name, agent) in enumerate(sim.agents.items(), 1):
+        ctx = sim._assemble_agent_prompt(name)
+        memory = sim._fresh_memory_block(name, sim._current_elapsed_minutes())
+        messages = agent.build_messages(
+            sim.background_log, ctx["visible_agents"], ctx["key_to_alias"],
+            ctx["target_sections"], ctx["location_name"], ctx["situation_targets"],
+            ctx["ephemeral_msgs"], memory,
+        )
+        parts = [f"# {name} — 최종 컨텍스트\n",
+                 "실행 종료 상태에서 재구성한 다음 호출용 메시지입니다.\n"]
+        for number, message in enumerate(messages, 1):
+            parts.append(f"## {number}. {message['role']}\n\n{message['content']}\n")
+        # 순번으로 정규화 후 이름 충돌과 . / .. 경로를 방지한다.
+        filename = f"{index:03d}_{safe_filename(name)}.md"
+        _write_output("\n".join(parts), os.path.join(directory, "contexts", filename))
+
+
 def cmd_run(args) -> int:
     cfg, scenario_name = _build_config(args)
     fmt, ext, include = _resolve_format(args)
@@ -466,7 +495,10 @@ def cmd_run(args) -> int:
         return _dry_run(cfg, scenario_name)
 
     n = max(1, args.runs)
-    if n > 1 and not args.outdir:
+    bundle_dir = getattr(args, "output_dir", None)
+    if bundle_dir and (args.output or args.outdir or fmt != "md"):
+        raise ConfigError("--output-dir 은 -o/--output, --outdir, --format csv 와 함께 쓸 수 없습니다.")
+    if n > 1 and not (args.outdir or bundle_dir):
         raise ConfigError("-n/--runs 가 2 이상이면 --outdir 이 필요합니다.")
     if args.output and args.output != "-" and n > 1:
         raise ConfigError("-o/--output 은 단일 실행에만 쓸 수 있습니다 (-n > 1 이면 --outdir).")
@@ -541,6 +573,13 @@ def cmd_run(args) -> int:
                 if db is not None:
                     _finish_db_run(db, run_id, res.sim, status)
 
+                if bundle_dir:
+                    directory = bundle_dir if n == 1 else os.path.join(bundle_dir, f"run_{idx:03d}")
+                    # 기존 결과를 덮어쓰지 않도록 실행별 고유 디렉토리를 만든다.
+                    directory = os.path.join(directory, run_id)
+                    _write_run_bundle(directory, cfg, scenario_name, res, status, include)
+                    progress.say(f"→ {directory}")
+
                 if fmt == "csv":
                     # DB 조회가 아니라 메모리의 shared_log/events 를 그대로 쓴다 —
                     # 그래서 --no-db 실행에서도 CSV 가 나온다.
@@ -583,6 +622,8 @@ def cmd_run(args) -> int:
     tag = now_tag()
     base = safe_filename(scenario_name)
     for r in sorted(results, key=lambda x: x["idx"]):
+        if bundle_dir:
+            continue
         if r.get("error") is not None:
             continue
         if n > 1:
@@ -696,6 +737,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--scenario-id", help="DB(simulation_scenarios)에 저장된 시나리오 id")
     r.add_argument("-o", "--output", help="출력 파일 (- 면 stdout)")
     r.add_argument("--outdir", help="출력 디렉토리 (-n > 1 이면 필수)")
+    r.add_argument("--output-dir", help="실행별 폴더에 scenario.md, locations.csv, contexts/*.md 를 함께 저장")
     r.add_argument("-n", "--runs", type=int, default=1, help="반복 실행 횟수 (기본 1)")
     r.add_argument("--concurrency", type=int, default=1, help="동시 실행 수 (기본 1)")
     _add_toggles(r)

@@ -36,6 +36,16 @@ python -m ABM.cli run scenario.json
 python -m ABM.cli run scenario.json -o out.md
 python -m ABM.cli run scenario.json -o -                 # stdout
 
+# 전체 결과를 output/<실행 UUID>/ 에 함께 저장
+python -m ABM.cli run scenario.json --output-dir output/
+# scenario.md        : 시나리오 실행 결과
+# locations.csv      : 위치 이력 (기존 CSV 내보내기와 같은 컬럼)
+# contexts/001_이름.md : 에이전트별 최종 컨텍스트 메시지
+# 컨텍스트는 종료 상태의 다음 호출용 프롬프트를 재구성한 결과이며,
+# 마지막 LLM 요청의 원본 기록과는 다를 수 있다.
+# -n 사용 시 output/run_001/<실행 UUID>/ 등으로 실행별 분리된다.
+# --no-db 와도 함께 사용 가능. -o, --outdir, --format csv 와는 함께 쓰지 않는다.
+
 # 설정만 검증 + 엔진 프롬프트 계약 미리보기 (LLM 서버 불필요)
 python -m ABM.cli run scenario.json --dry-run
 
