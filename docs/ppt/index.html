@@ -1,0 +1,559 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI에게 역할을 주면 생기는 일</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Gothic+A1:wght@800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="deck.css">
+</head>
+<body>
+<div class="stage">
+<div class="gridlines"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+
+<!-- 01 표지 -->
+<section class="slide">
+  <div class="grid">
+    <div class="span-12 self-start" data-in="2">
+      <div class="cover-meta">
+        <span><b>LLM과 다중 에이전트 시뮬레이션</b>발표 초안</span>
+        <span><b>vLLM Chat · Rippletown</b>프로젝트 소개</span>
+      </div>
+    </div>
+    <div class="span-8 self-end">
+      <h1 class="h-xl" data-in="1">AI에게 역할을<br>주면 생기는 일</h1>
+      <p class="body mt-m" data-in="3">대화하는 AI 하나에서 시작해, 한집에 사는 AI 여럿까지 갑니다.</p>
+    </div>
+  </div>
+  <aside class="notes">제목만 읽고 넘어갑니다. 오늘은 두 이야기입니다. 앞은 AI 하나, 뒤는 AI 여럿.</aside>
+</section>
+
+<!-- 02 순서 -->
+<section class="slide">
+  <div class="folio">순서</div>
+  <div class="grid">
+    <div class="span-5 self-center">
+      <h1 class="h-l" data-in="1">이야기는<br>두 개입니다</h1>
+    </div>
+    <div class="span-7 self-center">
+      <div class="part-row" data-in="2">
+        <span class="n">1부</span>
+        <div><h2>AI 하나와 대화하기</h2><p>LLM이 글을 쓰는 방식, 그리고 이 프로젝트의 채팅이 <span class="nw">컨텍스트 윈도우</span>를 채우는 방법</p></div>
+      </div>
+      <div class="part-row" data-in="3">
+        <span class="n">2부</span>
+        <div><h2>AI 여럿이 만드는 작은 세상</h2><p>성격을 준 에이전트들이 같은 공간에서 사는 시뮬레이션</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 03 1부 -->
+<section class="slide inverse">
+  <div class="grid">
+    <div class="span-12 self-end">
+      <div class="part-mark" data-in="1">1부</div>
+      <h1 class="h-xl mt-s" data-in="2">AI 하나와<br>대화하기</h1>
+    </div>
+  </div>
+</section>
+
+<!-- 04 다음 토큰 -->
+<section class="slide">
+  <div class="folio">1부 · LLM이 글을 쓰는 방식</div>
+  <div class="grid">
+    <div class="span-5 self-center">
+      <h1 class="h-m" data-in="1">LLM은 다음에 올 말 하나를 고르는 일을 반복한다</h1>
+      <p class="body mt-m" data-in="2">휴대폰 키보드의 단어 추천과 같은 원리입니다. 지금까지의 글을 보고 다음 조각의 확률을 계산해 하나를 고르고, 고른 조각을 붙여 다시 계산합니다.</p>
+      <p class="body" data-in="3">그래서 LLM은 답을 찾아오지 않고 <strong>이어 씁니다</strong>. 이 성질이 2부에서 캐릭터 연기를 가능하게 합니다.</p>
+    </div>
+    <div class="span-6 col-7 self-center">
+      <p class="prompt-line" data-in="2">오늘 저녁 뭐 먹을까 고민되는데,<span class="tok" data-step="2"> 매콤한</span><span class="tok" data-step="3"> 거</span></p>
+      <div class="mt-m">
+        <div class="row-label" data-step="1">다음 조각의 확률 (예시)</div>
+        <div class="prob" data-step="1" data-at="2:pick"><span>매콤한</span><span class="bar"><i style="--w:68%"></i></span><span class="p">0.41</span></div>
+        <div class="prob" data-step="1"><span>가볍게</span><span class="bar"><i style="--w:45%"></i></span><span class="p">0.27</span></div>
+        <div class="prob" data-step="1"><span>그냥</span><span class="bar"><i style="--w:30%"></i></span><span class="p">0.18</span></div>
+        <div class="prob" data-step="1"><span>치킨</span><span class="bar"><i style="--w:15%"></i></span><span class="p">0.09</span></div>
+      </div>
+      <div class="lineage mt-l rule-top" data-step="4">
+        <span>RNN</span><span>→</span><span>LSTM</span><span>→</span><b>Transformer (2017)</b>
+        <span class="small">바뀐 것은 확률을 계산하는 신경망. 한 조각씩 이어 쓰는 절차는 같다.</span>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">→ 한 번: 후보 확률. → 두 번: 가장 높은 '매콤한'을 붙임. → 세 번: 붙인 결과로 다시 계산해 '거'. → 네 번: RNN, LSTM도 같은 절차였고 Transformer는 계산 구조만 바꿨다.</aside>
+</section>
+
+<!-- 05 토큰과 컨텍스트 윈도우 -->
+<section class="slide">
+  <div class="folio">1부 · 토큰과 <span class="nw">컨텍스트 윈도우</span></div>
+  <div class="grid">
+    <div class="span-5 self-center">
+      <h1 class="h-m" data-in="1">AI가 한 번에 펼쳐 볼 수 있는 분량은 정해져 있다</h1>
+      <p class="body mt-m" data-in="2">AI는 글을 <strong>토큰</strong>이라는 조각으로 읽습니다. 단어도 글자도 아닌 단위라서, 한글은 같은 뜻이라도 조각 수가 많아지기 쉽습니다.</p>
+      <p class="body" data-in="3">한 번에 펼쳐 놓고 볼 수 있는 토큰의 총량을 <strong><span class="nw">컨텍스트 윈도우</span></strong>라고 부릅니다.</p>
+    </div>
+    <div class="span-6 col-7 self-center">
+      <div data-step="1">
+        <div class="row-label">영어 9단어 · GPT-4 토크나이저(cl100k_base)</div>
+        <div class="chips"><span class="chip">The</span><span class="chip">quick</span><span class="chip">brown</span><span class="chip">fox</span><span class="chip">jumps</span><span class="chip">over</span><span class="chip">the</span><span class="chip">lazy</span><span class="chip">dog</span></div>
+        <div class="count mt-s">9<small>토큰</small></div>
+      </div>
+      <div class="mt-m" data-step="2">
+        <div class="row-label">“오늘 저녁 뭐 먹을까 고민되는데” 13자 · 같은 토크나이저</div>
+        <div class="blocks"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <div class="count mt-s signal">23<small>토큰</small></div>
+      </div>
+      <div class="mt-m" data-step="3">
+        <div class="row-label">같은 문장 · 최신 토크나이저(o200k_base)</div>
+        <div class="blocks second-tone"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <div class="count mt-s second">10<small>토큰</small></div>
+      </div>
+      <p class="small mt-m rule-top" data-step="4"><span class="nw">컨텍스트 윈도우</span>가 100만 토큰이면 A4 약 2,000쪽, 장편소설 10권 정도가 한 번에 들어갑니다.</p>
+    </div>
+  </div>
+  <aside class="notes">블록 하나가 토큰 하나입니다. 어떻게 쪼개졌는지가 아니라 개수를 보여 주는 그림입니다.</aside>
+</section>
+
+<!-- 06 컨텍스트 윈도우를 채우는 방식 -->
+<section class="slide">
+  <div class="folio">1부 · 컨텍스트 엔지니어링</div>
+  <div class="grid">
+    <div class="span-5 self-center">
+      <h1 class="h-m" data-in="1"><span class="nw">컨텍스트 윈도우</span>를 채우는 방식이 답을 정한다</h1>
+      <p class="body mt-m" data-in="2">같은 질문이라도 <span class="nw">컨텍스트 윈도우</span> 안에 무엇을, 어떤 순서로 담느냐에 따라 답이 달라집니다. 지시문 한 줄을 다듬는 일에서 나아가 윈도우 전체를 관리하는 일을 <strong>컨텍스트 엔지니어링</strong>이라고 부릅니다.</p>
+      <p class="small mt-m" data-in="3">이 프로젝트의 채팅이 실제로 <span class="nw">컨텍스트 윈도우</span>를 채우는 순서입니다.</p>
+    </div>
+    <div class="span-6 col-7 self-center">
+      <div class="window-cap"><span><span class="nw">컨텍스트 윈도우</span></span><span>위에서 아래로 쌓인다</span></div>
+      <div class="window" style="height: 700px;">
+        <div class="seg" style="flex: 1.3" data-step="1"><span>시스템 프롬프트</span><span class="k">맨 앞에 깔아 두는 고정 지시 · 2부의 성격</span></div>
+        <div class="seg" style="flex: 1.1" data-step="2"><span>기억 요약</span><span class="k">길어진 대화를 접은 카드 · 9쪽</span></div>
+        <div class="seg" style="flex: 1.1" data-step="3"><span>찾아온 자료</span><span class="k">웹검색·문서 조각 · 10쪽</span></div>
+        <div class="seg" style="flex: 2.2" data-step="4"><span>최근 대화</span><span class="k">원문 그대로</span></div>
+        <div class="seg new" style="flex: .9" data-step="5"><span>새 질문</span><span class="k">지금 들어온 말</span></div>
+        <div class="seg free" style="flex: 1.4" data-step="6"><span>남은 자리</span><span class="k">답을 쓸 공간</span></div>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">한 칸씩 쌓습니다. 마지막 빈칸이 답을 쓸 자리입니다. 생각 모드는 이 빈칸을 먼저 쓰는 방식이라 다음 장에서 봅니다.</aside>
+</section>
+
+<!-- 07 생각 모드 -->
+<section class="slide">
+  <div class="folio">1부 · 생각 모드</div>
+  <div class="grid">
+    <div class="span-5 self-center">
+      <h1 class="h-m" data-in="1">답을 쓰기 전에 생각부터 적는다</h1>
+      <p class="body mt-m" data-in="2">일부 모델은 최종 답을 내기 전에 풀이 과정을 먼저 씁니다. 시험지에 풀이를 쓰고 마지막 줄에 답을 적는 것과 같습니다.</p>
+      <p class="body" data-in="3">답이 타이핑하듯 나오는 것도 같은 이유입니다. 토큰이 하나 정해질 때마다 바로 화면으로 보냅니다.</p>
+      <p class="small mt-m" data-in="4">시연: 채팅에서 생각 모드를 켜고 같은 질문을 보냅니다.</p>
+    </div>
+    <div class="span-6 col-7 self-center">
+      <div class="stream">
+        <div class="think" data-step="1"><span class="tag">생각</span><span data-type="34">오늘 저녁 메뉴를 추천해야 한다. 날씨가 선선하니 국물 요리도 좋고, 매콤한 걸 좋아할 수도 있다. 하나만 고르자.</span></div>
+        <div class="answer" data-step="2"><span class="tag">답</span><span data-type="42">매콤달콤한 제육볶음 어떠세요? 쌈 싸서 든든하게 드세요.</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 08 기억 압축 -->
+<section class="slide">
+  <div class="folio">1부 · 대화 기억과 압축</div>
+  <div class="grid">
+    <div class="span-5 self-center">
+      <h1 class="h-m" data-in="1">가득 찬 대화는 접어서 따로 보관한다</h1>
+      <p class="body mt-m" data-in="2"><span class="nw">컨텍스트 윈도우</span>는 한정돼 있어서 대화를 전부 담아 둘 수 없습니다. 대화가 쌓이면 오래된 부분을 요약해 기억 카드로 접어 두고, 관련 있는 이야기가 나올 때만 그 카드를 다시 꺼냅니다.</p>
+      <p class="small mt-m" data-in="3">시연: 메모리 저장소 화면에서 저장된 카드를 확인합니다.</p>
+    </div>
+    <div class="span-3 col-7 self-center">
+      <div class="window-cap"><span><span class="nw">컨텍스트 윈도우</span></span><span data-step="1" class="fade-only signal">가득 참</span></div>
+      <div class="window" style="height: 720px; padding: 18px; justify-content: space-between;">
+        <div class="turns" data-at="1:folded" style="position:relative;">
+          <i class="old"></i><i class="old"></i><i class="old"></i><i class="old"></i><i class="old"></i><i class="old"></i><i class="old"></i><i class="old"></i><i class="old"></i><i class="old"></i><i class="old"></i><i></i><i></i><i></i>
+        </div>
+        <p class="small" data-step="1" style="text-align:center; margin-top: 24px;">확보된 자리</p>
+        <div class="card-note recall" data-step="2" style="margin-top: 16px;"><span class="k">다시 꺼낸 카드</span>지난주에 매운 음식은 못 먹는다고 했다</div>
+        <div style="height: 54px; background: var(--ink); color: var(--paper); display:flex; align-items:center; padding: 0 18px; font-size: 22px; margin-top: 16px;">새 질문</div>
+      </div>
+    </div>
+    <div class="span-3 self-center">
+      <div class="window-cap"><span>보관한 기억 카드</span></div>
+      <div class="cards">
+        <div class="card-note" data-step="1"><span class="k">카드 1</span>저녁 메뉴를 자주 묻는다</div>
+        <div class="card-note" data-step="1" data-out="2"><span class="k">카드 2</span>지난주에 매운 음식은 못 먹는다고 했다</div>
+        <div class="card-note" data-step="1"><span class="k">카드 3</span>주말에는 요리를 해 먹는다</div>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">→ 한 번: 오래된 대화가 접혀 오른쪽 카드가 되고 윈도우에 자리가 생깁니다. → 두 번: 새 질문과 관련된 카드 하나만 윈도우로 돌아옵니다.</aside>
+</section>
+
+<!-- 09 외부 지식 -->
+<section class="slide">
+  <div class="folio">1부 · 외부 지식</div>
+  <div class="grid">
+    <div class="span-5 self-center">
+      <h1 class="h-m" data-in="1">모르는 것은 찾아서 <span class="nw">컨텍스트 윈도우</span>에 넣어 준다</h1>
+      <p class="body mt-m" data-in="2">LLM은 학습 이후의 일도, 회사 내부 문서도 모릅니다. 필요한 자료를 찾아 <span class="nw">컨텍스트 윈도우</span>에 끼워 넣으면 그 자료를 근거로 답합니다.</p>
+      <p class="body" data-in="3">채팅의 웹검색은 질문을 검색어로 바꿔 상위 5건을 붙이고, 답과 함께 출처를 보여 줍니다. 문서 조각을 의미로 찾아 넣는 방식은 <strong>RAG</strong>라고 부릅니다.</p>
+    </div>
+    <div class="span-6 col-7 self-center">
+      <svg class="flow" viewBox="0 0 824 640" width="824" height="640">
+        <g data-step="1">
+          <rect class="box" x="0" y="20" width="240" height="96"/>
+          <text class="lbl" x="24" y="76">질문</text>
+        </g>
+        <g data-step="2">
+          <path class="line draw" d="M240 68 H330 V60 H380"/>
+          <path class="line draw" d="M240 68 H330 V200 H380"/>
+          <rect class="box" x="380" y="12" width="444" height="96"/>
+          <text class="lbl" x="404" y="58">웹검색</text><text class="sub" x="404" y="90">상위 5건</text>
+          <rect class="box" x="380" y="152" width="444" height="96"/>
+          <text class="lbl" x="404" y="198">문서 조각 검색 (RAG)</text><text class="sub" x="404" y="230">의미가 가까운 조각</text>
+        </g>
+        <g data-step="3">
+          <path class="line hot draw" d="M600 248 V330"/>
+          <rect x="0" y="330" width="824" height="130" fill="none" stroke="#141414" stroke-width="2"/>
+          <rect x="24" y="354" width="776" height="34" fill="#e6e4dd"/>
+          <rect x="24" y="398" width="776" height="38" fill="none" stroke="#e5442b" stroke-width="2"/>
+          <text class="sub" x="40" y="378">시스템 프롬프트 · 대화</text>
+          <text class="lbl" x="40" y="426" style="font-size:22px">찾아온 자료가 들어간 자리</text>
+        </g>
+        <g data-step="4">
+          <path class="line draw" d="M412 460 V520"/>
+          <rect class="box" x="0" y="520" width="824" height="96"/>
+          <text class="lbl" x="24" y="566">자료를 근거로 쓴 답</text><text class="sub" x="24" y="598">사용한 출처를 함께 표시</text>
+        </g>
+      </svg>
+    </div>
+  </div>
+  <aside class="notes">9쪽의 기억 카드가 RAG의 가장 단순한 형태입니다(키워드로 찾기). 검색이 실패해도 답변은 계속 진행됩니다.</aside>
+</section>
+
+<!-- 10 같은 컨텍스트 윈도우, 다른 모델 -->
+<section class="slide">
+  <div class="folio">1부 · 모델 고르기</div>
+  <div class="grid">
+    <div class="span-5 self-center">
+      <h1 class="h-m" data-in="1">같은 <span class="nw">컨텍스트 윈도우</span>도 모델이 다르면 답이 다르다</h1>
+      <p class="body mt-m" data-in="2">로컬에서 돌리는 모델, OpenAI, Anthropic은 학습 데이터와 크기, 성향이 다릅니다. 좋은 결과는 <strong>무엇을 채우는가</strong>와 <strong>누구에게 맡기는가</strong>가 함께 정합니다.</p>
+      <p class="small mt-m" data-in="3">시연: 같은 대화를 두고 서버만 바꿔 답을 비교합니다.</p>
+    </div>
+    <div class="span-6 col-7 self-center">
+      <svg class="flow" viewBox="0 0 824 620" width="824" height="620">
+        <g data-step="1">
+          <rect x="0" y="210" width="230" height="200" fill="none" stroke="#141414" stroke-width="2"/>
+          <rect x="16" y="226" width="198" height="40" fill="#e6e4dd"/><rect x="16" y="274" width="198" height="40" fill="#e6e4dd"/><rect x="16" y="322" width="198" height="40" fill="#e6e4dd"/>
+          <rect x="16" y="370" width="198" height="26" fill="#141414"/>
+          <text class="sub" x="0" y="196">완성한 컨텍스트 윈도우</text>
+        </g>
+        <g data-step="2">
+          <path class="line draw" d="M230 310 C300 310 300 90 380 90"/>
+          <path class="line draw" d="M230 310 H380"/>
+          <path class="line draw" d="M230 310 C300 310 300 530 380 530"/>
+          <text class="lbl" x="396" y="80">로컬 모델 (vLLM)</text>
+          <text class="lbl" x="396" y="300">OpenAI</text>
+          <text class="lbl" x="396" y="520">Anthropic</text>
+        </g>
+        <g data-step="3">
+          <text class="sub" x="396" y="116" style="font-size:24px; fill:#141414">“제육볶음 어때요?”</text>
+          <text class="sub" x="396" y="336" style="font-size:24px; fill:#141414">“비빔밥 추천드려요.”</text>
+          <text class="sub" x="396" y="556" style="font-size:24px; fill:#141414">“취향에 따라 다른데요…”</text>
+        </g>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- 11 지형 -->
+<section class="slide">
+  <div class="folio">1부 · 답이 갈리는 이유</div>
+  <div class="grid">
+    <div class="span-5 self-center">
+      <h1 class="h-m" data-in="1">모델마다 걷는 지형이 다르다</h1>
+      <p class="body mt-m" data-in="2">학습이 끝난 모델은 하나의 지형입니다. 학습 데이터가 언덕과 골짜기를 새긴 땅이고, 답을 쓰는 일은 그 위를 한 발씩 걷는 일입니다.</p>
+      <p class="body" data-in="3">출발점(입력)과 걷는 규칙이 같아도 땅이 다르면 다른 골짜기에 닿습니다. temperature는 한 걸음을 얼마나 과감하게 뗄지 정합니다.</p>
+    </div>
+    <div class="span-6 col-7 self-center">
+      <svg class="flow" viewBox="0 0 824 660" width="824" height="660">
+        <g fill="none" stroke="#c9c6bd" stroke-width="1.5">
+          <path d="M20 120 C200 60 380 160 560 100 S800 140 820 120"/>
+          <path d="M20 200 C180 150 360 250 540 180 S780 220 820 210"/>
+          <path d="M20 290 C160 250 330 350 520 270 S760 300 820 300"/>
+          <path d="M20 380 C190 350 340 440 530 360 S770 390 820 390"/>
+          <path d="M20 470 C210 440 360 520 560 450 S780 480 820 480"/>
+          <path d="M20 560 C220 530 380 600 580 540 S790 570 820 570"/>
+        </g>
+        <circle cx="90" cy="330" r="12" fill="#141414" data-step="1"/>
+        <text class="sub" x="60" y="300" data-step="1" style="fill:#141414">같은 입력</text>
+        <g data-step="2">
+          <path class="line hot draw" style="stroke-width:3" d="M90 330 C200 320 260 230 360 210 S520 170 600 120 S700 90 760 96"/>
+          <circle cx="760" cy="96" r="10" class="hot-fill"/>
+          <text class="lbl" x="560" y="66" style="fill:#e5442b">모델 A의 답</text>
+        </g>
+        <g data-step="3">
+          <path class="line sec draw" style="stroke-width:3" d="M90 330 C200 345 270 420 380 450 S540 500 620 540 S710 580 770 586"/>
+          <circle cx="770" cy="586" r="10" class="sec-fill"/>
+          <text class="lbl" x="560" y="636" style="fill:#1f5c5a">모델 B의 답</text>
+        </g>
+      </svg>
+    </div>
+  </div>
+  <aside class="notes">→ 첫 걸음이 다음 갈림길을 바꿉니다. 그래서 첫 토큰 몇 개가 답 전체의 방향을 정합니다. <span class="nw">컨텍스트 윈도우</span> 하나 이야기는 여기까지입니다.</aside>
+</section>
+
+<!-- 12 2부 -->
+<section class="slide inverse">
+  <div class="grid">
+    <div class="span-12 self-end">
+      <div class="part-mark" data-in="1">2부</div>
+      <h1 class="h-xl mt-s" data-in="2">AI 여럿이 만드는<br>작은 세상</h1>
+    </div>
+  </div>
+</section>
+
+<!-- 13 컨텍스트 윈도우가 여럿 -->
+<section class="slide">
+  <div class="folio">2부 · 에이전트</div>
+  <div class="grid">
+    <div class="span-12 self-start">
+      <h1 class="h-m" data-in="1" style="max-width: 18em;"><span class="nw">컨텍스트 윈도우</span>가 여럿이고, 서로 말을 건다면</h1>
+      <p class="body mt-s" data-in="2" style="max-width: 44em;">자기만의 <span class="nw">컨텍스트 윈도우</span>를 가진 존재를 <strong>에이전트</strong>라고 부릅니다. A의 윈도우는 B에게 보이지 않고, 각자 받은 말을 자기 윈도우에 쌓아 갑니다.</p>
+    </div>
+    <div class="span-12 self-end">
+      <svg class="flow" viewBox="0 0 1680 470" width="1680" height="470">
+        <g data-in="3">
+          <rect x="0" y="20" width="480" height="440" class="box"/>
+          <rect x="600" y="20" width="480" height="440" class="box"/>
+          <rect x="1200" y="20" width="480" height="440" class="box"/>
+          <rect x="0" y="20" width="480" height="64" fill="#141414"/><text x="24" y="62" style="font-size:24px; fill:#f3f2ee">A · 사장 (성격: 고지식함)</text>
+          <rect x="600" y="20" width="480" height="64" fill="#141414"/><text x="624" y="62" style="font-size:24px; fill:#f3f2ee">B · 알바생 (성격: 씩씩함)</text>
+          <rect x="1200" y="20" width="480" height="64" fill="#141414"/><text x="1224" y="62" style="font-size:24px; fill:#f3f2ee">C · 손님 (성격: 괴팍함)</text>
+          <rect x="24" y="108" width="380" height="30" fill="#e6e4dd"/><rect x="624" y="108" width="330" height="30" fill="#e6e4dd"/><rect x="1224" y="108" width="400" height="30" fill="#e6e4dd"/>
+          <rect x="24" y="150" width="300" height="30" fill="#e6e4dd"/><rect x="624" y="150" width="390" height="30" fill="#e6e4dd"/><rect x="1224" y="150" width="280" height="30" fill="#e6e4dd"/>
+        </g>
+        <g data-step="1">
+          <rect x="24" y="200" width="432" height="56" fill="none" stroke="#e5442b" stroke-width="2"/>
+          <text x="40" y="236" style="font-size:22px">나 → B: “문 열 준비 해.”</text>
+          <path class="line hot draw" d="M456 228 H624"/>
+          <rect x="624" y="200" width="432" height="56" fill="none" stroke="#e5442b" stroke-width="2"/>
+          <text x="640" y="236" style="font-size:22px">A → 나: “문 열 준비 해.”</text>
+        </g>
+        <g data-step="2">
+          <rect x="624" y="276" width="432" height="56" fill="none" stroke="#1f5c5a" stroke-width="2"/>
+          <text x="640" y="312" style="font-size:22px">나 → A: “네, 지금 할게요!”</text>
+          <path class="line sec draw" d="M624 304 H456"/>
+          <rect x="24" y="276" width="432" height="56" fill="none" stroke="#1f5c5a" stroke-width="2"/>
+          <text x="40" y="312" style="font-size:22px">B → 나: “네, 지금 할게요!”</text>
+        </g>
+        <g data-step="3">
+          <text x="1224" y="236" style="font-size:22px; fill:#8f8c84">C의 윈도우에는 이 대화가 없다</text>
+        </g>
+      </svg>
+    </div>
+  </div>
+  <aside class="notes">각 에이전트를 서로 다른 존재로 만드는 방법은 이미 봤습니다. 시스템 프롬프트로 성격을 주는 것입니다.</aside>
+</section>
+
+<!-- 14 ABM -->
+<section class="slide">
+  <div class="folio">2부 · LLM 기반 ABM</div>
+  <div class="grid">
+    <div class="span-5 self-center">
+      <h1 class="h-m" data-in="1">가상 주민에게 규칙 대신 성격을 준다</h1>
+      <p class="body mt-m" data-in="2">에이전트 기반 모델(ABM)은 주민들을 가상 공간에 풀어 두고 무슨 일이 생기는지 지켜보는 시뮬레이션입니다. 심시티나 스타듀밸리의 주민을 떠올리면 됩니다.</p>
+    </div>
+    <div class="span-6 col-7 self-center">
+      <div class="part-row" data-step="1" style="grid-template-columns: 220px 1fr;">
+        <span class="small">전통적인 ABM</span>
+        <div><h2 class="mono" style="font-family: var(--f-mono); font-weight: 500; font-size: 40px;">if 배고픔 &gt; 7:<br>&nbsp;&nbsp;부엌으로 이동</h2><p>사람이 정한 규칙대로만 움직인다</p></div>
+      </div>
+      <div class="part-row" data-step="2" style="grid-template-columns: 220px 1fr;">
+        <span class="small signal">LLM 기반 ABM</span>
+        <div><h2 style="font-size: 44px;">“당신은 47세 편의점 사장이다. 욕심이 많고 고지식하다.”</h2><p>성격만 주면, 상황에 맞는 말과 행동을 스스로 만든다</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 15 배역 -->
+<section class="slide">
+  <div class="folio">2부 · 실제 시나리오</div>
+  <div class="grid">
+    <div class="span-4 self-start">
+      <h1 class="h-m" data-in="1">편의점,<br>네 사람</h1>
+      <p class="body mt-m" data-in="2">성격만 적었습니다. 대사는 아무도 쓰지 않았습니다.</p>
+    </div>
+    <div class="span-8 self-center">
+      <div class="cast">
+        <div class="cast-row" data-step="1"><span class="name">김민태</span><span class="role">사장 · 47세</span><span class="trait">욕심 많고 고지식하다. 말투가 거칠고 불평이 많다.</span></div>
+        <div class="cast-row" data-step="2"><span class="name">이상민</span><span class="role">알바생 · 29세</span><span class="trait">아이돌 지망생. 착실하고 씩씩하며 친절하다.</span></div>
+        <div class="cast-row" data-step="3"><span class="name">박슬기</span><span class="role">알바생 · 21세</span><span class="trait">게으르고 냉소적이다. 말투가 반항적이다.</span></div>
+        <div class="cast-row" data-step="4"><span class="name">정용진</span><span class="role">손님 · 55세</span><span class="trait">불만이 많고 괴팍하다. 막무가내로 말한다.</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 16 wave -->
+<section class="slide">
+  <div class="folio">2부 · 진행 방식</div>
+  <div class="grid">
+    <div class="span-4 self-start">
+      <h1 class="h-m" data-in="1">말을 건 상대가 다음 차례가 된다</h1>
+      <p class="body mt-m" data-in="2">한 사람이 여럿을 동시에 부를 수 있고, 아무도 부르지 않으면 대화가 자연히 멈춥니다. 단체 채팅방의 멘션과 비슷합니다. 한 차례를 <strong>wave</strong>라고 부릅니다.</p>
+    </div>
+    <div class="span-8 self-center">
+      <svg class="flow" viewBox="0 0 1104 620" width="1104" height="620">
+        <text class="wave-col-h" x="0" y="30">wave 1</text>
+        <text class="wave-col-h" x="290" y="30">wave 2</text>
+        <text class="wave-col-h" x="580" y="30">wave 3</text>
+        <text class="wave-col-h" x="870" y="30">wave 4</text>
+        <line x1="0" y1="50" x2="1104" y2="50" stroke="#141414" stroke-width="2"/>
+        <g class="who speaker" data-step="1"><rect x="0" y="260" width="200" height="72"/><text x="24" y="306">사장</text></g>
+        <text class="sub" x="0" y="370" data-step="1">“다들 문 열 준비 해.”</text>
+        <g data-step="2">
+          <path class="line draw" d="M200 296 C250 296 240 170 290 170"/>
+          <path class="line draw" d="M200 296 C250 296 240 430 290 430"/>
+          <g class="who speaker"><rect x="290" y="134" width="200" height="72"/><text x="314" y="180">이상민</text></g>
+          <g class="who speaker"><rect x="290" y="394" width="200" height="72"/><text x="314" y="440">박슬기</text></g>
+          <text class="sub" x="290" y="240">“네! 바로 할게요.”</text>
+          <text class="sub" x="290" y="500">“아직 9시 아니잖아요.”</text>
+        </g>
+        <g data-step="3">
+          <path class="line draw" d="M490 170 C540 170 530 296 580 296"/>
+          <path class="line draw" d="M490 430 C540 430 530 296 580 296"/>
+          <g class="who speaker"><rect x="580" y="260" width="200" height="72"/><text x="604" y="306">사장</text></g>
+          <text class="sub" x="580" y="370">이상민만 불러 지시</text>
+        </g>
+        <g data-step="4">
+          <path class="line hot draw" d="M780 296 C830 296 820 170 870 170"/>
+          <g class="who speaker"><rect x="870" y="134" width="200" height="72"/><text x="894" y="180">이상민</text></g>
+          <g class="who"><rect x="870" y="394" width="200" height="72"/><text x="894" y="440" style="fill:#8f8c84">박슬기</text></g>
+          <text class="sub" x="870" y="500">불리지 않아 이번엔 쉰다</text>
+        </g>
+      </svg>
+    </div>
+  </div>
+  <aside class="notes">대사는 이해를 돕기 위한 예시입니다. 누가 다음에 말할지는 대본이 아니라 말을 건 상대로 정해집니다.</aside>
+</section>
+
+<!-- 17 시간과 공간 -->
+<section class="slide">
+  <div class="folio">2부 · 세상이 흘러가는 방식</div>
+  <div class="grid">
+    <div class="span-4 self-start">
+      <h1 class="h-m" data-in="1">시간은 흐르고, 같은 곳에 있어야 보인다</h1>
+      <p class="body mt-m" data-in="2">wave마다 엔진이 장면 길이만큼 시계를 넘깁니다. 자정이 지나면 요일도 바뀌어, 평일 아침엔 출근을 준비하고 주말엔 늦잠을 잡니다.</p>
+      <p class="body" data-in="3">누가 다른 방으로 옮기면 그 방에 있던 사람만 알아챕니다.</p>
+    </div>
+    <div class="span-8 self-center">
+      <svg class="flow" viewBox="0 0 1104 640" width="1104" height="640">
+        <g data-step="1">
+          <text class="sub" x="0" y="28">월</text><text class="sub" x="157" y="28">화</text><text class="sub" x="314" y="28">수</text><text class="sub" x="471" y="28">목</text><text class="sub" x="628" y="28">금</text><text class="sub" x="785" y="28">토</text><text class="sub" x="942" y="28">일</text>
+          <line x1="0" y1="50" x2="1100" y2="50" stroke="#c9c6bd" stroke-width="2"/>
+          <line class="draw hot" x1="0" y1="50" x2="380" y2="50" stroke-width="4"/>
+          <circle cx="380" cy="50" r="10" class="hot-fill"/>
+          <text class="lbl" x="400" y="100">수요일 오후 2시 20분</text>
+        </g>
+        <g data-step="2">
+          <rect x="0" y="200" width="460" height="380" class="box"/><text class="lbl" x="24" y="244">매장</text>
+          <rect x="520" y="200" width="300" height="380" class="box"/><text class="lbl" x="544" y="244">창고</text>
+          <rect x="880" y="200" width="224" height="380" fill="none" stroke="#c9c6bd" stroke-width="2" stroke-dasharray="8 8"/><text class="sub" x="904" y="244">가게 밖</text>
+          <circle cx="120" cy="420" r="26" fill="#141414"/><text class="sub" x="86" y="480" style="fill:#141414">사장</text>
+          <circle cx="300" cy="360" r="26" fill="#141414"/><text class="sub" x="262" y="420" style="fill:#141414">박슬기</text>
+          <circle cx="990" cy="400" r="26" fill="#8f8c84"/><text class="sub" x="956" y="460">손님</text>
+          <circle cx="670" cy="420" r="26" fill="#e5442b" data-out="3"/>
+        </g>
+        <g data-step="3">
+          <circle cx="330" cy="500" r="26" fill="#e5442b"/><text class="sub" x="292" y="560" style="fill:#e5442b">이상민</text>
+          <path class="line hot draw" d="M670 420 C560 420 470 500 360 500" stroke-dasharray="6 8"/>
+          <text class="sub" x="24" y="290" style="fill:#141414">사장·박슬기: “상민이 나왔네.”</text>
+          <text class="sub" x="904" y="290">모른다</text>
+        </g>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- 18 기억·연출 -->
+<section class="slide">
+  <div class="folio">2부 · 오래 사는 세상</div>
+  <div class="grid">
+    <div class="span-5 self-center">
+      <h1 class="h-m" data-in="1">기억은 스스로 정리하고, 늘어지면 연출자가 끼어든다</h1>
+    </div>
+    <div class="span-6 col-7 self-center">
+      <div class="part-row" data-step="1" style="grid-template-columns: 200px 1fr;">
+        <span class="small">기억 정리</span>
+        <div><h2 style="font-size: 44px;">“이 사람은 이런 사람이었지”</h2><p>대화가 쌓이면 에이전트가 스스로 사건과 사실, 관계를 요약해 둡니다. 1부의 기억 카드와 같은 방법입니다.</p></div>
+      </div>
+      <div class="part-row" data-step="2" style="grid-template-columns: 200px 1fr;">
+        <span class="small">숨은 연출자</span>
+        <div><h2 style="font-size: 44px;">“창밖에 갑자기 비가 쏟아진다”</h2><p>이야기가 너무 조용하거나 같은 말만 반복되면, 보이지 않는 연출자가 작은 사건을 하나 던집니다. 행동은 강요하지 않습니다.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 19 배역마다 모델 -->
+<section class="slide">
+  <div class="folio">2부 · 배역마다 다른 두뇌</div>
+  <div class="grid">
+    <div class="span-4 self-start">
+      <h1 class="h-m" data-in="1">배역마다 다른 모델을 맡길 수 있다</h1>
+      <p class="body mt-m" data-in="2">1부에서 본 것처럼 같은 <span class="nw">컨텍스트 윈도우</span>도 모델에 따라 답이 다릅니다. 주인공은 성능 좋은 모델, 지나가는 행인은 가벼운 모델로 나눠 쓸 수 있습니다.</p>
+      <p class="small mt-m" data-in="3">지정하지 않은 에이전트는 기본 서버를 따릅니다.</p>
+    </div>
+    <div class="span-7 col-6 self-center" data-in="2">
+      <div class="shot" style="width: 100%; height: 504px;">
+        <img src="assets/sim-agent-server.jpg" alt="시뮬레이션 설정 화면. 아버지 에이전트 카드의 LLM 서버 선택란에 Primary GPU Server가 선택되어 있다." style="width: 1342px; left: -185px; top: -336px;">
+        <div class="mark-box" data-step="1" style="left: 730px; top: 198px; width: 232px; height: 48px;"></div>
+      </div>
+      <p class="small mt-s" data-step="1">실제 설정 화면 · <span class="signal">아버지 에이전트에만 서버를 지정</span>, 나머지는 기본 서버</p>
+    </div>
+  </div>
+</section>
+
+<!-- 20 실제 대화 -->
+<section class="slide">
+  <div class="folio">2부 · 실제 실행 화면</div>
+  <div class="grid">
+    <div class="span-4 self-start">
+      <h1 class="h-m" data-in="1">대본 없이 이런 아침이 나왔다</h1>
+      <p class="body mt-m" data-in="2">“가족” 시나리오 두 번째 wave, 월요일 오전 7시 31분. 엄마가 밥 먹으라고 부르자 세 사람이 각자 다르게 반응합니다.</p>
+      <p class="small mt-m" data-in="3">말, 행동 묘사, 감정 태그, 관계 그래프가 실시간으로 쌓입니다.</p>
+    </div>
+    <div class="span-7 col-6 self-center" data-in="2">
+      <div class="shot" style="width: 100%; height: 581px;">
+        <img src="assets/sim-live-run.jpg" alt="실행 중인 가족 시나리오. 아들, 막내 딸, 첫째 딸, 아버지의 대사와 행동 묘사가 순서대로 쌓여 있다." style="width: 1500px; left: 0; top: -568px;">
+      </div>
+    </div>
+  </div>
+  <aside class="notes">아들은 "네, 가요. 가."라며 스마트폰을 보면서 느릿느릿, 막내는 이불을 걷어차고 뛰어나오고, 첫째는 졸린 눈으로 메뉴를 묻고, 아버지는 신문을 펴기 전 차분히 말합니다. 같은 부름에 네 가지 반응입니다.</aside>
+</section>
+
+<!-- 21 정리 -->
+<section class="slide">
+  <div class="folio">정리</div>
+  <div class="grid">
+    <div class="span-12 self-start">
+      <h1 class="h-l" data-in="1" style="max-width: 15em;">도구에 성격과 규칙을 주면 작은 사회가 된다</h1>
+    </div>
+    <div class="span-4 self-end qa" data-step="1"><h3>거짓말(환각)은?</h3><p>사실 확인이 필요한 용도라면 검증 단계를 따로 둬야 합니다.</p></div>
+    <div class="span-4 self-end qa" data-step="2"><h3>비용은?</h3><p>로컬 모델과 API 모델을 배역에 맞게 섞어 쓸 수 있습니다.</p></div>
+    <div class="span-4 self-end qa" data-step="3"><h3>어디에 쓰나?</h3><p>게임 NPC, 사용자 조사 시뮬레이션, 교육용 역할극, 감염병 같은 사회 현상 연구.</p></div>
+  </div>
+</section>
+
+</div>
+<div class="progress"></div>
+<div class="notes-panel"></div>
+<script src="deck.js"></script>
+</body>
+</html>
