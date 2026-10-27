@@ -113,6 +113,9 @@ def load_simulation(run_id: str):
             # config_json 에는 필드가 없지만 SimStartConfig 기본값이 "targeted"
             # 라 그대로 안전하다.
             perception_mode=cfg.perception_mode,
+            # 소통 채널 토글 — 세 조립 경로(/start·headless, /load, /resume)가 같아야 한다(빠뜨리면 그 경로만 꺼진다).
+            talk_through_doors=cfg.talk_through_doors,
+            phone_messages=cfg.phone_messages,
             lang_fix_enabled=cfg.lang_fix_enabled,
             lang_fix_retries=cfg.lang_fix_retries,
             llm_max_tokens=cfg.llm_max_tokens,

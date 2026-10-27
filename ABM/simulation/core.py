@@ -27,6 +27,7 @@ from .turn import _TurnMixin
 from .step import _StepMixin
 from .system import _SystemMixin
 from .runner import _RunnerMixin
+from .phone import _PhoneMixin
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,10 @@ _PERSIST_EVENTS: frozenset[str] = frozenset({
     # wave 시작 시점 활성 에이전트 전원 명단 + 시작·끝 경과분(infection.py::_wave_roster).
     # 위치 이력 CSV 의 정본 — 화면 리스너는 없다(내보내기·β 재계산 전용).
     "wave_roster",
+    # 문 너머 대화 배달(runner `_route_door_speech`) — 바로 붙은 같은 구역 장소의 직접 타깃에게 닿은 말.
+    "door_delivery",
+    # 휴대폰 메시지(runner `_process_phone_messages`) — 보낸 사람·받은 사람·내용·거절 사유.
+    "phone_message",
 })
 
 # 시작 요일 키(프론트/스키마와 동일) → 표시 라벨. 인덱스 = 월요일 기준 0~6.
@@ -78,7 +83,7 @@ _DEFAULT_STATE_CATEGORIES: list[dict] = [
 ]
 
 
-class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, _TargetsMixin, _StatusMixin, _EventsMixin, _TurnMixin, _StepMixin, _SystemMixin, _RunnerMixin):
+class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, _TargetsMixin, _StatusMixin, _EventsMixin, _TurnMixin, _StepMixin, _SystemMixin, _RunnerMixin, _PhoneMixin):
     def __init__(
         self,
         agents:           dict[str, Agent],
@@ -116,6 +121,12 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
         #   "spatial"        — + 같은 방의 제3자 엿듣기 + 독백의 행동을 같은 방
         #                       전원에게 씬으로 브로드캐스트.
         perception_mode:  str                         = "targeted",
+        # 문 너머 대화 — 바로 붙은(확장 그래프 1 hop) **같은 구역** 장소의 직접 타깃에게 말이 닿는다(보이지는
+        # 않음). 구역 없는 장소·외부 공간·이동 중은 해당 없음. False(기본) = 기존 동작 그대로.
+        talk_through_doors: bool                      = False,
+        # 휴대폰 메시지 — 출력 JSON 의 phone_message 로 아는 사람에게 위치와 무관하게 즉시 전달.
+        # False(기본) = 필드를 광고하지도 처리하지도 않는다.
+        phone_messages:   bool                        = False,
         lang_fix_enabled: bool                        = True,
         lang_fix_retries: int                         = 2,
         llm_max_tokens:   int                         = 16384,
@@ -313,6 +324,8 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
         self._perception_mode: str = (
             perception_mode if perception_mode in ("targeted", "spatial") else "targeted"
         )
+        self._talk_through_doors: bool = bool(talk_through_doors)
+        self._phone_messages:     bool = bool(phone_messages)
 
         # 위치 그래프 (인접 리스트) + 외부 공간 집합 + 인지 구역(zone) 맵
         # 주의: 여기서의 zone은 **위치 기반 인지 범위**이며, 관계 지도(캐릭터 관계)와는
@@ -349,6 +362,10 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
             # 여전히 순수 노드 인접 리스트라 adjacency/인지 로직 전부 무변경
             # (경로 탐색만 zone 경계 횡단을 먼저 줄인다 — location._find_path_zoned).
             self._expand_zone_edges(location_graph)
+        if self._talk_through_doors and not self._location_zone:
+            # 문 너머 대화는 같은 구역의 바로 붙은 장소끼리만 성립한다 — 구역이 하나도 없으면 아무 효과가 없다
+            # (계약에도 문장이 붙지 않는다). 설정 실수일 수 있어 경고만.
+            logger.warning("[문 너머 대화] 켜져 있지만 구역(zone)이 지정된 장소가 없어 아무 효과가 없습니다")
 
         # 위치/시간 계약 블록의 주입은 감염 모델 설정을 읽은 **뒤**에 한 번에 한다
         # (`_apply_engine_contract()`). 예전엔 여기서 map_section/time_section을
@@ -590,6 +607,8 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
             time_enabled       = self._time_enabled(),
             infection_enabled  = self._infection_enabled,
             disease_name       = self._infection_disease_name,
+            talk_through_doors = self._talk_through_doors,
+            phone_messages     = self._phone_messages,
         )
 
     def _apply_engine_contract(self) -> None:
@@ -619,6 +638,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
                 relationships      = rels,
                 state_categories   = self._state_categories,
                 fixed_place        = fixed,
+                phone_messages     = self._phone_messages,
             )
 
     def _verify_engine_contract(self) -> list[str]:

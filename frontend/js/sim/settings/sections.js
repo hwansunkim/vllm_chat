@@ -61,7 +61,8 @@ function _autoExpand(id, sim) {
   switch (id) {
     // 장소가 없어도 엿듣기가 켜져 있으면 펼친다 — 라우팅 규칙을 바꾸는 설정이
     // 접힌 섹션 안에 숨어 있으면 "왜 대화가 새지" 를 추적할 수 없다.
-    case 'world':     return (sim.location_graph?.length ?? 0) > 0 || sim.perception_mode === 'spatial';
+    case 'world':     return (sim.location_graph?.length ?? 0) > 0 || sim.perception_mode === 'spatial'
+                             || !!sim.talk_through_doors || !!sim.phone_messages;
     case 'infection': return !!sim.infection_model?.enabled;
     case 'director':  return !!sim.system_agent?.enabled;
     case 'events':    return (sim.events?.length ?? 0) > 0;
@@ -164,6 +165,8 @@ function _badgeText(id, sim) {
       const parts = [];
       if (sim.location_graph?.length) parts.push(`장소 ${sim.location_graph.length}`);
       if (sim.perception_mode === 'spatial') parts.push('엿듣기');
+      if (sim.talk_through_doors) parts.push('문 너머');
+      if (sim.phone_messages) parts.push('휴대폰');
       return parts.join(' · ');
     }
     case 'director':

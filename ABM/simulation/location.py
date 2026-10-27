@@ -647,11 +647,22 @@ class _LocationMixin:
                     return ""
                 return f'  → 만나려면 move_to: "{addressable_id}"'
 
+            # 문 너머 대화(토글 on) — 바로 붙은 같은 구역 장소의 사람은 target 에 넣을 **정확한 ID**를 함께 보인다.
+            # 보이지는 않으므로 외모(visual)는 문 너머 표시와 함께 두되 "보인다"고 하지 않는다(줄 형식 유지).
+            any_door = False
+
+            def _door_hint(real_key: str, addressable_id: str) -> str:
+                nonlocal any_door
+                if not self._door_reachable(agent_key, real_key):
+                    return ""
+                any_door = True
+                return f' [문 너머 — 말 걸기: target "{addressable_id}"]'
+
             if known_elsewhere:
                 lines.append("아는 사람:")
                 for k, loc in known_elsewhere:
                     label = self._key_to_alias.get(k, k)
-                    lines.append(f'  - {label} (ID: "{k}") — {loc}{_meet_hint(k, k)}')
+                    lines.append(f'  - {label} (ID: "{k}") — {loc}{_door_hint(k, k)}{_meet_hint(k, k)}')
             if strangers_elsewhere:
                 lines.append("처음 보는 사람:")
                 for sid, real_key, visual, loc in strangers_elsewhere:
@@ -660,7 +671,12 @@ class _LocationMixin:
                         desc += f"  {visual}"
                     # 낯선 이는 실명이 아니라 stranger_N ID로만 지목할 수 있다
                     # (`_resolve_meet_target`의 인지 규칙과 같은 제약).
-                    lines.append(f"{desc} — {loc}{_meet_hint(real_key, sid)}")
-            lines.append("※ 이들은 지금 다른 장소에 있어 말을 걸 수 없습니다. 대화하려면 move_to로 그 사람에게 가야 합니다.")
+                    lines.append(f"{desc} — {loc}{_door_hint(real_key, sid)}{_meet_hint(real_key, sid)}")
+            if any_door:
+                lines.append("※ '문 너머'로 표시된 사람은 바로 붙은 곳에 있어 보이지 않지만, target 에 그 ID를 넣으면 "
+                             "문 너머로 말이 닿습니다(행동은 보이지 않음). 나머지 사람에게 말을 걸려면 move_to로 그 "
+                             "사람에게 가야 합니다.")
+            else:
+                lines.append("※ 이들은 지금 다른 장소에 있어 말을 걸 수 없습니다. 대화하려면 move_to로 그 사람에게 가야 합니다.")
 
         return "\n".join(lines)

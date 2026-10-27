@@ -365,14 +365,20 @@ class SimStartConfig(BaseModel):
     location_graph:         list[LocationNode]  = []
     # 공간 기반 인지 모드. location_graph(특히 zone)와 짝이라 바로 옆에 둔다.
     #   "targeted" (기본) — 기존 동작 100% 그대로. 대사는 해석된 직접 타깃에게만 간다.
-    #   "spatial"        — 같은 방 제3자 엿듣기 + 같은 zone 다른 방으로의 원거리
-    #                      대사 전달(직접 타깃 한정, 행동 줄 없음) + 독백의 행동을
-    #                      같은 방 전원에게 씬으로 브로드캐스트.
+    #   "spatial"        — 같은 방 제3자 엿듣기 + 독백의 행동을 같은 방 전원에게 씬으로
+    #                      브로드캐스트(같은 방 한정). 다른 방으로의 대사 전달은 없다 —
+    #                      바로 붙은 같은 zone 방과의 대화는 talk_through_doors(아래)가 켜졌을 때만.
     # 알 수 없는 값은 엔진(Simulation.__init__)이 조용히 "targeted"로 폴백한다
     # (time_estimation_mode와 동일한 패턴 — 여기서 예외를 던지지 않는다).
     # 계약 문자열(ABM/prompt_contract.py)은 이 값에 전혀 의존하지 않으므로
     # ContractPreviewRequest에는 의도적으로 넣지 않았다.
     perception_mode:        Literal["targeted", "spatial"] = "targeted"
+    # ── 소통 채널 (기본 False = 기존 시나리오 글자 단위로 같음) ────────────────────
+    # 문 너머 대화: 확장 그래프에서 바로 붙은(1 hop) **같은 구역** 장소끼리 직접 타깃에게 말이 닿는다(보이지
+    # 않음 — 대사만). 구역 없는 장소·외부 공간·이동 중은 해당 없음. 계약(지도 규칙)에 반영된다.
+    talk_through_doors:     bool             = False
+    # 휴대폰 메시지: 출력 JSON 의 phone_message 로 아는 사람에게 위치와 무관하게 전달. 계약에 반영된다.
+    phone_messages:         bool             = False
     lang_fix_enabled:       bool             = True
     lang_fix_retries:       int              = 2
     # ── 출력 계약(프롬프트 계약 층) ────────────────────────────────────────────
@@ -555,6 +561,10 @@ class ContractPreviewRequest(BaseModel):
     # SimStartConfig 와 같은 기본값이어야 한다 — 생략된 프리뷰 요청이 실제 실행과
     # 다른 "상태 기능 OFF"를 보여주면 오도한다.
     state_categories:       list[StateCategory] = list(DEFAULT_STATE_CATEGORIES)
+    # 소통 채널 토글 — SimStartConfig 와 같은 기본값(False). 켜면 지도 규칙의 문 너머 문장(구역이 있을 때)·
+    # [휴대폰 메시지] 블록·출력 스키마의 "phone_message" 줄이 붙는다.
+    talk_through_doors:     bool                = False
+    phone_messages:         bool                = False
 
     def time_enabled(self) -> bool:
         return self.time_mode == "variable" or self.time_per_wave > 0

@@ -287,8 +287,11 @@ Prefix `/api/simulation`. 저장소는 채팅 DB `simulation_scenarios`.
 { "location_graph": [], "time_mode": "fixed", "time_per_wave": 30,
   "infection_model": {...}, "extra_fields": [...], "output_format_override": "",
   "include_output_schema": true, "situation_targets": false,
-  "available_targets": [], "key_to_alias": {}, "relationships": {} }
+  "available_targets": [], "key_to_alias": {}, "relationships": {},
+  "talk_through_doors": false, "phone_messages": false }
 ```
+`talk_through_doors`(구역이 있을 때만 지도 규칙에 문 너머 문장)·`phone_messages`(세계 계약에 [휴대폰 메시지] 블록, 출력
+스키마에 `"phone_message": null` 줄)는 `SimStartConfig` 와 같은 기본값 false — 끄면 계약이 글자 단위로 예전과 같다.
 응답 (`ContractPreviewResponse`):
 ```json
 { "contract": "world + output 전체 (실제 주입 순서/문자열)",

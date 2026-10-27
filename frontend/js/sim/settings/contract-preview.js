@@ -25,7 +25,7 @@
 // 네트워크를 전혀 건드리지 않는다.
 
 import { sim, getAgentIcon, liveRelationships, buildKeyToAlias } from '../state.js';
-import { readLocationGraph } from './location-graph.js';
+import { readLocationGraph, readChannelToggles } from './location-graph.js';
 import { readStateCategories } from './state-categories.js';
 import { updateSectionBadges } from './sections.js';
 import { autoGrowAll } from './textareas.js';
@@ -141,6 +141,8 @@ function _buildPayload(overrideOverride) {
     state_categories: readStateCategories(),
     // 관계는 per-agent — "누구 기준" 셀렉트가 고른 한 명의 시점만 보낸다.
     ..._relationshipPayload(),
+    // 소통 채널 토글 — 지도 규칙의 문 너머 문장·[휴대폰 메시지] 블록·"phone_message" 줄을 바꾼다.
+    ...readChannelToggles(),
   };
 }
 
@@ -155,6 +157,7 @@ function _signature() {
     p.output_format_override,
     p.state_categories.map(c => [c.id, c.label]),
     p.relationships, p.key_to_alias, p.available_targets,
+    p.talk_through_doors, p.phone_messages,
   ]);
 }
 

@@ -139,6 +139,65 @@ class _TargetsMixin:
             return (real_key, True) if real_key else None
         return self._normalize_target(t_s), False
 
+    # ── 문 너머 대화 (talk_through_doors) ────────────────────────────────────
+
+    def _door_adjacent(self, loc_a: str, loc_b: str) -> bool:
+        """두 장소가 "문 너머"인가 — 토글 on + 서로 다른 두 장소가 확장 그래프에서 **바로 붙어 있고**(1 hop)
+        **같은 구역**(빈 구역 아님)이며 어느 쪽도 외부 공간이 아니다. 구역 경계(구역 탈출 엣지 등)는 넘지 않는다."""
+        if not getattr(self, "_talk_through_doors", False):
+            return False
+        if not loc_a or not loc_b or loc_a == loc_b:
+            return False
+        if loc_a in self._exterior_locations or loc_b in self._exterior_locations:
+            return False
+        zone = self._location_zone.get(loc_a, "")
+        if not zone or self._location_zone.get(loc_b, "") != zone:
+            return False
+        return (loc_b in self._location_graph.get(loc_a, [])
+                or loc_a in self._location_graph.get(loc_b, []))
+
+    def _door_reachable(self, a: str, b: str, now: int | None = None) -> bool:
+        """a 와 b 가 **지금** 문 너머로 말이 닿는가 — 둘 다 이동 중이 아니고, 서로의 장소가 `_door_adjacent`.
+        라우팅 시점의 `_agent_location` 은 이동 적용 전(= wave 시작 스냅샷)이다."""
+        if now is None:
+            now = self._current_elapsed_minutes(self.completed_waves)
+        if self._agent_traveling(a, now) or self._agent_traveling(b, now):
+            return False
+        return self._door_adjacent(self._agent_location.get(a, ""), self._agent_location.get(b, ""))
+
+    def _resolve_door_targets(
+        self, targets: list[str], speaker_key: str, exclude: set[str] | list[str] = (),
+    ) -> list[str]:
+        """원본 targets 의 **직접 타깃**(`<key>`/alias/`stranger_N`) 중 1차 해석(`exclude`)에 없고 문 너머에
+        있는 사람. `"all"` 은 대상이 아니다(방송은 같은 방 한정 그대로). 인지 규칙은 1차와 같다 — 실명으로 낯선
+        이를 부르면 폐기, `stranger_N` 은 화자의 사전으로 해석하고 성공하면 서로를 알게 된다(말을 주고받았다).
+        수면·개인 용무 중인 사람도 직접 타깃이면 전달된다(같은 방 직접 지목과 같은 규칙 — 깨운다)."""
+        if not getattr(self, "_talk_through_doors", False):
+            return []
+        now = self._current_elapsed_minutes(self.completed_waves)
+        speaker_loc = self._agent_location.get(speaker_key, "")
+        if (not speaker_loc or speaker_loc in self._exterior_locations
+                or self._agent_traveling(speaker_key, now)):
+            return []
+        exclude = set(exclude or ())
+        out: list[str] = []
+        for t in targets or []:
+            parsed = self._parse_direct_target(t, speaker_key)
+            if parsed is None:
+                continue
+            key, via_stranger = parsed
+            if (key not in self.active_agents or key == speaker_key
+                    or key in exclude or key in out):
+                continue
+            if not via_stranger and self._is_anonymous_to(speaker_key, key):
+                continue
+            if not self._door_reachable(speaker_key, key, now):
+                continue
+            if via_stranger:
+                self._learn_each_other(speaker_key, key)
+            out.append(key)
+        return out
+
     def _learn_each_other(self, a: str, b: str) -> None:
         """stranger_N으로 말을 건넨 순간 서로를 '아는 사이'로 만든다(양방향)."""
         self._agent_knowledge.setdefault(a, set()).add(b)

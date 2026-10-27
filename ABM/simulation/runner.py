@@ -617,12 +617,27 @@ class _RunnerMixin:
                         "content":     result["clean_content"],
                         "action_note": result.get("action_note", ""),
                     })
+                if self._talk_through_doors:
+                    # 문 너머 대화 — 바로 붙은 같은 구역 장소의 직접 타깃. 직접 타깃 집합에 합류하므로 잠든
+                    # 사람도 깨우고(같은 방 직접 지목과 같은 규칙), 아래 이동 후 보강 배달은 이들을 다시 주지 않는다.
+                    door = self._route_door_speech(
+                        speaker_key, result, resolved, routed, disp_wave, spatial=spatial,
+                    )
+                    if door:
+                        reached_someone[speaker_key] = True
+                        first_resolved[speaker_key].update(door)
                 if spatial:
                     # 직접 배달 위에 얹히는 공간 효과(엿듣기·독백 행동 관찰)만.
                     self._route_spatial(
                         speaker_key, result, resolved, routed, scene_injections,
                         now_elapsed=now_elapsed,
                     )
+
+            # ── 휴대폰 메시지 (위치 무관, 이동 전 — 사용자 결과만 본다) ─────────────
+            # 받는 사람의 다음 턴 incoming(scene_injections, kind=phone). 직접 타깃이 아니라서 자기 선언 상태인
+            # 사람은 깨우지 않고 보류된다(아래 next_wave 조립). 토글 off 면 아무것도 하지 않는다 — phone.py.
+            if self._phone_messages:
+                self._process_phone_messages(results, scene_injections, world_activity, disp_wave, now_elapsed)
 
             # ── 외모·이동 처리 ────────────────────────────────────────────────
 
@@ -1626,6 +1641,68 @@ class _RunnerMixin:
                     "location":       after,
                     "new_edges":      [edge],
                 })
+
+    # ── 문 너머 대화 (talk_through_doors) ────────────────────────────────────
+
+    # 문 너머로 들린 말의 화자 표식(엔진 공용 중립 문구).
+    DOOR_TAG = "(방문 너머로)"
+
+    def _route_door_speech(
+        self,
+        speaker_key: str,
+        result:      dict,
+        resolved:    list[str],
+        routed:      dict[str, list],
+        disp_wave:   int,
+        *,
+        spatial:     bool = False,
+    ) -> list[str]:
+        """문 너머의 직접 타깃에게 말을 배달하고 그 목록을 돌려준다(토글 off 면 호출되지 않는다).
+
+        이동 전 스냅샷(= 지금 `_agent_location`) 기준. 들리기만 하고 보이지 않으므로 대사만 가고 행동
+        묘사(action_note)는 가지 않는다. 화자 표시는 받는 사람 시점 이름 + "(방문 너머로)".
+        spatial 모드면 **타깃이 있는 장소**의 제3자도 같은 표식으로 엿듣는다(화자 장소의 제3자는
+        `_route_spatial` 이 원래대로 처리한다). 그 밖의 장소에는 아무것도 가지 않는다.
+        `door_delivery` 이벤트(영속)와 관계 그래프 edge(turn.py — `door: True`)가 남는다.
+        """
+        content = (result.get("clean_content") or "").strip()
+        if not content:
+            return []          # 소리 낸 말이 없다 — 문 너머로 전할 것이 없다
+        door = self._resolve_door_targets(result.get("targets") or [], speaker_key, resolved)
+        if not door:
+            return []
+        speaker_loc = self._agent_location.get(speaker_key, "")
+        hearers: set[str] = set(resolved) | set(door) | {speaker_key}
+        for target_key in door:
+            routed.setdefault(target_key, []).append({
+                "speaker":     f"{self._meeting_label(target_key, speaker_key)} {self.DOOR_TAG}",
+                "content":     result["clean_content"],
+                "action_note": "",
+            })
+            target_loc = self._agent_location.get(target_key, "")
+            logger.info(f"[W{disp_wave}] 문 너머 대화: {speaker_key}({speaker_loc}) → {target_key}({target_loc})")
+            self._emit("door_delivery", {
+                "wave":            disp_wave,
+                "speaker":         speaker_key,
+                "speaker_display": self._key_to_alias.get(speaker_key, speaker_key),
+                "target":          target_key,
+                "target_display":  self._key_to_alias.get(target_key, target_key),
+                "from":            speaker_loc,
+                "location":        target_loc,
+            })
+        if spatial:
+            for target_key in door:
+                for k in sorted(self.active_agents):
+                    if k in hearers or not self._same_room(k, target_key):
+                        continue
+                    hearers.add(k)
+                    routed.setdefault(k, []).append({
+                        "speaker":     f"{self._eavesdrop_tag(k, speaker_key, result.get('targets'))} {self.DOOR_TAG}",
+                        "content":     result["clean_content"],
+                        "action_note": "",
+                        HELD_KIND_KEY: HELD_KIND_OVERHEARD,
+                    })
+        return door
 
     def _route_spatial(
         self,

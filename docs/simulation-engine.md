@@ -156,11 +156,24 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
 11. 각 성공한 speaker:
        resolved = _resolve_targets(result.targets, speaker)   ← 같은 방 + 1-wave 유예
        routed[target] += {speaker, content, action_note}       ← 두 모드 공통
+       talk_through_doors → _route_door_speech(...) : 직접 타깃 중 1차에 없고 **문 너머**(확장 그래프 1 hop +
+                       같은 구역 + 외부 공간·이동 중 아님 — targets._door_adjacent)인 사람에게 대사만
+                       ("<받는 사람 시점 이름> (방문 너머로)", action_note 없음). first_resolved 에 합류 →
+                       잠든 사람도 깨우고(같은 방 직접 지목과 같은 규칙) 14b 보강 배달이 중복하지 않는다.
+                       spatial 이면 타깃 방의 제3자도 같은 표식으로 엿듣는다. emit("door_delivery"),
+                       turn.py edge 에 door: True.
        spatial 모드  → _route_spatial(...) : 그 위에 엿듣기·독백 행동 관찰만 얹음
                        (각 항목에 kind=overheard/action_scene 표식 — 17번 보류 판정·요약용.
                         화자가 자기 선언 상태를 **이어가는** 턴(같은 상태 재선언)이면
                         독백 행동 방송은 생략 — 숨소리 핑퐁 차단. 상태에 드는 행동·
                         소리 낸 대사의 엿듣기는 그대로)
+11b. phone_messages → _process_phone_messages(...) (phone.py) : 성공한 턴의 phone_message 를 처리 —
+       받는 사람은 보낸 사람이 아는(_agent_knowledge) 활성 에이전트만, 다음 턴 incoming(scene_injections,
+       kind=phone, "[휴대폰 메시지] <보낸 사람>: <내용>"). 위치·구역·외부 공간 무관, 엿듣기·접촉 없음.
+       직접 타깃이 아니라 자기 선언 상태인 사람은 보류(깨우지 않음 — 해제 시 요약에서 최우선), 이동 중이면
+       도착 때(이동 중 턴 금지 관문). 거절(낯선 이·없는 연락처·자기 자신·퇴장)·형식 오류는 보낸 사람에게
+       다음 턴 안내. world_activity "휴대폰:<보낸 사람>"(혼자의 활동 규칙에서는 강한 신호 아님).
+       emit("phone_message")
     ...
     (wave 끝) _prev_wave_start_location = wave_start_location   ← 다음 wave 유예 기준
 

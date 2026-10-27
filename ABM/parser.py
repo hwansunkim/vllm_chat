@@ -164,6 +164,43 @@ def _normalize_str_field(field: str, raw, errors: list[dict] | None = None) -> s
     return None
 
 
+# 타입 위반 경고에 쓰는 필드별 기대 모양(기본은 문자열 필드).
+_EXPECTED_SHAPE = {"phone_message": '{"to": ["<ID>", ...], "text": "<내용>"}/null'}
+
+
+def expected_shape(field: str) -> str:
+    return _EXPECTED_SHAPE.get(field, "문자열/null")
+
+
+def _normalize_phone_message(raw, errors: list[dict] | None = None) -> dict | None:
+    """`phone_message` 값 → ``{"to": [str, ...], "text": str}`` 또는 None.
+
+    계약은 ``{"to": ["<ID>", ...], "text": "<내용>"} | null``. ``to`` 는 비지 않은 문자열 목록(순서 유지·중복
+    제거)이고, 받는 사람이 한 명이면 문자열 하나도 받는다(bring_along 과 같은 관용 — 뜻이 모호하지 않다).
+    ``text`` 는 비지 않은 문자열. 그 밖의 모양(문자열 하나만·키 누락·숫자·빈 내용)은 이 필드만 버리고 타입
+    위반을 기록한다(cba88fc 원칙 — 강제 변환하지 않는다). 대사·다른 필드는 그대로 쓰이고 턴은 성공한다.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        to, text = raw.get("to"), raw.get("text")
+        items = [to] if isinstance(to, str) else to if isinstance(to, list) else None
+        if items is not None and all(isinstance(t, str) for t in items) and isinstance(text, str) and text.strip():
+            out: list[str] = []
+            for t in items:
+                if t.strip() and t.strip() not in out:
+                    out.append(t.strip())
+            if out:
+                return {"to": out, "text": text.strip()}
+    if errors is not None:
+        try:
+            shown = json.dumps(raw, ensure_ascii=False)
+        except (TypeError, ValueError):
+            shown = repr(raw)
+        errors.append({"field": "phone_message", "type": type(raw).__name__, "preview": shown[:120]})
+    return None
+
+
 def parse_json_extras_checked(content: str) -> tuple[dict, list[dict]]:
     """`parse_json_extras` + 필드 타입 위반 목록.
 
@@ -181,6 +218,7 @@ def parse_json_extras_checked(content: str) -> tuple[dict, list[dict]]:
         "bring_along":       _normalize_bring_along(data.get("bring_along")),
         "update_appearance": _normalize_str_field("update_appearance", data.get("update_appearance"), errors),
         "enter_state":       _normalize_str_field("enter_state", data.get("enter_state"), errors),
+        "phone_message":     _normalize_phone_message(data.get("phone_message"), errors),
     }
     return extras, errors
 
@@ -196,6 +234,6 @@ def parse_json_extras(content: str) -> dict:
     for e in errors:
         logger.warning(
             f"[parser] extras 필드 타입 위반 — {e['field']}: {e['type']} "
-            f"(문자열/null 이어야 함) → 이 필드만 무시. 값: {e['preview']}"
+            f"({expected_shape(e['field'])} 이어야 함) → 이 필드만 무시. 값: {e['preview']}"
         )
     return extras

@@ -79,7 +79,8 @@ class ExtrasTypeValidationTests(unittest.TestCase):
         # 필드 누락
         self.assertEqual(parse_json_extras('{"content": "x"}'),
                          {"move_to": None, "bring_along": None,
-                          "update_appearance": None, "enter_state": None})
+                          "update_appearance": None, "enter_state": None,
+                          "phone_message": None})
         # 객체 없음 → {} (기존 계약)
         self.assertEqual(parse_json_extras("그냥 텍스트"), {})
 

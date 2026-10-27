@@ -133,6 +133,9 @@ def resume_simulation(run_id: str):
                 location_graph=[{"name": n.name, "connects_to": n.connects_to, "is_exterior": n.is_exterior, "zone": n.zone, "is_zone_entry": n.is_zone_entry} for n in cfg.location_graph],
                 # load.py 와 같은 이유 — 빠뜨리면 재개한 실행만 targeted 로 되돌아간다.
                 perception_mode=cfg.perception_mode,
+                # 소통 채널 토글 — 세 조립 경로(/start·headless, /load, /resume)가 같아야 한다(빠뜨리면 그 경로만 꺼진다).
+                talk_through_doors=cfg.talk_through_doors,
+                phone_messages=cfg.phone_messages,
                 lang_fix_enabled=cfg.lang_fix_enabled,
                 lang_fix_retries=cfg.lang_fix_retries,
                 llm_max_tokens=cfg.llm_max_tokens,

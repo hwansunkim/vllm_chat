@@ -364,6 +364,8 @@ def _dry_run(cfg, scenario_name: str) -> int:
     print(f"관계 지도     {f'{len(_rel_agents)}명 설정' if _rel_agents else '미사용'}")
     print(f"서버         {cfg.server_id or '(기본)'} · temperature {cfg.temperature}")
     print(f"시나리오 이벤트 {len(cfg.events)}건")
+    print(f"소통 채널     문 너머 대화 {'ON' if cfg.talk_through_doors else 'OFF'} · "
+          f"휴대폰 메시지 {'ON' if cfg.phone_messages else 'OFF'}")
 
     req = ContractPreviewRequest(
         location_graph         = cfg.location_graph,
@@ -375,6 +377,8 @@ def _dry_run(cfg, scenario_name: str) -> int:
         situation_targets      = bool(cfg.location_graph),
         available_targets      = [a.name for a in cfg.agents],
         key_to_alias           = {a.name: a.display_name for a in cfg.agents if a.display_name.strip()},
+        talk_through_doors     = cfg.talk_through_doors,
+        phone_messages         = cfg.phone_messages,
     )
     try:
         preview = preview_engine_contract(req)

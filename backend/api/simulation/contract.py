@@ -66,6 +66,8 @@ def preview_engine_contract(body: ContractPreviewRequest):
         output_format_override = body.output_format_override or None,
         relationships          = dict(body.relationships) or None,
         state_categories       = [c.model_dump() for c in body.state_categories] or None,
+        talk_through_doors     = bool(body.talk_through_doors),
+        phone_messages         = bool(body.phone_messages),
     )
 
     try:
@@ -80,6 +82,8 @@ def preview_engine_contract(body: ContractPreviewRequest):
             time_enabled       = kwargs["time_enabled"],
             infection_enabled  = kwargs["infection_enabled"],
             disease_name       = kwargs["disease_name"],
+            talk_through_doors = kwargs["talk_through_doors"],
+            phone_messages     = kwargs["phone_messages"],
         ) + build_relationship_contract(body.relationships, aliases)
         contract = build_engine_contract(
             include_output_schema=body.include_output_schema, **kwargs,

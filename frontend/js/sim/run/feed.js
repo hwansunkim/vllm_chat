@@ -52,18 +52,29 @@ export function flushPendingWaveCards(uptoWave) {
   last?.scrollIntoView({ behavior: 'smooth', block: 'end' });
 }
 
-export function renderHistoricalFeed(entries) {
+/**
+ * 불러온 실행의 피드. `events` 는 `/runs/{id}/events?types=phone_message,door_delivery` 응답(선택) — 대사와
+ * wave 순으로 합쳐 실시간과 같은 채널 카드(buildChannelCard)를 그린다. 없으면 예전과 같다(대사만).
+ */
+export function renderHistoricalFeed(entries, events = []) {
   const feed = document.getElementById('sim-feed');
   feed.innerHTML = '';
   resetWaveCardBuffer();
 
-  if (!entries || !entries.length) {
+  const stream = mergeFeedStream(entries, events);
+  if (!stream.length) {
     feed.innerHTML = '<div id="sim-feed-empty">저장된 대화 기록이 없습니다.</div>';
     return;
   }
 
   let curWave = null;
-  entries.forEach(entry => {
+  stream.forEach(({ kind, item }) => {
+    if (kind === 'channel') {
+      const card = buildChannelCard(item);
+      if (card) feed.appendChild(card);
+      return;
+    }
+    const entry = item;
     if (entry.wave != null && entry.wave !== curWave) {
       curWave = entry.wave;
       // 서버가 저장해둔 time_str(정확값)을 우선 사용하고, 없는 구버전 로그는 fixed 공식으로 폴백.
@@ -281,6 +292,89 @@ export function addWorldEventCard(d) {
     <div class="sim-world-event-content">${esc(d.content || '')}</div>
     ${d.reason ? `<div class="sim-world-event-reason">${esc(d.reason)}</div>` : ''}`;
   _appendWaveCard(d.wave, el);
+}
+
+// ── 소통 채널 카드 (phone_message · door_delivery) ───────────────────────────
+// 실시간(sse.js)과 과거 피드(renderHistoricalFeed · 이력 보기 모달 replay.js)가 **같은 빌더**를 쓴다 —
+// 휴대폰 본문은 simulation_log 에 없고 phone_message 이벤트에만, 문 너머 전달 사실은 door_delivery
+// 이벤트에만 있으므로 과거 피드도 이 이벤트를 읽어 대사와 함께 그려야 한다.
+export const CHANNEL_EVENT_TYPES = ['phone_message', 'door_delivery'];
+
+/** phone_message 페이로드 → 카드 요소(붙이지 않음). 휴대폰 메시지 한 건(보낸 사람 → 받은 사람, 내용, 거절·보류). */
+export function buildPhoneMessageCard(d) {
+  const to = (d.recipient_names || d.recipients || []).join(', ') || '(전달 안 됨)';
+  const notes = [];
+  if ((d.held || []).length) notes.push(`보류(상태 중): ${(d.held || []).map(agentLabel).join(', ')}`);
+  if ((d.rejected || []).length) notes.push(`보내지 못함: ${(d.rejected || []).map(r => `${r.to}(${r.reason})`).join(', ')}`);
+  const el = document.createElement('div');
+  el.className = 'sim-world-event-card sim-phone-card';
+  el.innerHTML = `
+    <div class="sim-world-event-header">
+      <span class="sim-world-event-icon">📱</span>
+      <span class="sim-world-event-label">휴대폰 메시지</span>
+      <span class="sim-world-event-targets">${esc(d.sender_name || agentLabel(d.sender))} → ${esc(to)}</span>
+      <span class="sim-world-event-wave">W${d.wave}</span>
+    </div>
+    <div class="sim-world-event-content">${esc(d.text || '')}</div>
+    ${notes.length ? `<div class="sim-world-event-reason">${esc(notes.join(' · '))}</div>` : ''}`;
+  return el;
+}
+
+/** door_delivery 페이로드 → 카드 요소(붙이지 않음). 대사 자체는 그 턴의 대사 카드에 이미 있다. */
+export function buildDoorDeliveryCard(d) {
+  const el = document.createElement('div');
+  el.className = 'sim-scene-event sim-door-event';
+  el.innerHTML = `
+    <div class="sim-scene-event-icon">🚪</div>
+    <div class="sim-scene-event-body">
+      <div class="sim-scene-event-type">문 너머 대화</div>
+      <div class="sim-scene-event-msg">${esc(`${d.speaker_display || agentLabel(d.speaker)}의 말이 문 너머 ${
+        d.target_display || agentLabel(d.target)}에게 전달됐다${d.location ? ` (${d.location})` : ''}`)}</div>
+    </div>`;
+  return el;
+}
+
+/** 저장된 이벤트 행({event_type, data}) → 채널 카드 요소. 채널 이벤트가 아니면 null. */
+export function buildChannelCard(evt) {
+  if (!evt || !evt.data) return null;
+  if (evt.event_type === 'phone_message') return buildPhoneMessageCard(evt.data);
+  if (evt.event_type === 'door_delivery') return buildDoorDeliveryCard(evt.data);
+  return null;
+}
+
+function _appendTo(container, el) {
+  (container || document.getElementById('sim-feed')).appendChild(el);
+  el.scrollIntoView?.({ behavior: 'smooth', block: 'end' });
+}
+
+/** phone_message SSE(실시간) — `container` 를 주면 그곳에(기본 #sim-feed). */
+export function addPhoneMessageCard(d, container = null) {
+  if (!container) removeFeedEmpty();
+  _appendTo(container, buildPhoneMessageCard(d));
+}
+
+/** door_delivery SSE(실시간) — `container` 를 주면 그곳에(기본 #sim-feed). */
+export function addDoorDeliveryCard(d, container = null) {
+  if (!container) removeFeedEmpty();
+  _appendTo(container, buildDoorDeliveryCard(d));
+}
+
+/**
+ * 과거 피드용 스트림 — 대사 로그와 채널 이벤트를 (wave, 단계, 시각) 순으로 합친다. 채널 이벤트는 엔진이 그 wave 의
+ * 턴이 모두 끝난 뒤(발화 라우팅) emit 하므로 같은 wave 의 대사 **뒤**다(마크다운 내보내기의 post-dialogue 와 같은
+ * 규칙). 같은 단계 안은 안정 정렬(원래 순서)이다. 반환: [{kind: 'dialogue'|'channel', wave, item}].
+ */
+export function mergeFeedStream(log, events) {
+  const items = [];
+  (log || []).forEach((entry, i) => items.push(
+    { kind: 'dialogue', wave: entry.wave ?? 0, phase: 0, ts: entry.timestamp || 0, i, item: entry }));
+  (events || []).forEach((evt, i) => {
+    if (!CHANNEL_EVENT_TYPES.includes(evt?.event_type)) return;
+    items.push({ kind: 'channel', wave: evt.wave ?? evt.data?.wave ?? 0, phase: 1,
+                 ts: evt.timestamp || 0, i: (log || []).length + i, item: evt });
+  });
+  items.sort((a, b) => (a.wave - b.wave) || (a.phase - b.phase) || (a.ts - b.ts) || (a.i - b.i));
+  return items;
 }
 
 export function addSceneEventToFeed(d) {

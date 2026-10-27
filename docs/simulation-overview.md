@@ -250,6 +250,8 @@ async def _gen():
 | `events[]` | `[]` | `ScenarioEvent` — `system_message` / `agent_enter` / `agent_exit` / `update_appearance` / `infect_agent` |
 | `location_graph[]` | `[]` | `LocationNode` — `name`, `connects_to`, `is_exterior`, `zone`, `is_zone_entry` |
 | `perception_mode` | `targeted` | `targeted` / `spatial` (엿듣기) |
+| `talk_through_doors` | `false` | 문 너머 대화 — 바로 붙은 같은 구역 장소의 직접 타깃에게 대사만(simulation-features §16) |
+| `phone_messages` | `false` | 휴대폰 메시지 — 출력 `phone_message` 로 아는 사람에게 위치 무관 전달(simulation-features §16) |
 | `time_mode` / `time_per_wave` | `fixed` / 30 | 시간 모델 |
 | `time_categories[]` / `time_estimation_mode` | 4종 / `category` | 가변 시간 |
 | `max_scene_jump_minutes` / `max_daytime_jump_minutes` | 45 / 180 | 시간 점프 상한 |

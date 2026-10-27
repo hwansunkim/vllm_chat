@@ -1294,6 +1294,8 @@ class _ScriptedLLM:
             "bring_along":       turn.get("bring_along"),
             "update_appearance": turn.get("update_appearance"),
             "enter_state":       turn.get("enter_state"),
+            # 휴대폰 메시지 — 스크립트에 있을 때만 싣는다(없으면 기존 응답 JSON 과 글자 단위로 같게).
+            **({"phone_message": turn["phone_message"]} if "phone_message" in turn else {}),
         }), "", {}
 
 
@@ -15414,7 +15416,8 @@ class MalformedJsonResponseTests(unittest.TestCase):
         # 첫 객체의 move_to 는 null → None. 두 번째의 "창고" 를 주워오면 안 된다.
         self.assertEqual(parse_json_extras(self._MULTI),
                          {"move_to": None, "bring_along": None,
-                          "update_appearance": None, "enter_state": None})
+                          "update_appearance": None, "enter_state": None,
+                          "phone_message": None})
 
     def test_plain_and_fenced_single_objects_still_parse(self):
         from ABM.parser import parse_json_response
@@ -17887,3 +17890,445 @@ class MemoryTimeAnchorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CommunicationChannelTests(unittest.TestCase):
+    """소통 채널 — 문 너머 대화(talk_through_doors)·휴대폰 메시지(phone_messages). 둘 다 시나리오 토글, 기본 off.
+
+    지도: 구역 "집" 안에 안방—거실—누나방(안방·누나방은 서로 안 붙음), 거실에 붙은 구역 없는 화장실, 거실에 붙은
+    외부 공간 마당(구역 표기가 있어도 외부 공간은 제외), 거실에 붙은 다른 구역 옆집.
+    """
+
+    GRAPH = [
+        {"name": "안방",   "connects_to": ["거실"], "zone": "집"},
+        {"name": "거실",   "connects_to": ["안방", "누나방", "화장실", "마당", "옆집"], "zone": "집"},
+        {"name": "누나방", "connects_to": ["거실"], "zone": "집"},
+        {"name": "화장실", "connects_to": ["거실"]},
+        {"name": "마당",   "connects_to": ["거실"], "zone": "집", "is_exterior": True},
+        {"name": "옆집",   "connects_to": ["거실"], "zone": "이웃"},
+    ]
+
+    def _sim(self, tmp, script, locs, *, doors=True, phone=False, **kw):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in script}
+        kw.setdefault("time_mode", "fixed")
+        kw.setdefault("time_per_wave", 10)
+        sim = Simulation(agents, [{"role": "user", "content": "x"}], tmp, llm=_ScriptedLLM(script),
+                         agent_locations=dict(locs), location_graph=[dict(n) for n in self.GRAPH],
+                         talk_through_doors=doors, phone_messages=phone, **kw)
+        ev = []
+        sim._emit = lambda t, d: ev.append((t, d))
+        return sim, ev
+
+    def _run(self, sim, waves, start=None):
+        """첫 wave 는 상태(수면 등)에 묶이지 않은 전원이 턴을 받는다(잠든 사람을 첫 wave 에 깨우지 않게)."""
+        turns = NaturalStatusExpiryTests._record_turns(sim)
+        sim.run(start or next(iter(sim.agents)), max_waves=waves, step_delay=0, starvation_waves=99,
+                resume_wave={k: [] for k in sim.agents if k not in sim._agent_status})
+        return turns
+
+    @staticmethod
+    def _inc(turns, key, wave):
+        return [m for w, k, inc in turns if k == key and w == wave for m in inc]
+
+    # ── 문 너머 대화 ──────────────────────────────────────────────────────────
+
+    def test_door_adjacency_is_one_hop_same_zone_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _ = self._sim(tmp, {"a": [{}]}, {"a": "안방"})
+            adj = sim._door_adjacent
+            self.assertTrue(adj("안방", "거실") and adj("거실", "안방") and adj("거실", "누나방"))
+            self.assertFalse(adj("안방", "누나방"))          # 두 칸 — 바로 붙지 않음
+            self.assertFalse(adj("거실", "화장실"))          # 구역 없는 장소
+            self.assertFalse(adj("거실", "마당"))            # 외부 공간(구역 표기가 있어도)
+            self.assertFalse(adj("거실", "옆집"))            # 구역 경계
+            self.assertFalse(adj("거실", "거실"))
+            off, _ = self._sim(tmp, {"a": [{}]}, {"a": "안방"}, doors=False)
+            self.assertFalse(off._door_adjacent("안방", "거실"))
+
+    def test_door_speech_delivered_tagged_wakes_sleeper_and_records_edge(self):
+        script = {"a": [{"content": "일어나!", "target": ["b", "c"], "action_note": "문을 두드린다"}, {}],
+                  "b": [{}], "c": [{}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, ev = self._sim(tmp, script, {"a": "안방", "b": "거실", "c": "누나방"})
+            sim._agent_status["b"] = {"state": "sleep", "until_elapsed": 999}
+            turns = self._run(sim, waves=2, start="a")
+        got = self._inc(turns, "b", 1)
+        self.assertEqual([(m["speaker"], m["content"], m["action_note"]) for m in got],
+                         [("a (방문 너머로)", "일어나!", "")])     # 들리기만 — 행동은 안 감
+        self.assertEqual(self._inc(turns, "c", 1), [])            # 누나방은 안방과 안 붙음
+        self.assertEqual([(d["speaker"], d["target"], d["from"], d["location"])
+                          for t, d in ev if t == "door_delivery"], [("a", "b", "안방", "거실")])
+        door_edges = [e for e in sim.edges if e.get("door")]
+        self.assertEqual([(e["source"], e["target"]) for e in door_edges], [("a", "b")])
+        self.assertIn("door_delivery", __import__("ABM.simulation.core", fromlist=["x"])._PERSIST_EVENTS)
+
+    def test_toggle_off_keeps_same_room_only(self):
+        script = {"a": [{"content": "일어나!", "target": ["b"]}, {}], "b": [{}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, ev = self._sim(tmp, script, {"a": "안방", "b": "거실"}, doors=False)
+            turns = self._run(sim, waves=2, start="a")
+        self.assertFalse(any(m.get("content") == "일어나!" for m in self._inc(turns, "b", 1)))
+        self.assertFalse([t for t, _ in ev if t == "door_delivery"])
+
+    def test_door_excludes_zoneless_exterior_other_zone_and_traveling(self):
+        cases = {"화장실": None, "마당": None, "옆집": None, "거실": "traveling"}
+        for loc, state in cases.items():
+            with self.subTest(loc=loc), tempfile.TemporaryDirectory() as tmp:
+                script = {"a": [{"content": "거기 있어?", "target": ["b"]}, {}], "b": [{}]}
+                start = "거실" if loc != "거실" else "안방"
+                sim, ev = self._sim(tmp, script, {"a": start, "b": loc})
+                if state:
+                    sim._agent_status["b"] = {"state": "traveling", "until_elapsed": 999, "arrival_location": "거실"}
+                self._run(sim, waves=1, start="a")
+                self.assertFalse([t for t, _ in ev if t == "door_delivery"])
+        # 화자가 이동 중이어도 안 된다.
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, ev = self._sim(tmp, {"a": [{"content": "x", "target": ["b"]}], "b": [{}]}, {"a": "안방", "b": "거실"})
+            sim._agent_status["a"] = {"state": "traveling", "until_elapsed": 999, "arrival_location": "안방"}
+            self.assertEqual(sim._resolve_door_targets(["b"], "a"), [])
+
+    def test_overhearing_scope_both_rooms_in_spatial_only(self):
+        script = {"a": [{"content": "밥 먹자", "target": ["b"]}, {}], "b": [{}], "x": [{}], "y": [{}], "z": [{}]}
+        locs = {"a": "안방", "x": "안방", "b": "거실", "y": "거실", "z": "누나방"}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _ = self._sim(tmp, script, locs, perception_mode="spatial")
+            turns = self._run(sim, waves=2, start="a")
+        heard = {k: [m for m in self._inc(turns, k, 1) if m.get("content") == "밥 먹자"] for k in "bxyz"}
+        self.assertEqual(heard["b"][0]["speaker"], "a (방문 너머로)")
+        self.assertEqual(len(heard["x"]), 1)                          # 화자 방의 제3자(기존 엿듣기)
+        self.assertNotIn("방문 너머로", heard["x"][0]["speaker"])
+        self.assertEqual(len(heard["y"]), 1)                          # 타깃 방의 제3자 — 문 너머로 엿들음
+        self.assertTrue(heard["y"][0]["speaker"].endswith("(방문 너머로)"))
+        self.assertIn("→", heard["y"][0]["speaker"])
+        self.assertEqual(heard["z"], [])
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _ = self._sim(tmp, script, locs)                     # targeted — 엿듣기 없음
+            turns = self._run(sim, waves=2, start="a")
+        self.assertEqual([k for k in "xyz" if any(m.get("content") == "밥 먹자" for m in self._inc(turns, k, 1))], [])
+
+    def test_no_infection_across_a_door(self):
+        model = {"enabled": True, "disease_name": "테스트열", "beta": 1000.0, "symptom_stages": [],
+                 "exposed_duration": {"kind": "uniform", "min_days": 1, "max_days": 1},
+                 "presymptomatic_duration": {"kind": "uniform", "min_days": 1, "max_days": 1},
+                 "infectious_duration": {"kind": "uniform", "min_days": 30, "max_days": 30}}
+        script = {"a": [{"content": "콜록, 괜찮아?", "target": ["b"]}], "b": [{"content": "응 괜찮아", "target": ["a"]}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, ev = self._sim(tmp, script, {"a": "안방", "b": "거실"}, infection_model=model, time_per_wave=60)
+            sim._agent_infection["a"].update(status="I", infected_at_minutes=0)
+            self._run(sim, waves=4, start="a")
+        self.assertGreaterEqual(len([t for t, _ in ev if t == "door_delivery"]), 3)   # 실제로 말을 주고받았다
+        self.assertEqual(sim._agent_infection["b"]["status"], "S")
+
+    def test_no_double_delivery_with_post_move(self):
+        script = {"a": [{"content": "나 간다", "target": ["b"], "move_to": "거실"}, {}], "b": [{}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, ev = self._sim(tmp, script, {"a": "안방", "b": "거실"})
+            turns = self._run(sim, waves=2, start="a")
+        self.assertEqual(sim._agent_location["a"], "거실")
+        self.assertEqual(len([m for m in self._inc(turns, "b", 1) if m.get("content") == "나 간다"]), 1)
+        self.assertFalse([t for t, _ in ev if t == "post_move_delivery"])
+
+    def test_situation_context_lists_door_reachable_people_with_target_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, _ = self._sim(tmp, {"a": [{}], "b": [{}], "c": [{}]}, {"a": "안방", "b": "거실", "c": "누나방"})
+            text = sim._assemble_agent_prompt("a", 0)["situation_text"]
+            self.assertIn('거실 [문 너머 — 말 걸기: target "b"]', text)
+            self.assertNotIn('target "c"', text)                      # 누나방은 안 붙음
+            self.assertIn("문 너머로 말이 닿습니다", text)
+            off, _ = self._sim(tmp, {"a": [{}], "b": [{}]}, {"a": "안방", "b": "거실"}, doors=False)
+            self.assertNotIn("문 너머", off._assemble_agent_prompt("a", 0)["situation_text"])
+
+    # ── 계약 ─────────────────────────────────────────────────────────────────
+
+    def test_toggles_off_change_no_contract_and_on_adds_text_preview_parity(self):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        from backend.api.simulation.contract import preview_engine_contract
+        from backend.api.simulation.schemas import ContractPreviewRequest
+        base = dict(location_graph=_ZONED_NODES, time_per_wave=30, situation_targets=True,
+                    available_targets=["b"], key_to_alias={"b": "비"})
+        off = preview_engine_contract(ContractPreviewRequest(**base))
+        self.assertEqual(off.contract, preview_engine_contract(ContractPreviewRequest(
+            **base, talk_through_doors=False, phone_messages=False)).contract)
+        for token in ("문 너머", "phone_message", "[휴대폰 메시지]"):
+            self.assertNotIn(token, off.contract)
+        on = preview_engine_contract(ContractPreviewRequest(**base, talk_through_doors=True, phone_messages=True))
+        self.assertIn("문 너머로 말을 걸 수 있고", on.world_contract)
+        self.assertIn("[휴대폰 메시지]", on.world_contract)
+        self.assertIn('"phone_message": null,', on.output_contract)
+        self.assertEqual(on.warnings, [])
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = {k: Agent(k, "너는 a다.", tmp, token_limit=8192, extra_fields=_FIELDS) for k in ("a", "b")}
+            Simulation(agents, _BACKGROUND, tmp, location_graph=[dict(n) for n in _ZONED_NODES], time_per_wave=30,
+                       talk_through_doors=True, phone_messages=True)
+            injected = agents["a"].get_system_message(["b"], {"b": "비"}, situation_targets=True)["content"]
+        self.assertEqual(injected, "너는 a다." + on.contract)
+        # 구역이 없으면 문 너머 문장은 붙지 않는다(동작하지 않는 기능 광고 금지) — 휴대폰은 그대로.
+        flat = [{"name": "가", "connects_to": ["나"]}, {"name": "나", "connects_to": ["가"]}]
+        nozone = preview_engine_contract(ContractPreviewRequest(location_graph=flat, talk_through_doors=True))
+        self.assertNotIn("문 너머", nozone.contract)
+
+    # ── 휴대폰 메시지 ────────────────────────────────────────────────────────
+
+    def test_phone_delivered_anywhere_only_to_recipients(self):
+        msg = {"to": ["b", "c"], "text": "저녁 먹고 와?"}
+        script = {"a": [{"content": "", "target": "self", "phone_message": msg}, {}],
+                  "b": [{}], "c": [{}], "x": [{}]}
+        locs = {"a": "안방", "x": "안방", "b": "마당", "c": "옆집"}
+        with tempfile.TemporaryDirectory() as tmp:
+            # 보낸 사람이 역할형이어도 된다(역할형도 보내고 받는다 — 결정).
+            sim, ev = self._sim(tmp, script, locs, phone=True, doors=False, perception_mode="spatial",
+                                role_type_agents={"a"})
+            turns = self._run(sim, waves=2, start="a")
+        for k in ("b", "c"):
+            self.assertIn("[휴대폰 메시지] a: 저녁 먹고 와?", [m["content"] for m in self._inc(turns, k, 1)])
+        self.assertFalse(any("저녁 먹고 와?" in m.get("content", "") for m in self._inc(turns, "x", 1)))
+        evs = [d for t, d in ev if t == "phone_message"]
+        self.assertEqual([(d["sender"], d["recipients"], d["text"], d["rejected"]) for d in evs],
+                         [("a", ["b", "c"], "저녁 먹고 와?", [])])
+        self.assertIn("phone_message", __import__("ABM.simulation.core", fromlist=["x"])._PERSIST_EVENTS)
+        # 기억 — 받은 사람은 받은 줄, 보낸 사람은 자기 턴 JSON(phone_message 포함).
+        self.assertTrue(any("[휴대폰 메시지] a: 저녁 먹고 와?" in m["content"] for m in sim.agents["b"].memory))
+        self.assertTrue(any(m["role"] == "assistant" and "저녁 먹고 와?" in m["content"]
+                            for m in sim.agents["a"].memory))
+
+    def test_phone_rejects_strangers_unknown_and_malformed_with_notice(self):
+        script = {"a": [{"content": "", "target": "self",
+                         "phone_message": {"to": ["c", "nobody", "stranger_1", "a"], "text": "안녕"}},
+                        {"content": "", "target": "self", "phone_message": {"to": "b"}}, {}],
+                  "b": [{}], "c": [{}]}
+        rels = {"a": {"b": "동생"}, "b": {"a": "형"}, "c": {}}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, ev = self._sim(tmp, script, {"a": "안방", "b": "거실", "c": "누나방"}, phone=True,
+                                agent_relationships=rels)
+            turns = self._run(sim, waves=3, start="a")
+        notes = [m["content"] for m in self._inc(turns, "a", 1)]
+        self.assertTrue(any("c의 번호를 모른다" in n for n in notes), notes)
+        self.assertTrue(any("'nobody'(이)라는 연락처가 없다" in n for n in notes), notes)
+        self.assertTrue(any("stranger_1" in n and "번호를 모른다" in n for n in notes), notes)
+        self.assertTrue(any("자기 자신에게는" in n for n in notes), notes)
+        self.assertFalse(any("안녕" in m.get("content", "") for w, k, inc in turns if k == "c" for m in inc))
+        self.assertEqual([[r["reason"] for r in d["rejected"]] for t, d in ev if t == "phone_message"],
+                         [["stranger", "unknown", "stranger", "self"]])
+        self.assertTrue(any('"phone_message": {"to": ["<ID>"]' in m["content"] for m in self._inc(turns, "a", 2)))
+
+    def test_phone_held_while_asleep_not_waking_then_shown_when_state_ends(self):
+        script = {"a": [{"content": "", "target": "self", "phone_message": {"to": ["b"], "text": "자?"}}, {}],
+                  "b": [{}], "c": [{}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, ev = self._sim(tmp, script, {"a": "안방", "b": "누나방", "c": "안방"}, phone=True)
+            sim._agent_status["b"] = {"state": "sleep", "until_elapsed": 25}
+            turns = self._run(sim, waves=4, start="a")
+        b_turns = [(w, [m["content"] for m in inc]) for w, k, inc in turns if k == "b"]
+        self.assertTrue(b_turns and b_turns[0][0] == 3, b_turns)       # W1·W2 는 자는 중 — 깨우지 않음
+        self.assertTrue(any("[휴대폰 메시지] a: 자?" in c for c in b_turns[0][1]), b_turns)
+        self.assertEqual([d["held"] for t, d in ev if t == "phone_message"], [["b"]])
+
+    def test_phone_counts_as_world_activity(self):
+        script = {"a": [{"content": "", "target": "self", "phone_message": {"to": ["b"], "text": "늦어"}}, {}],
+                  "b": [{}], "c": [{}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, ev = self._sim(tmp, script, {"a": "안방", "b": "누나방", "c": "거실"}, phone=True, doors=False,
+                                time_mode="variable",
+                                time_categories=[{"id": "normal_scene", "label": "t", "min_minutes": 10,
+                                                  "max_minutes": 10}],
+                                idle_minutes_schedule=[60], max_scene_jump_minutes=0, max_daytime_jump_minutes=0)
+            sim._agent_status["b"] = {"state": "sleep", "until_elapsed": 999}
+            with self.assertLogs("ABM.simulation.runner", level="INFO") as logs:
+                sim.run("a", max_waves=1, step_delay=0, resume_wave={"a": [], "c": []})
+        self.assertTrue(any("침묵 아님" in m and "휴대폰:a" in m for m in logs.output), logs.output)
+        self.assertEqual([d["recipients"] for t, d in ev if t == "phone_message"], [["b"]])
+
+    def test_phone_toggle_off_ignores_field(self):
+        script = {"a": [{"content": "", "target": "self", "phone_message": {"to": ["b"], "text": "x"}}, {}],
+                  "b": [{}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, ev = self._sim(tmp, script, {"a": "안방", "b": "누나방"}, doors=False)
+            turns = self._run(sim, waves=2, start="a")
+        self.assertFalse([t for t, _ in ev if t == "phone_message"])
+        self.assertFalse(any("휴대폰" in m.get("content", "") for w, k, inc in turns for m in inc))
+
+    def test_parser_phone_message_shapes(self):
+        from ABM.parser import parse_json_extras, parse_json_extras_checked
+        ok, err = parse_json_extras_checked(json.dumps({"content": "x", "phone_message": {"to": [" b ", "b", "c"],
+                                                                                          "text": " 안녕 "}}))
+        self.assertEqual((ok["phone_message"], err), ({"to": ["b", "c"], "text": "안녕"}, []))
+        one, _ = parse_json_extras_checked(json.dumps({"content": "x", "phone_message": {"to": "b", "text": "t"}}))
+        self.assertEqual(one["phone_message"], {"to": ["b"], "text": "t"})
+        for bad in ("안녕", {"to": ["b"]}, {"text": "t"}, {"to": [3], "text": "t"}, {"to": [], "text": "t"},
+                    {"to": ["b"], "text": "  "}):
+            with self.subTest(bad=bad):
+                ex, err = parse_json_extras_checked(json.dumps({"content": "x", "phone_message": bad}))
+                self.assertIsNone(ex["phone_message"])
+                self.assertEqual(err[0]["field"], "phone_message")
+        with self.assertLogs("ABM.parser", level="WARNING") as logs:
+            parse_json_extras(json.dumps({"content": "x", "phone_message": "x"}))
+        self.assertIn('{"to": ["<ID>", ...], "text": "<내용>"}/null 이어야 함', logs.output[0])
+
+    def test_markdown_py_js_parity_and_always_included(self):
+        import shutil
+        import subprocess
+        from ABM.export import markdown as md
+        cases = [
+            {"sender": "a", "sender_name": "엄마", "recipients": ["b"], "recipient_names": ["짱구"], "text": "밥\n먹어",
+             "rejected": []},
+            {"sender": "a", "recipients": [], "recipient_names": [], "text": "x",
+             "rejected": [{"to": "stranger_1", "reason": "stranger"}]},
+        ]
+        doors = [{"speaker": "a", "speaker_display": "엄마", "target": "b", "target_display": "짱구",
+                  "location": "거실"}, {"speaker": "a", "target": "b"}]
+
+        class _Idx:
+            def label(self, k):
+                return k
+        py = [md._fmt_phone_message(c, _Idx()) for c in cases] + [md._fmt_door_delivery(d, _Idx()) for d in doors]
+        self.assertEqual(py[0], "\n> **[📱 휴대폰]** *엄마 → 짱구: 밥\n> 먹어*\n")
+        self.assertEqual(py[1], "\n> **[📱 휴대폰]** *a → (전달 안 됨): x* *(보내지 못함: stranger_1)*\n")
+        self.assertEqual(py[2], "\n> **[🚪 씬]** *엄마의 말이 문 너머 짱구에게 전달됐다 (거실)*\n")
+        stream = md._build_stream([], [{"event_type": "phone_message", "wave": 1, "data": cases[0]},
+                                       {"event_type": "door_delivery", "wave": 1, "data": doors[0]}], frozenset())
+        self.assertEqual([it["kind"] for it in stream], ["phone_message", "door_delivery"])
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node 없음")
+        import re
+        src = (Path(__file__).resolve().parent.parent / "frontend/js/sim/export/markdown.js").read_text(encoding="utf-8")
+        fns = "".join(re.search(rf"function {n}\(data\) {{.*?\n}}\n", src, re.S).group(0)
+                      for n in ("fmtPhoneMessage", "fmtDoorDelivery"))
+        prog = ("const agentLabel = k => k;\n" + fns +
+                "const a = JSON.parse(process.argv[1]); const d = JSON.parse(process.argv[2]);"
+                "process.stdout.write(JSON.stringify([...a.map(fmtPhoneMessage), ...d.map(fmtDoorDelivery)]));")
+        out = subprocess.run([node, "-e", prog, json.dumps(cases, ensure_ascii=False),
+                              json.dumps(doors, ensure_ascii=False)], capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(json.loads(out.stdout), py, out.stderr)
+
+    def test_schema_round_trip_frontend_wiring_and_assembly_paths(self):
+        cfg = SimStartConfig(agents=[{"name": "a", "system_prompt": "x"}], background="b", start_agent="a",
+                             talk_through_doors=True, phone_messages=True)
+        again = SimStartConfig(**json.loads(cfg.model_dump_json()))
+        self.assertTrue(again.talk_through_doors and again.phone_messages)
+        legacy = SimStartConfig(agents=[{"name": "a", "system_prompt": "x"}], background="b", start_agent="a")
+        self.assertFalse(legacy.talk_through_doors or legacy.phone_messages)       # 구버전 = 꺼짐
+        with self.assertRaises(ValidationError):
+            SimStartConfig(agents=[{"name": "a", "system_prompt": "x"}], background="b", start_agent="a",
+                           phone_messages="maybe")
+        root = Path(__file__).resolve().parent.parent
+        read = lambda rel: (root / rel).read_text(encoding="utf-8")
+        for rel in ("ABM/simulation/headless.py", "backend/api/simulation/runtime/load.py",
+                    "backend/api/simulation/runtime/resume.py"):
+            src = read(rel)
+            self.assertIn("talk_through_doors=", src, rel)
+            self.assertIn("phone_messages=", src, rel)
+        self.assertIn("talk_through_doors:     !!s.talk_through_doors,", read("frontend/js/sim/config.js"))
+        scen = read("frontend/js/sim/scenarios.js")
+        self.assertIn("sim.talk_through_doors     = cfg.talk_through_doors === true;", scen)
+        self.assertIn("sim.phone_messages         = cfg.phone_messages === true;", scen)
+        html = read("frontend/index.html")
+        self.assertIn('id="sim-talk-through-doors"', html)
+        self.assertIn('id="sim-phone-messages"', html)
+        prev = read("frontend/js/sim/settings/contract-preview.js")
+        self.assertIn("...readChannelToggles(),", prev)
+        self.assertIn("p.talk_through_doors, p.phone_messages,", prev)
+        sse = read("frontend/js/sim/run/sse.js")
+        self.assertIn("es.addEventListener('phone_message'", sse)
+        self.assertIn("es.addEventListener('door_delivery'", sse)
+
+
+class ChannelHistoryFeedDomTests(unittest.TestCase):
+    """Codex 리뷰 P2(2026-10-27) — 과거 피드(불러온 실행 #sim-feed · 이력 보기 모달)가 소통 채널 이벤트를 읽어
+    실시간과 같은 카드로 그린다. feed.js·replay.js 실제 소스를 최소 DOM(node vm)에서 실행한다."""
+
+    HARNESS = r"""
+const fs = require('fs'), vm = require('vm');
+const strip = src => src.replace(/^import[\s\S]*?from '[^']+';\n/gm, '').replace(/^export /gm, '');
+class El {
+  constructor(tag) { this.tag = tag; this.children = []; this.className = ''; this.dataset = {}; this._html = ''; }
+  set innerHTML(v) { this._html = v; this.children = []; }
+  get innerHTML() { return this._html + this.children.map(c => c.outerHTML).join(''); }
+  get outerHTML() { return `<${this.tag} class="${this.className}">${this.innerHTML}</${this.tag}>`; }
+  appendChild(c) { this.children.push(c); return c; }
+  get lastElementChild() { return this.children.at(-1); }
+  scrollIntoView() {}
+  remove() {}
+}
+const feed = new El('div'); const modalFeed = new El('div');
+const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const ctx = { sim: { agents: [], extra_fields: [] }, esc, emotionClass: () => '', agentLabel: k => String(k),
+  getAgentIcon: () => '', simTimeLabel: () => '', infectionBadge: () => null, meetingNarration: () => '',
+  agentStatusBadge: () => null, console,
+  document: { getElementById: id => id === 'sim-feed' ? feed : null, createElement: t => new El(t) } };
+vm.createContext(ctx);
+vm.runInContext(strip(fs.readFileSync('frontend/js/sim/run/feed.js', 'utf8')), ctx);
+vm.runInContext(strip(fs.readFileSync('frontend/js/sim/runs/replay.js', 'utf8')), ctx);
+const log = [
+  { wave: 0, speaker: 'a', content: '', targets: ['self'], meta: {}, action_note: '', timestamp: 1 },
+  { wave: 0, speaker: 'c', content: '밥 먹자', targets: ['b'], meta: {}, action_note: '', timestamp: 2 },
+  { wave: 1, speaker: 'b', content: '응', targets: ['c'], meta: {}, action_note: '', timestamp: 3 },
+];
+const phone = { wave: 0, sender: 'a', sender_name: 'A', recipients: ['b'], recipient_names: ['B'],
+                text: 'UNIQUE_PHONE', rejected: [], held: [] };
+const door = { wave: 0, speaker: 'c', speaker_display: 'C', target: 'b', target_display: 'B', from: '안방', location: '거실' };
+const events = [ { event_type: 'door_delivery', wave: 0, data: door, timestamp: 2.5 },
+                 { event_type: 'phone_message', wave: 0, data: phone, timestamp: 2.4 },
+                 { event_type: 'agent_move', wave: 0, data: {}, timestamp: 2.6 } ];
+const out = {};
+// 실시간
+ctx.addPhoneMessageCard(phone); ctx.addDoorDeliveryCard(door);
+out.live = feed.children.map(c => c.outerHTML);
+// 불러온 실행 피드
+ctx.renderHistoricalFeed(log, events);
+out.history = feed.children.map(c => c.outerHTML);
+// 이력 보기 모달
+ctx.renderReplayFeed(modalFeed, log, events);
+out.modal = modalFeed.children.map(c => c.outerHTML);
+// 이벤트 없이(구버전·채널 미사용) — 예전과 같은 대사만
+const plain = new El('div'); ctx.renderReplayFeed(plain, log, []);
+out.plain = plain.children.length;
+process.stdout.write(JSON.stringify(out));
+"""
+
+    def _run(self):
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node 없음")
+        root = Path(__file__).resolve().parent.parent
+        res = subprocess.run([node, "-e", self.HARNESS], cwd=root, capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        return json.loads(res.stdout)
+
+    def test_phone_only_turn_text_visible_in_both_history_views(self):
+        out = self._run()
+        for view in ("history", "modal"):
+            with self.subTest(view=view):
+                self.assertTrue(any("UNIQUE_PHONE" in h and "휴대폰 메시지" in h for h in out[view]), out[view])
+
+    def test_door_delivery_marked_in_history_after_that_waves_dialogue(self):
+        out = self._run()
+        for view in ("history", "modal"):
+            with self.subTest(view=view):
+                items = out[view]
+                i_door = next(i for i, h in enumerate(items) if "문 너머 대화" in h)
+                i_c = next(i for i, h in enumerate(items) if "밥 먹자" in h)
+                i_b = next(i for i, h in enumerate(items) if "응" in h and "sim-feed" in h)
+                self.assertLess(i_c, i_door)                 # 같은 wave 의 대사 뒤
+                self.assertLess(i_door, i_b)                 # 다음 wave 대사 앞
+                self.assertIn("C의 말이 문 너머 B에게 전달됐다 (거실)", items[i_door])
+                self.assertFalse(any("agent_move" in h for h in items))   # 채널 외 이벤트는 그리지 않는다
+
+    def test_live_and_history_cards_identical_and_no_events_is_legacy(self):
+        out = self._run()
+        live_phone, live_door = out["live"]
+        for view in ("history", "modal"):
+            with self.subTest(view=view):
+                self.assertIn(live_phone, out[view])
+                self.assertIn(live_door, out[view])
+        self.assertEqual(out["plain"], 3)                    # 채널 이벤트가 없으면 대사 3개뿐
+        root = Path(__file__).resolve().parent.parent
+        replay = (root / "frontend/js/sim/runs/replay.js").read_text(encoding="utf-8")
+        self.assertIn("events?types=${CHANNEL_EVENT_TYPES.join(',')}", replay)
+        self.assertIn("renderHistoricalFeed(data.log, await fetchChannelEvents(runId));", replay)
+        self.assertIn("renderReplayFeed(feedEl, log, channelEvents);", replay)

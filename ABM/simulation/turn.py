@@ -105,7 +105,10 @@ class _TurnMixin:
 
         emotion_val = meta.get("emotion", "")
         new_edges   = []
-        for target_name in self._resolve_targets(parsed_targets, agent_key):
+        resolved_now = self._resolve_targets(parsed_targets, agent_key)
+        # 문 너머 대화(토글 off 면 빈 목록) — 라우팅(runner)과 같은 규칙·같은 스냅샷. edge 에 표식만 붙는다.
+        door_now = self._resolve_door_targets(parsed_targets, agent_key, resolved_now)
+        for target_name in [*resolved_now, *door_now]:
             edge = {
                 "source":    agent.name,
                 "target":    target_name,
@@ -114,6 +117,8 @@ class _TurnMixin:
                 "content":   clean_content,
                 "timestamp": time.time(),
             }
+            if target_name in door_now:
+                edge["door"] = True
             self.edges.append(edge)
             new_edges.append(edge)
 

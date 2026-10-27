@@ -121,7 +121,7 @@ async function fetchAll() {
 // 구분할 필드가 없고 스크립트로 외모를 바꾸는 경우 자체가 드물어 다수 사례(턴,
 // 대사 후)로 고정해 둔다 — 알려진 한계.
 const PRE_DIALOGUE_EVENT_TYPES  = new Set(['scene_event', 'director_call', 'system_intervention', 'world_event']);
-const POST_DIALOGUE_EVENT_TYPES = new Set(['appearance_update', 'agent_move', 'meeting_update', 'infection_update', 'time_jump', 'agent_status_change', 'post_move_delivery', 'journey_update']);
+const POST_DIALOGUE_EVENT_TYPES = new Set(['appearance_update', 'agent_move', 'meeting_update', 'infection_update', 'time_jump', 'agent_status_change', 'post_move_delivery', 'journey_update', 'door_delivery', 'phone_message']);
 
 function streamPhase(kind, payload) {
   if (kind === 'dialogue') return 0;
@@ -156,6 +156,9 @@ function buildStream(log, events, checks) {
   // 지적한 "Markdown만으로는 상태 시작/종료 시각·이유를 감사할 수 없다"는 공백을
   // 메우는 것이 이 필드의 목적이라, 옵션으로 숨길 수 있게 두면 그 목적이 무너진다.
   wantTypes.add('agent_status_change');
+  // 소통 채널(문 너머 대화·휴대폰 메시지)도 토글 무관하게 항상(ABM/export/markdown.py와 동일).
+  wantTypes.add('door_delivery');
+  wantTypes.add('phone_message');
 
   // Normalise events: { wave, sort_key, kind, payload }
   const items = [];
@@ -294,6 +297,30 @@ function fmtPostMoveDelivery(data) {
   const target  = data.target_display  || agentLabel(data.target);
   const loc     = data.location ? ` (${data.location})` : '';
   return `\n> **[🗣️ 씬]** *${speaker}의 말이 이동 후 ${target}에게 전달됐다${loc}*\n`;
+}
+
+/**
+ * 문 너머 대화 한 줄 — ABM/export/markdown.py의 _fmt_door_delivery와 글자 단위로 같아야 한다.
+ */
+function fmtDoorDelivery(data) {
+  const speaker = data.speaker_display || agentLabel(data.speaker);
+  const target  = data.target_display  || agentLabel(data.target);
+  const loc     = data.location ? ` (${data.location})` : '';
+  return `\n> **[🚪 씬]** *${speaker}의 말이 문 너머 ${target}에게 전달됐다${loc}*\n`;
+}
+
+/**
+ * 휴대폰 메시지 한 줄 — ABM/export/markdown.py의 _fmt_phone_message와 글자 단위로 같아야 한다.
+ */
+function fmtPhoneMessage(data) {
+  const sender = data.sender_name || agentLabel(data.sender);
+  const names  = (data.recipient_names && data.recipient_names.length)
+    ? data.recipient_names : (data.recipients || []).map(agentLabel);
+  const to = names.length ? names.join(', ') : '(전달 안 됨)';
+  let s = `\n> **[📱 휴대폰]** *${sender} → ${to}: ${(data.text || '').replace(/\n/g, '\n> ')}*`;
+  const rejected = data.rejected || [];
+  if (rejected.length) s += ` *(보내지 못함: ${rejected.map(r => String(r.to || '')).join(', ')})*`;
+  return s + '\n';
 }
 
 /**
@@ -454,6 +481,8 @@ function _buildMarkdown(log, events, statusStr, checks) {
         case 'meeting_update':      md += fmtMeeting(item.payload); break;
         case 'post_move_delivery':  md += fmtPostMoveDelivery(item.payload); break;
         case 'journey_update':      md += fmtJourney(item.payload); break;
+        case 'door_delivery':       md += fmtDoorDelivery(item.payload); break;
+        case 'phone_message':       md += fmtPhoneMessage(item.payload); break;
         case 'agent_status_change': md += fmtStatus(item.payload); break;
       }
     }

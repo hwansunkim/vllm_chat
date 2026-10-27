@@ -133,7 +133,8 @@ def _quote(text: str) -> str:
 _PRE_DIALOGUE_EVENT_TYPES  = {"scene_event", "director_call", "system_intervention", "world_event"}
 _POST_DIALOGUE_EVENT_TYPES = {"appearance_update", "agent_move", "meeting_update",
                               "infection_update", "time_jump", "agent_status_change",
-                              "post_move_delivery", "journey_update"}
+                              "post_move_delivery", "journey_update",
+                              "door_delivery", "phone_message"}
 
 
 def _stream_phase(kind: str, payload: dict | None = None) -> int:
@@ -168,6 +169,10 @@ def _build_stream(log: list[dict], events: list[dict], include: frozenset) -> li
     # 지적한 "Markdown만으로는 상태 시작/종료 시각·이유를 감사할 수 없다"는 공백을
     # 메우는 것이 이 필드의 목적이라, 옵션으로 숨길 수 있게 두면 그 목적이 무너진다.
     want.add("agent_status_change")
+    # 소통 채널(문 너머 대화·휴대폰 메시지)도 토글 무관하게 항상 — 누가 누구에게 어떻게 닿았는지는 대사
+    # 줄만으로는 알 수 없다(문 너머는 다른 방, 휴대폰은 대사 줄 자체가 없다).
+    want.add("door_delivery")
+    want.add("phone_message")
 
     items: list[dict] = []
     for entry in log:
@@ -231,6 +236,26 @@ def _fmt_post_move_delivery(data: dict, index: AgentIndex) -> str:
     target  = data.get("target_display") or index.label(data.get("target"))
     loc     = f" ({data['location']})" if data.get("location") else ""
     return f"\n> **[🗣️ 씬]** *{speaker}의 말이 이동 후 {target}에게 전달됐다{loc}*\n"
+
+
+def _fmt_door_delivery(data: dict, index: AgentIndex) -> str:
+    """문 너머 대화 한 줄 — markdown.js ``fmtDoorDelivery`` 와 글자 단위로 같아야 한다."""
+    speaker = data.get("speaker_display") or index.label(data.get("speaker"))
+    target  = data.get("target_display") or index.label(data.get("target"))
+    loc     = f" ({data['location']})" if data.get("location") else ""
+    return f"\n> **[🚪 씬]** *{speaker}의 말이 문 너머 {target}에게 전달됐다{loc}*\n"
+
+
+def _fmt_phone_message(data: dict, index: AgentIndex) -> str:
+    """휴대폰 메시지 한 줄 — markdown.js ``fmtPhoneMessage`` 와 글자 단위로 같아야 한다."""
+    sender = data.get("sender_name") or index.label(data.get("sender"))
+    names  = data.get("recipient_names") or [index.label(k) for k in (data.get("recipients") or [])]
+    to     = ", ".join(names) if names else "(전달 안 됨)"
+    s = f"\n> **[📱 휴대폰]** *{sender} → {to}: {_quote(data.get('text') or '')}*"
+    rejected = data.get("rejected") or []
+    if rejected:
+        s += f" *(보내지 못함: {', '.join(str(r.get('to') or '') for r in rejected)})*"
+    return s + "\n"
 
 
 def _fmt_journey(data: dict, index: AgentIndex) -> str:
@@ -526,6 +551,10 @@ def render_markdown(
             md += _fmt_post_move_delivery(payload, index)
         elif kind == "journey_update":
             md += _fmt_journey(payload, index)
+        elif kind == "door_delivery":
+            md += _fmt_door_delivery(payload, index)
+        elif kind == "phone_message":
+            md += _fmt_phone_message(payload, index)
         elif kind == "appearance_update":
             md += _fmt_appearance(payload)
         elif kind == "system_intervention":

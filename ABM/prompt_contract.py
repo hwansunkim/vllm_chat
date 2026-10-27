@@ -41,6 +41,7 @@ from __future__ import annotations
 #   <FIELD_HINTS>    extra_fields의 설명 라인
 #   <MOVE_TO_HINT>   move_to 의미 (위치 그래프/zone 유무에 따라 조건부) + bring_along 설명
 #   <BRING_ALONG_LINE> JSON 의 "bring_along": null 줄 (위치 그래프 있고 고정 자리가 아닐 때만)
+#   <PHONE_LINE>     JSON 의 "phone_message": null 줄 (휴대폰 메시지 토글이 켜졌을 때만)
 #   <STATE_HINT>     enter_state 의미 (state_categories 설정 시에만 — §상태)
 #   <TARGETS>        지목 가능한 시스템 ID 목록
 #   <TARGETS_FOOTER> all/self 단축 표기
@@ -59,7 +60,7 @@ DEFAULT_OUTPUT_FORMAT_TEMPLATE = """
     "action_note": "행동이나 생각, 상황 묘사. 텍스트로 서술. 예: '한숨을 쉰다', '눈을 흘김'",
 <FIELD_LINES>
     "target": ["id1", "id2"] 또는 "all" 또는 "self",
-    "move_to": null,<BRING_ALONG_LINE>
+    "move_to": null,<BRING_ALONG_LINE><PHONE_LINE>
     "update_appearance": null,
     "enter_state": null
 }
@@ -245,9 +246,29 @@ _MAP_RULE_PRESENCE_TAIL = (
 )
 
 
-def presence_rule(*, has_zone: bool) -> str:
-    """보이는 사람 규칙 — 구역이 있을 때만 [같은 구역…] 문장을 넣는다(그 블록은 구역이 있어야 나온다)."""
-    return _MAP_RULE_PRESENCE_HEAD + (_MAP_RULE_PRESENCE_ZONE if has_zone else "") + _MAP_RULE_PRESENCE_TAIL
+# 문 너머 대화(talk_through_doors) — 구역이 있을 때만(바로 붙은 같은 구역 장소끼리만 성립). "보이는 사람"과
+# "문 너머로 들리는 사람"을 갈라 말한다: 보이지는 않고 말만 오간다.
+_MAP_RULE_PRESENCE_DOOR = (
+    "그중 '문 너머'로 표시된 사람(바로 붙은 장소에 있음)은 보이지는 않지만 target 에 그 ID를 넣어 문 너머로 "
+    "말을 걸 수 있고, 그 사람의 말도 문 너머로 들립니다. "
+)
+
+
+def presence_rule(*, has_zone: bool, talk_through_doors: bool = False) -> str:
+    """보이는 사람 규칙 — 구역이 있을 때만 [같은 구역…] 문장을 넣는다(그 블록은 구역이 있어야 나온다).
+    문 너머 대화가 켜졌고 구역이 있으면 "문 너머로 들리는 사람" 문장이 붙는다."""
+    door = _MAP_RULE_PRESENCE_DOOR if (has_zone and talk_through_doors) else ""
+    return (_MAP_RULE_PRESENCE_HEAD + (_MAP_RULE_PRESENCE_ZONE if has_zone else "") + door
+            + _MAP_RULE_PRESENCE_TAIL)
+
+
+# 구역 규칙의 문 너머 판(토글 on + 구역 있음). 끄면 _MAP_RULE_ZONE 그대로(기존 시나리오 글자 단위 동일).
+_MAP_RULE_ZONE_DOOR = (
+    "※ [구역: ...]은 같은 생활권을 뜻합니다. 같은 구역 안의 다른 장소에 있는 사람은 "
+    "서로 존재를 인지합니다. 마주 보고 대화하려면 같은 장소에 있어야 하고, 바로 붙은 장소(같은 구역)에 "
+    "있으면 문 너머로 말만 주고받을 수 있습니다(서로 보이지 않음 — 행동은 전해지지 않습니다). "
+    "그 밖의 사람에게 말을 걸고 싶다면 move_to에 그 사람의 ID(또는 그 장소명)를 넣으세요."
+)
 
 
 def build_map_contract(
@@ -256,8 +277,11 @@ def build_map_contract(
     exterior_locations: set[str] | None             = None,
     location_zone:      dict[str, str] | None       = None,
     zone_entry:         dict[str, str] | None       = None,
+    talk_through_doors: bool                        = False,
 ) -> str:
     """[위치 그래프] 블록 + 이동/외부공간/구역 규칙. 그래프가 없으면 빈 문자열.
+
+    `talk_through_doors` 가 켜지고 구역이 있으면 보이는 사람 규칙·구역 규칙이 문 너머 대화 판으로 바뀐다.
 
     `zone_entry` (zone -> 입구 노드명)가 주어지면 입구 노드에 ", 입구" 표기를 붙이고
     구역 밖으로 바로 나갈 수 있다는 규칙 한 줄을 추가한다. 탈출 엣지 자체는 이미
@@ -282,11 +306,12 @@ def build_map_contract(
         lines.append(f"  {loc}{exterior_mark}{zone_mark}: {conn_str}")
     lines.append(_MAP_RULE_GRAPH_ONLY)
     lines.append(_MAP_RULE_PERSON)
-    lines.append(presence_rule(has_zone=bool(zones)))
+    door = bool(talk_through_doors) and bool(zones)
+    lines.append(presence_rule(has_zone=bool(zones), talk_through_doors=door))
     if exterior:
         lines.append(_MAP_RULE_EXTERIOR)
     if zones:
-        lines.append(_MAP_RULE_ZONE)
+        lines.append(_MAP_RULE_ZONE_DOOR if door else _MAP_RULE_ZONE)
     if entries:
         lines.append(_MAP_RULE_ZONE_EXIT)
     if zones:
@@ -339,6 +364,28 @@ def build_infection_contract(
         "증상이나 감염 여부를 임의로 지어내지 마세요.\n"
         "- 자신의 감염 여부를 수치나 상태값으로 알 수는 없습니다. 몸으로 느끼는 것만 압니다."
     )
+
+
+# ── 휴대폰 메시지 계약 ────────────────────────────────────────────────────────
+#
+# phone_messages 토글이 켜졌을 때만. 정적 세계 계약이라 출력 계약 오버라이드(옛 프리즈 템플릿 —
+# <PHONE_LINE> 자리표시자가 없음)를 쓰는 시나리오에도 사용법이 들어간다.
+_PHONE_CONTRACT = (
+    "\n\n[휴대폰 메시지]\n"
+    "당신에게는 휴대폰이 있습니다. 아는 사람에게는 어디에 있든 메시지를 보낼 수 있습니다 — 출력 JSON 의 "
+    '"phone_message" 에 {"to": ["<ID>", ...], "text": "<보낼 내용>"} 를 넣고, 보내지 않으면 null 로 두십시오. '
+    "ID 는 아는 사람의 ID(target 과 같은 ID)입니다. 처음 보는 사람(stranger_N)에게는 번호를 몰라 보낼 수 "
+    "없습니다.\n"
+    "- 메시지는 받는 사람만 읽습니다(곁에 있는 사람에게 들리지 않고, 만나는 것도 아닙니다).\n"
+    "- 받은 메시지는 [휴대폰 메시지] 로 표시됩니다. 자거나 다른 일에 빠져 있는 사람은 그 상태가 끝난 뒤에 "
+    "읽습니다."
+)
+_PHONE_SCHEMA_LINE = '\n    "phone_message": null,'
+
+
+def build_phone_contract(*, phone_messages: bool = False) -> str:
+    """[휴대폰 메시지] 블록. 토글이 꺼져 있으면 빈 문자열."""
+    return _PHONE_CONTRACT if phone_messages else ""
 
 
 # ── 관계 지도 계약 ────────────────────────────────────────────────────────────
@@ -407,8 +454,10 @@ def build_world_contract(
     time_enabled:       bool                        = False,
     infection_enabled:  bool                        = False,
     disease_name:       str                         = "",
+    talk_through_doors: bool                        = False,
+    phone_messages:     bool                        = False,
 ) -> str:
-    """시뮬레이션 수명 동안 고정인 계약 블록들(지도 + 시간 + 감염)을 순서대로 이어붙인다.
+    """시뮬레이션 수명 동안 고정인 계약 블록들(지도 + 시간 + 감염 + 휴대폰)을 순서대로 이어붙인다.
 
     반환 문자열은 사용자 `system_prompt` **뒤에**, 출력 계약 **앞에** 붙는다.
     활성화된 feature가 하나도 없으면 빈 문자열.
@@ -419,12 +468,14 @@ def build_world_contract(
             exterior_locations = exterior_locations,
             location_zone      = location_zone,
             zone_entry         = zone_entry,
+            talk_through_doors = talk_through_doors,
         )
         + build_time_contract(time_enabled=time_enabled)
         + build_infection_contract(
             infection_enabled = infection_enabled,
             disease_name      = disease_name,
         )
+        + build_phone_contract(phone_messages=phone_messages)
     )
 
 
@@ -515,6 +566,7 @@ def build_output_contract(
     speaker_relationships: dict[str, str] | None = None,
     state_categories: list[dict] | None = None,
     fixed_place: bool = False,
+    phone_messages: bool = False,
 ) -> str:
     """출력 JSON 스키마 + move_to 의미 + target ID 규칙을 담은 계약 블록.
 
@@ -553,6 +605,7 @@ def build_output_contract(
     return (
         tmpl
         .replace("<BRING_ALONG_LINE>", bring_line)
+        .replace("<PHONE_LINE>", _PHONE_SCHEMA_LINE if phone_messages else "")
         .replace("<FIELD_LINES>", field_lines)
         .replace("<FIELD_HINTS>", field_hints)
         .replace("<MOVE_TO_HINT>", move_to_hint)
@@ -581,6 +634,8 @@ def build_engine_contract(
     relationships:      dict[str, str] | None              = None,
     state_categories:   list[dict] | None                  = None,
     fixed_place:        bool                               = False,
+    talk_through_doors: bool                               = False,
+    phone_messages:     bool                               = False,
 ) -> str:
     """계약 층 전체(세계 계약 + 관계 지도 + 출력 계약)를 한 번에 만든다.
 
@@ -604,6 +659,8 @@ def build_engine_contract(
         time_enabled       = time_enabled,
         infection_enabled  = infection_enabled,
         disease_name       = disease_name,
+        talk_through_doors = talk_through_doors,
+        phone_messages     = phone_messages,
     ) + (build_fixed_place_contract(has_location_graph=bool(location_graph)) if fixed_place else "") \
       + build_relationship_contract(relationships or {}, key_to_alias)
     if not include_output_schema:
@@ -620,6 +677,7 @@ def build_engine_contract(
         speaker_relationships = relationships or None,
         state_categories   = state_categories,
         fixed_place        = fixed_place,
+        phone_messages     = phone_messages,
     )
 
 

@@ -121,6 +121,7 @@ class Agent:
         relationships: dict[str, str] | None = None,
         state_categories: list[dict] | None = None,
         fixed_place: bool = False,
+        phone_messages: bool = False,
     ) -> None:
         """시뮬레이션이 소유한 정적 계약 블록(지도/시간/감염/관계)을 이 에이전트에 건다.
 
@@ -142,6 +143,8 @@ class Agent:
         self._state_categories = list(state_categories) if state_categories else None
         # 역할형 에이전트 — 출력 계약의 move_to 설명을 "고정된 자리" 안내로 바꾼다.
         self._fixed_place = bool(fixed_place)
+        # 휴대폰 메시지 토글 — 출력 스키마에 "phone_message": null 줄을 싣는다.
+        self._phone_messages = bool(phone_messages)
 
     def get_system_message(
         self,
@@ -170,6 +173,7 @@ class Agent:
                 speaker_relationships=self.relationships or None,
                 state_categories=self._state_categories,
                 fixed_place=getattr(self, "_fixed_place", False),
+                phone_messages=getattr(self, "_phone_messages", False),
             ),
         }
 

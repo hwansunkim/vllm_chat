@@ -47,9 +47,13 @@ export function buildSimConfig(s = sim) {
     extra_fields:           s.extra_fields,
     events:                 s.events,
     location_graph:         s.location_graph || [],
-    // 'spatial' = 같은 방 엿듣기 + 같은 zone 다른 방으로의 대사 전달 + 혼잣말 행동 관찰.
+    // 'spatial' = 같은 방 엿듣기 + 혼잣말 행동 관찰(같은 방 한정). 다른 방으로의 대사 전달은 없다 —
+    // 바로 붙은(1 hop) 같은 zone 방과의 대화는 talk_through_doors(아래)가 켜졌을 때만.
     // 'targeted'(기본)이면 엔진이 기존 라우팅 경로를 그대로 탄다.
     perception_mode:        s.perception_mode === 'spatial' ? 'spatial' : 'targeted',
+    // 소통 채널 — 문 너머 대화(같은 zone 바로 붙은 장소) · 휴대폰 메시지. 기본 false = 기존 동작.
+    talk_through_doors:     !!s.talk_through_doors,
+    phone_messages:         !!s.phone_messages,
     lang_fix_enabled:       s.lang_fix_enabled ?? true,
     lang_fix_retries:       s.lang_fix_retries ?? 2,
     output_format_override: s.output_format_override || '',

@@ -97,7 +97,7 @@ body
 |---|---|
 | 식별 | `status`, `currentScenarioId`, `currentScenarioName`, `selectedAgent` |
 | 시나리오 | `agents[]`, `background`, `start_agent`, `max_waves`, `target_duration_minutes`, `extra_fields[]`, `events[]` |
-| 위치 | `location_graph[]`, `perception_mode` (`targeted`\|`spatial`) |
+| 위치 | `location_graph[]`, `perception_mode` (`targeted`\|`spatial`), `talk_through_doors`, `phone_messages` (소통 채널 토글, 기본 false) |
 | 시간 | `time_mode`, `time_per_wave`, `time_categories[]`, `time_estimation_mode`, `idle_minutes_schedule[]`, `max_scene_jump_minutes`, `max_daytime_jump_minutes`, `sim_start_time`, `sim_start_weekday` |
 | 소외 재투입 | `starvation_waves` (소외 재투입 간격(wave), input `#sim-starvation-waves`. 구 `max_silence_waves`는 로드 시 옮겨 읽음) |
 | 에이전트 상태 | `state_categories[]`(수면·개인 용무, []=off), `zone_travel_min_minutes`, `zone_travel_max_minutes`(zone 경계 이동 소요 시간) |
@@ -296,6 +296,13 @@ startSimulation() (run/control.js)
 | `runs/interview.js` | 실행 후 특정 에이전트에게 질문 (`POST /runs/{id}/agents/{name}/interview`) |
 
 ---
+
+> **소통 채널** (`settings/location-graph.js` `readChannelToggles`/`renderChannelToggles`, 위치 그래프 섹션의
+> "문 너머 대화"·"휴대폰 메시지" 체크박스 `#sim-talk-through-doors`·`#sim-phone-messages`): `sim.talk_through_doors`·
+> `sim.phone_messages`(기본 false, `config.js` 가 그대로 보내고 `applyScenario` 는 `=== true` 만 켬). 섹션 뱃지 "문 너머"·
+> "휴대폰". 계약 프리뷰 요청·서명에 포함. 실행 피드: `door_delivery` → `addDoorDeliveryCard`(🚪 한 줄),
+> `phone_message` → `addPhoneMessageCard`(📱 보낸 사람 → 받은 사람, 내용, 보류·거절). 마크다운 `fmtDoorDelivery`·
+> `fmtPhoneMessage`(py `_fmt_door_delivery`·`_fmt_phone_message` 와 같은 문구, 토글 무관 항상). docs simulation-features §16.
 
 > **이벤트 편집기 — 활성 일차** (`settings/events.js`): 모든 이벤트에 `from_day`/`until_day` 숫자 칸("활성 일차 N ~ M
 > 일차", 비우면 null = 제한 없음). 시작이 끝보다 크면 바꾼 쪽에 맞춰 다른 쪽을 고친다(서버 스키마가 역순을 거부).

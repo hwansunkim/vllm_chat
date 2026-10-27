@@ -9,9 +9,9 @@ import { updateSectionBadges } from './sections.js';
 // ── 공간 기반 인지 (perception_mode) ─────────────────────────────────────────
 // 'targeted'(기본) = 발화가 target에 지목된 상대에게만 전달된다(기존 동작 100% 유지).
 // 'spatial'        = ① 같은 장소의 제3자가 지목되지 않아도 엿듣고,
-//                    ② 같은 zone의 다른 장소에 있는 지목 상대(<key>/stranger_N)에게는
-//                       행동 묘사 없이 대사만 전달되고("[화자, 멀리서] …"),
-//                       ③ 혼잣말은 대사가 새지 않고 행동만 같은 장소 사람들에게 보인다.
+//                    ② 혼잣말은 대사가 새지 않고 행동만 같은 장소 사람들에게 보인다.
+//                    다른 장소로는 전달되지 않는다 — 바로 붙은(1 hop) 같은 zone 장소의 지목 상대와는
+//                    아래 talk_through_doors(문 너머 대화)를 켰을 때만 대사가 오간다(그때 그 장소의 제3자도 엿듣는다).
 // UI는 체크박스 하나지만 백엔드 계약은 문자열이므로 경계에서만 변환한다.
 
 export function normalizePerceptionMode(v) {
@@ -30,15 +30,52 @@ export function readPerceptionMode() {
 export function renderPerceptionMode() {
   const chk = document.getElementById('sim-perception-spatial');
   if (chk) chk.checked = normalizePerceptionMode(sim.perception_mode) === 'spatial';
+  renderChannelToggles();
 }
 
 export function initPerceptionModeToggle() {
+  initChannelToggles();
   const chk = document.getElementById('sim-perception-spatial');
   if (!chk) return;
   chk.onchange = () => {
     sim.perception_mode = chk.checked ? 'spatial' : 'targeted';
     updateSectionBadges(sim);   // 접힌 world 섹션 헤더/네비 뱃지("엿듣기")를 즉시 갱신
   };
+}
+
+// ── 소통 채널 (talk_through_doors · phone_messages) ──────────────────────────
+// 둘 다 시나리오 단위 불리언, 기본 false(= 기존 동작·계약 글자 단위 동일).
+const _CHANNEL_TOGGLES = [
+  ['talk_through_doors', 'sim-talk-through-doors'],
+  ['phone_messages',     'sim-phone-messages'],
+];
+
+/** 폼 → 값. 체크박스가 DOM에 없으면(패널 미렌더) 기존 상태 → false 로 폴백. */
+export function readChannelToggles() {
+  const out = {};
+  for (const [field, id] of _CHANNEL_TOGGLES) {
+    const chk = document.getElementById(id);
+    out[field] = chk ? !!chk.checked : !!sim[field];
+  }
+  return out;
+}
+
+export function renderChannelToggles() {
+  for (const [field, id] of _CHANNEL_TOGGLES) {
+    const chk = document.getElementById(id);
+    if (chk) chk.checked = !!sim[field];
+  }
+}
+
+function initChannelToggles() {
+  for (const [field, id] of _CHANNEL_TOGGLES) {
+    const chk = document.getElementById(id);
+    if (!chk) continue;
+    chk.onchange = () => {
+      sim[field] = !!chk.checked;
+      updateSectionBadges(sim);
+    };
+  }
 }
 
 export function renderLocationGraph() {

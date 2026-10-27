@@ -75,6 +75,9 @@ import random
 HELD_KIND_KEY      = "kind"
 HELD_KIND_OVERHEARD = "overheard"     # 엿듣기(`_eavesdrop_tag` 경로)
 HELD_KIND_ACTION    = "action_scene"  # 독백 행동 관찰(`_action_scene_msg` 경로)
+# 휴대폰 메시지(phone.py) — 자기 선언 상태(수면 등)·이동 중에는 다른 비직접 메시지처럼 보류되고(깨우지
+# 않음, 이동 중 턴 금지 불변식 유지), 해제 시 요약에서 가장 먼저 남는다(사람이 보낸 글이다).
+HELD_KIND_PHONE     = "phone"
 # 해제 시 상한: 행동 관찰 씬은 최근 N개만, 전체는 M개. 넘친 건 한 줄 요약.
 HELD_ACTION_KEEP = 2
 HELD_TOTAL_CAP   = 8
@@ -356,6 +359,8 @@ class _StatusMixin:
         if len(keep) > HELD_TOTAL_CAP:
             def tier(i: int) -> int:
                 kind = msgs[i].get(HELD_KIND_KEY)
+                if kind == HELD_KIND_PHONE:
+                    return -1
                 return 2 if kind == HELD_KIND_ACTION else 1 if kind == HELD_KIND_OVERHEARD else 0
             # 등급 오름차순, 같은 등급은 최근(인덱스 큰) 것 먼저.
             ranked = sorted(keep, key=lambda i: (tier(i), -i))

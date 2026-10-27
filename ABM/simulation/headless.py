@@ -143,6 +143,9 @@ def run_config(
         # 백엔드 스키마가 아직 이 필드를 갖고 있지 않을 수 있으므로 getattr로 안전하게.
         # 기본값 "targeted" = 기존 라우팅 동작 그대로.
         perception_mode=getattr(cfg, "perception_mode", "targeted"),
+        # 소통 채널 토글 — 세 조립 경로(/start·headless, /load, /resume)가 같아야 한다(빠뜨리면 그 경로만 꺼진다).
+        talk_through_doors=getattr(cfg, "talk_through_doors", False),
+        phone_messages=getattr(cfg, "phone_messages", False),
         lang_fix_enabled=cfg.lang_fix_enabled,
         lang_fix_retries=cfg.lang_fix_retries,
         llm_max_tokens=cfg.llm_max_tokens,

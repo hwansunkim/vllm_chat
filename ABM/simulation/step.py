@@ -2,7 +2,7 @@ import logging
 
 from ..agent import Agent
 from ..llm import preview_raw
-from ..parser import parse_json_extras_checked
+from ..parser import expected_shape, parse_json_extras_checked
 from ._constants import (
     _COMPRESSION_THRESHOLD, _COMPRESSION_MIN_MSGS, _has_foreign_chars,
     _CONSOLIDATION_EVERY_N_COMPRESSIONS,
@@ -540,7 +540,7 @@ class _StepMixin:
             logger.warning(
                 f"[extras 타입 위반] kind=agent_turn wave={disp_wave} agent={agent_key} "
                 f"field={err['field']} type={err['type']} 값={err['preview']} "
-                f"→ 이 필드만 무시(문자열/null 이어야 함). 원문(앞 200자)={preview_raw(content)}"
+                f"→ 이 필드만 무시({expected_shape(err['field'])} 이어야 함). 원문(앞 200자)={preview_raw(content)}"
             )
         result = self._apply_turn_result(
             active_agent, agent_key, content, reasoning, usage, disp_wave, turn, est_tokens,
@@ -557,6 +557,9 @@ class _StepMixin:
         result["bring_along"]        = extras.get("bring_along")
         result["update_appearance"]  = extras.get("update_appearance")
         result["enter_state"]        = extras.get("enter_state")
+        result["phone_message"]      = extras.get("phone_message")
+        # 형식이 틀린 phone_message — 휴대폰 처리 단계가 다음 턴에 형식 안내를 준다(토글 on 일 때만).
+        result["phone_message_malformed"] = any(e["field"] == "phone_message" for e in type_errors)
         result["time_str"]           = time_str
         # 이 턴이 실제로 성공했을 때만 회복 안내 플래그를 내린다. LLM 실패로
         # 위에서 롤백됐다면 이 줄에 도달하지 않으므로, 안내는 다음 성공한 턴에

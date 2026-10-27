@@ -25,7 +25,8 @@ import { renderInfectionConfig, readInfectionModel, addSymptomStage } from './in
 import { renderTemperatureSlider } from './temperature.js';
 import { renderServerSelect } from './server-select.js';
 import { renderLocationGraph, readLocationGraph, addLocationNode,
-         renderPerceptionMode, readPerceptionMode, initPerceptionModeToggle } from './location-graph.js';
+         renderPerceptionMode, readPerceptionMode, initPerceptionModeToggle,
+         readChannelToggles } from './location-graph.js';
 import { renderContractPreview, readOutputFormatOverride } from './contract-preview.js';
 
 // 기존 사용처(index.js 등)가 계속 './settings/page.js' 하나만 import 하도록 재수출한다.
@@ -170,6 +171,7 @@ export function readConfigFromUI() {
   // 위치 그래프가 비어 있어도 값은 그대로 보존한다 — 엔진이 위치 없는 시나리오에서는
   // "전원이 같은 방"으로 해석하므로 무해하고, 장소를 지웠다 다시 넣을 때 초기화되지 않는다.
   sim.perception_mode  = readPerceptionMode();
+  Object.assign(sim, readChannelToggles());   // talk_through_doors · phone_messages
   sim.lang_fix_enabled = document.getElementById('sim-lang-fix-enabled')?.checked ?? true;
   sim.lang_fix_retries = parseInt(document.getElementById('sim-lang-fix-retries')?.value) || 2;
   // system 에이전트 설정 읽기

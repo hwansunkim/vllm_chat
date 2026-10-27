@@ -8,6 +8,7 @@ import {
   updateWaveIndicator, addDirectorCallCard, addInterventionCard, addWorldEventCard,
   addMovementCard, addAppearanceCard, addSituationCard, applyWaveTimeStr,
   addInfectionCard, addMeetingCard, addTimeJumpCard, addStatusCard, flushPendingWaveCards,
+  addPhoneMessageCard, addDoorDeliveryCard,
 } from './feed.js';
 import { updateAgentCard, updateAgentLocation, updateAgentInfection,
          updateAgentMeetingBadge, updateAgentStatus, updateAgentPresence,
@@ -80,6 +81,12 @@ export function connectSSE() {
       addD3Edge(edge.source, edge.target, edge.emotion || (edge.meta || {}).emotion || 'neutral')
     );
   });
+
+  // 문 너머 대화(talk_through_doors) — 바로 붙은 같은 구역 장소의 직접 타깃에게 말이 닿았다. 관계 그래프 edge 는
+  // turn_complete 의 new_edges(door: true)에 이미 있으므로 여기서는 피드 한 줄만.
+  es.addEventListener('door_delivery', e => addDoorDeliveryCard(JSON.parse(e.data)));
+  // 휴대폰 메시지(phone_messages) — 보낸 사람 → 받은 사람, 내용, 거절·보류.
+  es.addEventListener('phone_message', e => addPhoneMessageCard(JSON.parse(e.data)));
 
   es.addEventListener('turn_error', e => {
     const d = JSON.parse(e.data);
