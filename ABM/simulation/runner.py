@@ -78,6 +78,11 @@ def _beat_occurrence_after(
 class _RunnerMixin:
     """시뮬레이션 실행 루프, 웨이브 요약, system 에이전트."""
 
+    def export_timed_events(self) -> list[dict]:
+        """예정(at_time) 이벤트의 다음 도래 경과분 — 재개 때 ``run(timed_events_state=)`` 로 되돌린다."""
+        return [{"at_time": te["event"].get("at_time"), "next_at": te.get("next_at")}
+                for te in getattr(self, "_timed_events", None) or []]
+
     def run(
         self,
         start_agent:       str,
@@ -87,6 +92,7 @@ class _RunnerMixin:
         resume_wave:       dict | None = None,
         starvation_waves:  int         = 3,
         target_duration_minutes: int | None = None,
+        timed_events_state: list | None = None,
     ):
         """Wave-based BFS + 시나리오 이벤트 실행.
 
@@ -111,6 +117,13 @@ class _RunnerMixin:
         # 이벤트 트리거는 wave 번호 또는 시계 시각(at_time) 둘 중 하나.
         # at_time 이벤트는 at_days 가 있으면 그 요일마다 반복 발동한다(하루 일과).
         events_by_wave: dict[int, list] = {}
+        # 예정 이벤트의 "다음 도래" 저장값 — 재개(timed_events_state, finish_run 이 저장한
+        # export_timed_events())나 같은 객체로 이어 가는 /continue(직전 run() 의 목록). 없으면 아래
+        # 계산(시작 시각 이전 도래 = 발동함)을 쓴다. 저장값이 필요한 경우: 실패 wave 로 시계가 선
+        # 시각 T 에 이미 발동한 T 이벤트는 계산만으로는 "아직 안 발동"과 구별되지 않아 재개 첫 wave 에
+        # 다시 발동했다(Codex 리뷰 2026-11-02 P1).
+        saved_timed = (timed_events_state if timed_events_state is not None
+                       else self.export_timed_events())
         self._timed_events: list[dict] = []
         for e in (events or []):
             if not isinstance(e, dict):
@@ -133,6 +146,14 @@ class _RunnerMixin:
                 self._timed_events.append(te)
             else:
                 events_by_wave.setdefault(e.get("wave", 0), []).append(e)
+        # 저장값은 같은 이벤트 목록(순서·at_time)일 때만 쓴다 — 설정이 달라졌으면 계산값 그대로.
+        if (isinstance(saved_timed, list) and saved_timed
+                and len(saved_timed) == len(self._timed_events)
+                and all(isinstance(sv, dict) and sv.get("at_time") == te["event"].get("at_time")
+                        for sv, te in zip(saved_timed, self._timed_events))):
+            for sv, te in zip(saved_timed, self._timed_events):
+                na = sv.get("next_at")
+                te["next_at"] = int(na) if isinstance(na, (int, float)) else None
 
         # `resume_wave=None`(새 시작·재개 입력 없음)만 start_agent 로 시작한다.
         # **빈 dict `{}`** 는 "직전 run 의 다음 wave 가 비어 있었다"는 명시적
@@ -155,6 +176,7 @@ class _RunnerMixin:
         attempted_turns = 0
         log_start       = len(self.shared_log)
         silence_count = 0
+        retrying_failed_wave = False   # 직전 wave 가 실패 wave 였다(이번 wave 는 그 재시도)
         # 연속으로 "성공한 발화가 0인" wave 수. 옛 early_stop 이 암묵적으로 하던
         # "LLM 이 전부 죽으면 max_waves 까지 두들기지 말고 멈춘다"를 대체하는
         # 명시적 백스톱. 짧은 말이라도 뱉으면(any success) 0 으로 리셋되므로
@@ -403,7 +425,9 @@ class _RunnerMixin:
             # 전원 agent_exit 로 비워진 wave 를 되살려 no_agents 종료를 무력화한다.
             # 판정식도 `(wave_num+1) % interval` → `wave_num % interval`로 바뀌지만
             # 실제로 개입이 꽂히는 wave 번호는 예전과 동일하다(wave 0만 스킵).
-            if self._sys_enabled and disp_wave > 0 and not self._stop_event.is_set():
+            # 실패 wave 재시도는 같은 입력이어야 하므로 디렉터를 다시 부르지 않는다(개입이 쌓이거나
+            # 참가자가 바뀐다 — Codex 리뷰 2026-11-02 P2). 원래 개입은 재시도 입력에 이미 들어 있다.
+            if self._sys_enabled and disp_wave > 0 and not self._stop_event.is_set() and not retrying_failed_wave:
                 if disp_wave % self._sys_interval == 0:
                     logger.info(f"[W{disp_wave}] system 에이전트 호출 시작, current_wave={list(current_wave.keys())}")
                     try:
@@ -943,6 +967,16 @@ class _RunnerMixin:
                     + ", ".join(f"{k}({n}건)" for k, n in sorted(held_now.items()))
                 )
 
+            # ── 실패 wave — 턴을 시도했지만 성공한 응답이 하나도 없다 ─────────────
+            # LLM 연결 오류·빈 응답 등으로 아무도 행동하지 못한 wave 는 "전원 침묵"이 아니다.
+            # 침묵으로 세면 연속 침묵 idle 점프(60·120·180분…)가 걸려, 아무도 움직이지 않은
+            # 채 몇 시간이 흐르고 그 사이 동석 시간이 감염 판정에 들어간다(v16 case1 실측:
+            # 연결 끊김 뒤 08:21 → 13:30). 실패 wave 는 시간을 흘리지 않고(감염 t_d=0)
+            # 침묵 카운터도 건드리지 않으며, 같은 입력으로 같은 참가자를 다시 부른다.
+            # 연속되면 아래 진행 불가 백스톱(no_progress)이 마지막 정상 wave 시각에서 멈춘다.
+            dead_wave = bool(results) and not any(r.get("success") for r in results.values())
+            retrying_failed_wave = dead_wave
+
             # ── 침묵 처리 — 종료가 아니라 재투입/시간 점프 ────────────────────────
             organically_filled = bool(next_wave)
             # 이번 wave 끝에 결정적 idle 시간 점프를 할지(아래 시간 누적 블록).
@@ -966,7 +1000,20 @@ class _RunnerMixin:
                 and not _mid_trip_now
                 and not any(tag.startswith(("알림응답:", "기상:")) for tag in world_activity)
             )
-            if not next_wave and world_activity and not all_locked_now and not lone_activity:
+            if dead_wave:
+                # 실패한 턴은 incoming 을 롤백했으므로 이번 wave 입력을 그대로 다시 넣는다
+                # (보류 해제분·알림 포함). 이번 wave 에 새로 생긴 주입이 있으면 뒤에 붙인다.
+                retry = {
+                    k: [*current_wave.get(k, []), *next_wave.get(k, [])]
+                    for k in [*current_wave, *(k for k in next_wave if k not in current_wave)]
+                    if k in self.active_agents
+                }
+                next_wave = retry
+                logger.warning(
+                    f"[W{disp_wave}] 성공한 응답 0 — 실패 wave(시간 정지·침묵 아님), "
+                    f"같은 입력으로 재시도: {sorted(retry)}"
+                )
+            elif not next_wave and world_activity and not all_locked_now and not lone_activity:
                 # 말은 아무에게도 닿지 않았지만 세계가 움직였다 — 침묵이 아니다. 카운터를 리셋하고 시간은 일반 추정.
                 # 재투입은 전원 침묵 1회째와 같다(상태에 안 묶인 가용 전원) — 무언가 막 일어났으니 다들 반응할 수 있게.
                 # 재투입 규칙 자체(1회째 전원 · 2회째부터 소외 해당자)는 바꾸지 않는다 — 카운터만 리셋된다.
@@ -1112,7 +1159,10 @@ class _RunnerMixin:
             # 결정적 idle 스케줄을 쓴다.
             if self._time_mode == "variable":
                 has_content = any(r.get("success") for r in results.values())
-                if idle_jump:
+                if dead_wave:
+                    # 실패 wave — 시계를 멈춘다(위 침묵 처리 주석). time_jump 도 내지 않는다.
+                    pass
+                elif idle_jump:
                     # 연속 전원 침묵 2회째에 스케줄 첫 값, 3회째에 둘째 값 … (끝에서
                     # 포화). 전원 상태 잠금으로 1회째에 들어온 경우도 인덱스 0 —
                     # 어차피 아래 all_locked 분기가 해제 시점으로 덮어쓴다.
@@ -1157,7 +1207,7 @@ class _RunnerMixin:
                         if state_wake_at is not None:
                             raw_jump    = max(1, state_wake_at - self._elapsed_minutes)
                             jump_reason = "전원 상태(수면·이동 등) 해제 대기"
-                    # 결정적 idle 점프도 두 시각은 넘기지 않는다. _clamp_time_jump 는
+                    # 결정적 idle 점프도 아래 시각(과 목표 기간 마감)은 넘기지 않는다. _clamp_time_jump 는
                     # LLM/카테고리 경로 전용이라 여기서 따로 못 박는다(같은 원칙: 후보를
                     # 모아 min 한 번).
                     # - 예정 이벤트(at_time) — "가족이 각자 나가 있는 낮"에 15:00 하교·
@@ -1168,8 +1218,8 @@ class _RunnerMixin:
                     #   점프). 해제 시점에서 멈추면 다음 wave 시작의 만료 처리가 그
                     #   사람에게 해제 알림 + 턴을 준다. 전원 잠금이면 raw_jump가 이미
                     #   그 시점이라 이 후보는 걸리지 않는다.
-                    # 동률이면 예정 이벤트가 먼저(목록 순서 — min은 첫 최솟값을 고른다).
-                    # 두 후보 모두 "지금보다 뒤"만 남는 조회라(_next_pending_beat는
+                    # 동률이면 예정 이벤트 → 상태 해제 → 목표 순(목록 순서 — min은 첫 최솟값을 고른다).
+                    # 앞의 두 후보는 "지금보다 뒤"만 남는 조회라(_next_pending_beat는
                     # next_at > 지금, _earliest_status_clear는 아직 유효한 상태만)
                     # room ≥ 1이지만, 0분 점프면 같은 시각에 머문 채 침묵 wave가
                     # 반복되므로 max(1, …)로 한 번 더 못 박는다.
@@ -1188,6 +1238,13 @@ class _RunnerMixin:
                         room = state_wake_at - self._elapsed_minutes
                         if 0 < room < raw_jump:
                             idle_limits.append((room, "상태 해제 시점"))
+                    # 목표 기간 마감 — _clamp_time_jump 와 같은 캡. 빠져 있어 마지막 idle
+                    # 점프가 목표를 지나쳤다(실측: v16 case2 `b7eb9b06` W1093, 남은 6분인데
+                    # 상태 해제까지 14분 점프 → 10088분 종료).
+                    if self._target_deadline_elapsed is not None:
+                        room = self._target_deadline_elapsed - self._elapsed_minutes
+                        if 0 < room < raw_jump:
+                            idle_limits.append((room, "목표 기간 종료"))
                     if idle_limits:
                         cap, cap_label = min(idle_limits, key=lambda t: t[0])
                         jump = max(1, cap)

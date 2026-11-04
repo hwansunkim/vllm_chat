@@ -24,6 +24,11 @@ GUI 와 **공유**한다.
     # DB에 저장된 시나리오를 id 로 실행 + 설정 오버라이드
     python -m ABM.cli run --scenario-id <uuid> --max-waves 200 --server-id <server>
 
+    # 멈춘 실행(LLM 연결 끊김 등)을 저장 상태에서 이어 실행 — 새 실행 ID, 누적 wave·시각.
+    # 목표 기간은 원래 시나리오의 누적 종료 시점이라 남은 분만 돈다. --output-dir 결과는
+    # 앞선 실행들까지 이어 붙인 전체 기간을 담는다.
+    python -m ABM.cli run --resume <run_id> --output-dir run/case1/
+
     # 이미 끝난 실행(GUI 실행 포함)을 마크다운으로 다시 뽑기
     python -m ABM.cli export --run-id <uuid> -o out.md
     python -m ABM.cli export --scenario "4인가족" --latest
@@ -174,7 +179,11 @@ def _build_config(args):
     from pydantic import ValidationError
     from backend.api.simulation.schemas import SimStartConfig
 
-    data, name = _load_scenario(getattr(args, "scenario", None), args.scenario_id)
+    resume_row = None
+    if getattr(args, "resume", None):
+        data, name, resume_row = _load_resume_source(args)
+    else:
+        data, name = _load_scenario(getattr(args, "scenario", None), args.scenario_id)
     data = dict(data)
     # 구 시나리오 스냅샷에만 있는 폐기 필드 — 런타임이 무시하지만 남겨둬도 무해하다.
     if args.max_waves is not None:
@@ -192,7 +201,77 @@ def _build_config(args):
         cfg = SimStartConfig(**data)
     except ValidationError as e:
         raise ConfigError(f"시나리오 설정이 스키마를 만족하지 않습니다:\n{e}") from e
+    if resume_row is not None and cfg.target_duration_minutes:
+        # 목표 기간은 원래 시나리오의 누적 종료 시점이다 — 이미 지났으면 이어 갈 것이 없다.
+        done = resume_row["elapsed_minutes"] or 0
+        if done >= cfg.target_duration_minutes:
+            raise ConfigError(
+                f"이 실행은 이미 목표 기간에 도달했습니다(경과 {done}분 ≥ {cfg.target_duration_minutes}분)."
+            )
     return cfg, (name or "시나리오")
+
+
+def _load_resume_source(args) -> tuple[dict, str, dict]:
+    """``--resume RUN_ID`` — 저장된 실행의 설정과 재개 가능 여부를 읽기 전용으로 확인한다.
+
+    재개는 그 실행이 끝날 때 남긴 설정 스냅샷·기억·런타임 상태(``agent_snapshots``)를 쓴다.
+    끝나지 않은(``running``) 실행이나 스냅샷이 빠진 실행(실행 중 예외로 끝난 경우 등)은
+    거절한다. 시나리오 파일은 받지 않는다 — 시나리오를 고친 뒤 재개하면 같은 실행이 아니다.
+    """
+    if args.scenario or args.scenario_id or args.no_db or args.runs != 1 or args.concurrency != 1:
+        raise ConfigError("--resume 은 시나리오 입력, --no-db, 반복/동시 실행과 함께 쓸 수 없습니다.")
+    from ABM.config import LOG_DIR
+    import sqlite3
+    path = os.path.join(LOG_DIR, "simulation.db")
+    if not os.path.exists(path):
+        raise ConfigError(f"실행 기록 DB가 없습니다: {path}")
+    conn = sqlite3.connect("file:" + path + "?mode=ro", uri=True)
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM simulation_runs WHERE run_id=?", (args.resume,)).fetchone()
+        if row is None:
+            raise ConfigError("재개할 실행을 찾을 수 없습니다: " + args.resume)
+        if row["status"] == "running":
+            raise ConfigError("아직 실행 중으로 기록된 실행은 재개할 수 없습니다 "
+                              "(프로세스가 강제 종료됐다면 상태 스냅샷도 남지 않았습니다).")
+        try:
+            data = json.loads(row["config_json"])
+            saved = conn.execute(
+                "SELECT agent_key, memory_json, state_json FROM agent_snapshots WHERE run_id=?",
+                (args.resume,),
+            ).fetchall()
+            if {a["name"] for a in data["agents"]} != {r["agent_key"] for r in saved}:
+                raise ValueError("incomplete snapshots")
+            for r in saved:
+                if not isinstance(json.loads(r["memory_json"]), list) or not isinstance(json.loads(r["state_json"]), dict):
+                    raise ValueError("invalid snapshots")
+        except (TypeError, ValueError, KeyError) as e:
+            raise ConfigError("설정 또는 상태 스냅샷이 없어 재개할 수 없습니다.") from e
+        return data, row["scenario_name"] or "", dict(row)
+    finally:
+        conn.close()
+
+
+def _resume_history(db, run_id: str) -> tuple[list[dict], list[dict]]:
+    """재개한 실행의 조상(``resumed_from`` 사슬)이 남긴 로그·이벤트를 오래된 순으로 모은다.
+
+    재개 run 은 wave 번호가 누적으로 이어지므로(``start_wave``) 이어 붙이면 하나의 실행처럼
+    읽힌다. ``/continue`` 처럼 링크를 남기지 않은 이음매에서는 거기서 멈춘다.
+    """
+    chain: list[str] = []
+    cur = run_id
+    while cur and cur not in chain:
+        row = db.get_run(cur)
+        if row is None:
+            break
+        chain.append(cur)
+        cur = row.get("resumed_from")
+    logs: list[dict] = []
+    events: list[dict] = []
+    for rid in reversed(chain):
+        logs.extend(db.get_run_log(rid))
+        events.extend(db.get_run_events(rid))
+    return logs, events
 
 
 def _parse_include(args) -> frozenset:
@@ -447,6 +526,7 @@ def _finish_db_run(db, run_id: str, sim, status: str) -> None:
             active_agents=sim.active_agents,
             pending_wave=sim._pending_wave,
             elapsed_minutes=elapsed,
+            timed_events=sim.export_timed_events() if hasattr(sim, "export_timed_events") else None,
         )
     except Exception:
         pass
@@ -462,16 +542,21 @@ def _finish_db_run(db, run_id: str, sim, status: str) -> None:
         pass
 
 
-def _write_run_bundle(directory, cfg, scenario_name, res, status, include):
-    """실행 종료 상태를 GUI 컨텍스트 조회와 같은 프롬프트 조립 경로로 저장한다."""
+def _write_run_bundle(directory, cfg, scenario_name, res, status, include, shared_log=None, events=None):
+    """실행 종료 상태를 GUI 컨텍스트 조회와 같은 프롬프트 조립 경로로 저장한다.
+
+    ``shared_log``/``events`` 를 주면(재개 실행의 전체 이력) 문서·CSV 를 그것으로 만든다.
+    """
     from ABM.export.csv import render_location_csv
     from ABM.export.markdown import render_markdown
 
+    shared_log = res.shared_log if shared_log is None else shared_log
+    events = res.events if events is None else events
     _write_output(render_markdown(
-        config=cfg.model_dump(), shared_log=res.shared_log, events=res.events,
+        config=cfg.model_dump(), shared_log=shared_log, events=events,
         scenario_name=scenario_name, status=status, include=include,
     ), os.path.join(directory, "scenario.md"))
-    _write_output(render_location_csv(res.shared_log, res.events),
+    _write_output(render_location_csv(shared_log, events),
                   os.path.join(directory, "locations.csv"))
     sim = res.sim
     for index, (name, agent) in enumerate(sim.agents.items(), 1):
@@ -552,7 +637,10 @@ def cmd_run(args) -> int:
                     random.seed(args.seed + i)
                 started = time.time()
                 if db is not None:
-                    db.create_run(run_id, cfg.scenario_id, scenario_name, cfg.model_dump_json())
+                    prior = db.get_run(args.resume) if getattr(args, "resume", None) else None
+                    start_wave = ((prior.get("start_wave") or 0) + (prior.get("total_waves") or 0)) if prior else 0
+                    db.create_run(run_id, cfg.scenario_id, scenario_name, cfg.model_dump_json(),
+                                  start_wave=start_wave, resumed_from=getattr(args, "resume", None))
                 try:
                     res = run_config(
                         cfg,
@@ -563,6 +651,7 @@ def cmd_run(args) -> int:
                         sim_id=run_id,
                         stop_event=stop_ev,
                         on_event=progress.callback(idx),
+                        resume_from=getattr(args, "resume", None),
                     )
                 except Exception as e:
                     if db is not None:
@@ -577,22 +666,30 @@ def cmd_run(args) -> int:
                 if db is not None:
                     _finish_db_run(db, run_id, res.sim, status)
 
+                # 이번 run 은 메모리의 shared_log/events 를 그대로 쓴다(--no-db 에서도 문서가 나온다).
+                # 재개 실행이면 앞선 실행들의 기록을 DB 에서 읽어 앞에 붙여, 문서·CSV 가
+                # 시나리오 처음부터의 전체 기간을 담게 한다.
+                shared_log, events = res.shared_log, res.events
+                if getattr(args, "resume", None) and db is not None:
+                    prior_log, prior_events = _resume_history(db, args.resume)
+                    shared_log = prior_log + shared_log
+                    events = prior_events + events
+
                 if bundle_dir:
                     directory = bundle_dir if n == 1 else os.path.join(bundle_dir, f"run_{idx:03d}")
                     # 기존 결과를 덮어쓰지 않도록 실행별 고유 디렉토리를 만든다.
                     directory = os.path.join(directory, run_id)
-                    _write_run_bundle(directory, cfg, scenario_name, res, status, include)
+                    _write_run_bundle(directory, cfg, scenario_name, res, status, include,
+                                      shared_log=shared_log, events=events)
                     progress.say(f"→ {directory}")
 
                 if fmt == "csv":
-                    # DB 조회가 아니라 메모리의 shared_log/events 를 그대로 쓴다 —
-                    # 그래서 --no-db 실행에서도 CSV 가 나온다.
-                    doc = render_location_csv(res.shared_log, res.events)
+                    doc = render_location_csv(shared_log, events)
                 else:
                     doc = render_markdown(
                         config=cfg.model_dump(),
-                        shared_log=res.shared_log,
-                        events=res.events,
+                        shared_log=shared_log,
+                        events=events,
                         scenario_name=scenario_name,
                         status=status,
                         include=include,
@@ -604,6 +701,14 @@ def cmd_run(args) -> int:
                     + " · "
                     f"{time.time() - started:.0f}s"
                 )
+                if res.end_reason == "no_progress" and db is not None:
+                    # 진행률이 아니라 조치 안내라 --quiet 에서도 낸다.
+                    print(
+                        f"⚠ [run {idx}/{n}] 성공한 응답이 이어지지 않아 멈췄습니다(LLM 연결 등). "
+                        f"마지막 정상 wave 시각에서 이어 가려면: python -m ABM.cli run --resume {run_id}"
+                        + (f" --output-dir {bundle_dir}" if bundle_dir else ""),
+                        file=sys.stderr, flush=True,
+                    )
                 return {
                     "idx": idx, "run_id": run_id, "doc": doc, "error": None,
                     "end_reason": res.end_reason,
@@ -737,6 +842,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # run ---------------------------------------------------------------------
     r = sub.add_parser("run", help="시나리오를 실행하고 문서(마크다운/CSV)를 만든다")
+    r.add_argument("--resume", metavar="RUN_ID",
+                   help="멈춘 실행을 저장 상태에서 이어 실행(새 실행 ID, 누적 wave·시각). 시나리오 파일 대신 쓴다")
     r.add_argument("scenario", nargs="?", help="시나리오 JSON 경로")
     r.add_argument("--scenario-id", help="DB(simulation_scenarios)에 저장된 시나리오 id")
     r.add_argument("-o", "--output", help="출력 파일 (- 면 stdout)")

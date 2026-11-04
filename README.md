@@ -46,6 +46,13 @@ python -m ABM.cli run scenario.json --output-dir output/
 # -n 사용 시 output/run_001/<실행 UUID>/ 등으로 실행별 분리된다.
 # --no-db 와도 함께 사용 가능. -o, --outdir, --format csv 와는 함께 쓰지 않는다.
 
+# 멈춘 실행(LLM 연결 끊김 등으로 no_progress)을 저장 상태에서 이어 실행
+python -m ABM.cli run --resume <run_id> --output-dir output/
+# 새 실행 UUID 로 기록되고 wave 번호·시각은 앞 실행에 이어진다(resumed_from 에 앞 실행 id).
+# 목표 기간은 원래 시나리오의 누적 종료 시점이라 남은 분만 돈다. 시나리오 파일은 받지 않는다.
+# --output-dir 의 scenario.md·locations.csv 는 앞 실행들까지 이어 붙인 전체 기간을 담는다.
+# no_progress 로 멈추면 CLI 가 이 명령을 안내한다. 실행 중 강제 종료된 실행은 상태가 저장되지 않아 재개할 수 없다.
+
 # 설정만 검증 + 엔진 프롬프트 계약 미리보기 (LLM 서버 불필요)
 python -m ABM.cli run scenario.json --dry-run
 

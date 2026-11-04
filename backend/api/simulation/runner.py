@@ -131,6 +131,9 @@ def finalize_run(db, run_sim_id: str | None, stop_event: threading.Event,
                         # raw _elapsed_minutes를 저장하면 fixed 모드에서 이번 run의
                         # wave 경과가 통째로 누락돼 /load·/resume이 시계를 되감는다.
                         elapsed_minutes=_total_elapsed_minutes(sim_obj),
+                        # 예정 이벤트의 다음 도래 — 재개가 이미 발동한 이벤트를 다시 발동하지 않게.
+                        timed_events=(sim_obj.export_timed_events()
+                                      if hasattr(sim_obj, "export_timed_events") else None),
                     )
                 except Exception:
                     pass

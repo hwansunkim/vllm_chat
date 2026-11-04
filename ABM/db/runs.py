@@ -36,12 +36,14 @@ class RunsMixin:
         scenario_name: str | None,
         config_json: str,
         start_wave: int = 0,
+        resumed_from: str | None = None,
     ):
         """`start_wave` = 이 run의 첫 wave가 갖는 누적 표시 wave 번호.
 
         fresh /start는 0, /continue·/resume은 직전 run의 (start_wave + total_waves).
         누적 마지막 wave = start_wave + total_waves 로 유도한다(`finish_run`은
         `total_waves`에 계속 per-run 값을 넣는다 — 하위호환·run_number 분석용).
+        `resumed_from` = 저장 상태를 이어받은 직전 run id(/resume·CLI --resume). 새 시작은 None.
         """
         conn = self._conn()
         run_number = 1
@@ -53,10 +55,10 @@ class RunsMixin:
             run_number = (row["cnt"] or 0) + 1
         conn.execute(
             "INSERT INTO simulation_runs "
-            "(run_id, scenario_id, scenario_name, run_number, status, started_at, config_json, start_wave) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+            "(run_id, scenario_id, scenario_name, run_number, status, started_at, config_json, start_wave, resumed_from) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
             (run_id, scenario_id, scenario_name, run_number, "running", time.time(),
-             config_json, int(start_wave or 0)),
+             config_json, int(start_wave or 0), resumed_from),
         )
         conn.commit()
 
@@ -69,6 +71,7 @@ class RunsMixin:
         active_agents: set | None = None,
         pending_wave:  dict | None = None,
         elapsed_minutes: int | None = None,
+        timed_events: list | None = None,
     ):
         """실행 종료 메타데이터를 저장한다.
 
@@ -84,16 +87,43 @@ class RunsMixin:
             "UPDATE simulation_runs "
             "SET status=?, total_waves=?, "
             "total_turns=(SELECT COUNT(*) FROM simulation_log WHERE run_id=?), finished_at=?, "
-            "active_agents_json=?, pending_wave_json=?, elapsed_minutes=? "
+            "active_agents_json=?, pending_wave_json=?, elapsed_minutes=?, timed_events_json=? "
             "WHERE run_id=?",
             (
                 status, total_waves, run_id, time.time(),
                 json.dumps(list(active_agents), ensure_ascii=False) if active_agents is not None else None,
                 json.dumps(pending_wave, ensure_ascii=False) if pending_wave is not None else None,
                 elapsed_minutes,
+                json.dumps(timed_events, ensure_ascii=False) if timed_events is not None else None,
                 run_id,
             ),
         )
+        conn.commit()
+
+    # 재개 run 이 이어받는 구조화 기억(압축 결과). 원문 근거(messages)·과거 버전 이력은 원래 run 에 남긴다.
+    _INHERITED_MEMORY_TABLES = ("episodic_memory", "semantic_memory", "relationship_memory", "agent_self_state")
+
+    def copy_structured_memory(self, src_run_id: str, dst_run_id: str) -> None:
+        """구조화 기억을 직전 run 에서 새 run 으로 복사한다(/resume · CLI --resume).
+
+        구조화 기억은 run(sim_id) 단위로 저장되고 읽힌다. 복사하지 않으면 재개 run 의 첫 압축 뒤
+        `_fresh_memory_block` 이 새 run 의 기억만 보여 주고, 그 run 을 다시 재개하면 이전 기억이 통째로
+        빠진다(Codex 리뷰 2026-11-02 P1). 복사해 두면 재개를 몇 번 하든 각 run 이 자기 기억을 온전히 갖는다.
+        """
+        if not src_run_id or src_run_id == dst_run_id:
+            return
+        conn = self._conn()
+        for table in self._INHERITED_MEMORY_TABLES:
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()
+                    if r[1] not in ("id", "sim_id")]
+            if not cols:
+                continue
+            col_sql = ", ".join(cols)
+            conn.execute(
+                f"INSERT OR IGNORE INTO {table} (sim_id, {col_sql}) "
+                f"SELECT ?, {col_sql} FROM {table} WHERE sim_id=? ORDER BY rowid",
+                (dst_run_id, src_run_id),
+            )
         conn.commit()
 
     def count_run_turns(self, run_id: str) -> int:

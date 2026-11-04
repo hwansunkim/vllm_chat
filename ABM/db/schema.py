@@ -208,6 +208,10 @@ def migrate(conn: sqlite3.Connection) -> None:
         ("pending_wave_json",  "ALTER TABLE simulation_runs ADD COLUMN pending_wave_json TEXT"),
         ("elapsed_minutes",    "ALTER TABLE simulation_runs ADD COLUMN elapsed_minutes INTEGER"),
         ("start_wave",         "ALTER TABLE simulation_runs ADD COLUMN start_wave INTEGER DEFAULT 0"),
+        # 이 run 이 이어받은 직전 run(/resume·CLI --resume). 이어진 실행의 전체 이력을 거슬러 모을 때 쓴다.
+        ("resumed_from",       "ALTER TABLE simulation_runs ADD COLUMN resumed_from TEXT"),
+        # 예정(at_time) 이벤트의 다음 도래 — 재개가 이미 발동한 이벤트를 다시 발동하지 않게 한다.
+        ("timed_events_json",  "ALTER TABLE simulation_runs ADD COLUMN timed_events_json TEXT"),
     ]:
         if col not in cols:
             conn.execute(ddl)

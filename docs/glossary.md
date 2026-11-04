@@ -415,6 +415,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin,
 | **직접 타깃 / 비직접 메시지** | 직접 타깃 = 화자의 target 해석(1차 라우팅·1-wave 유예·이동 후 보강 배달, `first_resolved`)에 든 수신자. 그 외 수신(씬·엿듣기)은 비직접 — 자기 선언 상태 수신자에게 턴을 만들지 않는다 |
 | **빈 wave 안전장치** | wave 시작(자연 만료·예정 이벤트 편입 뒤)에 current_wave가 비었는데 활성 에이전트가 있으면 `no_agents`로 끝내지 않고 가용 전원(전원 상태 잠금이면 가장 먼저 풀리는 한 명)을 빈 incoming으로 재투입(`_empty_wave_fallback`). 클램프 없이 크게 흐른 idle 점프 뒤 아무도 사유가 없을 때 전원을 부르는 경로 |
 | **진행 불가 (no_progress)** | 연속으로 성공한 발화가 하나도 없는 wave가 `max(6, starvation_waves×2)`회 → 사실상 고장(LLM 서버 다운 등)으로 보고 종료. 구 `early_stop`이 암묵적으로 하던 보호 |
+| **실패 wave (dead wave)** | 턴을 시도했지만 성공한 응답이 0인 wave(LLM 연결 오류 등). 침묵으로 세지 않고 같은 참가자를 같은 입력으로 다시 부른다(디렉터 재호출 없음). 가변 시간 모드는 시계를 멈추고(경과 0분), 고정 시간 모드는 시계가 wave 번호로 정해져 실패 wave 에도 time_per_wave 만큼 흐른다. 이어지면 no_progress 로 멈추고, CLI `run --resume` 으로 이어 간다 |
 | **end_reason** | 종료 사유: `max_waves` / `target_duration` / `no_agents` / `no_progress` / `stopped`. (구 `early_stop_enabled` 플래그와 `silence` end_reason은 제거 — 대화가 시들해지는 것으로는 더 이상 종료하지 않고 시간을 건너뛴다) |
 | **목표 기간 (target_duration_minutes)** | 시뮬레이션 내 경과 시간이 이 값에 도달하면 정상 종료. `max_waves`와 함께 쓰면 먼저 도달하는 쪽 |
 | **step delay** | wave 사이 실제 대기 시간(초). 관전·서버 부하 조절용 |

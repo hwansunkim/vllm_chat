@@ -78,7 +78,14 @@ def resume_simulation(run_id: str):
             new_db        = SimDB(os.path.join(LOG_DIR, "simulation.db"))
             scenario_name = run.get("scenario_name")
             new_db.create_run(run_sim_id, run.get("scenario_id"), scenario_name, config_json,
-                              start_wave=prior_cum)
+                              start_wave=prior_cum, resumed_from=run_id)
+            # 구조화 기억을 새 run 으로 이어받는다(CLI 재개와 같은 규칙) — 새 run 의 첫 압축 뒤나
+            # 다시 재개할 때 이전 기억이 빠지지 않는다.
+            try:
+                new_db.copy_structured_memory(run_id, run_sim_id)
+            except Exception as e:   # 기억 복사 실패가 재개 자체를 막지는 않는다(옛 캐시 경로가 첫 압축까지 이어 준다)
+                import logging
+                logging.getLogger(__name__).warning(f"구조화 기억 복사 실패 {run_id} → {run_sim_id}: {e}")
 
             alias_map    = {a.display_name: a.name for a in cfg.agents if a.display_name.strip()}
             key_to_alias = {v: k for k, v in alias_map.items()}
@@ -210,6 +217,7 @@ def resume_simulation(run_id: str):
                 # max_silence_waves 는 스키마 validator 가 옮겨 읽는다).
                 starvation_waves=cfg.starvation_waves,
                 target_duration_minutes=cfg.target_duration_minutes,
+                timed_events_state=json.loads(run["timed_events_json"]) if run.get("timed_events_json") else None,
             )
             finalize_run(new_db, run_sim_id, stop_ev, sim, eq)
         except Exception as e:

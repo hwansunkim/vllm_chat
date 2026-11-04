@@ -269,17 +269,30 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
        추가, _emit("starvation_reinject")
        (한 번도 턴을 안 받은 에이전트는 run 시작 wave(_wave_base)를 기준으로 간주)
 
+── 실패 wave ──
+18a. dead_wave = 턴을 시도했고(results 비어 있지 않음) 성공한 응답이 0 (LLM 연결 오류·빈 응답·파싱 실패).
+     침묵 처리(18)보다 먼저 판정: silence_count 는 그대로, idle_jump 없음,
+     next_wave = 이번 wave 입력(current_wave — 실패 턴은 incoming 을 롤백했다) + 이번 wave 새 주입.
+     가변 시간 모드는 시간 누적(20)도 건너뛴다 → 경과 0분, 감염 t_d=0. 고정 시간 모드는 시계가
+     wave 번호로 정해져 실패 wave 에도 time_per_wave 만큼 흐른다. 다음 wave(재시도)는 디렉터를
+     다시 부르지 않는다. (2026-11-02: 예전엔 침묵으로 세어 연결이 끊긴 동안 idle 점프로 몇 시간이 흘렀다.)
+     재개: finish_run 이 예정 이벤트의 다음 도래(export_timed_events)를 저장하고 run(timed_events_state=)
+     가 되돌린다 — 시계가 선 시각에 이미 발동한 이벤트를 재개 첫 wave 에 다시 발동하지 않는다.
+
 ── 진행 불가 백스톱 ──
 19. 이번 wave에 성공한 발화 있으면 dead_waves=0, 없으면 dead_waves+1
     dead_waves >= max(6, starvation_waves×2) → end_reason="no_progress",
        _apply_infection_wave(run_wave, disp_wave, infection_start)(완료된 wave — 20a 와 같은 판정), break
 
 ── 시간 누적 (variable 모드만) ──
-20. idle_jump → idle_minutes_schedule[min(silence_count-1, len)-1] (2회째에 첫 값, 끝에서 포화;
+20. dead_wave → 시간 미누적, time_jump 없음 (18a, 가변 모드)
+    idle_jump → idle_minutes_schedule[min(silence_count-1, len)-1] (2회째에 첫 값, 끝에서 포화;
        전원 상태 잠금이면 가장 이른 해제 시점까지. 그다음 min(예정 이벤트 시각,
-       가장 이른 상태 해제 시점)에서 클램프 — 일부만 상태 중이어도 누군가의 해제
-       시점을 넘지 않는다(실측: 23:09 해제인데 22:46→23:46 점프). 동률이면 예정 이벤트,
-       최소 1분. clamp_reason "상태 해제 시점 전까지 60→29분" / "예정 이벤트(HH:MM) 전까지 …"),
+       가장 이른 상태 해제 시점, 목표 기간 마감)에서 클램프 — 일부만 상태 중이어도 누군가의 해제
+       시점을 넘지 않는다(실측: 23:09 해제인데 22:46→23:46 점프). 목표 마감도 넘지 않는다
+       (2026-11-04, 실측: v16 case2 10088분 종료). 동률이면 예정 이벤트, 최소 1분.
+       clamp_reason "상태 해제 시점 전까지 60→29분" / "예정 이벤트(HH:MM) 전까지 …" /
+       "목표 기간 종료 전까지 …"),
        _emit("time_jump", mode="idle")
     아니면 → _classify_wave_time / _estimate_wave_minutes → _clamp_time_jump
             _emit("time_jump", {...}) → _elapsed_minutes += jump

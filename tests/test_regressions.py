@@ -9538,7 +9538,7 @@ class NaturalStatusExpiryTests(unittest.TestCase):
 
     # ── idle 점프: 일부만 상태 중이어도 해제 시점을 넘지 않는다 ────────────────
 
-    def _partial_lock_run(self, events=None):
+    def _partial_lock_run(self, events=None, target_duration_minutes=None):
         # 22:30 시작. a 는 23:09(경과 39분)에 씻기가 끝나고, b 는 깨어 있지만 혼자
         # 독백 → W0 전원 침묵 #1(일반 경로 10분, 22:40) → W1 전원 침묵 #2 → idle
         # 점프 60분이 23:09 를 지나치면 안 된다.
@@ -9554,7 +9554,8 @@ class NaturalStatusExpiryTests(unittest.TestCase):
             sim._emit = lambda t, d: emitted.append((t, d))
             turns = self._record_turns(sim)
             sim.run("b", max_waves=3, step_delay=0.0, events=events,
-                    resume_wave={"b": []})
+                    resume_wave={"b": []},
+                    target_duration_minutes=target_duration_minutes)
         jumps = [d for t, d in emitted if t == "time_jump" and d.get("mode") == "idle"]
         return sim, turns, jumps
 
@@ -9578,6 +9579,14 @@ class NaturalStatusExpiryTests(unittest.TestCase):
         ])
         self.assertEqual(jumps[0]["minutes"], 10)            # 22:40 → 22:50
         self.assertEqual(jumps[0]["clamp_reason"], "예정 이벤트(22:50) 전까지 60→10분")
+
+    def test_idle_jump_does_not_overshoot_the_target_duration(self):
+        # 목표 25분이 해제 시점(39분)보다 이르면 목표에서 멈추고 정상 종료한다.
+        # 예전엔 idle 경로에 목표 캡이 없어 해제 시점(39분)까지 가서 끝났다(v16 case2 10088분).
+        sim, _, jumps = self._partial_lock_run(target_duration_minutes=25)
+        self.assertEqual(jumps[0]["minutes"], 15)            # 22:40 → 22:55
+        self.assertEqual(jumps[0]["clamp_reason"], "목표 기간 종료 전까지 60→15분")
+        self.assertEqual(sim._elapsed_minutes, 25)
 
     # ── 문구 헬퍼 ─────────────────────────────────────────────────────────────
 
@@ -11250,10 +11259,11 @@ class SilenceReinjectScopeTests(unittest.TestCase):
                          [(0, "category"), (1, "idle")])
         self.assertEqual(jumps[1]["reason"], "연속 전원 침묵 2회")
 
-    def test_second_silence_onward_reinjects_only_starved_agents(self):
+    def test_failed_alert_wave_retries_the_same_agent_instead_of_silence(self):
         # starvation_waves=1. W0·W1 전원 독백(침묵 #1 전원 → #2 해당자 없음) →
-        # idle 60분이 12:30 예정 이벤트에 클램프(20분) → W2 는 알림 대상 a 만인데 a 의 턴이 실패한다(LLM 오류 —
-        # 성공한 알림 응답이 아니라 세계 활동이 아니다) → 침묵 #3 → b·d 가 1 wave 쉬어 소외 해당 → W3 은 b·d 만.
+        # idle 60분이 12:30 예정 이벤트에 클램프(20분) → W2 는 알림 대상 a 만인데 a 의 턴이 실패한다(LLM 오류).
+        # 실패 wave 는 침묵이 아니다(2026-11-02 결정) — 예전엔 침묵 #3 으로 세어 b·d 를 소외 재투입했다.
+        # 이제 시계를 멈추고 W3 에 a 만 같은 입력으로 다시 부른다. 소외 재투입은 W3 끝(정상 독백 침묵)부터다.
         events = [{"at_time": "12:30", "type": "system_message",
                    "message": "12:30. 점심시간이다.", "targets": ["a"]}]
         with tempfile.TemporaryDirectory() as tmp:
@@ -11274,12 +11284,11 @@ class SilenceReinjectScopeTests(unittest.TestCase):
                                       resume_wave={"a": [], "b": [], "d": []})
         self.assertEqual(self._speakers(turns, 1), {"a", "b", "d"})
         self.assertEqual(self._speakers(turns, 2), {"a"})        # 안전장치 미발동
-        self.assertEqual(self._speakers(turns, 3), {"b", "d"})
-        sr = [(d["wave"], d["agents"], d["waves_since"]) for t, d in emitted
-              if t == "starvation_reinject"]
-        # 침묵 분기의 재투입도 같은 관전 이벤트로 나간다(W3 끝엔 이번엔 a 차례).
-        self.assertEqual(sr[0], (2, ["b", "d"], {"b": 1, "d": 1}))
-        self.assertEqual(sr[1][:2], (3, ["a"]))
+        self.assertEqual(self._speakers(turns, 3), {"a"})        # 실패 wave 재시도
+        sr = [(d["wave"], d["agents"]) for t, d in emitted if t == "starvation_reinject"]
+        self.assertNotIn(2, [w for w, _ in sr])                   # 실패 wave 에서는 재투입하지 않는다
+        rosters = {d["wave"]: d for t, d in emitted if t == "wave_roster"}
+        self.assertEqual(rosters[2]["start_elapsed_minutes"], rosters[2]["end_elapsed_minutes"])
 
     def test_alert_response_wave_is_not_silence(self):
         # 같은 장면에서 a 가 12:30 알림에 정상으로 턴을 하면(2026-10-13) 그 wave 는 침묵이 아니다 — 카운터 리셋,
@@ -14151,9 +14160,10 @@ class RosterCsvParityTests(unittest.TestCase):
         self.assertEqual(engine, {"m": 60, "c": 180})
         self.assertEqual(tool, engine)
 
-    def test_wave_with_all_turns_failed_but_idle_time(self):
-        # LLM 전부 실패 — wave 0 은 시간 미누적(t_d=0), wave 1 은 연속 침묵 idle 점프 60분. 발화 행은 하나도 없지만
-        # 명단 행이 있어 도구도 wave 1 의 60분 접촉을 본다.
+    def test_wave_with_all_turns_failed_keeps_the_clock_and_contact_at_zero(self):
+        # LLM 전부 실패 — 실패 wave 는 침묵이 아니라 시계를 멈춘다(2026-11-02 결정). 예전엔 wave 1 이 연속 침묵
+        # idle 점프 60분이 돼, 아무도 행동하지 않은 60분의 동석이 감염 판정에 들어갔다. 명단 행은 남고
+        # 도구도 엔진과 같이 접촉 0분을 본다.
         class _Dead:
             def __call__(self, *a, **k):
                 raise RuntimeError("LLM down")
@@ -14166,8 +14176,8 @@ class RosterCsvParityTests(unittest.TestCase):
             sim.run("a", max_waves=2, step_delay=0, resume_wave={"a": [], "b": []})
             obs, engine, tool, _ = self._tool(tmp, sim, ev, mode="variable", tpw=0)
         self.assertEqual([e for e in sim.shared_log if "speaker" in e], [])
-        self.assertEqual([(w, obs.start[w], obs.end[w]) for w in obs.waves], [(0, 0, 0), (1, 0, 60)])
-        self.assertEqual(engine, {"b": 60})
+        self.assertEqual([(w, obs.start[w], obs.end[w]) for w in obs.waves], [(0, 0, 0), (1, 0, 0)])
+        self.assertEqual(sim._agent_infection.get("b", {}).get("status", "S"), "S")
         self.assertEqual(tool, engine)
 
     def test_variable_mode_parity(self):

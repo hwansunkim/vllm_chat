@@ -10,7 +10,7 @@ SSE 큐 연결과 run row 생명주기만 담당하는 얇은 래퍼가 됐다.
 같이 회귀한다.
 
 ``/load`` · ``/resume`` 은 과거 실행 상태를 복원하는 별도 조립 경로(load.py ·
-resume.py)를 그대로 쓴다. 이 함수는 fresh start 전용이다.
+resume.py)를 쓴다. CLI 재개는 resume_from으로 저장 상태를 복원한다.
 """
 from __future__ import annotations
 
@@ -59,6 +59,7 @@ def run_config(
     stop_event:   threading.Event | None         = None,
     on_event:     Callable[[str, dict], None] | None = None,
     on_sim_ready: Callable[[Any], None] | None   = None,
+    resume_from: str | None = None,
 ) -> RunResult:
     """``SimStartConfig`` 를 실행하고 결과를 모아 돌려준다.
 
@@ -97,6 +98,10 @@ def run_config(
     run_sim_id = sim_id or str(uuid.uuid4())
     stop_ev    = stop_event or threading.Event()
 
+    prior = db.get_run(resume_from) if resume_from and db is not None else None
+    if resume_from and not prior:
+        raise ValueError("Resume requires an existing run and database")
+
     agents = {
         a.name: Agent(a.name, a.system_prompt, log_dir,
                       token_limit=cfg.token_limit,
@@ -106,6 +111,20 @@ def run_config(
                       output_format_template=cfg.effective_output_format_override())
         for a in cfg.agents
     }
+    if prior and cfg.target_duration_minutes and (prior.get("elapsed_minutes") or 0) >= cfg.target_duration_minutes:
+        raise ValueError("Saved run has already reached the target duration")
+    if prior:
+        from ..memory_compressor import build_memory_block
+        # 구조화 기억을 새 run 으로 이어받는다 — 새 run 의 압축·다음 재개도 이전 기억을 본다.
+        db.copy_structured_memory(resume_from, run_sim_id)
+        snapshots = db.get_agent_snapshots(resume_from)
+        aliases = {a.name: a.display_name for a in cfg.agents if a.display_name.strip()}
+        for name, agent in agents.items():
+            agent.memory = list(snapshots[name])
+            block = build_memory_block(resume_from, name, db, key_to_alias=aliases,
+                                       now_elapsed=prior.get("elapsed_minutes") or 0)
+            if block:
+                agent._memory_block = block
     background_log = [{"role": "user", "content": f"[배경] {cfg.background}"}]
 
     # initial_active 설정 — False인 에이전트는 비활성으로 시작
@@ -119,6 +138,10 @@ def run_config(
     # 관계 지도 — 에이전트별 [아는 사람] 계약 블록과 <TARGETS> 관계 라벨의 원본.
     # 비어 있는 시나리오는 엔진이 블록을 아예 만들지 않는다(기존 동작 불변).
     agent_relationships = {a.name: dict(a.relationships) for a in cfg.agents}
+
+    import json
+    if prior and prior.get("active_agents_json") is not None:
+        init_param = json.loads(prior["active_agents_json"])
 
     sim = Simulation(
         agents, background_log, log_dir,
@@ -134,7 +157,7 @@ def run_config(
         role_type_agents={a.name for a in cfg.agents if a.role_type},
         # 처음부터 면역(R) — **새 실행 전용**. /load·/resume(runtime/load.py·resume.py)은 저장 상태를 쓰므로
         # 일부러 넘기지 않는다(시작 옵션을 다시 적용하지 않는다).
-        initially_immune_agents={a.name for a in cfg.agents if a.infection_start_status == "R"},
+        initially_immune_agents=set() if prior else {a.name for a in cfg.agents if a.infection_start_status == "R"},
         system_agent=cfg.system_agent.model_dump(),
         agent_locations=agent_locations,
         agent_visuals=agent_visuals,
@@ -165,7 +188,12 @@ def run_config(
         zone_travel_min_minutes=cfg.zone_travel_min_minutes,
         zone_travel_max_minutes=cfg.zone_travel_max_minutes,
         infection_model=cfg.infection_model.model_dump(),
+        elapsed_minutes_init=(prior.get("elapsed_minutes") or 0) if prior else 0,
+        wave_base_init=((prior.get("start_wave") or 0) + (prior.get("total_waves") or 0)) if prior else 0,
     )
+
+    if prior:
+        sim.restore_agent_state(db.get_agent_states(resume_from))
 
     if on_sim_ready is not None:
         on_sim_ready(sim)
@@ -204,9 +232,11 @@ def run_config(
             cfg.start_agent,
             max_waves=cfg.max_waves,
             step_delay=cfg.step_delay,
-            events=[e.model_dump() for e in cfg.events],
+            events=[e.model_dump() for e in cfg.events if not prior or e.at_time],
+            resume_wave=json.loads(prior["pending_wave_json"]) if prior and prior.get("pending_wave_json") else None,
             starvation_waves=cfg.starvation_waves,
-            target_duration_minutes=cfg.target_duration_minutes,
+            target_duration_minutes=(cfg.target_duration_minutes - (prior.get("elapsed_minutes") or 0)) if prior and cfg.target_duration_minutes else cfg.target_duration_minutes,
+            timed_events_state=json.loads(prior["timed_events_json"]) if prior and prior.get("timed_events_json") else None,
         )
     finally:
         sim.__dict__.pop("_emit", None)
