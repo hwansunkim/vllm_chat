@@ -3,6 +3,7 @@
 
 import { sim, esc, emotionClass, agentLabel, getAgentIcon, simTimeLabel, infectionBadge,
          meetingNarration, agentStatusBadge } from '../state.js';
+import { buildWaveContext } from '../runs/wave-context.js';
 
 // 증상 서사 카드 접두사 — 서버(_build_symptom_context)가 항상 이 머리말로 시작한다.
 // 같은 턴에 위치 안내 카드와 증상 카드가 각각 올 수 있어 이걸로 구분해 다르게 꾸민다.
@@ -52,14 +53,53 @@ export function flushPendingWaveCards(uptoWave) {
   last?.scrollIntoView({ behavior: 'smooth', block: 'end' });
 }
 
+// ── 이력 피드의 위치·상태·감염 꼬리표 ─────────────────────────────────────────
+// 실행 중엔 씬 알림으로 보이던 정보가 이력엔 빠지므로 "이름(위치 · 상태 · 감염) W# → 대상(…)"으로
+// 되살린다. 값은 wave 시작 시점(감염 판정과 같은 기준)이라 그 wave 대사 속 이동은 다음 wave 에 반영된다.
+const CTX_LABEL_MAX = 12;
+
+function _contextTag(ctx, own = {}) {
+  const loc = own.location ?? ctx?.location;
+  const inf = own.infection ?? ctx?.infection;
+  const parts = [];
+  if (loc) parts.push(esc(loc));
+  if (ctx?.traveling) parts.push('🚶 이동 중');
+  if (ctx?.activity) {
+    const label = ctx.activity.label || '';
+    const short = label.length > CTX_LABEL_MAX ? `${label.slice(0, CTX_LABEL_MAX)}…` : label;
+    parts.push(`<span title="${esc(label)}">💤 ${esc(short)}</span>`);
+  }
+  const badge = inf ? infectionBadge(inf) : null;   // S 는 null — 표시 안 함
+  if (badge) parts.push(`<span class="sim-feed-ctx-inf inf-${badge.cls}">${badge.icon} ${esc(badge.label)}</span>`);
+  if (!parts.length) return '';
+  return `<span class="sim-feed-ctx" title="wave 시작 시점의 위치·상태">(${parts.join(' · ')})</span>`;
+}
+
 /**
- * 불러온 실행의 피드. `events` 는 `/runs/{id}/events?types=phone_message,door_delivery` 응답(선택) — 대사와
- * wave 순으로 합쳐 실시간과 같은 채널 카드(buildChannelCard)를 그린다. 없으면 예전과 같다(대사만).
+ * 이력 대사 한 줄의 화자 꼬리표와 대상 HTML. 화자는 로그 행에 저장된 위치·감염(그 턴의 스냅샷)을
+ * 우선 쓰고, 대상은 wave_roster 로 찾는다. 문맥 이벤트가 없는 구버전 실행은 화자 위치만 나온다.
+ */
+export function historyEntryContext(entry, waveCtx) {
+  const wave = entry.wave ?? 0;
+  const speakerTag = _contextTag(waveCtx?.at(wave, entry.speaker),
+    { location: entry.location ?? undefined, infection: entry.infection_status ?? undefined });
+  const targets = (entry.targets || []).filter(t => t !== 'self' && t !== 'system');
+  const targetsHtml = targets.map(t => t === 'all'
+    ? '전체'
+    : `${esc(agentLabel(t))}${_contextTag(waveCtx?.at(wave, t))}`).join(', ');
+  return { speakerTag, targetsHtml };
+}
+
+/**
+ * 불러온 실행의 피드. `events` 는 `/runs/{id}/events?types=…` 응답(선택) — 채널 이벤트는 대사와
+ * wave 순으로 합쳐 실시간과 같은 채널 카드(buildChannelCard)를 그리고, 문맥 이벤트(wave_roster·
+ * agent_status_change)는 대사 머리의 위치·상태·감염 꼬리표가 된다. 없으면 예전과 같다(대사만).
  */
 export function renderHistoricalFeed(entries, events = []) {
   const feed = document.getElementById('sim-feed');
   feed.innerHTML = '';
   resetWaveCardBuffer();
+  const waveCtx = buildWaveContext(events);
 
   const stream = mergeFeedStream(entries, events);
   if (!stream.length) {
@@ -83,9 +123,8 @@ export function renderHistoricalFeed(entries, events = []) {
     }
 
     const agent = sim.agents.find(a => a.name === entry.speaker) || { icon: '🤖', name: entry.speaker };
-    const targets = (entry.targets || []).filter(t => t !== 'self' && t !== 'system');
-    const targetLabels = targets.map(t => t === 'all' ? '전체' : agentLabel(t));
-    const targetStr = targets.length ? `→ ${targetLabels.join(', ')}` : '(독백)';
+    const { speakerTag, targetsHtml } = historyEntryContext(entry, waveCtx);
+    const targetHtml = targetsHtml ? `→ ${targetsHtml}` : '(독백)';
 
     const meta = entry.meta || {};
     const entryEmotion = meta.emotion || 'neutral';
@@ -102,8 +141,9 @@ export function renderHistoricalFeed(entries, events = []) {
     div.innerHTML = `
       <div class="sim-feed-header">
         <span class="sim-feed-speaker">${esc(getAgentIcon(agent, entryEmotion))} ${esc(agent.display_name || agent.name)}</span>
+        ${speakerTag}
         ${waveBadge}
-        <span class="sim-feed-target">${esc(targetStr)}</span>
+        <span class="sim-feed-target">${targetHtml}</span>
       </div>
       <div class="sim-feed-bubble">${esc(entry.content)}</div>
       ${actionNote ? `<div class="sim-feed-action">*${esc(actionNote)}*</div>` : ''}
@@ -295,10 +335,11 @@ export function addWorldEventCard(d) {
 }
 
 // ── 소통 채널 카드 (phone_message · door_delivery) ───────────────────────────
-// 실시간(sse.js)과 과거 피드(renderHistoricalFeed · 이력 보기 모달 replay.js)가 **같은 빌더**를 쓴다 —
-// 휴대폰 본문은 simulation_log 에 없고 phone_message 이벤트에만, 문 너머 전달 사실은 door_delivery
-// 이벤트에만 있으므로 과거 피드도 이 이벤트를 읽어 대사와 함께 그려야 한다.
-export const CHANNEL_EVENT_TYPES = ['phone_message', 'door_delivery'];
+// 실시간(sse.js)과 과거 피드(renderHistoricalFeed · 이력 보기 모달 replay.js)가 **같은 빌더**를 쓴다.
+// 과거 피드가 읽는 채널은 휴대폰뿐이다 — 휴대폰 본문은 simulation_log 에 없고 phone_message 이벤트에만 있다.
+// 문 너머 전달(door_delivery)은 과거 피드에 그리지 않는다: 대사 꼬리표가 화자·대상의 서로 다른 위치를
+// 보여 줘 카드가 중복이다(2026-11-05 사용자 요청). 실시간 피드는 꼬리표가 없어 카드를 그대로 그린다.
+export const CHANNEL_EVENT_TYPES = ['phone_message'];
 
 /** phone_message 페이로드 → 카드 요소(붙이지 않음). 휴대폰 메시지 한 건(보낸 사람 → 받은 사람, 내용, 거절·보류). */
 export function buildPhoneMessageCard(d) {

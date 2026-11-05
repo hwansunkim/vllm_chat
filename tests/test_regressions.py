@@ -18246,6 +18246,64 @@ class CommunicationChannelTests(unittest.TestCase):
         self.assertIn("es.addEventListener('door_delivery'", sse)
 
 
+class HistoryWaveContextTests(unittest.TestCase):
+    """`frontend/js/sim/runs/wave-context.js` — 이력 피드의 wave·에이전트별 위치·상태·감염 조회(2026-11-05).
+
+    상태 구간 규칙: enter 는 턴 안에서 일어나 **다음 wave 부터**, clear 는 wave 시작(자연 만료)이라
+    **그 wave 부터** 상태가 아니다 → enter@w … clear@c = [w+1, c).
+    """
+
+    def _at(self, events, queries):
+        import shutil
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("node 없음")
+        root = Path(__file__).resolve().parent.parent.as_uri()
+        script = (
+            f"const m = await import({json.dumps(root + '/frontend/js/sim/runs/wave-context.js')});"
+            f"const c = m.buildWaveContext({json.dumps(events, ensure_ascii=False)});"
+            f"process.stdout.write(JSON.stringify({{ has: c.hasRoster, out: "
+            f"{json.dumps(queries, ensure_ascii=False)}.map(([w, a]) => c.at(w, a)) }}));"
+        )
+        proc = subprocess.run(["node", "--input-type=module", "-e", script],
+                              capture_output=True, text=True, encoding="utf-8", timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return json.loads(proc.stdout)
+
+    @staticmethod
+    def _st(wave, agent, action, state="sleep", label="수면"):
+        return {"event_type": "agent_status_change", "wave": wave,
+                "data": {"wave": wave, "agent": agent, "action": action, "state": state, "label": label}}
+
+    def test_status_interval_starts_next_wave_and_ends_at_clear_wave(self):
+        ev = [self._st(2, "a", "enter"), self._st(5, "a", "clear")]
+        r = self._at(ev, [[2, "a"], [3, "a"], [4, "a"], [5, "a"]])
+        self.assertFalse(r["has"])
+        self.assertIsNone(r["out"][0])                                   # 진입한 wave 의 턴은 아직 상태 전
+        self.assertEqual(r["out"][1]["activity"], {"state": "sleep", "label": "수면"})
+        self.assertEqual(r["out"][2]["activity"]["label"], "수면")
+        self.assertIsNone(r["out"][3])                                   # 해제 wave 부터 상태 아님
+        self.assertIsNone(r["out"][1]["location"])                       # 명단 없는 구버전 — 위치 모름
+
+    def test_clear_and_reenter_in_same_wave_switches_label(self):
+        ev = [self._st(1, "a", "enter", "custom_3", "업무A"), self._st(4, "a", "clear", "custom_3"),
+              self._st(4, "a", "enter", "custom_3", "업무B")]
+        r = self._at(ev, [[3, "a"], [4, "a"], [5, "a"]])
+        self.assertEqual(r["out"][0]["activity"]["label"], "업무A")
+        self.assertIsNone(r["out"][1])
+        self.assertEqual(r["out"][2]["activity"]["label"], "업무B")
+
+    def test_traveling_status_is_left_to_roster_and_roster_gives_location(self):
+        roster = {"event_type": "wave_roster", "wave": 3, "data": {"wave": 3, "agents": [
+            {"agent": "a", "location": "거실", "status": "I", "traveling": True}]}}
+        ev = [self._st(2, "a", "enter", "traveling", "이동"), roster]
+        r = self._at(ev, [[3, "a"], [3, "zz"], [4, "a"]])
+        self.assertTrue(r["has"])
+        self.assertEqual(r["out"][0], {"location": "거실", "infection": "I", "traveling": True, "activity": None})
+        self.assertIsNone(r["out"][1])
+        self.assertIsNone(r["out"][2])                                   # traveling 상태 이벤트로는 꼬리표를 만들지 않는다
+
+
 class ChannelHistoryFeedDomTests(unittest.TestCase):
     """Codex 리뷰 P2(2026-10-27) — 과거 피드(불러온 실행 #sim-feed · 이력 보기 모달)가 소통 채널 이벤트를 읽어
     실시간과 같은 카드로 그린다. feed.js·replay.js 실제 소스를 최소 DOM(node vm)에서 실행한다."""
@@ -18266,15 +18324,20 @@ class El {
 const feed = new El('div'); const modalFeed = new El('div');
 const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const ctx = { sim: { agents: [], extra_fields: [] }, esc, emotionClass: () => '', agentLabel: k => String(k),
-  getAgentIcon: () => '', simTimeLabel: () => '', infectionBadge: () => null, meetingNarration: () => '',
+  getAgentIcon: () => '', simTimeLabel: () => '',
+  infectionBadge: st => ({ I: { icon: '🦠', label: '감염', cls: 'infected' },
+                           E: { icon: '⏳', label: '잠복기', cls: 'exposed' } })[st] || null,
+  meetingNarration: () => '',
   agentStatusBadge: () => null, console,
   document: { getElementById: id => id === 'sim-feed' ? feed : null, createElement: t => new El(t) } };
 vm.createContext(ctx);
+vm.runInContext(strip(fs.readFileSync('frontend/js/sim/runs/wave-context.js', 'utf8')), ctx);
 vm.runInContext(strip(fs.readFileSync('frontend/js/sim/run/feed.js', 'utf8')), ctx);
 vm.runInContext(strip(fs.readFileSync('frontend/js/sim/runs/replay.js', 'utf8')), ctx);
 const log = [
   { wave: 0, speaker: 'a', content: '', targets: ['self'], meta: {}, action_note: '', timestamp: 1 },
-  { wave: 0, speaker: 'c', content: '밥 먹자', targets: ['b'], meta: {}, action_note: '', timestamp: 2 },
+  { wave: 0, speaker: 'c', content: '밥 먹자', targets: ['b'], meta: {}, action_note: '', timestamp: 2,
+    location: '거실', infection_status: 'I' },
   { wave: 1, speaker: 'b', content: '응', targets: ['c'], meta: {}, action_note: '', timestamp: 3 },
 ];
 const phone = { wave: 0, sender: 'a', sender_name: 'A', recipients: ['b'], recipient_names: ['B'],
@@ -18282,7 +18345,16 @@ const phone = { wave: 0, sender: 'a', sender_name: 'A', recipients: ['b'], recip
 const door = { wave: 0, speaker: 'c', speaker_display: 'C', target: 'b', target_display: 'B', from: '안방', location: '거실' };
 const events = [ { event_type: 'door_delivery', wave: 0, data: door, timestamp: 2.5 },
                  { event_type: 'phone_message', wave: 0, data: phone, timestamp: 2.4 },
-                 { event_type: 'agent_move', wave: 0, data: {}, timestamp: 2.6 } ];
+                 { event_type: 'agent_move', wave: 0, data: {}, timestamp: 2.6 },
+                 // 위치·상태·감염 문맥(wave 시작 명단 · 상태 진입) — 카드로 그리지 않고 대사 꼬리표가 된다
+                 { event_type: 'wave_roster', wave: 0, timestamp: 0.5, data: { wave: 0, agents: [
+                     { agent: 'b', location: '안방', status: 'E', traveling: false },
+                     { agent: 'c', location: '거실', status: 'I', traveling: false } ] } },
+                 { event_type: 'wave_roster', wave: 1, timestamp: 2.9, data: { wave: 1, agents: [
+                     { agent: 'b', location: '안방', status: 'E', traveling: false },
+                     { agent: 'c', location: '거실', status: 'I', traveling: true } ] } },
+                 { event_type: 'agent_status_change', wave: 0, timestamp: 2.7,
+                   data: { wave: 0, agent: 'b', action: 'enter', state: 'sleep', label: '수면' } } ];
 const out = {};
 // 실시간
 ctx.addPhoneMessageCard(phone); ctx.addDoorDeliveryCard(door);
@@ -18316,17 +18388,18 @@ process.stdout.write(JSON.stringify(out));
             with self.subTest(view=view):
                 self.assertTrue(any("UNIQUE_PHONE" in h and "휴대폰 메시지" in h for h in out[view]), out[view])
 
-    def test_door_delivery_marked_in_history_after_that_waves_dialogue(self):
+    def test_door_delivery_not_drawn_in_history_but_phone_ordered_after_dialogue(self):
+        # 2026-11-05 사용자 요청: 이력의 대사 꼬리표가 서로 다른 위치를 보여 줘 문 너머 카드는 중복 → 그리지 않는다.
         out = self._run()
         for view in ("history", "modal"):
             with self.subTest(view=view):
                 items = out[view]
-                i_door = next(i for i, h in enumerate(items) if "문 너머 대화" in h)
+                self.assertFalse(any("문 너머" in h for h in items))
+                i_phone = next(i for i, h in enumerate(items) if "UNIQUE_PHONE" in h)
                 i_c = next(i for i, h in enumerate(items) if "밥 먹자" in h)
                 i_b = next(i for i, h in enumerate(items) if "응" in h and "sim-feed" in h)
-                self.assertLess(i_c, i_door)                 # 같은 wave 의 대사 뒤
-                self.assertLess(i_door, i_b)                 # 다음 wave 대사 앞
-                self.assertIn("C의 말이 문 너머 B에게 전달됐다 (거실)", items[i_door])
+                self.assertLess(i_c, i_phone)                # 같은 wave 의 대사 뒤
+                self.assertLess(i_phone, i_b)                # 다음 wave 대사 앞
                 self.assertFalse(any("agent_move" in h for h in items))   # 채널 외 이벤트는 그리지 않는다
 
     def test_live_and_history_cards_identical_and_no_events_is_legacy(self):
@@ -18335,10 +18408,30 @@ process.stdout.write(JSON.stringify(out));
         for view in ("history", "modal"):
             with self.subTest(view=view):
                 self.assertIn(live_phone, out[view])
-                self.assertIn(live_door, out[view])
+                self.assertNotIn(live_door, out[view])       # 문 너머 카드는 실시간에만
+        self.assertIn("문 너머", live_door)
         self.assertEqual(out["plain"], 3)                    # 채널 이벤트가 없으면 대사 3개뿐
         root = Path(__file__).resolve().parent.parent
         replay = (root / "frontend/js/sim/runs/replay.js").read_text(encoding="utf-8")
-        self.assertIn("events?types=${CHANNEL_EVENT_TYPES.join(',')}", replay)
-        self.assertIn("renderHistoricalFeed(data.log, await fetchChannelEvents(runId));", replay)
-        self.assertIn("renderReplayFeed(feedEl, log, channelEvents);", replay)
+        self.assertIn("[...CHANNEL_EVENT_TYPES, ...CONTEXT_EVENT_TYPES].join(',')", replay)
+        self.assertIn("renderHistoricalFeed(data.log, await fetchFeedEvents(runId));", replay)
+        self.assertIn("renderReplayFeed(feedEl, log, feedEvents);", replay)
+
+    def test_history_lines_show_location_status_and_infection_of_speaker_and_targets(self):
+        # 2026-11-05 사용자 요청: 이력에는 씬 알림이 없어 위치·상태가 빠졌다 → "이름(위치 · 상태 · 감염) W# → 대상(…)".
+        out = self._run()
+        for view in ("history", "modal"):
+            with self.subTest(view=view):
+                items = out[view]
+                c0 = next(h for h in items if "밥 먹자" in h)
+                b1 = next(h for h in items if "응" in h and "sim-feed" in h)
+                # 화자는 로그 행의 스냅샷, 대상은 wave_roster. S 는 표시하지 않는다.
+                self.assertIn("(거실 · <span class=\"sim-feed-ctx-inf inf-infected\">🦠 감염</span>)", c0)
+                self.assertIn("b<span class=\"sim-feed-ctx\"", c0)
+                self.assertIn("(안방 · <span class=\"sim-feed-ctx-inf inf-exposed\">⏳ 잠복기</span>)", c0)
+                # wave 0 에 진입한 수면은 wave 1 부터 보인다. 대상 c 는 wave 1 에 이동 중.
+                self.assertIn("(안방 · <span title=\"수면\">💤 수면</span> · "
+                              "<span class=\"sim-feed-ctx-inf inf-exposed\">⏳ 잠복기</span>)", b1)
+                self.assertIn("(거실 · 🚶 이동 중 · <span class=\"sim-feed-ctx-inf inf-infected\">🦠 감염</span>)", b1)
+                self.assertFalse(any("wave_roster" in h or "agent_status_change" in h for h in items))
+

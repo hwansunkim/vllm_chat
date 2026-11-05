@@ -1,13 +1,14 @@
 // frontend/js/sim/runs/replay.js
 // Run replay modal: read-only feed + resume / restart actions.
 
-import { sim, esc, emotionClass, agentLabel } from '../state.js';
+import { sim, esc, emotionClass } from '../state.js';
 import { fmtTime, statusIcon } from '../utils/time.js';
 import { applyScenario } from '../scenarios.js';
 import { setStatus } from '../run/control.js';
 import { renderAgentCards, resetRunState, updateAgentInfection, updateAgentMeetingBadge } from '../run/cards.js';
 import { renderHistoricalFeed, resetWaveCardBuffer, mergeFeedStream, buildChannelCard,
-         CHANNEL_EVENT_TYPES } from '../run/feed.js';
+         CHANNEL_EVENT_TYPES, historyEntryContext } from '../run/feed.js';
+import { buildWaveContext, CONTEXT_EVENT_TYPES } from './wave-context.js';
 import { initD3Graph, refreshInfectionStyles } from '../graph/d3.js';
 import { initLocationMap, updateAgentInfectionOnMap, setMeetingIntentOnMap } from '../map/d3.js';
 import { updateScenarioLabel } from '../views.js';
@@ -74,23 +75,26 @@ async function restoreMeetingIntents(runId) {
 }
 
 /**
- * 이 실행의 소통 채널 이벤트(phone_message · door_delivery). 휴대폰 본문·문 너머 전달 사실은 로그에 없고 이
- * 이벤트에만 있다 — 이력 보기 모달과 불러온 피드가 대사와 합쳐 그린다(feed.js mergeFeedStream). 저장 형식은
- * 그대로이고, 채널을 안 쓴(또는 구버전) 실행은 빈 배열이라 예전과 같다. 실패해도 대사 피드는 그린다.
+ * 이력 피드가 대사와 함께 쓰는 저장 이벤트.
+ * - 소통 채널(phone_message · door_delivery): 휴대폰 본문·문 너머 전달 사실은 로그에 없고 이 이벤트에만
+ *   있다 — 대사와 합쳐 카드로 그린다(feed.js mergeFeedStream).
+ * - 문맥(wave_roster · agent_status_change): 대사 머리의 위치·상태·감염 꼬리표(wave-context.js).
+ * 저장 형식은 그대로이고, 해당 이벤트가 없는(구버전) 실행은 빈 배열이라 예전과 같다. 실패해도 대사 피드는 그린다.
  */
-export async function fetchChannelEvents(runId) {
+export async function fetchFeedEvents(runId) {
+  const types = [...CHANNEL_EVENT_TYPES, ...CONTEXT_EVENT_TYPES].join(',');
   try {
     const res = await fetch(
-      `/api/simulation/runs/${encodeURIComponent(runId)}/events?types=${CHANNEL_EVENT_TYPES.join(',')}`);
+      `/api/simulation/runs/${encodeURIComponent(runId)}/events?types=${types}`);
     return res.ok ? await res.json() : [];
   } catch (e) {
-    console.warn('[replay] 소통 채널 이벤트를 불러오지 못했습니다:', e);
+    console.warn('[replay] 피드 이벤트(채널·위치 문맥)를 불러오지 못했습니다:', e);
     return [];
   }
 }
 
 /** 이력 보기 모달의 대사 항목 하나(읽기 전용 피드). */
-export function buildReplayDialogueItem(entry) {
+export function buildReplayDialogueItem(entry, waveCtx = null) {
   const div = document.createElement('div');
   div.className = 'sim-feed-item';
   const agentObj = sim.agents.find(a => a.name === entry.speaker);
@@ -105,20 +109,21 @@ export function buildReplayDialogueItem(entry) {
       const cls = f.name === 'emotion' ? emotionClass(val) : 'emotion-neutral';
       return `<span class="sim-feed-badge ${cls}">${esc(val)}</span>`;
     }).join('');
-  const targetArr = Array.isArray(entry.targets) ? entry.targets : [];
-  const targets = targetArr.map(t => t === 'all' ? '전체' : agentLabel(t)).join(', ');
+  const { speakerTag, targetsHtml } = historyEntryContext(
+    { ...entry, targets: Array.isArray(entry.targets) ? entry.targets : [] }, waveCtx);
   div.innerHTML = `
     <div class="sim-feed-speaker">
       <span class="sim-feed-icon">${esc(icon)}</span>
       <span class="sim-feed-name">${esc(label)}</span>
-      <span class="sim-feed-wave-badge">W${entry.wave}</span>
+      ${speakerTag}
+      <span class="sim-feed-wave-badge"${entry.time_str ? ` title="${esc(entry.time_str)}"` : ''}>W${entry.wave}</span>
     </div>
     <div class="sim-feed-body">
       <div class="sim-feed-content">${esc(entry.content)}</div>
       ${actionNote ? `<div class="sim-feed-action">*${esc(actionNote)}*</div>` : ''}
       <div class="sim-feed-meta">
         ${metaBadges}
-        ${targets ? `<span class="sim-feed-target">→ ${esc(targets)}</span>` : ''}
+        ${targetsHtml ? `<span class="sim-feed-target">→ ${targetsHtml}</span>` : ''}
       </div>
     </div>`;
   return div;
@@ -126,8 +131,9 @@ export function buildReplayDialogueItem(entry) {
 
 /** 이력 보기 모달 피드 — 대사와 채널 이벤트를 wave 순으로(실시간·불러온 피드와 같은 채널 카드). */
 export function renderReplayFeed(feedEl, log, events) {
+  const waveCtx = buildWaveContext(events);
   for (const { kind, item } of mergeFeedStream(log, events)) {
-    const el = kind === 'channel' ? buildChannelCard(item) : buildReplayDialogueItem(item);
+    const el = kind === 'channel' ? buildChannelCard(item) : buildReplayDialogueItem(item, waveCtx);
     if (el) feedEl.appendChild(el);
   }
 }
@@ -146,7 +152,8 @@ export async function openRunReplay(runId, runNum) {
 
   const run = await runRes.json();
   const log = await logRes.json();
-  const channelEvents = await fetchChannelEvents(runId);
+  const feedEvents = await fetchFeedEvents(runId);
+  const channelEvents = feedEvents.filter(e => CHANNEL_EVENT_TYPES.includes(e?.event_type));
 
   // config_json 파싱 (빈 객체면 재시작 불가)
   let parsedConfig = null;
@@ -199,7 +206,7 @@ export async function openRunReplay(runId, runNum) {
 
   // 피드 렌더링
   const feedEl = document.getElementById('sim-replay-feed');
-  renderReplayFeed(feedEl, log, channelEvents);
+  renderReplayFeed(feedEl, log, feedEvents);
 
   // MD 내보내기
   document.getElementById('sim-replay-md-btn')?.addEventListener('click', async () => {
@@ -308,7 +315,7 @@ export async function openRunReplay(runId, runNum) {
       initLocationMap(data.agent_locations);
 
       // 과거 대화 피드 복원 — 휴대폰·문 너머 채널 이벤트를 대사와 합쳐 그린다.
-      renderHistoricalFeed(data.log, await fetchChannelEvents(runId));
+      renderHistoricalFeed(data.log, await fetchFeedEvents(runId));
 
       // 감염 뱃지 복원 — /load 응답의 infection 스냅샷을 우선 쓰고, 구버전 서버라
       // 그 필드가 없으면 저장된 infection_update 이벤트 재생으로 폴백한다.

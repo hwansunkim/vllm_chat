@@ -1124,6 +1124,13 @@
 .sim-feed-header { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
 .sim-feed-speaker { font-size: 11px; font-weight: 600; color: #475569; }
 .sim-feed-target  { font-size: 10px; color: #94a3b8; }
+/* 이력 피드의 위치·상태·감염 꼬리표 — "이름(거실 · 💤 수면 · 🦠 감염)". 감염 색은 카드 뱃지와 같다. */
+.sim-feed-ctx     { font-size: 10px; font-weight: 400; color: #6366f1; white-space: nowrap; }
+.sim-feed-ctx-inf { padding: 0 4px; border-radius: 4px; font-weight: 600; }
+.sim-feed-ctx-inf.inf-exposed        { color: #0e7490; background: rgba(8,145,178,0.10); }
+.sim-feed-ctx-inf.inf-presymptomatic { color: #b45309; background: rgba(245,158,11,0.12); }
+.sim-feed-ctx-inf.inf-infected       { color: #be123c; background: rgba(225,29,72,0.10); }
+.sim-feed-ctx-inf.inf-recovered      { color: #15803d; background: rgba(34,197,94,0.12); }
 .sim-feed-bubble  {
   padding: 9px 13px; border-radius: 12px;
   font-size: 13px; line-height: 1.55; color: #1e293b;
