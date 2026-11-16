@@ -4,7 +4,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ._constants import _WEEKDAY_KEYS
-from .status import HELD_KIND_ACTION, HELD_KIND_KEY, HELD_KIND_OVERHEARD, strip_held_kind
+from .status import CROSSED_KEY, HELD_KIND_ACTION, HELD_KIND_KEY, HELD_KIND_OVERHEARD, strip_held_kind
 
 logger = logging.getLogger(__name__)
 
@@ -948,6 +948,12 @@ class _RunnerMixin:
                     return "self_state"
                 return None
 
+            # 엇갈린 대사 — 이번 wave 에 자기 턴을 한 사람이 받는 이번 wave 의 말(routed: 직접·문 너머·
+            # 엿듣기·이동 후 보강)은 그 턴과 **동시에** 나왔다(턴은 병렬, 말한 사람은 받는 사람의 이번 턴을
+            # 모른다). 표식(CROSSED_KEY)을 달아 `_inject_incoming` 이 그렇게 알려 준다. 씬(도착·휴대폰·행동
+            # 관찰)은 응답이 아니라 관찰이라 달지 않는다. 보류분은 나중에 요약돼 전달되므로 달지 않는다.
+            acted_now = {k for k, r in results.items() if r.get("success")}
+
             next_wave: dict[str, list] = {}
             held_now: dict[str, int] = {}
             for buffer in (scene_injections, routed):
@@ -960,7 +966,10 @@ class _RunnerMixin:
                         if reason == "self_state":
                             held_now[agent_key] = held_now.get(agent_key, 0) + len(msgs)
                         continue
-                    next_wave.setdefault(agent_key, []).extend(strip_held_kind(msgs))
+                    msgs = strip_held_kind(msgs)
+                    if buffer is routed and agent_key in acted_now:
+                        msgs = [{**m, CROSSED_KEY: True} for m in msgs]
+                    next_wave.setdefault(agent_key, []).extend(msgs)
             if held_now:
                 logger.info(
                     f"[W{disp_wave}] 자기 선언 상태 중 비직접 메시지 보류: "

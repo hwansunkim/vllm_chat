@@ -83,6 +83,13 @@ HELD_ACTION_KEEP = 2
 HELD_TOTAL_CAP   = 8
 
 
+# 엇갈린 대사 표식 — 받는 사람이 같은 wave 에 자기 턴을 했는데 그 wave 의 다른 사람 말을 받을 때 붙는다.
+# 같은 wave 의 턴은 병렬이라 말한 사람은 받는 사람의 그 턴을 모른 채 말했다. 표식이 없으면 받는 사람
+# 기억에 "내 말 → 상대 말" 순서로 쌓여 상대가 내 말을 듣고 답한 것처럼 읽힌다(2026-11-05 결정).
+# `_inject_incoming` 이 설명 문구로 바꾼다. 재개 입력(pending_wave)에도 그대로 실린다.
+CROSSED_KEY = "crossed"
+
+
 def strip_held_kind(msgs: list[dict]) -> list[dict]:
     """`kind` 표식을 뗀 사본 — 소비처에 기존 shape(speaker/content/action_note)만."""
     return [

@@ -1299,6 +1299,101 @@ class _ScriptedLLM:
         }), "", {}
 
 
+class CrossedSpeechTests(unittest.TestCase):
+    """엇갈린 대사(2026-11-05 결정) — 같은 wave 의 턴은 병렬이라, 그 wave 에 자기도 턴을 한 사람이 받는
+    그 wave 의 말은 "동시에 나온 말"로 표시한다(status.CROSSED_KEY → step.CROSSED_NOTE).
+
+    실측 상황: 깬 짱구가 "배고파"라고 하는 동안 엄마가 "일어나"라고 하면, 짱구 기억엔 "내: 배고파 →
+    엄마: 일어나" 순서로 쌓여 엄마가 듣고도 일어나라고 한 것처럼 읽혔다.
+    """
+
+    _ROOM = [{"name": "거실", "connects_to": []}]
+    _TIME = [{"id": "normal_scene", "label": "t", "min_minutes": 10, "max_minutes": 10}]
+
+    def _run(self, tmp, script, resume_wave, max_waves=2):
+        from ABM.agent import Agent
+        from ABM.simulation import Simulation
+        agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in script}
+        sim = Simulation(
+            agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+            llm=_ScriptedLLM(script), agent_locations={k: "거실" for k in script},
+            location_graph=self._ROOM, time_mode="variable", time_categories=self._TIME,
+        )
+        turns = NaturalStatusExpiryTests._record_turns(sim)
+        sim.run(next(iter(resume_wave)), max_waves=max_waves, step_delay=0.0,
+                starvation_waves=100, resume_wave=resume_wave)
+        return sim, turns
+
+    def test_messages_from_the_same_wave_are_marked_crossed_for_both_speakers(self):
+        from ABM.simulation.status import CROSSED_KEY
+        from ABM.simulation.step import CROSSED_NOTE
+        script = {"a": [{"content": "배고파, 밥 줘.", "target": "b"}],
+                  "b": [{"content": "일어나!",       "target": "a"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, turns = self._run(tmp, script, {"a": [], "b": []})
+            a_w1 = [inc for w, k, inc in turns if k == "a" and w == 1][0]
+            b_w1 = [inc for w, k, inc in turns if k == "b" and w == 1][0]
+            self.assertEqual(a_w1, [{"speaker": "b", "content": "일어나!", "action_note": "", CROSSED_KEY: True}])
+            self.assertEqual(b_w1, [{"speaker": "a", "content": "배고파, 밥 줘.", "action_note": "", CROSSED_KEY: True}])
+            # LLM 이 보는 기억: 자기 말 뒤에 상대 말 + 동시 설명.
+            texts = [m["content"] for m in sim.agents["a"].memory]
+            i_own = next(i for i, t in enumerate(texts) if "배고파" in t)
+            i_in  = next(i for i, t in enumerate(texts) if t.startswith("[b] 일어나!"))
+            self.assertLess(i_own, i_in)
+            self.assertEqual(texts[i_in], f"[b] 일어나!\n{CROSSED_NOTE}")
+
+    def test_reply_after_hearing_is_not_marked(self):
+        # W0 a 만 말한다 → W1 b 는 그 말을 듣고 답한다(b 는 W0 에 턴이 없었다 — 동시가 아님)
+        # → W2 a 가 받는 b 의 답도 a 가 W1 에 턴이 없었으므로 동시가 아니다.
+        from ABM.simulation.status import CROSSED_KEY
+        from ABM.simulation.step import CROSSED_NOTE
+        script = {"a": [{"content": "배고파.", "target": "b"}],
+                  "b": [{"content": "밥 차려 줄게.", "target": "a"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            sim, turns = self._run(tmp, script, {"a": []}, max_waves=3)
+            b_w1 = [inc for w, k, inc in turns if k == "b" and w == 1][0]
+            a_w2 = [inc for w, k, inc in turns if k == "a" and w == 2][0]
+            self.assertNotIn(CROSSED_KEY, b_w1[0])
+            self.assertNotIn(CROSSED_KEY, a_w2[0])
+            self.assertFalse(any(CROSSED_NOTE in m["content"] for m in sim.agents["a"].memory))
+
+    def test_compression_prompt_explains_the_crossed_note(self):
+        # Codex 리뷰 2026-11-05 P2: 압축 입력엔 "[수신] [b] 일어나!\n(↔ 동시에 나온 말: …)" 가 그대로 들어간다 —
+        # 압축 LLM 이 엔진 설명을 등장인물의 말·지속 사실로 옮기지 않게 규칙이 같은 표식을 가리켜야 한다.
+        from ABM.memory_compressor import _COMPRESSION_PROMPT, _format_messages
+        from ABM.simulation.step import CROSSED_NOTE
+        marker = CROSSED_NOTE.split(":", 1)[0]            # "(↔ 동시에 나온 말"
+        self.assertIn(marker, _COMPRESSION_PROMPT)
+        self.assertIn("등장인물이 한\n  말이 아니므로", _COMPRESSION_PROMPT)
+        self.assertIn("내 말을 듣고 한 반응으로 요약하지 마세요", _COMPRESSION_PROMPT)
+        text = _format_messages([{"role": "assistant", "content": "배고파"},
+                                 {"role": "user", "content": f"[b] 일어나!\n{CROSSED_NOTE}"}], 0, 0)
+        self.assertIn(marker, text)
+        _COMPRESSION_PROMPT.format(agent_name="a", existing_memory="", messages_text=text)   # 중괄호 깨짐 없음
+
+    def test_scene_messages_are_not_marked(self):
+        # 같은 wave 에 턴을 한 사람이라도 씬(도착 알림 등)은 응답이 아니라 관찰이라 표시하지 않는다.
+        from ABM.simulation.status import CROSSED_KEY
+        script = {"a": [{"content": "어디 가?", "target": "b"}],
+                  "b": [{"content": "잠깐.", "target": "a", "move_to": "부엌"}, {"content": "왔어.", "target": "a"}]}
+        room = [{"name": "거실", "connects_to": ["부엌"]}, {"name": "부엌", "connects_to": ["거실"]}]
+        with tempfile.TemporaryDirectory() as tmp:
+            from ABM.agent import Agent
+            from ABM.simulation import Simulation
+            agents = {k: Agent(k, f"너는 {k}다.", tmp, token_limit=8192) for k in script}
+            sim = Simulation(agents, [{"role": "user", "content": "[배경] 테스트"}], tmp,
+                             llm=_ScriptedLLM(script), agent_locations={"a": "거실", "b": "거실"},
+                             location_graph=room, time_mode="variable", time_categories=self._TIME)
+            turns = NaturalStatusExpiryTests._record_turns(sim)
+            sim.run("a", max_waves=2, step_delay=0.0, starvation_waves=100, resume_wave={"a": [], "b": []})
+        a_w1 = [inc for w, k, inc in turns if k == "a" and w == 1][0]
+        scenes = [m for m in a_w1 if m["speaker"] == "씬"]
+        speech = [m for m in a_w1 if m["speaker"] != "씬"]
+        self.assertTrue(scenes, a_w1)                              # b 의 이탈 알림
+        self.assertFalse(any(m.get(CROSSED_KEY) for m in scenes))
+        self.assertTrue(all(m.get(CROSSED_KEY) for m in speech))  # b 가 떠나며 한 말은 동시
+
+
 class MoveRoutingTests(unittest.TestCase):
     """move_to(이동)와 발화 라우팅/씬 통보의 순서 회귀 (ABM/simulation/runner.py).
 

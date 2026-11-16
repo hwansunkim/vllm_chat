@@ -240,6 +240,10 @@ now_elapsed = _current_elapsed_minutes(run_wave)   ← 이번 wave 시작 벽시
          행동 관찰 씬). 보류분은 2b(자연 만료) 또는 4c(상태 중 턴)에서 요약돼 전달.
        ※ 보류로 next_wave 가 비면 18번 전원 침묵 처리가 그대로 돈다 — 전원 상태 잠금이면
          wake_key + 해제 시점 점프(case1 v9 W108~114 의 숨소리 핑퐁이 막던 밤 점프 복원).
+       엇갈린 대사(2026-11-05): 수신자가 이번 wave 에 성공한 턴을 했으면 routed 항목(직접·문 너머·
+         엿듣기·14b 보강)에 crossed 표식 — 턴이 병렬이라 말한 사람은 수신자의 이번 턴을 모른다.
+         _inject_incoming 이 대사 아래에 "(↔ 동시에 나온 말: …)" 줄을 붙인다(step.CROSSED_NOTE).
+         씬(scene_injections — 도착·휴대폰·행동 관찰)과 보류분에는 붙이지 않는다. 재개 입력에도 실린다.
        ※ reached_someone/any_reached 는 11·14b 의 직접 해석으로만 정해져 보류와 무관
          (보류분은 직접 타깃이 아니므로 "닿음"이 아니다).
 

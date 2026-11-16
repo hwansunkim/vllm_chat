@@ -3,12 +3,17 @@ import logging
 from ..agent import Agent
 from ..llm import preview_raw
 from ..parser import expected_shape, parse_json_extras_checked
+from .status import CROSSED_KEY
 from ._constants import (
     _COMPRESSION_THRESHOLD, _COMPRESSION_MIN_MSGS, _has_foreign_chars,
     _CONSOLIDATION_EVERY_N_COMPRESSIONS,
 )
 
 logger = logging.getLogger(__name__)
+
+# 엇갈린 대사(status.CROSSED_KEY)에 붙는 설명 — 받는 사람 기억엔 "내 말 → 상대 말" 순서로 쌓이므로,
+# 상대가 내 말을 듣고 한 말이 아니라 같은 때에 나온 말임을 알려 준다(2026-11-05 결정).
+CROSSED_NOTE = "(↔ 동시에 나온 말: 네가 방금 한 말·행동과 같은 때에 나왔다. 말한 사람은 아직 그걸 모르고 말했다.)"
 
 
 class _StepMixin:
@@ -114,6 +119,7 @@ class _StepMixin:
                     msg["content"] if msg["speaker"] == "씬" else
                     f"[{msg['speaker']}] {msg['content']}"
                     + (f"\n({msg['action_note']})" if msg.get("action_note") else "")
+                    + (f"\n{CROSSED_NOTE}" if msg.get(CROSSED_KEY) else "")
                 ),
             }
             for msg in incoming
