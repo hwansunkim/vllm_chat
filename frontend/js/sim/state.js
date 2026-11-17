@@ -536,7 +536,7 @@ export function esc(str) {
 // 않아 이 공식으로 계산할 수 없으므로 null을 반환한다(호출부가 "…" 등으로 처리).
 // 서버가 turn_complete 이벤트/로그 항목에 실어 보내는 `time_str`(실제 계산값)이 있으면
 // 항상 그것을 우선 사용하고, 이 함수는 time_str이 없는 구버전 로그에 대한 폴백으로만 쓸 것.
-// 반환 포맷은 서버 `_format_time_str()`과 동일: `{요일} {오전|오후} {시}시 {분:02d}분`.
+// 반환 포맷은 서버 `_format_time_str()`과 동일: `{N}일차 {요일} {오전|오후} {시}시 {분:02d}분`.
 // 요일은 시작 요일(sim.sim_start_weekday) + 자정 경과 일수로 계산한다. 구버전 로그에는
 // 당시 시작 요일 정보가 없으므로 현재 설정값 기준의 근사치이며, 목적은 신규/구버전 로그의
 // 화면 표기를 일관되게 맞추는 것이다.
@@ -555,9 +555,10 @@ export function simTimeLabel(waveNum) {
   const hour = Math.floor(total / 60);
   const min  = total % 60;
   const pad  = String(min).padStart(2, '0');
-  if (hour < 12) return `${wd} 오전 ${hour}시 ${pad}분`;
+  const day  = `${dayOffset + 1}일차`;
+  if (hour < 12) return `${day} ${wd} 오전 ${hour}시 ${pad}분`;
   const dh = hour === 12 ? 12 : hour - 12;
-  return `${wd} 오후 ${dh}시 ${pad}분`;
+  return `${day} ${wd} 오후 ${dh}시 ${pad}분`;
 }
 
 // ── Misc small helpers ────────────────────────────────────────────────────────

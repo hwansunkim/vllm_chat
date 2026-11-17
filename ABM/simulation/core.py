@@ -955,7 +955,7 @@ class Simulation(_LocationMixin, _InfectionMixin, _MeetingMixin, _JourneyMixin, 
                 json.dump(self.edges, f, ensure_ascii=False, indent=2)
 
     def _format_time_str(self, total_min: int) -> str:
-        """총 분(시작 시각 + 경과분) 값을 '요일 + 오전/오후 N시 M분' 문자열로 변환.
+        """총 분(시작 시각 + 경과분) 값을 'N일차 요일 + 오전/오후 N시 M분' 문자열로 변환.
 
         total_min을 1440(하루)으로 나눈 몫만큼 시작 요일에서 날짜가 넘어간 것으로 보고
         자정 롤오버마다 요일을 순환시킨다. fixed 모드(sim_start_minutes + wave*time_per_wave)와

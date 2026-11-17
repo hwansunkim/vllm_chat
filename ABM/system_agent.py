@@ -116,7 +116,7 @@ def run_system_agent(
     ``_meta`` (``prompt_tokens`` / ``prompt_chars``), or None on failure.
 
     ``current_time_str`` 은 에이전트들이 보는 것과 **같은** 시각 문자열
-    (`Simulation._format_time_str(...)`, 요일 포함)이다. 비어 있으면 [현재 시각]
+    (`Simulation._format_time_str(...)`, 일차·요일 포함)이다. 비어 있으면 [현재 시각]
     섹션 자체를 생략한다 — 시간 개념이 꺼진 시뮬레이션에서 없는 시계를 만들지
     않기 위해서다. 이 인자가 없던 시절 디렉터는 시각을 전혀 못 받아 개입에
     엉뚱한 시각("벽시계가 8시를 친다")을 지어냈다.

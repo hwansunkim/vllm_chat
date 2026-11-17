@@ -351,7 +351,7 @@ def sim_time_label(
     """``time_str`` 이 없는 구버전 로그용 폴백. variable 모드/시간 OFF 면 None.
 
     반환 포맷은 엔진의 ``Simulation._format_time_str`` 과 같다:
-    ``{요일} {오전|오후} {시}시 {분:02d}분``.
+    ``{N}일차 {요일} {오전|오후} {시}시 {분:02d}분``.
     """
     if time_mode == "variable":
         return None
@@ -374,10 +374,11 @@ def sim_time_label(
     start_idx = WEEKDAY_KEYS.index(normalize_weekday(sim_start_weekday))
     wd = WEEKDAY_LABELS[WEEKDAY_KEYS[(start_idx + day_offset) % 7]]
     hour, minute = divmod(total, 60)
+    day = f"{day_offset + 1}일차"
     if hour < 12:
-        return f"{wd} 오전 {hour}시 {minute:02d}분"
+        return f"{day} {wd} 오전 {hour}시 {minute:02d}분"
     display_hour = 12 if hour == 12 else hour - 12
-    return f"{wd} 오후 {display_hour}시 {minute:02d}분"
+    return f"{day} {wd} 오후 {display_hour}시 {minute:02d}분"
 
 
 # ── 만남 서술 ─────────────────────────────────────────────────────────────────

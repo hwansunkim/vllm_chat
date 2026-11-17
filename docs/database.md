@@ -156,7 +156,7 @@ nullable/기본값이라 기존 행은 영향 없음. 컬럼 삭제·이름 변�
 | `meta_json` | TEXT | extra_fields (emotion 등, `action_note` 제외) |
 | `targets_json` | TEXT | 원본 `target` 배열 |
 | `timestamp` | REAL | epoch |
-| `time_str` | TEXT | 시뮬레이션 내 시각 (`월요일 오전 9시 30분`) |
+| `time_str` | TEXT | 시뮬레이션 내 시각 (`1일차 월요일 오전 9시 30분`; 2026-11-17 이전 실행은 일차 없이 `월요일 오전 9시 30분`) |
 | `location` | TEXT | 그 턴 시점(이동 전) 발화자 위치 — 접촉 분석용 |
 | `is_exterior` | INTEGER | 외부 공간 여부 |
 

@@ -369,13 +369,12 @@ class _LocationMixin:
             self._agent_time_anchor_seen[agent_key] = value
 
     def _time_anchor_label(self, total_min: int) -> str:
-        """'N일차 요일 오전/오후 N시 M분' — 새 포맷 함수를 만들지 않고 기존
-        `_format_time_str` 앞에 1-based 일차만 덧붙인다. day-count 공식은
-        `_constants.format_sim_day_period`와 **정확히 같아야** 한다(`day_offset + 1`)
-        — 다르면 압축 헤더와 이 라벨이 몇 주 뒤 서로 다른 날짜를 가리킨다.
+        """'N일차 요일 오전/오후 N시 M분' — 매 턴 [현재 시각]과 같은 `_format_time_str`
+        라벨이다(일차 포함). 일차 공식은 `_constants.format_sim_day_period`와 **정확히
+        같아야** 한다(`day_offset + 1`) — 다르면 압축 헤더와 이 라벨이 몇 주 뒤 서로
+        다른 날짜를 가리킨다.
         """
-        day_offset, _ = divmod(total_min, 24 * 60)
-        return f"{day_offset + 1}일차 {self._format_time_str(total_min)}"
+        return self._format_time_str(total_min)
 
     def _reunion_appearance_msg(
         self, subject_key: str, observer_key: str, description: str

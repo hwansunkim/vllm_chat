@@ -880,9 +880,9 @@ class TimeJumpEndTimeStrTests(unittest.TestCase):
         self._assert_invariant(sim, jumps)
         # 14:00 시작 + wave당 12분 → 2시 12분 / 2시 24분 / 2시 36분
         self.assertEqual([e["end_time_str"] for e in jumps],
-                         ["월요일 오후 2시 12분",
-                          "월요일 오후 2시 24분",
-                          "월요일 오후 2시 36분"])
+                         ["1일차 월요일 오후 2시 12분",
+                          "1일차 월요일 오후 2시 24분",
+                          "1일차 월요일 오후 2시 36분"])
 
     def test_ai_mode_emits_end_time_str(self):
         sim, jumps = self._run(estimation_mode="ai", ai_minutes=7, max_waves=3)
@@ -938,11 +938,11 @@ class TimeJumpEndTimeStrTests(unittest.TestCase):
                             sim._format_time_str(sim._sim_start_minutes))
 
     def test_end_time_str_rolls_over_midnight(self):
-        # 자정을 넘는 wave 도 요일까지 함께 넘어간 문자열이어야 한다.
+        # 자정을 넘는 wave 도 일차·요일까지 함께 넘어간 문자열이어야 한다.
         sim, jumps = self._run(start="23:50", weekday="mon", max_waves=2)
 
         self._assert_invariant(sim, jumps)
-        self.assertEqual(jumps[0]["end_time_str"], "화요일 오전 0시 02분")
+        self.assertEqual(jumps[0]["end_time_str"], "2일차 화요일 오전 0시 02분")
 
     def test_resumed_run_counts_from_restored_elapsed(self):
         # /continue 로 복원된 누적 경과(elapsed_minutes_init)가 기준점이어야 한다.
@@ -8364,6 +8364,33 @@ class _DirectorLLM:
         }), "", {}
 
 
+class ClockDayIndexTests(unittest.TestCase):
+    """시각 라벨의 일차(시뮬레이션 시작일 = 1일차) — 매 턴 시계·상태 해제 시각·내보내기 공통."""
+
+    def test_format_sim_time_prefixes_the_absolute_day(self):
+        from ABM.simulation._constants import format_sim_day_period, format_sim_time
+        total = 6 * 1440 + 22 * 60 + 19                  # 월요일 시작 → 7일차 일요일 22:19
+        self.assertEqual(format_sim_time(total, 0), "7일차 일요일 오후 10시 19분")
+        self.assertEqual(format_sim_time(0, 0), "1일차 월요일 오전 0시 00분")
+        # 압축 구획 머리와 같은 일차를 가리킨다.
+        self.assertTrue(format_sim_day_period(total, 0).startswith("7일차 일요일"))
+
+    def test_old_log_fallback_uses_the_same_format(self):
+        from ABM.export.labels import sim_time_label
+        from ABM.simulation._constants import format_sim_time
+        label = sim_time_label(50, time_mode="fixed", time_per_wave=30,
+                               sim_start_time="09:00", sim_start_weekday="fri")
+        self.assertEqual(label, format_sim_time(9 * 60 + 50 * 30, 4))
+        self.assertTrue(label.startswith("2일차 토요일"))
+
+    def test_time_contract_tells_the_agent_to_read_the_day_from_the_clock(self):
+        from ABM.prompt_contract import build_time_contract
+        contract = build_time_contract(time_enabled=True)
+        self.assertIn("[현재 시각: N일차 요일", contract)
+        self.assertIn("1일차 기준", contract)
+        self.assertIn("일차와 요일이 자동으로 다음 날로", contract)
+
+
 class SystemAgentTimeAndOrderTests(unittest.TestCase):
     """디렉터(system 에이전트)의 실행 시점과 시각 주입.
 
@@ -8446,11 +8473,23 @@ class SystemAgentTimeAndOrderTests(unittest.TestCase):
                 time_per_wave=30,
             )
             # wave 1 → 06:45 + 30분
-            self.assertIn("[현재 시각]\n수요일 오전 7시 15분", llm.director_calls[0])
-            self.assertIn("[현재 시각: 수요일 오전 7시 15분]", llm.agent_calls[1][1])
+            self.assertIn("[현재 시각]\n1일차 수요일 오전 7시 15분", llm.director_calls[0])
+            self.assertIn("[현재 시각: 1일차 수요일 오전 7시 15분]", llm.agent_calls[1][1])
             # wave 2 → 06:45 + 60분
-            self.assertIn("[현재 시각]\n수요일 오전 7시 45분", llm.director_calls[1])
-            self.assertIn("[현재 시각: 수요일 오전 7시 45분]", llm.agent_calls[2][1])
+            self.assertIn("[현재 시각]\n1일차 수요일 오전 7시 45분", llm.director_calls[1])
+            self.assertIn("[현재 시각: 1일차 수요일 오전 7시 45분]", llm.agent_calls[2][1])
+
+    def test_agent_clock_carries_the_day_index_across_midnight(self):
+        # 요일만 주면 7일차 "일요일"과 배경의 "오늘(월요일, 1일차)"을 엮어 날짜를 착각한다
+        # (v16 case1 `ba39a953` W1076). 매 턴 [현재 시각]에 일차가 붙어 자정에 함께 넘어가야 한다.
+        with tempfile.TemporaryDirectory() as tmp:
+            _, llm, _ = self._run(
+                tmp, waves=3, sim_start_time="23:15", sim_start_weekday="sun",
+                time_per_wave=30,
+            )
+            prompts = "\n".join(c[1] for c in llm.agent_calls)
+            self.assertIn("[현재 시각: 1일차 일요일 오후 11시 45분]", prompts)
+            self.assertIn("[현재 시각: 2일차 월요일 오전 0시 15분]", prompts)
 
     def test_time_section_is_omitted_when_time_is_disabled(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -12758,7 +12797,7 @@ class MarkdownGoldenTests(unittest.TestCase):
         self.assertIn("*(부엌 쪽을 바라보며)*", full)
         self.assertNotIn("*(부엌 쪽을 바라보며)*", bare)
         # time 토글은 켜져 있으므로 wave 헤딩은 시각 형식 그대로
-        self.assertIn("### 🕐 월요일 오전 9시 00분  ·  Wave 0", bare)
+        self.assertIn("### 🕐 1일차 월요일 오전 9시 00분  ·  Wave 0", bare)
 
     def test_time_toggle_off_falls_back_to_plain_wave_heading(self):
         cfg, name, result = _run_golden()

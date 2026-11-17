@@ -9,7 +9,12 @@ _WEEKDAY_LABELS: tuple[str, ...] = ("월요일", "화요일", "수요일", "목�
 
 
 def format_sim_time(total_min: int, start_weekday_idx: int) -> str:
-    """총 분(시작 시각 + 경과분) → '요일 + 오전/오후 N시 M분'.
+    """총 분(시작 시각 + 경과분) → 'N일차 요일 + 오전/오후 N시 M분'.
+
+    일차(시뮬레이션 시작일 = 1일차)를 앞에 붙인다. 요일만 주면 에이전트가 "지금이 며칠째인지"를
+    알 근거가 매 턴 시계에 없어, 배경 설명의 "오늘(월요일, 1일차)"과 7일차 "일요일"을 엮어
+    "아직 격리 1일차"라고 착각했다(v16 case1 `ba39a953` W1076). 기억 쪽 라벨(시간 경과 마커,
+    압축 구획 머리 `format_sim_day_period`)과 같은 일차 공식(`day_offset + 1`)이다.
 
     `core.py::Simulation._format_time_str`의 로직을 프리(free) 함수로 옮긴 것 —
     `ABM/memory_compressor.py`처럼 `Simulation` 인스턴스 없이(엔진 import 없이)도
@@ -18,10 +23,11 @@ def format_sim_time(total_min: int, start_weekday_idx: int) -> str:
     day_offset, minute_of_day = divmod(total_min, 24 * 60)
     weekday = _WEEKDAY_LABELS[(start_weekday_idx + day_offset) % 7]
     hour, minute = divmod(minute_of_day, 60)
+    day = f"{day_offset + 1}일차"
     if hour < 12:
-        return f"{weekday} 오전 {hour}시 {minute:02d}분"
+        return f"{day} {weekday} 오전 {hour}시 {minute:02d}분"
     display_hour = hour if hour == 12 else hour - 12
-    return f"{weekday} 오후 {display_hour}시 {minute:02d}분"
+    return f"{day} {weekday} 오후 {display_hour}시 {minute:02d}분"
 
 
 def format_sim_day_period(total_min: int, start_weekday_idx: int) -> str:

@@ -345,7 +345,7 @@ known, strangers  = _compute_wave_targets(agent_key)     # 같은 장소 + 관�
 zone_awareness    = _compute_zone_awareness(agent_key)   # 같은 zone 다른 방 (인지만)
 
 ephemeral_msgs (메모리에 저장 안 함, 매 턴 재계산):
-  · [현재 시각: {요일} {오전|오후} N시 M분]   (시간 개념 활성 시)
+  · [현재 시각: N일차 {요일} {오전|오후} N시 M분]   (시간 개념 활성 시; 시작일 = 1일차)
       → _current_elapsed_minutes(wave) 로 계산 (감염 진행과 같은 값)
   · _build_situation_context(...)  → "[현재 상황]" (이 자리의 사람들 + 낯선 이 + zone 인지)
   · _build_symptom_context(...)    → "[몸 상태]"  (감염 중일 때만)
@@ -870,5 +870,9 @@ run_wave`)를 넘기면 `/continue`·`/resume` 후 fixed 모드에서 이미 `_e
 (`elapsed_minutes_init`으로 복원, `/continue`가 리셋 전에 이번 run 경과를 접어 넣음).
 
 `_format_time_str(total_min)` — `총 분 // 1440`만큼 시작 요일에서 날짜가 넘어간 것으로
-보고 `{요일} {오전|오후} {시}시 {분:02d}분` 반환. fixed·variable 모두 같은 "총 경과 분"을
-넘기므로 이 계산 하나가 양쪽을 커버.
+보고 `{N}일차 {요일} {오전|오후} {시}시 {분:02d}분` 반환(일차 = `총 분 // 1440 + 1`).
+fixed·variable 모두 같은 "총 경과 분"을 넘기므로 이 계산 하나가 양쪽을 커버. 매 턴
+`[현재 시각]`, 디렉터의 현재 시각, 상태 해제 시각(`until_time_str`), 로그 `time_str`
+(내보내기 wave 머리), 시간 경과 마커가 모두 이 라벨을 쓴다. 일차를 넣은 이유: 요일만 주면
+에이전트가 배경 설명의 "오늘(월요일, 1일차)"과 7일차 "일요일"을 엮어 날짜를 착각했다
+(v16 case1 `ba39a953` W1076, `docs/decisions.md` 2026-11-17).
